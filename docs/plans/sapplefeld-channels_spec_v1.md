@@ -54,6 +54,15 @@ hooks and reading the payloads, not from documentation:
   join key that binds a hook to the relay running in the same process.
 - `PostToolUse` delivers `tool_name`, `tool_input`, `tool_response`, `duration_ms`, and `prompt_id`.
 - `Stop` delivers `last_assistant_message`, `background_tasks`, and `session_crons`.
+- **Hook transport is not uniform, and the split is fixed by observation.** The `http` hook type
+  (documented fields `url`, `headers`, `allowedEnvVars`, `timeout`) delivers `PostToolUse` correctly:
+  a probe received the complete payload as an `application/json` POST on a loopback port. The same
+  configuration never delivered `SessionStart` across two runs, the second with the listener verified
+  reachable before launch, while `SessionStart` over a `command` hook delivered fine in an earlier
+  probe. The cause is unknown and does not need to be known: **use `command` for `SessionStart` and
+  `http` for `PostToolUse` and `Stop`.** That is the right shape anyway, since `SessionStart` fires
+  once per session (one process spawn is free) and the per-tool-call events are the ones that must
+  not spawn anything.
 
 So: **hooks report what the session is and what it is doing; the channel carries messages in and
 out.** Neither can do the other's job.
@@ -148,9 +157,9 @@ Discord ──gateway── broker daemon (one per host: owns the bot token, the
 (a fresh GUID per launch), then starts Claude Code with the relay channel.
 
 **Hooks.** `SessionStart` announces identity: this process token now holds this session ID, named
-this, triggered by this source. `PostToolUse` and `Stop` feed the status card. Delivered as `http`
-hooks posting straight to the broker where the hook type supports it, avoiding a process spawn per
-tool call; a `command` shim is the fallback.
+this, triggered by this source. `PostToolUse` and `Stop` feed the status card. `SessionStart` is a
+`command` hook and the other two are `http` hooks posting straight to the broker, per the transport
+finding above.
 
 **Relay MCP server.** Stdio child of one Claude Code process. Reads `CHANNEL_PROCESS_TOKEN` from its
 environment, connects to the broker, declares `claude/channel` and `claude/channel/permission`, and
@@ -183,7 +192,7 @@ Runtime is Node (confirmed present at v24.18.0) with `discord.js` and
 
 ## Prerequisite gate
 
-**Nothing in S4 onward is worth building until this passes.** It is unproven that a channel survives
+**This gate blocks S5 and S6 only.** It is unproven that a channel survives
 a `claude-swap` seat rotation. The reasoning that it does is sound (a channel is a local subprocess
 with no cloud object to orphan, `claude-swap` rewrites credential files without restarting Claude
 Code, and it states that it preserves live MCP server state across swaps) but nobody has observed it.
@@ -198,7 +207,16 @@ pre-provisioned Discord bots using the shipped, allowlisted Discord plugin, leas
 setting `DISCORD_BOT_TOKEN` and `DISCORD_STATE_DIR` in the wrapper. That fallback loses automatic
 thread-per-session and the `/clear` behavior, and it is worse, but it works with zero custom code.
 
-S1 through S3 are independent of the channel and may proceed while this gate is pending.
+**S1 through S4 proceed unconditionally.** None of them touches the relay or a channel event: every
+surface in S4 is fed by registry state that arrives over hooks. That matters for build order, because
+S1 through S4 is a complete and useful product on its own. With only those four done, launching a
+session makes it appear as a Discord thread, the thread list shows the whole fleet and its states,
+and the card shows what each session is doing. That solves the half of the problem that hurt most
+("the session was following a goal and I couldn't see what it was") with no development flag, no
+`channelsEnabled` dependency, and no dependency on this gate. Only sending messages **into** a
+session (S5) and approving permissions remotely (S6) need the channel to survive a rotation.
+
+Build S1 through S4 first regardless of when the gate runs.
 
 ## Sections of Work
 
@@ -250,11 +268,15 @@ Model: sonnet
 The client half of S2: hook definitions and the PowerShell launcher.
 
 Acceptance:
-- A settings fragment registering `SessionStart`, `PostToolUse`, and `Stop` hooks that post to the
-  broker. Prefer the `http` hook type; fall back to a `command` shim if `http` is unavailable in the
-  installed CLI, and record which was used.
-- Hooks fail open: a broker that is down or slow must never block or slow the session. Bound the hook
-  timeout well below the default.
+- A settings fragment registering all three hooks against the broker, with the transport fixed per
+  event: `SessionStart` as a `command` hook (it does not deliver over `http`), `PostToolUse` and
+  `Stop` as `http` hooks with `url` pointing at the broker. Do not re-litigate this; it was settled by
+  probe and the reasoning is in the Approach.
+- Hooks fail open. `http` hooks get this for free (non-2xx responses, connection failures, and
+  timeouts are all documented as non-blocking errors that let execution continue), so the work is
+  making the `SessionStart` command hook match that behavior: it exits zero and silently whatever the
+  broker does, and carries a short explicit `timeout`. A broker that is down must never slow or block
+  a twelve-hour session.
 - `wrapper/Enter-ClaudeSession.ps1` exports a function taking a session name, generating a fresh
   `CHANNEL_PROCESS_TOKEN`, setting `CHANNEL_SESSION`, and launching Claude Code with the correct
   channel flag for the host (plain `--channels` on NEO and ASR, development flag on SCOTT).
