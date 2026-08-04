@@ -1,0 +1,27 @@
+{
+  "_comment": "Attach with: claude --settings tools/probe-hook-payload.json, run from the repository root. Captures every hook payload to tools/hook-capture.jsonl. See docs/operator-checks.md.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"tools\\dump-hook.ps1\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"tools\\dump-hook.ps1\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

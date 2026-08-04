@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+
+# Secrets and per-host config. Never committed.
+.env
+*.token
+config.local.json
+
+# Output of the hook-capture harness in tools/.
+tools/hook-capture.jsonl

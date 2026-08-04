@@ -47,8 +47,9 @@ confirmed empirically against the live CLI on 2026-08-04 by running a headless s
 hooks and reading the payloads, not from documentation:
 
 - `SessionStart` delivers `session_id`, `transcript_path`, `cwd`, and a `source` field naming the
-  trigger (observed value `startup`; the documented value set is `startup`, `resume`, `clear`,
-  `compact`, `fork`).
+  trigger. **The field tracks the real trigger**, observed reading `startup` on a fresh session and
+  `resume` on one launched with `--resume`; the documented value set is `startup`, `resume`, `clear`,
+  `compact`, `fork`.
 - Hook commands **inherit environment variables set by the launch wrapper**. A probe set
   `CHANNEL_SESSION` and `CHANNEL_PROBE_TOKEN` before launch and the hook read both back. This is the
   join key that binds a hook to the relay running in the same process.
@@ -229,13 +230,12 @@ Acceptance:
 - `npm install` succeeds from a clean clone; `npm run lint` and `npm test` exist and pass on an empty
   suite.
 - Workspace layout: `broker/`, `relay/`, `hooks/`, `wrapper/`, `docs/`.
-- `docs/rotation-gate.md` states the exact three-swap procedure above, what to observe, and the kill
-  condition verbatim.
-- A capture script timestamps each inbound fakechat message to a log so the operator has evidence
-  rather than a recollection.
-- `.gitignore` excludes `node_modules/`, `.env`, and any token file.
+- `docs/operator-checks.md` and `tools/` already ship the rotation gate procedure, the kill
+  condition, and the hook-capture harness. Do not rewrite them; extend only if the gate run surfaces
+  a step that was missing.
+- `.gitignore` excludes `node_modules/`, `.env`, any token file, and `tools/hook-capture.jsonl`.
 
-Files in scope: repo root, `docs/rotation-gate.md`, `package.json`, `.gitignore`.
+Files in scope: repo root, `package.json`, `.gitignore`.
 
 ### 2. Broker core: session registry and hook intake
 Model: opus
@@ -391,21 +391,29 @@ Files in scope: `install/`, `docs/install.md`, `docs/operations.md`.
 
 ## Open Questions
 
-1. **Does `allowedChannelPlugins` reach a Windows host as an account-scoped setting or as a local
-   managed-settings file?** This matters because the seat rotates: an account-scoped setting must be
-   present on every account in the pool, while a machine-scoped file survives rotation for free. The
-   documentation says `channelsEnabled` can be set through the claude.ai admin console or through
-   managed settings, but describes `allowedChannelPlugins` only as a managed setting. Owner: Scott,
-   by inspecting the admin console and the managed-settings path on a NEO host before S7.
-2. **Does `SessionStart` fire with `source: "clear"` in an interactive session?** The `source` field
-   and the value list are confirmed; the specific `clear` firing was not observed because it needs an
-   interactive terminal. Owner: Scott, sixty seconds. Low risk, but S2's clear-supersedes behavior
-   rests on it.
-3. **Does the thread name stay pinned in the mobile header while scrolling?** Claimed from how the
-   Discord client behaves, not tested. If it does not, the thread-list dashboard still stands and the
-   design barely moves. Owner: Scott.
-4. **The real rename budget.** Undocumented and to be measured against live headers during S4, not
-   assumed.
+The first three are the operator checks in [`docs/operator-checks.md`](../operator-checks.md), which
+carries runnable steps, pass criteria, and what each answer changes. Owner is Scott for all three.
+
+1. **Does a local managed-settings file control channels on this machine?** (Check D.) Partly
+   resolved: `channelsEnabled` and `allowedChannelPlugins` are **managed-settings only**, and on
+   Windows managed settings are deliverable as a local file at
+   `C:\Program Files\ClaudeCode\managed-settings.json`, a drop-in `managed-settings.d\` directory, or
+   `HKLM\SOFTWARE\Policies\ClaudeCode`. All three are **machine-scoped, not account-scoped**, which
+   would make one file per host survive every rotation and permanently close the silent-delivery-death
+   hole. What is untested is whether a local file is honored for a personal account with no
+   organization, which decides whether the SCOTT host can also drop the development flag. Answering
+   this before S7 may remove the launch dialog everywhere and restore the option of an unattended
+   supervisor.
+2. **Does `SessionStart` fire with `source: "clear"`?** (Check B.) Low risk now: `source` is confirmed
+   to track the real trigger, observed reading `startup` on a fresh session and `resume` on a resumed
+   one in the same probe harness. If it somehow does not fire, the fallback is detecting a changed
+   `session_id` on any hook event from a known process token, which reaches the same outcome slightly
+   less cleanly. S2 should be written so that fallback is a small change.
+3. **Does the thread name stay pinned in the mobile header while scrolling?** (Check C.) Cannot run
+   until S4 exists. If negative, only the in-thread header is lost; the thread-list dashboard, which
+   is the more valuable half, is unaffected.
+4. **The real rename budget.** Undocumented by Discord, and to be measured against live response
+   headers during S4 rather than assumed. No operator action.
 
 ## Chapters
 

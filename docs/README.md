@@ -8,7 +8,12 @@
 
 ## Reference
 
-Written as sections land. `rotation-gate.md` (S1), `install.md` and `operations.md` (S7).
+| Document | What it is |
+|---|---|
+| [`operator-checks.md`](operator-checks.md) | The four checks that need a human at a terminal, a phone, or an Administrator prompt: the seat-rotation gate that blocks sections 5 and 6, the `/clear` behavior, the mobile header, and whether a local managed-settings file controls channels on a host. Each states its steps, its pass criteria, and what the answer changes. |
+
+`tools/` holds the hook-capture harness those checks use. `install.md` and `operations.md` arrive
+with section 7.
 
 ## Related work
 
