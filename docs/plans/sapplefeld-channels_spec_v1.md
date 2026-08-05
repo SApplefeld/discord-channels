@@ -198,6 +198,14 @@ Folded verbatim into every dispatch brief from here on.
   been imported or run.
 - **Gates are `npm run lint` and `npm test`, run from the repo root.** Report the delta against the
   stated baseline, not just "green".
+- **Every string that reaches a Discord surface is untrusted and is neutralized at the render site,
+  not at intake.** The broker's intake strips control characters and caps length; it deliberately
+  does not touch `@everyone`, `@here`, markdown, or bidi controls, because escaping display syntax
+  is the renderer's job. Any Discord write sets `allowed_mentions` to suppress all pings, and a
+  session name or tool name is inert text in a thread title or card. A local process can announce a
+  session with any name it likes, so this is a real input, not a hypothetical one.
+- **Never render a `SessionRecord` wholesale.** `processToken` is the forgery key for hook posts and
+  is already stripped from `GET /sessions`; a surface that serializes a whole record re-leaks it.
 
 ### Decisions carried in
 
@@ -475,4 +483,56 @@ failing; `npm ci` from a wiped `node_modules` exit 0. Tree state was captured be
 review round and was byte-identical, so no reviewer probe leaked into the worktree.
 Stamps: none surfaced (the project memory store was empty at section start; this section created it)
 Next: 2. Broker core: session registry and hook intake
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-05
+Completed: 2. Broker core: session registry and hook intake
+Implemented By: implementer-opus (one build round, one review-fix round via the same agent)
+Metrics: 1 review round (adversarial + blind at fable, security at default); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The security reviewer found a **Critical the other two missed**: the listener
+checked the socket's peer address but not the `Host` header, so DNS rebinding defeated it. The peer
+check passes honestly under rebinding, because the browser really does connect to 127.0.0.1; the page
+then treats the port as same-origin, needs no CORS preflight, and can both read `GET /sessions` (which
+was publishing every process token) and post forged hooks. Fixed with a `Host` allowlist checked
+before routing. The adversarial and blind reviewers independently found the same Major: `PostToolUse`
+and `Stop` routed purely by process token, so an event from the old session arriving after a `/clear`
+was credited to the new record and held it out of staleness. Fixed by routing on `session_id` when
+present, opportunistically, because whether `session_id` rides on every hook payload is unconfirmed
+(the spec's confirmed `PostToolUse` field list does not include it).
+The implementer added two conditions beyond the fix brief and both were accepted: the keyed record's
+process token must also match (otherwise an event could be aimed at any session by ID), and an ended
+record takes counts without being revived, which keeps "ended" a genuine terminal transition.
+Deliberate deviation from the review: **no write coalescing was added** despite the security
+reviewer's Major. Once pruning bounds the record count, the snapshot is small and a synchronous write
+of a few KB per hook event is not a measured cost; keeping the crash-safety story simple beat
+optimizing a cost nobody has observed. Reversal is localized to the `onMutate` wiring.
+Two findings were routed forward rather than fixed here: Discord-active text (`@everyone`, bidi marks)
+is neutralized at S4's render site via `allowed_mentions`, not at intake, because escaping display
+syntax is the renderer's job - now a Standing Brief Amendment, along with a ban on rendering a
+`SessionRecord` wholesale. An intake audit log and `docs/security-model.md` go to S7 with the rotating
+log file.
+Surprise worth keeping: `fetch` treats `Host` as a forbidden header and silently substitutes the real
+one, so the Host-check unit tests had to drive `node:http` directly. A test written with `fetch` would
+have passed while proving nothing.
+Review Findings: 1 Critical fixed (Host header / DNS rebinding). 4 Major fixed - the `/clear` routing
+race, `processToken` published by `GET /sessions`, unbounded registry growth (retention horizon
+defaulting to 24h plus a record cap with terminal-first eviction), and the sanitizer's overclaiming
+comment. 1 Major deliberately not fixed, justified above. 9 Minor fixed: `positiveInt` accepting 0
+(a zero sweep interval was a busy loop), `FORMAT_VERSION` written but never read, a listen-error
+listener left attached that would swallow one error then crash on the next, non-uniform finite checks
+letting `Infinity` hold a record live forever, unsanitized strings re-admitted on load, file modes for
+a token-bearing file, a fixed temp filename, a case-sensitive run-directly guard that made
+`node broker/index.ts` exit 0 having started nothing, and the state file's name added to `.gitignore`.
+Gate delta: lint exit 0 unchanged; tests 3 passing → 47 passing, 0 failing throughout. The nine new
+defenses were red-checked by mutation (9 tests went red, files restored and verified by hash) and
+confirmed against a live `node broker/index.ts` with `curl.exe`: a rebinding Host got 403 on both
+routes, `GET /sessions` carried no process token on the wire, and a misrouted `PostToolUse` was
+dropped with 202 while the correctly-routed one incremented only its own record. Tree state was
+captured before and after the review round and was byte-identical.
+Not proven: that retention fires *at the configured horizon* under real wall time. The horizon is
+locked by the injected-clock test; the live run proves only that the sweep prunes and evicts without
+crashing.
+Stamps: adjudicated 1, stamped 1 (`typescript-runs-unbuilt-under-node-type-stripping`, which shaped
+this section's brief and the import convention its code follows)
+Next: 3. Session lifecycle hooks and the launch wrapper
 Commit Model: Commit-and-Push

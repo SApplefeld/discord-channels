@@ -15,5 +15,9 @@ dist/
 secrets/
 config.local.json
 
+# The broker's persisted registry holds a process token per session. It defaults to a path outside
+# the repo, but CHANNEL_BROKER_STATE can point it anywhere, so the name is ignored here too.
+broker-state*.json
+
 # Output of the hook-capture harness in tools/.
 tools/hook-capture.jsonl
