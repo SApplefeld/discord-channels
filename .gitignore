@@ -2,9 +2,17 @@ node_modules/
 dist/
 *.log
 
-# Secrets and per-host config. Never committed.
+# Kit scratch state. Never committed.
+.kit/
+
+# Secrets and per-host config. Never committed. Broad by intent: a bot token is the one file
+# whose accidental commit cannot be undone by deleting it.
 .env
+.env.*
 *.token
+*token*.json
+*token*.txt
+secrets/
 config.local.json
 
 # Output of the hook-capture harness in tools/.

@@ -177,6 +177,28 @@ with any chat_id or none, and it still lands in the correct thread.
 Runtime is Node (confirmed present at v24.18.0) with `discord.js` and
 `@modelcontextprotocol/sdk`. Bun also satisfies the SDK requirement but is not assumed.
 
+**There is no build step.** TypeScript runs directly under Node 24's type stripping, so every entry
+point is invoked as source (`node broker/index.ts`), which is also how S7's scheduled task starts the
+broker. This buys away a compile stage and the stale-`dist` failure class, at the price of one rule:
+relative imports carry the `.ts` extension. A `./thing.js` specifier type-checks clean under
+`moduleResolution: nodenext` and then throws `ERR_MODULE_NOT_FOUND` at runtime, and no compiler
+option catches it (`verbatimModuleSyntax`, `rewriteRelativeImportExtensions`, and disabling
+`allowImportingTsExtensions` were each measured against a probe and all three still exit 0).
+`import-hygiene.test.ts` is the enforcement.
+
+## Standing Brief Amendments
+
+Folded verbatim into every dispatch brief from here on.
+
+- **Relative imports carry the `.ts` extension**, never `.js` and never bare. There is no build step;
+  TypeScript runs under Node 24 type stripping. `npm test` fails on a violation via
+  `import-hygiene.test.ts`.
+- **`tsc --noEmit` is not a runtime check.** The lint gate is blind to module-resolution failure by
+  construction, so a change to any entry point is not "verified" until the entry point has actually
+  been imported or run.
+- **Gates are `npm run lint` and `npm test`, run from the repo root.** Report the delta against the
+  stated baseline, not just "green".
+
 ### Decisions carried in
 
 - **Thread identity is the session ID, never the name.** A `/clear` mints a new session ID and
@@ -417,4 +439,40 @@ carries runnable steps, pass criteria, and what each answer changes. Owner is Sc
 
 ## Chapters
 
-(Appended by executing-work as sections complete.)
+### Chapter 1 - 2026-08-05
+Completed: 1. Repo scaffold and the rotation gate runbook
+Implemented By: adopted from a prior session, then verified and repaired by the main session
+Metrics: 1 review round (adversarial + blind, both at opus); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **The scaffold was not authored in this session.** A prior session wrote it and
+was terminated before the work was reviewed or committed, so it arrived as untracked, unverified
+files. It was re-verified from scratch and reviewed as if new rather than assumed good. Both
+reviewers returned CHANGES_REQUIRED independently, and the shared class was that the gate S1 exists
+to build was green on code that crashes at runtime. The material decision was the runtime model,
+which S1 had chosen implicitly and never written down: keep Node 24 type stripping (no build step)
+and enforce the import convention with a test, rather than switch to a real emit. Type stripping
+avoids a compile stage before S7's scheduled task and the stale-`dist` failure class; the price is
+that `tsc` provably cannot catch a `./thing.js` specifier, so the guard is homegrown. Chosen while
+zero source files exist, which is when the reversal is cheapest. Recorded in Approach, in a new
+Standing Brief Amendments block, and in project memory.
+Three probe findings worth keeping: `lib: ["es2023"]` does **not** cost the `fetch`/`Response`/
+`Headers`/`AbortController` globals S4 needs (`@types/node` v24 declares them), so dropping the DOM
+lib is free. `node --test <dir>` treats the directory as a test *file* and errors; only bare
+`--test` recurses. A missing literal path alongside a matching glob still exits 0, which killed the
+obvious fix for the green-on-zero hole and forced the `pretest` guard instead.
+Review Findings: 5 Major addressed - missing `verbatimModuleSyntax` (type-only named imports crashed
+at runtime); no compiler guard for `.js`/bare relative specifiers (closed by `import-hygiene.test.ts`,
+proven red on `.js`, bare, multi-line, export-from, dynamic import, and a URL sharing the line, and
+green on `.ts`, bare specifiers, and a commented-out violation); no `lib` (the type checker accepted
+`document`/`WebSocket`, confirmed exit 0 before and exit 2 after); `node --test` reporting green
+having run nothing (closed by a `pretest` guard, proven exit 1 on an empty tree and exit 0 with files
+present); no stated runtime model for S7 to inherit (now in README and Approach). 4 Minor addressed -
+`.mts`/`.cts` outside the lint include; `dist/` inside both gates; narrow secret globs in
+`.gitignore`; and the root README claiming the S5/S6 capabilities in the present tense when nothing
+is built, an honesty-gate violation swept tree-wide (`docs/README.md` and the plan's own line are
+correctly framed as plan and future, so they were left alone).
+Gate baseline for later sections to diff against: `npm run lint` exit 0; `npm test` 3 passing, 0
+failing; `npm ci` from a wiped `node_modules` exit 0. Tree state was captured before and after the
+review round and was byte-identical, so no reviewer probe leaked into the worktree.
+Stamps: none surfaced (the project memory store was empty at section start; this section created it)
+Next: 2. Broker core: session registry and hook intake
+Commit Model: Commit-and-Push

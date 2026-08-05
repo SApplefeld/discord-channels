@@ -1,0 +1,19 @@
+{
+  "name": "sapplefeld-channels",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Watch and steer long-running Claude Code sessions from Discord.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "pretest": "node -e \"const{globSync}=require('node:fs');const n=globSync('**/*.test.ts',{exclude:d=>d.includes('node_modules')}).length;if(!n){console.error('gate error: no test files matched, so a green run would prove nothing');process.exit(1)}console.log('gate: '+n+' test file(s)')\"",
+    "test": "node --test \"**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
