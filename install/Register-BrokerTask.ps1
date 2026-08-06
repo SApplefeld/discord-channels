@@ -58,8 +58,11 @@ function Register-BrokerScheduledTask {
             "say why."
     }
 
+    # -WindowStyle Hidden keeps the broker's console off the desktop. The window still exists (a
+    # brief flash at logon is normal); an Interactive-logon task cannot be fully windowless, and
+    # the logon type below explains why Interactive is required.
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`""
     # Scoped to $User rather than every logon: an unscoped AtLogOn trigger fires for any account
     # that logs onto the machine, and a second broker started under a second account's logon cannot
     # bind the port the first one already holds.

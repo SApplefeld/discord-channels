@@ -186,6 +186,25 @@ test("a PostToolUse from an unannounced process token is accepted and dropped", 
   assert.deepEqual(registry.list(), []);
 });
 
+test("a post with no process token is dropped as unwatched, never refused", async () => {
+  // The installed hooks fire in every session on the machine; one started without the launch
+  // wrapper posts with no token (or an empty one) after every tool call. A non-2xx here surfaces
+  // as a visible hook error inside that session, so the drop must answer 202.
+  const { registry, handle } = harness();
+
+  const bare: Record<string, string> = { "x-channel-hook-event": "PostToolUse" };
+  const empty: Record<string, string> = { ...bare, "x-channel-process-token": "" };
+  const start: Record<string, string> = { "x-channel-hook-event": "SessionStart" };
+  for (const headers of [bare, empty, start]) {
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", { headers, body: JSON.stringify({ tool_name: "Read" }) }),
+    );
+    assert.equal(result.status, 202, JSON.stringify(headers));
+  }
+  assert.deepEqual(registry.list(), []);
+});
+
 test("malformed JSON is a 400 and mutates nothing", async () => {
   const { registry, handle } = harness();
 
@@ -220,7 +239,6 @@ test("a post with no recognized event header is a 400", async () => {
     {},
     { "x-channel-process-token": TOKEN },
     { "x-channel-hook-event": "SessionEnd", "x-channel-process-token": TOKEN },
-    { "x-channel-hook-event": "SessionStart" },
   ];
 
   for (const headers of cases) {

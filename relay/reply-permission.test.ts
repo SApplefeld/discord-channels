@@ -69,8 +69,8 @@ test("the wrapper registers the relay and passes its name with the channel flag"
   const text = wrapper();
   assert.match(
     text,
-    /&\s*claude\s+--mcp-config\s+\$mcpConfig\s+\$channelFlag\s+\$script:ChannelServerName/,
-    "the wrapper must register the relay and name it immediately after the channel flag",
+    /&\s*claude\s+--mcp-config\s+\$mcpConfig\s+\$channelFlag\s+"server:\$\(\$script:ChannelServerName\)"/,
+    "the wrapper must register the relay and pass its tagged server entry immediately after the channel flag",
   );
   assert.match(
     text,

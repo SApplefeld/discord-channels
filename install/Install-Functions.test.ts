@@ -491,18 +491,23 @@ test("Register-BrokerTask's function builds a task definition without registerin
   const registerScript = path.join(path.dirname(FUNCTIONS_PATH), "Register-BrokerTask.ps1");
   const startBrokerPath = "C:\\repo\\install\\Start-Broker.ps1";
 
-  type Definition = { TaskName: string; Principal: { UserId: string } };
+  type Definition = { TaskName: string; Principal: { UserId: string }; Action: { Arguments: string } };
   const definition = runFunctions<Definition>(
     [
       `. "${registerScript}"`,
       `$definition = Register-BrokerScheduledTask -TaskName "ProbeTask" -ScriptPath "${startBrokerPath}" -User "TESTDOMAIN\\TestUser" -IsElevated:$true -WhatIf`,
-      `(@{ TaskName = $definition.TaskName; Principal = @{ UserId = $definition.Principal.UserId } } | ConvertTo-Json) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
+      `(@{ TaskName = $definition.TaskName; Principal = @{ UserId = $definition.Principal.UserId }; Action = @{ Arguments = $definition.Action.Arguments } } | ConvertTo-Json) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
     ].join("\n"),
     dir,
   );
 
   assert.equal(definition.TaskName, "ProbeTask");
   assert.equal(definition.Principal.UserId, "TESTDOMAIN\\TestUser");
+  assert.match(
+    definition.Action.Arguments,
+    /-WindowStyle Hidden/,
+    "the broker's console must stay off the desktop; the task action hides it",
+  );
   // The strongest evidence available without registering a real task: the same script never
   // reached Get-ScheduledTask, Unregister-ScheduledTask, or Register-ScheduledTask, none of which
   // this test's PowerShell process has any reason to have called on a task named "ProbeTask".

@@ -426,8 +426,8 @@ function Set-ChannelBrokerEnvironment {
     $values = Get-ChannelEnvFile -Path $Path
     foreach ($key in $values.Keys) {
         if ($script:ChannelBrokerEnvAllowlist -notcontains $key) {
-            Write-Warning "Set-ChannelBrokerEnvironment: '$key' in '$Path' is not a recognized " +
-                "broker setting and was not applied."
+            Write-Warning ("Set-ChannelBrokerEnvironment: '$key' in '$Path' is not a recognized " +
+                "broker setting and was not applied.")
             continue
         }
         Set-Item -Path "env:$key" -Value $values[$key]

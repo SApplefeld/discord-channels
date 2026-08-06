@@ -149,7 +149,7 @@ export type IntakeFailure = { status: number; message: string };
 export function parseIntake(
   request: IncomingMessage,
   body: string,
-): { intake: HookIntake } | { failure: IntakeFailure } {
+): { intake: HookIntake } | { failure: IntakeFailure } | { unwatched: true } {
   const event = header(request, "x-channel-hook-event");
   if (event === null || !HOOK_EVENTS.includes(event as HookEvent)) {
     return { failure: { status: 400, message: "unknown or missing X-Channel-Hook-Event" } };
@@ -157,7 +157,11 @@ export function parseIntake(
 
   const processToken = header(request, "x-channel-process-token");
   if (processToken === null) {
-    return { failure: { status: 400, message: "missing X-Channel-Process-Token" } };
+    // The installed hooks fire in every session on the machine, and a session started without the
+    // launch wrapper carries no process token. That is unwatched traffic, not malformed traffic:
+    // it is dropped rather than refused, because Claude Code surfaces a non-2xx hook response as a
+    // visible error after every tool call inside that session.
+    return { unwatched: true };
   }
 
   let payload: unknown;
@@ -295,6 +299,14 @@ export function createHandler(
       }
 
       const parsed = parseIntake(request, body);
+      if ("unwatched" in parsed) {
+        refusals.warn(
+          "hook without a process token",
+          "dropped; a session started without the launch wrapper is not watched",
+        );
+        send(response, 202, { ignored: true });
+        return;
+      }
       if ("failure" in parsed) {
         refusals.warn("hook rejected", parsed.failure.message);
         send(response, parsed.failure.status, { error: parsed.failure.message });

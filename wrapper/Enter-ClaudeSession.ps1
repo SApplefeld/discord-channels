@@ -35,12 +35,15 @@ $script:ChannelFlagByHost = @{
     'SCOTT' = '--dangerously-load-development-channels'
 }
 
-# Both channel flags are variadic and take server names, not a bare switch. This is the name the
-# relay is registered under, and it is also what Claude Code builds the reply tool's permission rule
-# from. It is passed explicitly rather than left to the caller: a flag given no value silently
-# swallows whatever argument follows it, and a session that loaded no channel starts and runs
-# normally with no signal that it cannot be steered. hooks/settings-fragment.json's allow rule and
-# relay/reply-permission.test.ts hold the copies together.
+# Both channel flags are variadic and take tagged entries, not a bare switch: `server:<name>` for a
+# manually configured MCP server, `plugin:<name>@<marketplace>` for a plugin-provided channel. The
+# relay is an MCP server, so the launch line passes it as server:<this name>. The untagged name is
+# the key the relay is registered under in the generated --mcp-config, and it is also what Claude
+# Code builds the reply tool's permission rule from. The entry is passed explicitly rather than left
+# to the caller: a flag given no value silently swallows whatever argument follows it, and a session
+# that loaded no channel starts and runs normally with no signal that it cannot be steered.
+# hooks/settings-fragment.json's allow rule and relay/reply-permission.test.ts hold the copies
+# together.
 $script:ChannelServerName = 'channel-relay'
 
 # The relay itself, resolved from this file's own location so it is correct wherever the repository
@@ -152,7 +155,7 @@ function Enter-ClaudeSession {
         $env:CHANNEL_SESSION = $Name
         $env:CHANNEL_PROCESS_TOKEN = [guid]::NewGuid().ToString()
 
-        & claude --mcp-config $mcpConfig $channelFlag $script:ChannelServerName @ClaudeArgs
+        & claude --mcp-config $mcpConfig $channelFlag "server:$($script:ChannelServerName)" @ClaudeArgs
     } finally {
         # Restored whether claude exited, threw, or was interrupted. A token left behind in a
         # dot-sourced shell is inherited by the next `claude` started from it, and the broker reads
