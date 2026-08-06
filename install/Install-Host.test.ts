@@ -70,8 +70,24 @@ type InstallArgs = {
   skipNpmCi?: boolean;
 };
 
-/** Builds and runs a driver script that supplies -BotToken as a real SecureString via splatting. */
+/**
+ * Builds and runs a driver script that supplies -BotToken as a real SecureString via splatting.
+ *
+ * Every run is fenced into the fixture twice over, because the installer's job is to write the
+ * operator's real settings file and a forgotten parameter here reaches it. A test that omits
+ * `settingsPath` or `stateRoot` is refused outright, and the child process is handed a fixture
+ * HOME, USERPROFILE, and LOCALAPPDATA so that even a default resolves inside the fixture rather
+ * than into the real profile. One of these alone is not enough: the first catches the omission,
+ * the second catches a path this harness does not know the installer derives.
+ */
 function runInstallHost(args: InstallArgs, directory: string): { status: number | null; stdout: string; stderr: string } {
+  if (args.settingsPath === undefined) {
+    throw new Error("runInstallHost: settingsPath is required, or this writes the real ~/.claude/settings.json");
+  }
+  if (args.stateRoot === undefined) {
+    throw new Error("runInstallHost: stateRoot is required, or this writes the real %LOCALAPPDATA%");
+  }
+
   const lines: string[] = [];
   const params: string[] = [];
   if (args.hostName !== undefined) params.push(`HostName = "${args.hostName}"`);
@@ -107,11 +123,37 @@ function runInstallHost(args: InstallArgs, directory: string): { status: number 
 
   const driverPath = path.join(directory, `driver-${Math.random().toString(36).slice(2)}.ps1`);
   writeFileSync(driverPath, lines.join("\n"), "utf8");
+  const profile = path.join(directory, "fixture-profile");
+  mkdirSync(path.join(profile, ".claude"), { recursive: true });
   const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", driverPath], {
     encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: profile,
+      USERPROFILE: profile,
+      LOCALAPPDATA: path.join(profile, "AppData", "Local"),
+    },
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
+
+test("the harness refuses to run an install that is not fenced into a fixture", () => {
+  // This guard exists because its absence caused a real incident: a test that omitted settingsPath
+  // fell through to the installer's own default and merged this project's hooks into the operator's
+  // live ~/.claude/settings.json, pointing SessionStart at a fixture directory the test then
+  // deleted. Every Claude Code session on the machine reported a hook error afterwards, and nothing
+  // in the suite noticed, because the installer had done exactly what it was asked to do.
+  const base = { scriptPath: "unused", hostName: "NEO" };
+
+  assert.throws(
+    () => runInstallHost({ ...base, stateRoot: "somewhere" }, os.tmpdir()),
+    /settingsPath is required/,
+  );
+  assert.throws(
+    () => runInstallHost({ ...base, settingsPath: "somewhere" }, os.tmpdir()),
+    /stateRoot is required/,
+  );
+});
 
 test("Install-Host provisions config, merges hooks, hardens the fixture tree, and creates the token file", (t) => {
   const repoRoot = fixtureRepoRoot();
@@ -208,7 +250,13 @@ test("Install-Host rejects both -BotToken and -BotTokenFile together", (t) => {
 
 test("Install-Host rejects a channel or user ID that is not a Discord snowflake", (t) => {
   const repoRoot = fixtureRepoRoot();
-  t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
+  const settingsDir = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-settings-"));
+  const stateRoot = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-state-"));
+  t.after(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(settingsDir, { recursive: true, force: true });
+    rmSync(stateRoot, { recursive: true, force: true });
+  });
 
   const result = runInstallHost(
     {
@@ -217,6 +265,8 @@ test("Install-Host rejects a channel or user ID that is not a Discord snowflake"
       channelId: "not-a-snowflake",
       allowedUserId: "876543210987654321",
       repoRoot,
+      settingsPath: path.join(settingsDir, "settings.json"),
+      stateRoot,
       skipAcl: true,
       skipNpmCi: true,
     },
@@ -227,9 +277,11 @@ test("Install-Host rejects a channel or user ID that is not a Discord snowflake"
 
 test("Install-Host refuses -SkipAcl combined with a token", (t) => {
   const repoRoot = fixtureRepoRoot();
+  const settingsDir = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-settings-"));
   const stateRoot = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-state-"));
   t.after(() => {
     rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(settingsDir, { recursive: true, force: true });
     rmSync(stateRoot, { recursive: true, force: true });
   });
 
@@ -241,6 +293,7 @@ test("Install-Host refuses -SkipAcl combined with a token", (t) => {
       allowedUserId: "876543210987654321",
       botToken: "fake",
       repoRoot,
+      settingsPath: path.join(settingsDir, "settings.json"),
       stateRoot,
       skipAcl: true,
       skipNpmCi: true,
