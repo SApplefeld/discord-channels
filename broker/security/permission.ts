@@ -120,6 +120,14 @@ export type PermissionDesk = {
   request: (processToken: string, request: PermissionRequest) => Promise<boolean>;
   /** Applies a verdict typed in a thread, if that thread has a request open under that ID. */
   resolve: (threadId: string, verdict: Verdict) => Promise<void>;
+  /**
+   * Sessions with a prompt the operator has not answered. This is what feeds the `needs you` state,
+   * and it is the reason the state exists: a session parked on a permission prompt is doing nothing
+   * and will do nothing until a person acts, which is precisely what the thread list is for.
+   * Without it the surface renders such a session as idle, indistinguishable from one that is
+   * simply quiet.
+   */
+  waiting: () => ReadonlySet<string>;
 };
 
 export type PermissionDeskOptions = {
@@ -180,6 +188,12 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
   }
 
   return {
+    waiting() {
+      const sessions = new Set<string>();
+      for (const entry of open.values()) sessions.add(entry.sessionId);
+      return sessions;
+    },
+
     async request(processToken, request) {
       if (!REQUEST_ID.test(request.requestId)) {
         // Posting it would ping the operator with a prompt no reply of theirs can answer. If Claude

@@ -113,6 +113,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       return false;
     },
     resolve: async () => {},
+    waiting: () => new Set<string>(),
   };
   const relayRoutes = createRelayRoutes({
     relays,
@@ -149,7 +150,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // registry and its intake, which is what a local debugging run and every test wants. The refresh
   // timer lives here for the same reason the sweep does, so the surface itself is drivable by an
   // injected clock.
-  const discord = loadDiscordConfig(process.env, { staleAfterMs: config.staleAfterMs });
+  const discord = loadDiscordConfig(process.env, {
+    staleAfterMs: config.staleAfterMs,
+    // A half-configured Discord is the one shape that looks identical to a working one from every
+    // other signal: the broker starts, the registry fills, the status cards would tick. Saying so
+    // once at startup is the difference between a typo and an afternoon.
+    warn: (message) => {
+      console.warn(message);
+      logger.warn(message);
+    },
+  });
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;
@@ -201,7 +211,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // with the Discord surface, and the intake is the half that has to keep running. The pass is
       // kept so that shutdown can wait for it: clearing the timer does not cancel a call already
       // on the wire, or the binding write that follows it.
-      inFlight = surface.tick(registry.list().map((record) => toView(record))).catch((error: unknown) => {
+      // Recomputed each pass rather than pushed, so a prompt answered between ticks stops showing
+      // as waiting without anything having to remember to clear it.
+      const waiting = permissions.waiting();
+      inFlight = surface
+        .tick(registry.list().map((record) => toView(record, waiting.has(record.sessionId))))
+        .catch((error: unknown) => {
         // describe() rather than String(error): a discord.js error can carry the request object,
         // and the Authorization header along with it, and this string lands in the log file.
         const message = `broker: discord refresh failed: ${describe(error)}`;

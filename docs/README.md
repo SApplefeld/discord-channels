@@ -1,19 +1,28 @@
 # Documentation index
 
-## Plans
-
-| Plan | Status | What it is |
-|---|---|---|
-| [`plans/sapplefeld-channels_spec_v1.md`](plans/sapplefeld-channels_spec_v1.md) | In Progress | The whole system: a per-host broker daemon, a relay MCP channel, and session-lifecycle hooks that surface each running Claude Code session as a Discord thread you can watch and steer from a phone. |
+This repository steers long-running Claude Code sessions from Discord. Every running session on a
+host appears as its own Discord thread: the thread list is a live dashboard of the fleet, the
+thread's first message is a status card showing what that session is doing, and a message typed in
+the thread reaches the running session. Tool permission prompts are answered from the same thread
+with a one-line reply. All of it is built and installable.
 
 ## Reference
 
 | Document | What it is |
 |---|---|
-| [`operator-checks.md`](operator-checks.md) | The four checks that need a human at a terminal, a phone, or an Administrator prompt: the seat-rotation gate that blocks sections 5 and 6, the `/clear` behavior, the mobile header, and whether a local managed-settings file controls channels on a host. Each states its steps, its pass criteria, and what the answer changes. |
+| [`architecture.md`](architecture.md) | The system in one page: the four components per host, the split between hooks (which carry identity) and the channel (which carries messages), the data flow, the external integrations, and the no-build-step runtime model. Read this first. |
+| [`install.md`](install.md) | Standing a host up: creating the Discord application, provisioning the host, registering the broker's scheduled task, and launching a session. |
+| [`operations.md`](operations.md) | Running a host: where state and logs live, how to read a thread, how to answer a permission prompt, the tunables, and what to do when something is wrong. |
+| [`security-model.md`](security-model.md) | The trust boundary: what the process token authenticates, what the sender gate is the only authority for, what a permission prompt sends off the machine, and which files must not be writable. |
+| [`operator-checks.md`](operator-checks.md) | Four checks that need a human at a terminal, a phone, or an Administrator prompt. All four have been run and passed; the file records each result and keeps the procedure for re-running it on a new host. |
 
-`tools/` holds the hook-capture harness those checks use. `install.md` and `operations.md` arrive
-with section 7.
+## Plans
+
+| Plan | Status | What it is |
+|---|---|---|
+| [`archive/plans/sapplefeld-channels_spec_v1.md`](archive/plans/sapplefeld-channels_spec_v1.md) | Complete | The design and build record for the whole system, in seven sections, with a Chapter per section covering what shipped, the decisions, and the surprises. |
+
+`tools/` holds the hook-capture harness the operator checks use.
 
 ## Related work
 

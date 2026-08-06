@@ -1,9 +1,10 @@
 # Session Channels: steering long-running Claude Code sessions from Discord
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: reviewer pairs on the opus-tier sections (S2, S4, S5, S6); finishing reviews. No fable-tier implementation sections.
 Created: 2026-08-04
+Completed: 2026-08-06
 
 ## Goal
 
@@ -898,8 +899,12 @@ attach its own pipe and man-in-the-middle the operator; fixed by first-claim-win
 attachment reply key that never travels where the token holder can read it. A transient pipe close
 permanently tombstoned a live session, with the relay's own read-timeout recovery as a trigger, so
 the client's reconnect logic and the server's close-is-death rule contradicted each other; fixed with
-a grace window, which also matches the acceptance criterion's "within one heartbeat interval" more
-exactly than the original did. And the relay's `instructions` asserted that channel text came from
+a grace window. **Correction to what this Chapter first claimed:** the grace window does not match
+the criterion's "within one heartbeat interval" more exactly than the original did, it relaxes it.
+The grace equals one heartbeat and the sweep is periodic, so a close landing just after a tick ends
+the session on the tick after next: the real bound is up to two intervals. The trade is deliberate
+and worth it (it is what stops a reconnecting relay being tombstoned) but it is a loosening of the
+stated criterion, not a tightening, and the original wording overstated it. And the relay's `instructions` asserted that channel text came from
 the operator, a provenance the transport cannot establish, which undercut the data-not-instruction
 paragraph directly above it.
 7 Major fixed: reply authorship (closed by the reply key), a `reply()` that could hang forever

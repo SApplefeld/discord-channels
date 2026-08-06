@@ -15,14 +15,23 @@
 # -ClaudeArgs passes extra arguments straight through to `claude` after the channel flag and the
 # relay's server name: a -p prompt, or anything else.
 
-# Which flag opens channels on each host, per the spec's Approach: NEO and ASR are organization-
-# owned and allowlist the relay plugin through managed settings, so plain --channels opens it with
-# no development-flag warning dialog. SCOTT is a personal Max account with no organization to
-# allowlist through, so it keeps --dangerously-load-development-channels and the one confirmation
-# keypress that flag opens at launch. Add a host here rather than branching in Enter-ClaudeSession.
+# Which flag opens channels on each host. Plain --channels loads a channel only when its plugin is
+# on an allowlist; otherwise the launch is refused, and a refused channel is this project's worst
+# shape of failure, because the session starts, the hooks announce it, and the thread and card look
+# healthy while nothing can reach it.
+#
+# The relay is on no allowlist on any host today: it is registered per launch through --mcp-config,
+# and packaging it as a plugin so it can be named in allowedChannelPlugins is the one step of the
+# install deliberately left for later. So every host takes the development flag and its one
+# confirmation keypress, which is a nuisance at a keyboard the operator is already sitting at.
+#
+# Operator check D settled that a local managed-settings file is honored on a personal account, so
+# this is not a Team-and-Enterprise privilege: once the relay is a plugin, every host here can move
+# to plain --channels, SCOTT included. Change an entry only alongside that packaging, and confirm
+# the startup banner's channel line on the first launch after.
 $script:ChannelFlagByHost = @{
-    'NEO'   = '--channels'
-    'ASR'   = '--channels'
+    'NEO'   = '--dangerously-load-development-channels'
+    'ASR'   = '--dangerously-load-development-channels'
     'SCOTT' = '--dangerously-load-development-channels'
 }
 

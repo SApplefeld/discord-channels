@@ -110,3 +110,23 @@ test("a non-integer interval is refused rather than silently defaulted", () => {
   assert.throws(() => load({ ...base, CHANNEL_DISCORD_REFRESH_MS: "0" }), /expected an integer/);
   assert.equal(load({ ...base, CHANNEL_DISCORD_DWELL_MS: "0" })?.dwellMs, 0);
 });
+
+test("a half-configured Discord says so, while an unconfigured one stays quiet", () => {
+  // The shape this catches is a typo, and it is the one misconfiguration that looks exactly like a
+  // working broker from every other signal: it starts, the registry fills, and the surfaces are
+  // simply never there. A broker with nothing Discord-related set is a deliberate state and must
+  // stay silent, or the warning is noise on every local run and nobody reads it.
+  const said: string[] = [];
+  const context = { staleAfterMs: STALE_AFTER_MS, warn: (m: string) => said.push(m) };
+
+  assert.equal(loadDiscordConfig({}, context), null);
+  assert.deepEqual(said, [], "a broker that wants no Discord is not misconfigured");
+
+  assert.equal(loadDiscordConfig({ CHANNEL_DISCORD_TOKEN: "t" }, context), null);
+  assert.equal(said.length, 1, "a token with no channel is a typo worth naming");
+  assert.match(said[0], /CHANNEL_DISCORD_CHANNEL is not/);
+
+  assert.equal(loadDiscordConfig({ CHANNEL_DISCORD_CHANNEL: CHANNEL }, context), null);
+  assert.equal(said.length, 2, "a channel with no token is the same typo the other way round");
+  assert.match(said[1], /no bot token/);
+});

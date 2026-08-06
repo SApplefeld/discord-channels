@@ -66,6 +66,13 @@ function readToken(env: NodeJS.ProcessEnv, direct: string | undefined): string |
 export type DiscordConfigContext = {
   /** The registry's staleness window, which bounds how long the idle threshold may be. */
   staleAfterMs: number;
+  /**
+   * Where a half-finished configuration is reported. A broker with nothing Discord-related set is
+   * a deliberate, silent, working state, but one with a token and no channel, or a channel and no
+   * token, is a typo the operator wants to hear about: the surfaces are off, and every other
+   * signal in the system looks exactly the way it would if they were on.
+   */
+  warn?: (message: string) => void;
 };
 
 /** Returns null when no token or no channel is configured, which turns the surfaces off. */
@@ -83,7 +90,18 @@ export function loadDiscordConfig(
   // path left in the environment must not stop a broker that is not configured for Discord at all
   // from starting.
   const channelId = env.CHANNEL_DISCORD_CHANNEL?.trim();
-  if (!channelId) return null;
+  const tokenFile = env.CHANNEL_DISCORD_TOKEN_FILE?.trim();
+  const wanted = Boolean(direct) || Boolean(tokenFile) || Boolean(channelId);
+
+  if (!channelId) {
+    if (wanted) {
+      context.warn?.(
+        "discord: a token is configured but CHANNEL_DISCORD_CHANNEL is not, so the surfaces are " +
+          "off. Sessions will be tracked and reachable by nothing.",
+      );
+    }
+    return null;
+  }
   // The channel ID is interpolated into a token-bearing request path, so its shape is checked
   // rather than trusted.
   if (!SNOWFLAKE.test(channelId)) {
@@ -93,7 +111,13 @@ export function loadDiscordConfig(
   }
 
   const token = readToken(env, direct);
-  if (!token) return null;
+  if (!token) {
+    context.warn?.(
+      "discord: CHANNEL_DISCORD_CHANNEL names a channel but no bot token is configured, so the " +
+        "surfaces are off. Sessions will be tracked and reachable by nothing.",
+    );
+    return null;
+  }
 
   const idleAfterMs = integerAtLeast(
     env.CHANNEL_DISCORD_IDLE_AFTER_MS,

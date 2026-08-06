@@ -8,8 +8,10 @@ instruction.
 
 ## The trust boundary
 
-The broker listens on `127.0.0.1` only, and refuses a request three ways before it reaches the
-registry:
+The broker listens on `127.0.0.1` only, and three origin checks refuse a request before it reaches
+the registry. They apply to the relay's routes as well as the hook intake, re-checked there rather
+than shared, because those routes are composed in front of the intake and would otherwise be
+reachable without either of the first two:
 
 - **The socket peer must be loopback.** Binding to `127.0.0.1` already makes an off-box connection
   impossible; this is defense in depth against a future bind change or a proxy in front of the port.
@@ -21,6 +23,10 @@ registry:
 - **The event name rides in a header that is not CORS-simple.** A browser must preflight to send
   `X-Channel-Hook-Event`, and this server answers no `OPTIONS` request. Adding an `OPTIONS` handler,
   or moving the event name into the body, removes that property silently.
+
+A request body is capped at 64 KB and refused unread past it, and refusal logging is rate-limited by
+reason, so a local process cannot flood the log with its own refused posts to push earlier evidence
+of the same behavior out through rotation.
 
 `GET /sessions` withholds `processToken`, and the record is serialized field by field so that a
 field added later has to be published deliberately rather than arriving on its own.
@@ -59,9 +65,10 @@ Since that process can also issue permission prompts, the residual is now phishi
 impersonation: it can ring the phone with an approval request carrying a tool name, description and
 input of its choosing. It cannot escalate to approving a *real* pending call, because holding the
 pipe means the genuine relay was refused and there are no real prompts to answer. Volume is damped
-per thread: past a few prompts a minute the message still arrives and is still answerable but stops
-mentioning the operator, and only far past that is a prompt dropped. The ping stops; the session
-does not park.
+per thread: past **3 prompts a minute** the message still arrives and is still answerable but stops
+mentioning the operator, and only past **12 a minute** is a prompt dropped. The ping stops; the
+session does not park. The split is deliberate, because a single ceiling that drops prompts would let
+a local process park every session on the host by spending it first, turning phishing into denial.
 
 ## The sender gate
 
@@ -156,18 +163,21 @@ execution in the operator's context.** The bot token is a bearer credential: rea
 of the bot, write access lets an attacker substitute a token and redirect the host's entire session
 inventory to a server they own.
 
-The scheduled task widens this: at every logon it runs `install/Start-Broker.ps1` under the same
-Bypass, which loads `install/Install-Functions.ps1` and executes `broker/`. So the surface is every
-path on the execution chain, not a pair of files, and **directories count as much as the files in
-them**: a hardened file in a directory that permits delete-child can simply be deleted and
-re-created attacker-owned with a clean access control list, which defeats the file's own permissions
-entirely.
+Two more things widen this. At every logon the scheduled task runs `install/Start-Broker.ps1` under
+the same Bypass, which loads `install/Install-Functions.ps1` and executes `broker/`. And the merged
+user settings name `relay/index.ts` as an MCP server command, so Claude Code executes the relay at
+the start of every wrapped session. So the surface is every path on the execution chain, not a pair
+of files, and **directories count as much as the files in them**: a hardened file in a directory that
+permits delete-child can simply be deleted and re-created attacker-owned with a clean access control
+list, which defeats the file's own permissions entirely.
 
 The installer strips inheritance and grants only the owner, Administrators, and SYSTEM on:
 
-- `hooks/`, `wrapper/`, `install/`, and `broker/`, as directories, inherited by their contents
+- `hooks/`, `relay/`, `wrapper/`, `install/`, and `broker/`, as directories, inherited by their
+  contents
 - the bot token file
-- the bot token file's parent directory, and the state root
+- the state root, unconditionally, since `broker.env`, the registry snapshot, the log file, and the
+  per-launch relay registration all live there whether a token does or not
 
 It also refuses to harden a drive root, and refuses a token file outside the state root, because
 rewriting the access control list of an arbitrary directory an operator happened to name is a
@@ -186,6 +196,14 @@ owned by that account, so hardening it "to its owner" would hand it to the attac
 verification. The owner must be this process's account or an administrative identity. Reparse points
 are refused outright, since a symbolic link passes every check against its current target and can be
 re-pointed afterwards.
+
+`broker.env` gets a second layer beyond its ACL. `Start-Broker.ps1` applies only the keys on a fixed
+allowlist and skips anything else with a warning, because that file's contents become environment
+variables of the process that then reads the bot token, and something like `NODE_OPTIONS` there is a
+code-execution primitive needing no hook and no ACL bypass at all. The settings fragment gets the
+same treatment from the other direction: the installer refuses to merge any hook event, hook type, or
+permission rule outside its own short lists, so an attacker-writable fragment cannot persist an
+arbitrary `PreToolUse` command machine-wide by riding the merge.
 
 The exposure is latent on a single-operator machine and live the moment a host has a second
 authenticated account or a non-administrative service account.

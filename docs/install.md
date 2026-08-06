@@ -4,8 +4,9 @@ One broker per host, one Discord bot identity per host, one channel per host. A 
 sessions over localhost, so it cannot serve another machine.
 
 The three hosts are NEO, ASR, and SCOTT. NEO and ASR are organization-owned; SCOTT is a personal Max
-account with no organization. That difference decides two things below: the channel flag the launch
-wrapper uses, and whether the launch dialog appears.
+account with no organization. Steps 1 through 4 are identical on all three. The only thing that
+differs is the channel flag the launch wrapper passes, which is decided by whether that host's
+managed settings allowlist the relay, not by which kind of account pays for the session.
 
 ## 1. Create the Discord application
 
@@ -54,11 +55,17 @@ The installer:
 - writes `broker.env` and the token file under `%LOCALAPPDATA%\sapplefeld-channels\`, outside the
   repository,
 - substitutes this checkout's absolute path into the `SessionStart` hook and merges the three hooks
-  into your user-level `~/.claude/settings.json`, backing it up first and preserving every hook and
-  setting that is not this project's,
-- hardens the access control lists on the hook script, the launch wrapper, the token file, and the
-  token file's directory,
+  and the relay's one reply-tool permission rule into your user-level `~/.claude/settings.json`,
+  backing it up first and preserving every hook, rule, and setting that is not this project's,
+- hardens the access control lists on the whole execution surface: `hooks/`, `relay/`, `wrapper/`,
+  `install/`, and `broker/` as directories, the bot token file, and the state root,
 - runs `npm ci`, which installs the reviewed lockfile rather than resolving newer dependencies.
+
+Directories are hardened as containers rather than file by file, because a hardened file in a
+directory that permits delete-child can be deleted and re-created with a clean access control list.
+The reasoning is in [`security-model.md`](security-model.md); the short version is that every one of
+those paths is executed automatically, either by the scheduled task at logon or by Claude Code at the
+start of every session on the machine.
 
 The hooks belong in the **user-level** settings file rather than a project one, because the sessions
 being watched live in arbitrary repositories. That is also why the `SessionStart` hook names its
@@ -72,12 +79,18 @@ run unwatched.
 Elevated, once:
 
 ```powershell
-install\Register-BrokerTask.ps1
+install\Register-BrokerTask.ps1 -User <the account that ran step 2>
 ```
 
-This registers a scheduled task that starts the broker at logon and restarts it on failure. Running
-it again updates the existing task rather than creating a second one. It refuses to run unelevated
-with a message saying so, rather than failing with an access error further in.
+`Install-Host.ps1` prints that exact command with the account already filled in, and `-User` matters:
+the ACLs from step 2 grant the account that ran it, so a task registered under a different principal
+starts a broker that cannot read its own token file. It also scopes the logon trigger, since an
+unscoped one fires on any account's logon and a second broker cannot bind the port the first holds.
+
+The task starts the broker at logon and restarts it every minute on failure, up to 999 times, with no
+execution time limit. Running the script again updates the existing task in place rather than
+creating a second one. It refuses to run unelevated with a message saying so, rather than failing
+with an access error further in.
 
 ## 4. Launch a session
 
@@ -91,33 +104,63 @@ identity is the session ID, not the name. It is restricted to printable ASCII, b
 travels as an HTTP header and a non-ASCII one would fail in a way that silently prevents the session
 from ever being announced.
 
+The wrapper refuses to launch rather than launching a session that cannot be watched. It throws when
+the hook script or the relay is missing, when the installed `SessionStart` hook in your user settings
+names a different checkout, or when the hook script has lost the permissions the installer set. Each
+message names the command that fixes it, which is almost always re-running `Install-Host.ps1` from
+this checkout. On a fresh clone where the installer has not run, expect the permission refusal.
+
+Each launch also rewrites `%LOCALAPPDATA%\sapplefeld-channels\relay-mcp.json`, which is the
+`--mcp-config` that registers the relay for that one session. It is regenerated from the wrapper's
+own location every time, so unlike the installed hook path it can never come to name a checkout that
+has moved.
+
 Confirm the session registered:
 
 ```powershell
 curl.exe -s http://127.0.0.1:8787/sessions
 ```
 
-## The launch dialog, on NEO and ASR
+## The launch dialog
 
 A custom channel is not on Anthropic's approved allowlist, so it normally requires
 `--dangerously-load-development-channels` and a full-screen warning that needs a keypress at the
-terminal. On Team and Enterprise plans an organization admin can set `allowedChannelPlugins` to
-include a plugin from their own marketplace, which replaces the Anthropic allowlist entirely. NEO and
-ASR take that route and launch with plain `--channels` and no dialog; SCOTT keeps the flag and the
-keypress.
+terminal. Setting `allowedChannelPlugins` to include the relay replaces the Anthropic allowlist
+entirely and removes both.
 
 `channelsEnabled` and `allowedChannelPlugins` are managed settings, deliverable on Windows as a local
 file at `C:\Program Files\ClaudeCode\managed-settings.json`, a `managed-settings.d\` drop-in
 directory, or `HKLM\SOFTWARE\Policies\ClaudeCode`. All three are machine-scoped rather than
-account-scoped, so one file per host survives every account rotation.
+account-scoped, so one file per host survives every account rotation, and a local file is honored
+even on a personal account with no organization behind it. That is what makes this route available on
+every host rather than only the organization-owned ones, and it is also what stops a rotation onto an
+account without `channelsEnabled` from silently killing message delivery.
 
 **Note that the replacement is total.** Once `allowedChannelPlugins` is set, any shipped channel
 plugin you also want must be listed alongside this project's.
 
-## Not yet installable
+The wrapper picks the flag from a table keyed by host name
+(`wrapper/Enter-ClaudeSession.ps1`, `$script:ChannelFlagByHost`). NEO and ASR are configured for
+plain `--channels`; SCOTT carries `--dangerously-load-development-channels` and its one keypress.
+Add a new host to that table rather than branching elsewhere.
 
-Packaging the relay as a plugin, and naming it in `allowedChannelPlugins`, waits on the relay itself
-(Section 5 of the plan, which is gated on the rotation check in
-[`operator-checks.md`](operator-checks.md)). Until then a host runs the broker, the hooks, and the
-Discord surfaces: sessions appear as threads and the thread list works as a dashboard, but there is
-no path for sending a message into a session.
+## Packaging the relay as a plugin
+
+This is the one step that is not yet built. Nothing here is blocked by it: a host installed as above
+runs the full system, threads and cards and messages and permission prompts all included. What
+packaging buys is the removal of the development flag and its launch dialog, and with it the option
+of an unattended supervisor that restarts a crashed session, which the dialog forecloses because a
+keypress at the terminal cannot be automated away.
+
+Until the relay ships as a plugin in a marketplace, any host that would name it in
+`allowedChannelPlugins` has nothing to name, and SCOTT keeps its flag.
+
+**This is the one place a host can be installed into a half-working state.** The wrapper's table
+already gives NEO and ASR plain `--channels`, which is correct only once the relay is allowlisted
+there, and the relay is not on any allowlist yet. A host launched with plain `--channels` may
+therefore have its channel refused, in which case the session starts, the hooks announce it, the
+thread opens and the card ticks, and messages typed into the thread reach nothing. That is the same
+shape as the `channelsEnabled` failure [`operations.md`](operations.md) describes, and only SCOTT has
+ever been launched against a live channel. Until the relay is a plugin, give a new host
+`--dangerously-load-development-channels` in that table, and check the startup banner's channel line
+on the first launch after any change to it before trusting the message path.

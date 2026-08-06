@@ -7,13 +7,16 @@
 | Broker state (the session registry) | `%LOCALAPPDATA%\sapplefeld-channels\broker-state.json` |
 | Thread bindings | `%LOCALAPPDATA%\sapplefeld-channels\discord-threads.json` |
 | Host configuration | `%LOCALAPPDATA%\sapplefeld-channels\broker.env` |
-| Log file | `CHANNEL_BROKER_LOG_FILE` in `broker.env`, by default `%LOCALAPPDATA%\sapplefeld-channels\broker.log` |
-| Scheduled task | `SapplefeldChannelsBroker`, at logon, restarts on failure |
+| Bot token | `%LOCALAPPDATA%\sapplefeld-channels\discord-token.txt`, or wherever `CHANNEL_DISCORD_TOKEN_FILE` points inside the state root |
+| Relay registration, rewritten per launch | `%LOCALAPPDATA%\sapplefeld-channels\relay-mcp.json` |
+| Log file | `CHANNEL_BROKER_LOG_FILE` in `broker.env`, by default `%LOCALAPPDATA%\sapplefeld-channels\broker.log`, rotated at 5 MB with 5 files kept |
+| Scheduled task | `SapplefeldChannelsBroker`, at logon, restarting every minute on failure |
 
 The log is the first place to look when anything is wrong. Several failures here are deliberately
 silent everywhere else: the `SessionStart` hook swallows every error so it can never slow or block a
-session, and the broker answers a misrouted or forged hook post with a quiet acknowledgement rather
-than an error. The log is where those become visible.
+session, the broker answers a misrouted or forged hook post with a quiet acknowledgement rather than
+an error, and a dropped inbound message or permission prompt is logged and nothing more. The log is
+where those become visible.
 
 ```powershell
 Get-Content $env:LOCALAPPDATA\sapplefeld-channels\broker.log -Tail 50 -Wait
@@ -22,10 +25,10 @@ curl.exe -s http://127.0.0.1:8787/sessions
 
 ## The failure this design exists to make visible
 
-`channelsEnabled` is an organization-level managed setting. When it is off, the channel server still
-connects and its tools still work while channel messages silently stop arriving, and the warning
-fires **at startup only**. A `claude-swap` seat rotation lands mid-session, hours later, so a swap
-onto an account without `channelsEnabled` kills message delivery with no signal at all.
+`channelsEnabled` is a managed setting, and when it is off the channel server still connects and its
+tools still work while channel messages silently stop arriving. The warning fires **at startup
+only**, and a `claude-swap` seat rotation lands mid-session, hours later, so a swap onto an account
+without `channelsEnabled` would kill message delivery with no signal at all.
 
 The status card closes that hole, and it is why the card is a safety feature rather than polish. The
 two paths fail independently: the card is fed by hooks running locally over loopback, while messages
@@ -33,9 +36,10 @@ ride the channel. If channels die on a swap, **the card keeps ticking**. You see
 demonstrably alive and working while your messages go unanswered, which names the failure exactly.
 Without the card, the same failure is indistinguishable from Claude ignoring you.
 
-So: a thread whose card is updating but whose messages are ignored means channels are off on the
-current account. Check which account `cswap` last moved to and whether that account has
-`channelsEnabled`.
+A thread whose card is updating but whose messages are ignored means channels are off for the current
+session. Check which account `cswap` last moved to, and check the host's managed-settings file: a
+local file at `C:\Program Files\ClaudeCode\managed-settings.json` is machine-scoped and honored on
+every account, including a personal one, which is the durable fix rather than chasing the rotation.
 
 ## Reading a thread
 
@@ -43,40 +47,111 @@ Thread names are glyph-first because the mobile thread list truncates hard and t
 has to survive truncation.
 
 ```
-⏸ neo-warden      needs you · Bash
 ⚙ neo-intake      working · 14m
+⚙ neo-migrate     working · 2m
 ✅ scott-kit       idle · 1h
 ⚠ asr-docs        exited · 3h
 ```
 
 `working` and `idle` are derived from how recently hook traffic arrived. `exited` means the session
-ended, or that it went silent past the presumed-dead horizon.
+ended, or that it went silent past the presumed-dead horizon. A fourth state, `needs you`, is
+rendered by the code with a ⏸ glyph but is fed by nothing: the broker never marks a session as
+waiting on you, so no thread carries it today. A pending permission prompt reaches you as a message
+that pings, not as a state on the thread name.
 
 Renames are the scarcest resource here. Discord documents no limit on channel or thread modification
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
-adapts. A rename it cannot afford is **dropped, never queued**, because a rename landing ten minutes
-late paints a state that stopped being true. The card underneath is edited in a far looser bucket and
-carries the detail.
+adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
+because a rename landing ten minutes late paints a state that stopped being true. The card underneath
+is edited in a far looser bucket and carries the detail: session ID, host, state, last tool, turn
+count, and heartbeat.
+
+## Answering a permission prompt
+
+When a session asks to run a tool, the broker posts one message into that session's thread and
+mentions you. It carries the tool name, the tool's description, a preview of its input, and a
+five-letter request ID:
+
+```
+@you Permission needed · qwtrb
+Reply `y qwtrb` to allow or `n qwtrb` to deny.
+Tool: Bash
+What: Run the test suite
+Input: npm test
+```
+
+Reply with exactly `y <id>` or `n <id>` and nothing else. The pattern is anchored at both ends, so a
+sentence that merely contains a verdict is treated as prose and forwarded to the session instead. A
+verdict is consumed as a verdict and never also delivered as chat, and answering consumes the
+request, so the same message sent twice names nothing the second time.
+
+A verdict is bound to the thread it was typed in as well as to the ID. An ID that names nothing open
+in that thread gets an in-thread notice saying so rather than being matched against another session's
+pending prompt.
+
+Three ceilings govern volume, and they behave differently on purpose. Past **3 prompts a minute in
+one thread** the message still arrives and is still answerable but stops mentioning you, so the phone
+stops ringing for a run nobody could keep up with. Past **12 prompts a minute in one thread** a
+prompt is dropped: it is logged, no notice is posted, and the session that sent it stays parked.
+Across the whole host, **64 requests** may be open at once, and at the ceiling the newest is refused
+rather than the oldest evicted, because the oldest is the session that has been waiting longest.
+
+Inbound chat has its own ceiling: **20 messages a minute per session**. Past it a message is dropped
+with a log line and no in-thread notice.
 
 ## Tunables
 
-All live in `broker.env` and take effect on restart.
+Everything below lives in `broker.env` and takes effect when the broker restarts. Only these keys are
+applied: `Start-Broker.ps1` reads the file against an allowlist and skips anything else with a
+warning, because write access to that file would otherwise be arbitrary environment injection into
+the process that reads the bot token.
 
 | Setting | Default | What it decides |
 |---|---|---|
+| `CHANNEL_HOST_NAME` | the machine name | The host label on every card and record |
+| `CHANNEL_BROKER_PORT` | 8787 | The loopback port. Must match the hooks; see below |
+| `CHANNEL_BROKER_STATE` | state root | Path to the registry snapshot |
 | `CHANNEL_STALE_AFTER_MS` | 5 min | Silence after which a session is marked stale |
-| `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working` |
-| `CHANNEL_DISCORD_EXITED_AFTER_MS` | 4 hours | Silence after which a stale session is presumed dead and reads `exited` |
-| `CHANNEL_DISCORD_DWELL_MS` | 60 s | How long a state must hold before a rename is spent on it |
-| `CHANNEL_DISCORD_ARCHIVE_ON_END` | off | Whether an ended session's thread is archived |
+| `CHANNEL_SWEEP_INTERVAL_MS` | 15 s | How often the staleness sweep runs |
+| `CHANNEL_MAX_BODY_BYTES` | 64 KB | Ceiling on a hook or relay request body |
 | `CHANNEL_RETAIN_TERMINAL_MS` | 24 h | How long an ended session is kept before pruning |
+| `CHANNEL_MAX_SESSIONS` | 500 | Record ceiling, terminal records evicted oldest first |
+| `CHANNEL_BROKER_LOG_FILE` | unset (console only) | The rotating log file |
+| `CHANNEL_BROKER_LOG_MAX_BYTES` | 5 MB | Rotation size |
+| `CHANNEL_BROKER_LOG_MAX_FILES` | 5 | Files kept, active plus rotated |
+| `CHANNEL_DISCORD_TOKEN_FILE` | state root | The bot token file |
+| `CHANNEL_DISCORD_CHANNEL` | unset | The channel threads are opened in |
+| `CHANNEL_ALLOWED_USER_ID` | unset | The one Discord user allowed to steer this host |
+| `CHANNEL_DISCORD_REFRESH_MS` | 5 s | How often the surfaces are reconciled |
+| `CHANNEL_DISCORD_DWELL_MS` | 60 s | How long a state must hold before a rename is spent on it |
+| `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working` |
+| `CHANNEL_DISCORD_EXITED_AFTER_MS` | 4 h | Silence after which a stale session is presumed dead and reads `exited` |
+| `CHANNEL_DISCORD_ARCHIVE_ON_END` | off | Whether an ended session's thread is archived |
+
+Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to
+`node` pinned at install time, which `Start-Broker.ps1` reads directly so it never resolves `node`
+from whatever PATH a logon happened to carry. `CHANNEL_TASK_USER` records the account that installed,
+so a mismatch with the account the scheduled task runs as is something you can see in the file rather
+than diagnosing from a broker that cannot read its own token.
+
+Every knob **refuses a bad value rather than clamping it**, and the broker does not start. A knob
+silently moved to a value you did not ask for is a knob whose behavior nobody can reason about later.
 
 `CHANNEL_DISCORD_EXITED_AFTER_MS` is the one most likely to want moving. It is the backstop for a
 session that was hard-killed: nothing fires a hook on a kill, so without it a dead session would show
-the success glyph indefinitely. Four hours is deliberately long, so that a slow tool call, a
-compaction, or a session parked at a prompt is never reported as a death. Shorten it if you would
-rather learn about a dead session sooner and can tolerate the occasional false report. It must stay
-above `CHANNEL_STALE_AFTER_MS`; the broker refuses to start otherwise.
+the idle glyph indefinitely. Four hours is deliberately long, so that a slow tool call, a compaction,
+or a session parked at a prompt is never reported as a death. Shorten it if you would rather learn
+about a dead session sooner and can tolerate the occasional false report.
+
+Three windows are ordered and the broker refuses a configuration where they cross:
+`CHANNEL_DISCORD_IDLE_AFTER_MS` must be below `CHANNEL_STALE_AFTER_MS`, or a session is marked stale
+before it could ever render idle, and `CHANNEL_DISCORD_EXITED_AFTER_MS` must be above it, or every
+quiet session is instantly called dead.
+
+`CHANNEL_BROKER_PORT` is the trap. Moving it here moves the broker only. The two `http` hook URLs in
+`hooks/settings-fragment.json` and the literal in `hooks/session-start.ps1` carry their own copies,
+and the installer refuses a `-Port` that disagrees with the fragment for exactly that reason. Change
+all three, and `broker/config.ts`'s `DEFAULT_PORT` with them.
 
 ## When something is wrong
 
@@ -88,19 +163,47 @@ unwatched; re-run the installer.
 **Threads stop updating but the broker is running.** Check the log for a rejected token. The broker
 stops its Discord surfaces after one rejection rather than retrying forever, and says so once.
 
-**The broker will not start.** It refuses a token file that any account on the machine can read or
-write, and it refuses one whose directory is that permissive, naming the file and the principal. Re-
-run the installer, which sets both.
+**Sessions are tracked and nothing appears in Discord at all.** A half-configured Discord is the one
+shape that looks identical to a working one from every other signal: the registry fills, the log
+ticks, `GET /sessions` is healthy. A token with no channel, or a channel with no token, turns the
+surfaces off and warns **once at startup**, so the evidence is at the top of the log and nowhere
+else.
 
-**A message into an old thread gets no answer at all.** A message sent to a session that has ended
-is normally answered in-thread with a notice saying so. That only works while the broker still holds
-the ended record, which is `CHANNEL_RETAIN_TERMINAL_MS` (24 hours by default). Past that horizon the
+**The broker will not start.** Three refusals are deliberate and each names its cause in the log
+before the process exits. It refuses a token file that any account on the machine can read or write,
+and one whose directory is that permissive, naming the file and the principal. It refuses to run a
+Discord connection with no `CHANNEL_ALLOWED_USER_ID`, because a gate that was misconfigured and a
+gate that was never wired look identical from the outside. And it refuses any out-of-range or
+misordered tunable. Re-run the installer for the first, fix `broker.env` for the other two.
+
+**A message into an old thread gets no answer at all.** A message sent to a session that has ended is
+normally answered in-thread with a notice saying so. That only works while the broker still holds the
+ended record, which is `CHANNEL_RETAIN_TERMINAL_MS` (24 hours by default). Past that horizon the
 thread is unknown to the broker and a message there is ignored in silence. Threads are left open on
 purpose, so old ones stay in the list and stay writable; a silent one is old, not broken.
+
+**A verdict comes back saying nothing is open, and you know you were just asked.** The open-request
+table lives in memory and the scheduled task restarts the broker at every logon. A restart forgets
+every outstanding prompt, the session behind it is not re-asked, and your answer gets the
+unknown-request notice. Answer that one at the keyboard.
+
+**A session is parked and no prompt ever arrived.** Three causes, all log-only. The thread was over
+its 12-prompt minute and the prompt was dropped. Or the session has no thread yet, so the prompt had
+nowhere to go. Or the request ID fell outside the alphabet a verdict can name, which is a Claude Code
+internal this project is coupled to: the log line names that cause specifically, so a future alphabet
+change is diagnosable rather than silent.
 
 **Messages reach a session but its answers read wrong.** The relay holds its pipe on a
 first-claim-wins basis and every reply must present a key issued only down that pipe, so a second
 process cannot take the channel from a relay that already holds it. What it can do is get there
-first, before the relay attaches. Nothing detects that, and the status card keeps ticking either
-way. If a session's replies do not match what it is doing, stop the session rather than steering it,
-and see `security-model.md`.
+first, before the relay attaches. Nothing detects that, and the status card keeps ticking either way.
+If a session's replies do not match what it is doing, stop the session rather than steering it, and
+see [`security-model.md`](security-model.md).
+
+**A closed session takes half a minute to show as exited.** That is the design, not a lag. The relay
+reconnects on its own, and a pipe that closed and came back is a reconnect rather than a death, so
+the broker holds one heartbeat of grace (15 seconds) before ending the session. The sweep is periodic
+on top of that, so a close landing just after a tick is not acted on until the tick after next: the
+bound is up to two heartbeat intervals, roughly 30 seconds, rather than one. The trade buys the
+opposite failure, which is worse: without the grace, a relay's own reconnect would strand a working
+session as exited, and ended is terminal with no way back.

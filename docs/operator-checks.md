@@ -1,20 +1,28 @@
 # Operator checks
 
 Four checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
-proves, the exact steps, and what to do with the answer. Record results in the plan doc's Chapters.
+proves, its result, the exact steps, and what the answer settled.
 
-Check A gates sections 5 and 6 of the plan. Checks B and D are cheap and change the design if they
-come back negative. Check C cannot run until section 4 exists.
+**All four were run on 2026-08-06 and all four passed.** The procedures are kept because they are
+also how to re-check a new host: none of these results is inferable from the code, and two of them
+would change the design if a future host answered differently.
+
+Two results changed the design rather than merely confirming it. Check D means channel settings are
+machine-scoped, which permanently closes the silent-delivery-death hole on every host, and it means
+the SCOTT host can drop its development flag once the relay is packaged as a plugin. Check B means
+the broker's supersession branch reads a real signal rather than an inferred one.
 
 ---
 
 ## A. Does a channel survive a cswap seat rotation?
 
-**Proves:** the single assumption the whole message path rests on. A channel is a local subprocess
-with no cloud object to orphan, and `claude-swap` rewrites credential files without restarting Claude
-Code, so it should ride straight through a swap. Nobody has watched it happen.
+**Result: passed, 2026-08-06.** A channel kept delivering in both directions across three
+consecutive `cswap` rotations. The message path this whole project rests on is confirmed rather than
+reasoned about, and the pre-provisioned-bot fallback below is not needed.
 
-**Blocks:** sections 5 and 6. Sections 1 through 4 do not depend on it.
+**Proves:** the single assumption the message path rests on. A channel is a local subprocess with no
+cloud object to orphan, and `claude-swap` rewrites credential files without restarting Claude Code,
+so it rides straight through a swap.
 
 **Why three swaps and not one:** Remote Control also worked for a while after a rotation and only
 failed permanently after repeated ones. A single passing swap proves nothing.
@@ -47,9 +55,9 @@ failed permanently after repeated ones. A single passing swap proves nothing.
    browser. The reply direction matters as much as the inbound one; they are different code paths.
    The first reply triggers a permission prompt in the terminal. Approve it.
 
-   `fakechat` serves its UI on 8787, which is also the broker's default port. If the broker is
-   installed by the time this check runs, stop it first; otherwise one of the two fails to bind and
-   the check measures the wrong thing.
+   `fakechat` serves its UI on 8787, which is also the broker's default port. On a host where the
+   broker is already installed, stop it first; otherwise one of the two fails to bind and the check
+   measures the wrong thing.
 
 5. In a second terminal, rotate the seat:
    ```
@@ -70,21 +78,30 @@ distinct and important result, not a fail.
 
 ### Kill condition
 
-If delivery stops in either direction after any swap and does not recover, **stop building sections 5
-and 6.** Sections 1 through 4 still ship and still solve the visibility half of the problem. The
-fallback for the messaging half is several pre-provisioned Discord bots on the shipped, allowlisted
-Discord plugin, leased per launch by setting `DISCORD_BOT_TOKEN` and `DISCORD_STATE_DIR` in the
-wrapper. That loses automatic thread-per-session and the `/clear` behavior.
+If delivery stops in either direction after any swap and does not recover on a new host, **that host
+cannot carry the message half.** The registry, the threads, and the status cards still work and still
+solve the visibility half of the problem. The fallback for the messaging half is several
+pre-provisioned Discord bots on the shipped, allowlisted Discord plugin, leased per launch by setting
+`DISCORD_BOT_TOKEN` and `DISCORD_STATE_DIR` in the wrapper. That loses automatic thread-per-session
+and the `/clear` behavior.
 
 ---
 
 ## B. Does `/clear` fire `SessionStart` with `source: "clear"`?
 
+**Result: passed with captured payloads, 2026-08-06.** `/clear` fires `SessionStart` carrying
+`"source":"clear"` and a **new `session_id`**, which is exactly what the broker's supersession branch
+reads: the old record is marked ended and a new one is created under the same process token. The
+fallback (detecting a changed `session_id` on any hook event) is not needed and is not implemented.
+
+The same capture shows `SessionEnd` fires on a clean exit, carrying the ending session's ID. **The
+broker does not use it.** A hard kill fires no hook, so relay stdio closing and the heartbeat
+backstop remain the death signals, and the intake accepts only `SessionStart`, `PostToolUse`, and
+`Stop`. A `SessionEnd` post would be refused with a 400. The signal exists and is free if a later
+change wants a precise clean-exit case.
+
 **Proves:** that an outside process can tell a session was replaced inside a still-running process.
 The whole thread-per-work-topic behavior depends on it.
-
-**Risk level: low.** The `source` field is confirmed to exist and to track the real trigger, observed
-reading `startup` on a fresh session and `resume` on a resumed one. This check closes the last gap.
 
 ### Steps
 
@@ -103,36 +120,49 @@ reading `startup` on a fresh session and `resume` on a resumed one. This check c
 **Pass:** two `SessionStart` lines, the second carrying a **different `session_id`** and
 `"source":"clear"`.
 
-**If it comes back negative:** the session ID still changes, so the broker can detect a replacement by
-watching for a new `session_id` on any hook event from a process token it already knows. Slightly
-less clean, same outcome. Tell the executor to use that instead.
+**If it comes back negative on a future host:** the session ID still changes, so the broker could
+detect a replacement by watching for a new `session_id` on any hook event from a process token it
+already knows. That path is not built.
 
 ---
 
 ## C. Does a thread name stay pinned in the mobile header while scrolling?
 
-**Proves:** whether the always-visible status line works as designed on a phone.
+**Result: passed, 2026-08-06.** The thread name stays in the top bar through a long scroll, so both
+halves of the design work: the in-thread header and the thread-list dashboard.
 
-**Cannot run until section 4 exists**, since it needs a real bot posting real threads.
+**Proves:** whether the always-visible status line works as designed on a phone. Thread names are
+rendered glyph-first for exactly this reason, because the list view truncates hard and the actionable
+part has to survive truncation.
 
 ### Steps
 
 Open any thread in the Discord mobile app, scroll down through a long message history, and check
 whether the thread name stays in the top bar.
 
-**If negative:** the design barely moves. The thread **list** view still shows every session and its
-state, which is the more valuable half. Only the in-thread header is lost.
+**If negative on a future device:** the design barely moves. The thread **list** view still shows
+every session and its state, which is the more valuable half. Only the in-thread header is lost.
 
 ---
 
 ## D. Does a local managed-settings file control channels on this machine?
 
-**Proves:** the most valuable unknown left. `channelsEnabled` and `allowedChannelPlugins` can only be
-set in managed settings, and on Windows managed settings can be delivered as a **local file**, which
-is **machine-scoped rather than account-scoped**. If a local file is honored, then one file per host
-survives every cswap rotation, and delivery can never silently die because the seat rotated onto an
-account without channels enabled. It may also let a custom relay be allowlisted without the
-development flag, on the personal-Max host as well as the two organization ones.
+**Result: passed, 2026-08-06.** A local managed-settings file **is** honored on a personal account
+with no organization. This was the most valuable unknown in the design, and it settled two things.
+
+**Channel settings are machine-scoped, not account-scoped.** `channelsEnabled` and
+`allowedChannelPlugins` can be set once per host and survive every `cswap` rotation, so a rotation
+onto an account without channels enabled can no longer kill message delivery. That closes the
+silent-delivery-death hole on every host, SCOTT included, and it is the failure mode
+[`operations.md`](operations.md) describes the status card as existing to reveal.
+
+**SCOTT can drop `--dangerously-load-development-channels`**, and with it the launch dialog, once the
+relay is packaged as a plugin and named in that file. SCOTT keeps the flag today because the
+allowlist route requires a plugin to allowlist and the relay is not yet packaged as one. Removing the
+dialog on every host restores the option of an unattended supervisor that restarts a crashed session.
+
+**Proves:** whether `channelsEnabled` and `allowedChannelPlugins`, which can only be set in managed
+settings, can be delivered as a local file on a host with no organization behind it.
 
 **This check is deliberately reversible and uses no custom plugin.** It sets the allowlist to empty,
 which should block *everything*, and watches whether the shipped demo channel gets refused. If it
@@ -171,11 +201,10 @@ does, the file is being read.
 
 ### What the answer changes
 
-**If it passes:** each host gets a managed-settings file naming the relay plugin, and there is no
-development flag and no launch dialog anywhere. That also restores the option of an unattended
-supervisor restarting a crashed session, which the dialog otherwise forecloses. Note the allowlist
-replaces the Anthropic default entirely, so any shipped channel plugin still wanted must be listed
-alongside the relay.
+**On a host where it passes:** that host gets a managed-settings file naming the relay plugin, and
+needs no development flag and no launch dialog. Note the allowlist replaces the Anthropic default
+entirely, so any shipped channel plugin still wanted must be listed alongside the relay.
 
-**If it fails:** the two organization hosts use server-managed settings through the admin console, and
-the personal-Max host keeps `--dangerously-load-development-channels` and its one keypress at launch.
+**On a host where it fails:** an organization-owned host uses server-managed settings through the
+admin console instead, and a personal-account host keeps
+`--dangerously-load-development-channels` and its one keypress at launch.

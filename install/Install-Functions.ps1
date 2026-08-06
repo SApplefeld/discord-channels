@@ -396,6 +396,9 @@ $script:ChannelBrokerEnvAllowlist = @(
     'CHANNEL_MAX_BODY_BYTES',
     'CHANNEL_RETAIN_TERMINAL_MS',
     'CHANNEL_MAX_SESSIONS',
+    # broker/config.ts reads and bounds this one. Without it here, the only configuration path an
+    # installed host has cannot reach a knob the code documents as configurable.
+    'CHANNEL_RELAY_HEARTBEAT_MS',
     'CHANNEL_BROKER_LOG_FILE',
     'CHANNEL_BROKER_LOG_MAX_BYTES',
     'CHANNEL_BROKER_LOG_MAX_FILES',

@@ -387,3 +387,28 @@ test("the log names what was approved, in which session, and by which tool", asy
   assert.match(line as string, /Bash/);
   assert.match(line as string, /session-a/);
 });
+
+test("a session with an unanswered prompt is reported as waiting, and stops when it is answered", async () => {
+  // This is what feeds the `needs you` thread state. Without it the thread list shows a session
+  // parked on a prompt as idle, indistinguishable from one that is merely quiet, so the one state
+  // the dashboard exists to surface is the one it cannot show.
+  const { desk } = harness();
+
+  assert.deepEqual([...desk.waiting()], [], "nothing is waiting before a prompt is posted");
+
+  await desk.request(TOKEN_A, request());
+  assert.deepEqual([...desk.waiting()], ["session-a"], "the session is parked on its prompt");
+
+  await desk.resolve(THREAD_A, { behavior: "allow", requestId: "abcde" });
+  assert.deepEqual([...desk.waiting()], [], "answering it stops the session waiting");
+});
+
+test("a prompt that never reached the operator does not leave a session looking parked", async () => {
+  // A prompt the writer refused is not held open, so it must not be reported as waiting either:
+  // the thread would claim a person owes an answer to a question never asked.
+  const { desk } = harness({ outcomes: [{ status: "failed", error: "no", rate: NO_RATE_INFO }] });
+
+  await desk.request(TOKEN_A, request());
+
+  assert.deepEqual([...desk.waiting()], []);
+});

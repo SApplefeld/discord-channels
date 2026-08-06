@@ -46,6 +46,7 @@ function watchedDesk() {
     resolve: async (threadId, verdict) => {
       resolved.push({ threadId, verdict });
     },
+    waiting: () => new Set<string>(),
   };
   return { desk, resolved, requested };
 }
@@ -235,8 +236,11 @@ test("a message from anyone but the allowed sender never reaches the session", a
 });
 
 test("a verdict-shaped message from a stranger is refused before the pattern is even read", async () => {
-  // Outcome-equal is not enough here. A gate that runs after the pattern leaves nothing different
-  // to assert on, so the desk is the witness: it must not have been consulted at all.
+  // Outcome-equal is not enough here, and the permission desk is what makes this more than that.
+  // The router gates, then reads the pattern, then resolves a verdict against the desk. Move the
+  // gate below that block and a stranger's "y abcde" parses and reaches `resolve`, so `verdicts`
+  // stops being empty and this reddens. The desk is the witness precisely because it sits on the
+  // far side of the pattern.
   const { router, verdicts, sent } = harness();
   await router.deliver(message({ senderId: STRANGER, text: "y abcde" }));
   assert.deepEqual(verdicts, [], "the pattern ran on a message the gate should have refused first");
