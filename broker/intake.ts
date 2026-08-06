@@ -18,6 +18,7 @@
 //
 //   GET /sessions  -> the registry as JSON, for debugging.
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Logger } from "./log.ts";
 import type { HookEvent, HookIntake, Registry, SessionRecord } from "./registry.ts";
 import { clean } from "./sanitize.ts";
 
@@ -84,6 +85,47 @@ export function isAllowedHost(hostHeader: string | string[] | undefined): boolea
   }
 
   return ALLOWED_HOSTS.includes(name);
+}
+
+/** How long a suppressed run of the same refusal reason is aggregated before its next flush. */
+const REFUSAL_WINDOW_MS = 60_000;
+
+/** Truncates a value logged verbatim from the wire, so a header cannot pad a log line without limit. */
+function capped(value: string, limit = 200): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+
+type RefusalLog = { warn: (reason: string, detail: string) => void };
+
+/**
+ * Rate-limits refusal logging by reason, so a local process cannot flood the log with its own
+ * refused requests to push earlier evidence of the same behavior out through rotation. The first
+ * refusal of a given reason is logged immediately; a repeat within the window is counted instead
+ * of logged, and the count is flushed as one summary line the next time that reason's window has
+ * closed. No timer: the flush is lazy, on the next call, which keeps this free of anything to
+ * clear on shutdown and keeps it drivable by an injected clock in a test.
+ */
+function createRefusalLog(log: Logger | undefined, now: () => number): RefusalLog {
+  const state = new Map<string, { windowStart: number; suppressed: number }>();
+  return {
+    warn(reason, detail) {
+      if (!log) return;
+      const at = now();
+      const entry = state.get(reason);
+      if (entry !== undefined && at - entry.windowStart < REFUSAL_WINDOW_MS) {
+        entry.suppressed += 1;
+        return;
+      }
+      if (entry !== undefined && entry.suppressed > 0) {
+        log.warn(
+          `hook refused: ${reason} occurred ${entry.suppressed} more time(s) in the last ` +
+            `${REFUSAL_WINDOW_MS}ms`,
+        );
+      }
+      log.warn(`hook refused: ${reason} (${detail})`);
+      state.set(reason, { windowStart: at, suppressed: 0 });
+    },
+  };
 }
 
 function header(request: IncomingMessage, name: string): string | null {
@@ -174,6 +216,14 @@ async function readBody(request: IncomingMessage, maxBodyBytes: number): Promise
 export type HandlerOptions = {
   registry: Registry;
   maxBodyBytes: number;
+  /**
+   * Where a refused, malformed, or silently-dropped hook post becomes visible. Optional so every
+   * existing caller and test that does not pass one keeps working; a request is still served with
+   * no logger at all, just with nothing written down about it.
+   */
+  log?: Logger;
+  /** Drives the refusal-log rate limiter. Injected so a test can move the window without sleeping. */
+  now?: () => number;
 };
 
 /**
@@ -204,15 +254,19 @@ export function redact(record: SessionRecord): PublicSessionRecord {
 export function createHandler(
   options: HandlerOptions,
 ): (request: IncomingMessage, response: ServerResponse) => void {
+  const refusals = createRefusalLog(options.log, options.now ?? Date.now);
+
   return (request, response) => {
     // Both checks run before the body is read, so a refused request cannot reach the registry.
     if (!isLoopback(request.socket.remoteAddress)) {
+      refusals.warn("non-loopback remote address", `remote=${capped(request.socket.remoteAddress ?? "none")}`);
       send(response, 403, { error: "loopback only" });
       return;
     }
 
     // Closes DNS rebinding, where the socket peer is loopback but the page that opened it is not.
     if (!isAllowedHost(request.headers.host)) {
+      refusals.warn("unrecognized Host header", `host=${capped(String(request.headers.host ?? "none"))}`);
       send(response, 403, { error: "unrecognized host" });
       return;
     }
@@ -242,14 +296,24 @@ export function createHandler(
 
       const parsed = parseIntake(request, body);
       if ("failure" in parsed) {
+        refusals.warn("hook rejected", parsed.failure.message);
         send(response, parsed.failure.status, { error: parsed.failure.message });
         return;
       }
 
       const record = options.registry.apply(parsed.intake);
       if (record === null) {
-        // A tool or stop event from a process token with no announced session. Accepted off the
-        // wire and dropped, so a replayed post cannot conjure a session that never started.
+        // A tool or stop event from a process token with no announced session, or one whose session
+        // ID and process token disagree (registry.route's opportunistic keying). Accepted off the
+        // wire and dropped, so a replayed or misrouted post cannot conjure or corrupt a session.
+        // The process token itself is never logged; it is the forgery key a hook post is
+        // authenticated by, and this is exactly the traffic a forged one would produce.
+        refusals.warn(
+          "hook dropped",
+          `event=${parsed.intake.event} session=${parsed.intake.sessionId ?? "none"} ` +
+            `name=${parsed.intake.sessionName ?? "none"} (no session holds this process token, or ` +
+            "the session id and process token disagree)",
+        );
         send(response, 202, { ignored: true });
         return;
       }

@@ -103,6 +103,9 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     maxBodyBytes: 64 * 1024,
     retainTerminalMs: 24 * 60 * 60 * 1000,
     maxSessions: 500,
+    logFile: null,
+    logMaxBytes: 5 * 1024 * 1024,
+    logMaxFiles: 5,
     ...overrides,
   };
 }

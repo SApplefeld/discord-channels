@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import { createHandler } from "./intake.ts";
+import { createLogger } from "./log.ts";
+import type { Logger } from "./log.ts";
 import { createRegistry } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { loadSessions, saveSessions } from "./persistence.ts";
@@ -21,10 +23,21 @@ export type Broker = {
   registry: Registry;
   /** The port actually bound, which differs from the configured one when that port is 0. */
   port: number;
+  /** The rotating-file logger this broker started with, so the caller can log a line beside it. */
+  logger: Logger;
   stop: () => Promise<void>;
 };
 
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
+  // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
+  // it. The logger writes the same lines to a rotating file too, when one is configured, because a
+  // scheduled task (S7) has no console for that output to land in.
+  const logger = createLogger({
+    file: config.logFile,
+    maxBytes: config.logMaxBytes,
+    maxFiles: config.logMaxFiles,
+  });
+
   const registry = createRegistry({
     host: config.host,
     staleAfterMs: config.staleAfterMs,
@@ -38,20 +51,24 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       try {
         saveSessions(config.stateFile, sessions);
       } catch (error) {
-        console.error(
-          `broker: cannot write the registry state to ${config.stateFile}: ${String(error)}`,
-        );
+        const message = `broker: cannot write the registry state to ${config.stateFile}: ${String(error)}`;
+        console.error(message);
+        logger.error(message);
       }
     },
   });
 
-  const server = createServer(createHandler({ registry, maxBodyBytes: config.maxBodyBytes }));
+  const server = createServer(
+    createHandler({ registry, maxBodyBytes: config.maxBodyBytes, log: logger }),
+  );
 
   // The registry owns no timer of its own so that unit tests can drive it with an injected clock.
   // The sweep that turns a silent session stale lives here instead.
   const sweep = setInterval(() => {
     for (const record of registry.sweep()) {
-      console.log(`broker: session ${record.sessionId} (${record.name ?? "unnamed"}) is stale`);
+      const message = `broker: session ${record.sessionId} (${record.name ?? "unnamed"}) is stale`;
+      console.log(message);
+      logger.info(message);
     }
   }, config.sweepIntervalMs);
 
@@ -65,7 +82,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   if (discord !== null) {
     // Imported here rather than at the top so that discord.js, the one dependency with a network
     // client in it, is loaded only by a broker that is actually configured to reach Discord.
-    const { createRestRequest } = await import("./discord/rest.ts");
+    const { createRestRequest, describe } = await import("./discord/rest.ts");
     // Beside the registry snapshot, and for the same reason: without it a restart would open a
     // second thread for every session the registry still holds.
     const bindingsFile = path.join(path.dirname(config.stateFile), "discord-threads.json");
@@ -88,14 +105,18 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         try {
           saveBindings(bindingsFile, bindings);
         } catch (error) {
-          console.error(
-            `broker: cannot write the thread bindings to ${bindingsFile}: ${String(error)}`,
-          );
+          const message = `broker: cannot write the thread bindings to ${bindingsFile}: ${String(error)}`;
+          console.error(message);
+          logger.error(message);
         }
       },
-      log: (message) => console.log(message),
+      log: (message) => {
+        console.log(message);
+        logger.info(message);
+      },
       onFatal: (message) => {
         console.error(message);
+        logger.error(message);
         stopRefresh();
       },
     });
@@ -104,11 +125,17 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // with the Discord surface, and the intake is the half that has to keep running. The pass is
       // kept so that shutdown can wait for it: clearing the timer does not cancel a call already
       // on the wire, or the binding write that follows it.
-      inFlight = surface
-        .tick(registry.list().map((record) => toView(record)))
-        .catch((error: unknown) => console.error(`broker: discord refresh failed: ${String(error)}`));
+      inFlight = surface.tick(registry.list().map((record) => toView(record))).catch((error: unknown) => {
+        // describe() rather than String(error): a discord.js error can carry the request object,
+        // and the Authorization header along with it, and this string lands in the log file.
+        const message = `broker: discord refresh failed: ${describe(error)}`;
+        console.error(message);
+        logger.error(message);
+      });
     }, discord.refreshIntervalMs);
-    console.log(`broker: discord surfaces on, threads open in channel ${discord.channelId}`);
+    const message = `broker: discord surfaces on, threads open in channel ${discord.channelId}`;
+    console.log(message);
+    logger.info(message);
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -118,6 +145,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       clearInterval(sweep);
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
+      // Logged here, not just rethrown: under a scheduled task there is no console to catch the
+      // rejection this throws into, and a broker that never bound would otherwise leave a zero-byte
+      // log with no signal that anything went wrong at all.
+      const message = `broker: failed to bind 127.0.0.1:${config.port}: ${String(error)}`;
+      console.error(message);
+      logger.error(message);
       reject(error);
     };
     server.once("error", failedToBind);
@@ -127,7 +160,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // Left attached, this listener would swallow the first error after startup against a
       // promise that has already settled, and the daemon would then die uncaught on the second.
       server.removeListener("error", failedToBind);
-      server.on("error", (error) => console.error(`broker: server error: ${String(error)}`));
+      server.on("error", (error) => {
+        const message = `broker: server error: ${String(error)}`;
+        console.error(message);
+        logger.error(message);
+      });
       resolve();
     });
   });
@@ -146,7 +183,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  return { server, registry, port, stop };
+  return { server, registry, port, logger, stop };
 }
 
 /**
@@ -173,12 +210,32 @@ function runDirectly(): boolean {
 }
 
 if (runDirectly()) {
-  const config = loadConfig();
+  let config: BrokerConfig;
+  try {
+    config = loadConfig();
+  } catch (error) {
+    // No BrokerConfig exists yet to read a log path from, so this reads the same environment
+    // variable directly. Under a scheduled task there is no console for the throw below to reach,
+    // so a config error would otherwise leave nothing on disk explaining why the task keeps
+    // restarting and failing.
+    const fallback = createLogger({
+      file: process.env.CHANNEL_BROKER_LOG_FILE?.trim() || null,
+      maxBytes: 5 * 1024 * 1024,
+      maxFiles: 5,
+    });
+    const message = `broker: failed to load configuration: ${String(error)}`;
+    console.error(message);
+    fallback.error(message);
+    throw error;
+  }
+
+  // A bind or startup failure inside startBroker is already logged, through the config's own
+  // logger, before it rejects; nothing more to do here except let it propagate.
   const broker = await startBroker(config);
-  console.log(
-    `broker: listening on http://127.0.0.1:${broker.port} as host ${config.host}, ` +
-      `state at ${config.stateFile}`,
-  );
+  const message = `broker: listening on http://127.0.0.1:${broker.port} as host ${config.host}, ` +
+    `state at ${config.stateFile}`;
+  console.log(message);
+  broker.logger.info(message);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
       void broker.stop().then(() => process.exit(0));

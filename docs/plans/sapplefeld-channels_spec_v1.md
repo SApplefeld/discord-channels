@@ -419,6 +419,12 @@ Files in scope: `broker/security/`, `relay/permission.ts`.
 
 ### 7. Supervision and three-host install
 Model: sonnet
+Locus: inline for everything under `docs/` (the docs-write-guard denies a non-curator subagent any
+write there); `install/` and the scheduled task are dispatched.
+
+**Partially deliverable ahead of the prerequisite gate.** Everything here except the relay's plugin
+packaging is independent of S5 and S6, and is built now. The one deferred bullet is naming the relay
+in `allowedChannelPlugins` for NEO and ASR, which cannot be written until the relay exists.
 
 Make the broker survive a reboot and install it on all three hosts.
 
@@ -736,4 +742,72 @@ Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unappl
 type-stripping record remains stamped from Chapter 2's window and shaped this section's imports)
 Next: 5. Relay MCP channel server and message routing (blocked on the prerequisite gate, operator
 Check A in docs/operator-checks.md, which only Scott can run)
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-06
+Completed: 7. Supervision and three-host install (every part except the relay's plugin packaging,
+which cannot be written until the relay exists)
+Implemented By: implementer-sonnet for `install/` and the logger (one build round, one review-fix
+round via the same agent); main session for everything under `docs/` and for `wrapper/`
+Metrics: 1 review round (security at default, blind at opus); 0 NEEDS_CONTEXT; 0 escalations;
+advisor opus
+Decisions / Surprises: **S7 was built out of order, ahead of S5 and S6.** The gate blocks those two
+only, and everything here except naming the relay in `allowedChannelPlugins` is independent of them,
+so stopping at S4 would have left a section's worth of unblocked work undone. The routing override
+mattered: `docs/` is most of this section and the docs-write-guard denies a non-curator subagent any
+write there, so the dispatch covered `install/` and the logger while the three documents were written
+in the main thread. Recorded as `Locus: inline` on the section.
+The security review's verdict was BLOCK on three Criticals, all measured live with `icacls` rather
+than reasoned about. The most dangerous was found independently by both reviewers and was **not** a
+subtle one: `Protect-ChannelPath` hardened the token file's parent directory, and with the documented
+`-BotTokenFile D:\token.txt` that parent is `D:\`, so a normal documented invocation would have
+stripped and rewritten the access control list of the entire drive, inherited by everything under it,
+with no backup and a cheerful "Provisioned" at the end. The other two were the same defect this
+project had already reasoned about once and then failed to apply to itself: the scheduled task runs
+the broker's source and its own launcher under `-ExecutionPolicy Bypass` at every logon, and none of
+those paths were hardened, while `hooks/` and `wrapper/` still permitted delete-child, which defeats
+file-level hardening entirely. The fourth Critical was the hooks fragment being attacker-writable and
+merged verbatim into the operator's real user-level settings, which would persist an arbitrary
+`PreToolUse` command machine-wide and survive a re-clone.
+Worth keeping as a pattern: **the hardening and the verification were wrong in the same direction.**
+Both trusted "the file's current owner", and on a shared root any account can create a file and is
+then its owner, so a planted file would have been hardened into the attacker's exclusive control and
+then passed the broker's own check. Two components agreeing is not two checks.
+Deliberate strictness, and the one thing Scott will notice: the launch wrapper now refuses to start a
+session when the hook script has lost its protection, calling the broker's own rule rather than
+restating it. On a checkout where the installer has not run, that means `Enter-ClaudeSession` refuses
+until it does. That is the correct posture (the script runs under Bypass at every session start) and
+it matches the broker's refusal on an unprotected token file, but it is a real behavior change and
+the message says exactly which command fixes it.
+Review Findings: 4 Critical fixed (arbitrary-directory ACL wipe, unhardened logon execution surface,
+delete-child on the hook and wrapper directories, unvalidated fragment merged into user settings).
+11 Major fixed: the token was a plaintext command-line parameter and the docs told the operator to
+paste it (now `SecureString`, prompted); the owner-trust hole above, fixed on both sides; the ACL
+rewrite stripped inheritance before granting anything and had no rollback, so an unmappable SID left
+a path nobody could read (now one in-memory descriptor and a single write, restoring on failure); the
+scheduled task declared no principal and `-AtLogOn` fired on any user's logon; the log file was empty
+in exactly the two cases it exists for, a bind failure and a bad config, because both paths bypassed
+it; `-Port` moved the broker but not the hooks, silently disconnecting them; `broker.env` was applied
+to the broker's environment with no allowlist, making write access to it `NODE_OPTIONS` injection
+into the process that reads the bot token; the state root was hardened only incidentally and
+`CHANNEL_BROKER_STATE` was never written; and nothing re-asserted the hook script's ACL at launch.
+14 Minor fixed, including a false pass I introduced myself: the wrapper's `-File` regex was anchored
+to end-of-string, so any hook command with a trailing argument was skipped silently, which is a false
+negative in the one check standing between a moved checkout and permanently invisible sessions.
+Gate delta: lint exit 0 throughout; tests 153 (Chapter 4 baseline) → 176 after the build → 194
+passing, 1 skipped, 0 failing. Guards were red-checked by mutation across both rounds, each
+reddening its target. The ACL work was proved against real Windows access control lists rather than
+mocks, and the wrapper's path check was re-verified by hand across seven cases (correct path, stale
+path, both with and without trailing arguments, an unparseable path, an unrelated third-party hook,
+and an unquoted path) after the regex fix.
+Verified afterwards, because a mutation test briefly pointed the ACL code at the real `D:\` before an
+unmodified guard intercepted it: the drive's access control list is unchanged, still carrying
+`Authenticated Users: Modify`, and the repository's files still inherit it. Nothing on this machine
+was hardened, no scheduled task was registered, and the real `~/.claude/settings.json` was not
+touched. Every install path is proved against fixture trees and dry runs.
+Not proven, and only a real install can: registering the scheduled task, merging into the real user
+settings file, and hardening a real repository's ACLs. The `Protect-ChannelPath` rollback branch is
+verified by inspection only, since forcing that failure deterministically needs elevation.
+Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads)
+Next: BLOCKED on operator Check A. Sections 5 and 6 are the only work left and the gate blocks both.
 Commit Model: Commit-and-Push

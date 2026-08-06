@@ -6,9 +6,11 @@ import type { RawRequest } from "./adapter.ts";
 
 /**
  * Error text safe to log. Only the message is taken: a stack or a serialized request object can
- * carry the Authorization header, and this string ends up in the broker's log file.
+ * carry the Authorization header, and this string ends up in the broker's log file. Exported so
+ * every other Discord-adjacent catch block that logs a transport error uses this instead of
+ * `String(error)`, which for a discord.js error can carry the request object.
  */
-function describe(error: unknown): string {
+export function describe(error: unknown): string {
   return error instanceof Error ? error.message : "unknown transport error";
 }
 

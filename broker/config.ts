@@ -20,6 +20,12 @@ export type BrokerConfig = {
   retainTerminalMs: number;
   /** Ceiling on total records. Terminal records are evicted oldest first to hold it. */
   maxSessions: number;
+  /** Absolute path to the rotating log file. Logging falls through to the console when null. */
+  logFile: string | null;
+  /** Rotate the log file once it reaches this size. */
+  logMaxBytes: number;
+  /** Total log files kept on disk, the active one plus its rotated predecessors. */
+  logMaxFiles: number;
 };
 
 /**
@@ -34,6 +40,8 @@ const DEFAULT_SWEEP_INTERVAL_MS = 15 * 1000;
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_RETAIN_TERMINAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SESSIONS = 500;
+const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_LOG_MAX_FILES = 5;
 
 function integerAtLeast(raw: string | undefined, minimum: number, fallback: number): number {
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -66,5 +74,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     maxBodyBytes: integerAtLeast(env.CHANNEL_MAX_BODY_BYTES, 1, DEFAULT_MAX_BODY_BYTES),
     retainTerminalMs: integerAtLeast(env.CHANNEL_RETAIN_TERMINAL_MS, 1, DEFAULT_RETAIN_TERMINAL_MS),
     maxSessions: integerAtLeast(env.CHANNEL_MAX_SESSIONS, 1, DEFAULT_MAX_SESSIONS),
+    // Unset by default: a broker run at a terminal (every test, every local debugging session)
+    // keeps using the console output it always had. An installed service (S7) sets this to a path
+    // outside the repository, the same way the state file above resolves outside it, because under
+    // a scheduled task there is no console attached to catch what console.log and console.error
+    // write.
+    logFile: env.CHANNEL_BROKER_LOG_FILE?.trim() || null,
+    logMaxBytes: integerAtLeast(env.CHANNEL_BROKER_LOG_MAX_BYTES, 1024, DEFAULT_LOG_MAX_BYTES),
+    logMaxFiles: integerAtLeast(env.CHANNEL_BROKER_LOG_MAX_FILES, 1, DEFAULT_LOG_MAX_FILES),
   };
 }

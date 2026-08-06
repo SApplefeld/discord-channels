@@ -122,3 +122,56 @@ test("a token file the check cannot read is refused rather than assumed safe", (
     /token file/,
   );
 });
+
+test(
+  "a token file owned by neither this process nor an administrative identity is refused",
+  { skip: process.platform !== "win32" },
+  () => {
+    // A file planted by any account on a shared root is owned by that account, and foreignGrants
+    // exempts a descriptor's own owner from the grant scan by construction. Without this check a
+    // clean, owner-only ACL set by an attacker's own account would pass every other test above.
+    //
+    // A real file, self-owned and otherwise clean, stands in for that attacker-owned file: this
+    // test cannot elevate to actually change a real file's owner (icacls /setowner fails without
+    // SeRestorePrivilege for a trustee other than the caller), so the injectable currentUserSid is
+    // what makes this the owner the check is told to expect, rather than the owner the file has.
+    const directory = mkdtempSync(path.join(os.tmpdir(), "channels-cred-"));
+    try {
+      const file = path.join(directory, "bot.token");
+      writeFileSync(file, "token", "utf8");
+      assert.doesNotThrow(() => assertTokenFileIsProtected(file));
+
+      assert.throws(
+        () => assertTokenFileIsProtected(file, "win32", () => "S-1-5-21-9-9-9-9999"),
+        /is owned by .*neither this process's account nor an administrative identity/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "a reparse point in place of the token file or its directory is refused",
+  { skip: process.platform !== "win32" },
+  () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "channels-cred-"));
+    const realTarget = mkdtempSync(path.join(os.tmpdir(), "channels-cred-target-"));
+    try {
+      writeFileSync(path.join(realTarget, "bot.token"), "token", "utf8");
+      const junction = path.join(directory, "tokens");
+      // A junction needs no elevation, unlike a file symlink, and is a reparse point exactly the
+      // way a symlinked directory would be: Get-Acl and every check above would happily validate
+      // whatever the link currently points at, which can change the moment after.
+      execFileSync("cmd.exe", ["/c", "mklink", "/J", junction, realTarget], { stdio: "ignore" });
+
+      assert.throws(
+        () => assertTokenFileIsProtected(path.join(junction, "bot.token")),
+        /reparse point/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      rmSync(realTarget, { recursive: true, force: true });
+    }
+  },
+);

@@ -30,7 +30,6 @@ $script:ChannelFlagByHost = @{
 # Absolute path to the SessionStart hook script, resolved from this file's own location so it is
 # correct wherever the repository is checked out.
 $script:SessionStartHook = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\session-start.ps1'
-$script:SettingsFragment = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\settings-fragment.json'
 
 <#
 .SYNOPSIS
@@ -111,10 +110,12 @@ function Enter-ClaudeSession {
             "so it would run unwatched with no signal that anything is wrong."
     }
 
-    # The installed settings fragment names the hook script by absolute path, which is correct for
-    # exactly one checkout. A repository cloned or moved somewhere else keeps launching happily
-    # while every session silently fails to announce, so the disagreement is made loud here.
-    Assert-HookPathMatchesFragment
+    # The installed hooks name the script by absolute path, which is correct for exactly one
+    # checkout. A repository cloned or moved somewhere else keeps launching happily while every
+    # session silently fails to announce, so the disagreement is made loud here.
+    Assert-InstalledHookPath
+
+    Assert-HookScriptProtected
 
     $previous = @{
         CHANNEL_SESSION       = $env:CHANNEL_SESSION
@@ -137,22 +138,101 @@ function Enter-ClaudeSession {
 
 <#
 .SYNOPSIS
-Throws when the settings fragment's SessionStart script path is not this checkout's script.
+Throws when the hook script is writable by anyone but its owner, Administrators, and SYSTEM.
+
+.DESCRIPTION
+The installer hardens this path, but nothing keeps it hardened: a delete-and-recreate on a branch
+switch or a re-clone restores the inherited permissions with no signal, and the script then runs
+under -ExecutionPolicy Bypass at every session start, which makes write access to it code execution
+in the operator's context.
+
+The rule is the broker's own, called rather than restated so the two cannot drift apart. A failure
+to *run* the check warns instead of throwing: the launcher's job is starting sessions, and a Node
+hiccup at the desk should not stop work when the check has not actually found anything wrong.
 #>
-function Assert-HookPathMatchesFragment {
-    if (-not (Test-Path -LiteralPath $script:SettingsFragment)) { return }
+function Assert-HookScriptProtected {
+    $functions = Join-Path (Split-Path -Parent $PSScriptRoot) 'install\Install-Functions.ps1'
+    if (-not (Test-Path -LiteralPath $functions)) { return }
 
-    $fragment = Get-Content -LiteralPath $script:SettingsFragment -Raw | ConvertFrom-Json
-    $command = $fragment.hooks.SessionStart[0].hooks[0].command
-    if ($command -notmatch '-File\s+"([^"]+)"') { return }
+    try {
+        . $functions
+    } catch {
+        Write-Warning "Enter-ClaudeSession: could not load the permission check ($($_.Exception.Message))."
+        return
+    }
 
-    $declared = $Matches[1]
-    $declaredFull = [System.IO.Path]::GetFullPath($declared)
+    try {
+        Assert-ChannelPathProtected -Path $script:SessionStartHook
+    } catch [System.Management.Automation.RuntimeException] {
+        # The check ran and refused. That is a real finding, and it is fatal.
+        throw "Enter-ClaudeSession: $($_.Exception.Message) This script runs under " +
+            "-ExecutionPolicy Bypass at every session start, so write access to it is code " +
+            "execution as you. Re-run install/Install-Host.ps1 to restore its permissions."
+    } catch {
+        Write-Warning "Enter-ClaudeSession: the hook script permission check could not run ($($_.Exception.Message))."
+    }
+}
+
+<#
+.SYNOPSIS
+Throws when the installed SessionStart hook does not run this checkout's script.
+
+.DESCRIPTION
+Reads the user-level settings file, which is the copy that actually runs. The fragment in the
+checkout is a template the installer substitutes and merges; checking it instead would pass on
+exactly the case worth catching, a checkout moved or re-cloned while the installed settings still
+name the old path.
+
+Silence means no opinion: an absent settings file, no SessionStart hook in it, or no hook belonging
+to this project all mean nothing has been installed to disagree with, and a launch is not the place
+to insist on an install. Only a hook that names a session-start.ps1 other than this checkout's is a
+contradiction, and that one is fatal, because the alternative is a session that runs unwatched with
+no signal that anything is wrong.
+#>
+function Assert-InstalledHookPath {
+    param(
+        # Defaulted rather than read inline so the check is exercisable against a fixture. $HOME is
+        # read-only in PowerShell, so a test cannot redirect it and a function that reads it
+        # directly can only ever be run against the operator's real settings.
+        [string]$SettingsPath = (Join-Path $HOME '.claude\settings.json')
+    )
+
+    if (-not (Test-Path -LiteralPath $SettingsPath)) { return }
+
+    try {
+        $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+    } catch {
+        # A settings file this cannot parse is Claude Code's problem to report, not the launcher's.
+        return
+    }
+
     $actualFull = [System.IO.Path]::GetFullPath($script:SessionStartHook)
-    if ($declaredFull -ieq $actualFull) { return }
+    foreach ($entry in @($settings.hooks.SessionStart)) {
+        foreach ($hook in @($entry.hooks)) {
+            $command = [string]$hook.command
+            # Deliberately not anchored to the end of the command: a hook that passes arguments
+            # after the script path is still this project's hook, and an anchored match would skip
+            # it silently, which is a false pass in the one check standing between a moved checkout
+            # and a fleet of sessions that never announce themselves.
+            if ($command -notmatch '-File\s+(?:"([^"]+)"|([^\s"]+))') { continue }
 
-    throw "Enter-ClaudeSession: hooks/settings-fragment.json points SessionStart at " +
-        "'$declaredFull', but this checkout's hook script is '$actualFull'. Sessions would start " +
-        "and never announce themselves. Update the fragment's path (Section 7's installer does " +
-        "this) and re-merge it into the user-level settings file."
+            $declared = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+
+            # A path this cannot even parse is not one to form an opinion about, and a launcher that
+            # throws on a malformed third-party entry blocks work for no safety gain. Both calls are
+            # guarded: each throws on invalid path characters, and the file-name check runs first.
+            try {
+                if ([System.IO.Path]::GetFileName($declared) -ine 'session-start.ps1') { continue }
+                $declaredFull = [System.IO.Path]::GetFullPath($declared)
+            } catch {
+                continue
+            }
+            if ($declaredFull -ieq $actualFull) { return }
+
+            throw "Enter-ClaudeSession: the installed SessionStart hook in '$SettingsPath' runs " +
+                "'$declaredFull', but this checkout's hook script is '$actualFull'. Sessions would " +
+                "start and never announce themselves. Re-run install/Install-Host.ps1 from this " +
+                "checkout to point the installed hook at it."
+        }
+    }
 }

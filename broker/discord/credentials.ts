@@ -18,7 +18,7 @@
 // which names its principals by security identifier and so does not depend on the display
 // language of the account names.
 import { execFileSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -47,6 +47,32 @@ const PERMITTED_TRUSTEES: ReadonlySet<string> = new Set([
   "OW",
   "S-1-3-4",
 ]);
+
+let cachedCurrentUserSid: string | null | undefined;
+
+/**
+ * This process's own SID, or null if it could not be determined. Cached for the life of the
+ * process: the identity a broker runs as does not change between one hook post and the next.
+ */
+function currentWindowsUserSid(): string | null {
+  if (cachedCurrentUserSid !== undefined) return cachedCurrentUserSid;
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+      ],
+      { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    cachedCurrentUserSid = output === "" ? null : output.toUpperCase();
+  } catch {
+    cachedCurrentUserSid = null;
+  }
+  return cachedCurrentUserSid;
+}
 
 /** The owner from a security descriptor's `O:` field, upper-cased, or null when it carries none. */
 export function descriptorOwner(sddl: string): string | null {
@@ -120,12 +146,49 @@ function windowsSddl(paths: string[]): string[] {
 export function assertTokenFileIsProtected(
   file: string,
   platform: string = process.platform,
+  // Injectable for the same reason `platform` is: a test cannot elevate to change a real file's
+  // owner, so this is how the owner-mismatch path is exercised against a real, self-owned file
+  // instead.
+  currentUserSid: () => string | null = currentWindowsUserSid,
 ): void {
   const directory = path.dirname(path.resolve(file));
 
+  // Checked on both platforms, before anything else: a reparse point (a symlink or, on Windows, a
+  // junction or mount point) can pass every check below against its current target and then be
+  // re-pointed at an attacker-controlled file the moment after. lstat, not stat, is what tells the
+  // two apart, since stat follows the link.
+  for (const target of [file, directory]) {
+    let info;
+    try {
+      info = lstatSync(target);
+    } catch (error) {
+      // A missing or unreadable path is reported the same way the rest of this function reports
+      // one: naming the token file, not the internal target that happened to fail, since a
+      // directory that vanished out from under its file is still the token file's problem.
+      throw new Error(`cannot read the access control list of the token file ${file}: ${String(error)}`);
+    }
+    if (info.isSymbolicLink()) {
+      throw new Error(
+        `${target} is a reparse point (a symlink, junction, or mount point); refusing to trust a ` +
+          `path whose target can change after this check runs`,
+      );
+    }
+  }
+
   if (platform !== "win32") {
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
     for (const target of [file, directory]) {
-      if (unsafePosixMode(statSync(target).mode)) {
+      const stat = statSync(target);
+      // Ownership, not just mode: chmod 600 set by an account that is not this process's own, or
+      // root, still means that other account controls the file's mode and could loosen it again a
+      // moment after this check passes.
+      if (uid !== null && stat.uid !== 0 && stat.uid !== uid) {
+        throw new Error(
+          `${target} is owned by uid ${stat.uid}, neither this process's account (uid ${uid}) nor ` +
+            `root; take ownership of it as the broker's own account before starting`,
+        );
+      }
+      if (unsafePosixMode(stat.mode)) {
         throw new Error(
           `${target} is readable, writable, or listable beyond its owner; restrict it to the ` +
             `broker's account (chmod 600 on the token file, 700 on its directory) before starting`,
@@ -149,6 +212,8 @@ export function assertTokenFileIsProtected(
     );
   }
 
+  const currentSid = currentUserSid();
+
   for (const [index, target] of [file, directory].entries()) {
     const sddl = descriptors[index];
     // A descriptor with no DACL section is not one this check understood, and an unrecognized
@@ -156,6 +221,24 @@ export function assertTokenFileIsProtected(
     if (!/D:/.test(sddl)) {
       throw new Error(`the access control list of ${target} could not be read as a security descriptor`);
     }
+
+    // The owner is exempt from the grant scan below by construction (foreignGrants skips its own
+    // trustee), so an unverified owner turns that exemption into a hole: a file planted by any
+    // account on a shared root is owned by that account, hardened to itself with a clean ACL, and
+    // would otherwise pass. The owner must be this process's own account or an administrative
+    // identity, not merely whoever happened to create the file.
+    const owner = descriptorOwner(sddl);
+    if (owner === null) {
+      throw new Error(`the access control list of ${target} names no owner`);
+    }
+    if (owner !== currentSid && !PERMITTED_TRUSTEES.has(owner)) {
+      throw new Error(
+        `${target} is owned by ${owner}, which is neither this process's account nor an ` +
+          `administrative identity; it may have been planted by another account, so take ` +
+          `ownership of it as the broker's own account before starting`,
+      );
+    }
+
     const foreign = foreignGrants(sddl);
     if (foreign.length > 0) {
       throw new Error(
