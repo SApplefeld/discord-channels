@@ -431,6 +431,10 @@ Acceptance:
   script and the wrapper: both currently inherit `Authenticated Users: Modify` from the `D:\` root
   on the SCOTT host, and the hook runs under `-ExecutionPolicy Bypass` at every session start, so
   write access to that path is code execution in the operator's context.
+- The installer writes the substituted path into the **user-level settings file**, and the wrapper's
+  launch-time path check reads *that* file rather than the checkout's copy of the fragment. They are
+  different files, and only the merged one runs. A moved or re-cloned checkout whose user settings
+  still name the old path is exactly the state the check exists to catch, and today it would pass.
 - `docs/security-model.md` states the trust boundary this design actually has: what the process
   token authenticates (reports about a session) and what it must never authorize (anything inbound),
   that hook payloads cross loopback in cleartext with `tool_input` and `tool_response` in them, and
@@ -652,6 +656,11 @@ tool, and turn count; an unwrapped session in the same directory creates no reco
 socket. Tree state was captured before and after the review round and was byte-identical.
 Not proven: any of this on NEO or ASR. Both the absolute script path and the channel flag differ
 per host, and only SCOTT was available. S7's installer is what makes the path correct there.
+Known scope gap, routed to S7 rather than fixed here: the wrapper's path check reads the fragment
+**in the checkout**, but the copy that actually runs is the one merged into the user-level settings
+file. Every run verified here used `--settings <repo path>`, so the merged-settings install path is
+unexercised, and a checkout whose user settings still name an old path would pass the check while
+every session silently failed to announce. S7 owns the merged file and now carries the criterion.
 Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads; the
 type-stripping record was already stamped in Chapter 2's window and shaped this section's new
 test files the same way)
