@@ -20,7 +20,10 @@ with a one-line reply. All of it is built and installable.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`plans/channel-mirroring_spec_v1.md`](plans/channel-mirroring_spec_v1.md) | In Progress | Console-to-channel mirroring: every console prompt and every turn's final reply posted into the session's thread, making the return path structural rather than dependent on the model choosing the reply tool. |
 | [`archive/plans/sapplefeld-channels_spec_v1.md`](archive/plans/sapplefeld-channels_spec_v1.md) | Complete | The design and build record for the whole system, in seven sections, with a Chapter per section covering what shipped, the decisions, and the surprises. |
+
+[`backlog.md`](backlog.md) carries cross-effort next-steps that belong to no single open plan.
 
 `tools/` holds the hook-capture harness the operator checks use.
 
