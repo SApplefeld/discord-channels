@@ -55,9 +55,56 @@ token and its key until that pipe closes. Nothing detects it, and the operator's
 session whose status card keeps ticking while its answers read wrong. Closing it would need the
 broker to learn the relay's process identity, which the channel protocol does not carry.
 
+Since that process can also issue permission prompts, the residual is now phishing as well as
+impersonation: it can ring the phone with an approval request carrying a tool name, description and
+input of its choosing. It cannot escalate to approving a *real* pending call, because holding the
+pipe means the genuine relay was refused and there are no real prompts to answer. Volume is damped
+per thread: past a few prompts a minute the message still arrives and is still answerable but stops
+mentioning the operator, and only far past that is a prompt dropped. The ping stops; the session
+does not park.
+
+## The sender gate
+
 The authority for any inbound action is the Discord sender's user ID, checked against a one-entry
-allowlist, and it is gated on the sender rather than the channel or thread: gating on the room would
-let anyone with access to the channel inject text into a running session.
+allowlist (`CHANNEL_ALLOWED_USER_ID`), and it is gated on the sender rather than the channel or
+thread. A thread identifies a room, and everyone with access to the room can post in it, so treating
+the room as the credential would let any member steer a session and approve its tool calls. A broker
+with a Discord connection refuses to start without an allowlist, and says why in its log rather than
+dying silently under the scheduled task.
+
+The gate runs before everything else on the inbound path, **including the verdict pattern**, so a
+verdict-shaped message from anyone else is refused before it is read as one.
+
+**What it does not protect.** The allowlist is one Discord account. Whoever controls that account
+can steer every session on the host and approve any tool call it asks about, so that account's own
+password, second factor, and the device its notifications reach are part of this trust boundary. The
+gate says nothing about who is at the other end of it.
+
+## Tool approval over the channel
+
+**A permission prompt sends the tool's actual input off this machine.** `input_preview` is the shell
+command, the patch body, the file path and its contents. This is the only surface in the system that
+does that: hook payloads and relay traffic stay on loopback, and the log file records only a request
+ID. A prompt crosses to Discord's servers, is stored there under their retention, and is rendered on
+a phone. **The sender gate governs who can write, not who can read**, so every member of the channel
+sees every prompt. The channel must be private to the operator, and `install.md` says so.
+
+The description and the input preview are written by a tool call, which anything the session has
+read can influence, and they land in the one message this system deliberately pings with. They are
+rendered as inert text with mention and chip syntax escaped, and each is cut to its own budget so it
+cannot push the request ID and the answering instructions off the end of the message. A cut field is
+labelled as cut, because otherwise an attacker-influenced input can front-load benign content and
+push the part worth refusing past the boundary.
+
+A verdict is bound to the thread it was typed in as well as to the five-letter request ID, and
+answering consumes the request, so a verdict cannot be replayed or applied to a different open
+prompt. A verdict naming nothing open is answered in-thread rather than dropped in silence: from a
+phone, silence is indistinguishable from success.
+
+A prompt reaches the broker over the same loopback route a reply does and is held to the same bar,
+the per-attachment reply key. A process token is not enough. Without that, any of the subprocesses
+that inherit the token could ring the operator's phone with an approval request of its own devising,
+in the one message they are trained to answer quickly.
 
 **A channel event tells the model that its sender is unverified.** The relay's instructions say so
 explicitly and make no claim that a message came from the operator, because at that layer nothing
@@ -84,10 +131,18 @@ and caps length; it deliberately does not touch `@everyone`, `@here`, markdown, 
 because escaping display syntax is the job of whatever is displaying it. There are two render sites
 and both apply it:
 
-- **Discord.** Every message write sets `allowed_mentions` to suppress all pings and suppresses
-  embeds, so a bare URL cannot auto-link and leak a fetch to an attacker-chosen host. Markdown and
-  Discord's angle-bracket chip syntax are escaped, so a name cannot render as a fake timestamp,
-  mention, or emoji, and a card cannot spoof the heartbeat it exists to carry.
+- **Discord.** Every message write suppresses embeds, so a bare URL cannot auto-link and leak a
+  fetch to an attacker-chosen host, and every write sends an empty `allowed_mentions.parse` list, so
+  **no mention is ever resolved from message content**: `@everyone`, `@here`, a role, and any user
+  the text names all stay inert. Markdown and Discord's angle-bracket chip syntax are escaped, so a
+  name cannot render as a fake timestamp, mention, or emoji, and a card cannot spoof the heartbeat
+  it exists to carry.
+
+  **The permission prompt is the one write that deliberately mentions someone**, because its whole
+  job is to reach a phone. It is not a widening: the empty `parse` list stays, and the prompt adds
+  `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated as a
+  snowflake at load. The only mention syntax in the message is composed by the renderer from that
+  ID. Content still cannot produce one.
 - **The log file.** Untrusted fields pass through the same neutralization before they land, so a
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 

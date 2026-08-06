@@ -93,6 +93,67 @@ export function inertMessage(value: string): string {
   return fit(withoutInvisible(value).trim(), MAX_MESSAGE_LENGTH);
 }
 
+/**
+ * Room for the two untrusted halves of a permission prompt.
+ *
+ * They are cut here, before the message is assembled, rather than left to the whole message's cap.
+ * The cap truncates the tail, and the tail is where a long tool input would push the mention, the
+ * request ID, and the instructions for answering off the end of the one message in this system
+ * that exists to be answered.
+ */
+const MAX_TOOL_NAME_LENGTH = 100;
+const MAX_DESCRIPTION_LENGTH = 300;
+const MAX_PREVIEW_LENGTH = 900;
+
+/** What a field renders as when the tool supplied nothing for it. */
+const NOTHING = "(none)";
+
+/**
+ * One untrusted prompt field: neutralized, cut to its budget, and told apart from a whole one.
+ *
+ * The cut is named in the label rather than left to the ellipsis. A tool input is attacker
+ * influenced, so it can front-load harmless content and push the part worth refusing past the cut,
+ * and an operator approving from a phone would be approving a view they had no way to know was
+ * partial. The cap itself stays: it is what keeps the request ID and the instructions for answering
+ * inside the message at all.
+ */
+function promptField(label: string, value: string, limit: number): string {
+  const whole = inertText(value);
+  const shown = fit(whole, limit);
+  if (shown === "") return `${label}: ${NOTHING}`;
+  return shown === whole ? `${label}: ${shown}` : `${label} (cut): ${shown}`;
+}
+
+/**
+ * The permission prompt: the one message this broker writes that deliberately mentions someone.
+ *
+ * The mention is composed here from the operator's own ID, and every untrusted field goes through
+ * `inertText`, which escapes the angle brackets Discord's mention syntax lives inside. So the only
+ * mention this message can contain is the one written on this line, and the transport names that
+ * same single ID as the only one it will resolve.
+ *
+ * `description` and `input_preview` come from a tool call, which anything the session has read can
+ * steer. They are rendered last and as inert text, because this message pings a phone and asks a
+ * yes-or-no question: text that reads like an instruction, or that spoofs a second prompt, is the
+ * attack this ordering and this escaping are against.
+ */
+export function renderPermissionRequest(input: {
+  operatorId: string;
+  requestId: string;
+  toolName: string;
+  description: string;
+  inputPreview: string;
+}): string {
+  const id = input.requestId;
+  return [
+    `<@${input.operatorId}> **Permission needed** ${SEPARATOR} \`${id}\``,
+    `Reply \`y ${id}\` to allow or \`n ${id}\` to deny.`,
+    promptField("Tool", input.toolName, MAX_TOOL_NAME_LENGTH),
+    promptField("What", input.description, MAX_DESCRIPTION_LENGTH),
+    promptField("Input", input.inputPreview, MAX_PREVIEW_LENGTH),
+  ].join("\n");
+}
+
 /** The label a session is known by. A session launched without the wrapper carries no name. */
 function displayName(view: SessionView): string {
   const named = view.name === null ? "" : inertName(view.name);

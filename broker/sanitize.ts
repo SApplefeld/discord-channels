@@ -21,8 +21,13 @@ export function clean(value: string): string {
 }
 
 /**
- * Code points that can reorder or hide text with no visual trace: C0, DEL, the bidirectional
- * overrides and isolates, the zero-width family, and the byte order mark.
+ * Code points that can reorder or hide text with no visual trace.
+ *
+ * The class covers C0 and DEL, the soft hyphen, the bidirectional overrides and isolates, the
+ * zero-width family, the word joiner, the variation selectors, the byte order mark, and the Unicode
+ * tag block, which encodes a full hidden copy of ASCII that renders as nothing at all and is the
+ * standard way text is smuggled past a reader. It is a class of what is invisible, not of what is
+ * merely unusual: a homoglyph, a right-to-left script, and an emoji are all legible and all stay.
  *
  * Held here rather than beside any one consumer because two very different surfaces need the same
  * class and must not drift: what reaches Discord, and what reaches the model. A person reads both
@@ -35,10 +40,16 @@ export function isInvisible(code: number): boolean {
   return (
     code <= 0x1f ||
     code === 0x7f ||
+    // Soft hyphen: renders as nothing until a line break falls on it.
+    code === 0x00ad ||
     (code >= 0x200b && code <= 0x200f) ||
     (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x2064) ||
     (code >= 0x2066 && code <= 0x2069) ||
-    code === 0xfeff
+    (code >= 0xfe00 && code <= 0xfe0f) ||
+    code === 0xfeff ||
+    // The tag block. Every printable ASCII character has a copy here that renders as nothing.
+    (code >= 0xe0000 && code <= 0xe007f)
   );
 }
 

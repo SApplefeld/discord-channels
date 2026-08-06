@@ -13,8 +13,10 @@ import { createOutboundRouter } from "../broker/routing/outbound.ts";
 import { createThreadWriter } from "../broker/routing/writer.ts";
 import { createRelayRoutes } from "../broker/routing/http.ts";
 import { createRelayHub } from "../broker/routing/relays.ts";
+import type { PermissionRequest } from "../broker/security/permission.ts";
 import { createBrokerClient } from "./broker.ts";
 import type { BrokerClient } from "./broker.ts";
+import type { PermissionVerdict } from "./permission.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
@@ -42,6 +44,7 @@ async function broker(t: TestContext) {
     },
   };
   let replyRequests = 0;
+  const prompts: PermissionRequest[] = [];
   const routes = createRelayRoutes({
     relays,
     outbound: createOutboundRouter({
@@ -49,6 +52,12 @@ async function broker(t: TestContext) {
       threadFor: () => THREAD,
       writer: createThreadWriter({ messenger, now: Date.now }),
     }),
+    permissions: {
+      request: async (_processToken, request) => {
+        prompts.push(request);
+        return true;
+      },
+    },
     maxBodyBytes: 64 * 1024,
     streamIdleMs: 60_000,
   });
@@ -72,8 +81,23 @@ async function broker(t: TestContext) {
     registry,
     relays,
     posts,
+    prompts,
     close,
   };
+}
+
+/**
+ * Waits until the client holds the stream's `hello`, which is what issues the reply key.
+ *
+ * The hub registering the pipe is not that: it happens in this process before the line has crossed
+ * the socket. A message delivered after the hello travels the same stream through the same reader,
+ * so seeing one is proof the hello was already parsed.
+ */
+async function readyToWrite(context: Awaited<ReturnType<typeof broker>>, seen: () => number): Promise<void> {
+  await until(() => context.relays.attached(TOKEN));
+  const before = seen();
+  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "handshake" });
+  await until(() => seen() > before);
 }
 
 /** Registers a client's shutdown with the test, so a failed assertion cannot leave one reconnecting. */
@@ -125,15 +149,115 @@ test("a heartbeat keeps the pipe without being mistaken for a message", async (t
 
 test("a reply travels the wire and comes back as the broker's own verdict", async (t) => {
   const context = await broker(t);
+  let messages = 0;
+  const client = registered(
+    t,
+    createBrokerClient({
+      port: context.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        messages += 1;
+      },
+    }),
+  );
+  client.start();
+  await readyToWrite(context, () => messages);
+
+  assert.deepEqual(await client.reply("the migration is done"), { status: "sent", error: undefined });
+  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "the migration is done" }]);
+});
+
+test("a permission prompt travels the wire and its verdict comes back down the stream", async (t) => {
+  // Both directions over the real routes. The prompt is a POST that the broker only acknowledges,
+  // and the answer arrives whenever the operator gives it, on the stream, which is the one channel
+  // only the holder of this pipe can read.
+  const context = await broker(t);
+  let messages = 0;
+  const verdicts: PermissionVerdict[] = [];
+  const client = registered(
+    t,
+    createBrokerClient({
+      port: context.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        messages += 1;
+      },
+      onVerdict: (verdict) => verdicts.push(verdict),
+    }),
+  );
+  client.start();
+  await readyToWrite(context, () => messages);
+
+  assert.equal(
+    await client.permissionRequest({
+      requestId: "abcde",
+      toolName: "Bash",
+      description: "run the migration",
+      inputPreview: "{ command: npm run migrate }",
+    }),
+    true,
+  );
+  assert.deepEqual(context.prompts, [
+    {
+      requestId: "abcde",
+      toolName: "Bash",
+      description: "run the migration",
+      inputPreview: "{ command: npm run migrate }",
+    },
+  ]);
+
+  context.relays.deliver(TOKEN, { type: "permission", requestId: "abcde", behavior: "allow" });
+  await until(() => verdicts.length > 0);
+  assert.deepEqual(verdicts, [{ requestId: "abcde", behavior: "allow" }]);
+});
+
+test("a malformed verdict on the stream is ignored rather than answered", async (t) => {
+  const context = await broker(t);
+  let messages = 0;
+  const verdicts: PermissionVerdict[] = [];
+  const client = registered(
+    t,
+    createBrokerClient({
+      port: context.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        messages += 1;
+      },
+      onVerdict: (verdict) => verdicts.push(verdict),
+    }),
+  );
+  client.start();
+  await readyToWrite(context, () => messages);
+
+  // A behavior outside the two the protocol defines would otherwise reach Claude Code as a
+  // notification it rejects, and a prompt answered with nothing is a parked session.
+  context.relays.deliver(TOKEN, {
+    type: "permission",
+    requestId: "abcde",
+    behavior: "maybe" as "allow",
+  });
+  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "settle" });
+  await until(() => messages > 1);
+  assert.deepEqual(verdicts, []);
+});
+
+test("a relay holding no stream cannot hand over a permission prompt", async (t) => {
+  const context = await broker(t);
   const client = registered(
     t,
     createBrokerClient({ port: context.port, processToken: TOKEN, onMessage: () => {} }),
   );
-  client.start();
-  await until(() => context.relays.attached(TOKEN));
 
-  assert.deepEqual(await client.reply("the migration is done"), { status: "sent", error: undefined });
-  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "the migration is done" }]);
+  assert.equal(
+    await client.permissionRequest({
+      requestId: "abcde",
+      toolName: "Bash",
+      description: "",
+      inputPreview: "",
+    }),
+    false,
+  );
+  assert.deepEqual(context.prompts, []);
 });
 
 test("a relay holding no stream reports the reply locally instead of attempting it", async (t) => {
@@ -194,6 +318,46 @@ test("the relay reconnects after the broker drops its pipe", async (t) => {
   await until(() => context.relays.attached(TOKEN));
 });
 
+test("a relay that keeps losing the pipe race backs off instead of retrying every second", async (t) => {
+  // A refused attach arrives as a 200 that ends immediately. Reset on the status code alone, the
+  // backoff never grows, so a relay that lost the race to a local process retries once a second
+  // for the life of the session and writes a broker log line each time.
+  const attempts: number[] = [];
+  const server = http.createServer((_request, response) => {
+    attempts.push(Date.now());
+    response.writeHead(200, { "content-type": "application/x-ndjson" });
+    response.end(`${JSON.stringify({ type: "refused", reason: "already attached" })}\n`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+
+  // 25ms doubling reaches 200ms by the fifth attempt while a reset backoff stays at 25 plus a few
+  // milliseconds of loopback overhead. The two are far enough apart that scheduling noise cannot
+  // dress one up as the other, which a "the last gap is bigger than the first" check could not say.
+  const BASE_MS = 25;
+  const client = registered(
+    t,
+    createBrokerClient({
+      port: (server.address() as AddressInfo).port,
+      processToken: TOKEN,
+      onMessage: () => {},
+      reconnectDelayMs: BASE_MS,
+    }),
+  );
+  client.start();
+  await until(() => attempts.length >= 5);
+  client.stop();
+
+  const gaps = attempts.slice(1).map((at, index) => at - attempts[index]);
+  assert.ok(
+    gaps[gaps.length - 1] >= BASE_MS * 4,
+    `the delay has to keep doubling across refusals, saw ${JSON.stringify(gaps)}`,
+  );
+});
+
 test("a reply reaching no broker at all is reported rather than thrown", async (t) => {
   const context = await broker(t);
   const port = context.port;
@@ -219,6 +383,11 @@ test("a reply whose response is cut off mid-body settles instead of hanging", as
     if ((request.url ?? "").startsWith("/relay/stream")) {
       response.writeHead(200, { "content-type": "application/x-ndjson" });
       response.write(`${JSON.stringify({ type: "hello", replyKey: "issued" })}\n`);
+      // A message behind the hello, so the test has something observable to wait on. It travels
+      // the same stream through the same reader, so seeing it proves the hello was already parsed
+      // and the reply key is held. Without it this test can run its reply before the key arrives
+      // and pass on the local refusal instead of on the settle path it exists to prove.
+      response.write(`${JSON.stringify({ type: "message", chatId: THREAD, text: "ready" })}\n`);
       return;
     }
     request.resume();
@@ -236,19 +405,20 @@ test("a reply whose response is cut off mid-body settles instead of hanging", as
     server.close();
   });
 
+  let ready = false;
   const client = registered(
     t,
     createBrokerClient({
       port: (server.address() as AddressInfo).port,
       processToken: TOKEN,
-      onMessage: () => {},
+      onMessage: () => {
+        ready = true;
+      },
       replyTimeoutMs: 2_000,
     }),
   );
   client.start();
-  await until(() => client.reply !== undefined);
-  // Give the stream's hello a moment to land, which is what issues the reply key.
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await until(() => ready);
 
   const result = await client.reply("into the void");
   assert.equal(result.status, "failed", "the promise settled instead of parking the turn");

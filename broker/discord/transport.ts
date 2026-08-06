@@ -77,5 +77,14 @@ export type DiscordTransport = {
  * a person is meant to be pinged about.
  */
 export type ThreadMessenger = {
-  postToThread: (input: { threadId: string; text: string }) => Promise<CallOutcome<null>>;
+  postToThread: (input: {
+    threadId: string;
+    text: string;
+    /**
+     * The single Discord user this one message may resolve as a mention. Left unset on every
+     * write but the permission prompt, which is the only message in this system meant to reach a
+     * phone before the operator next looks at it.
+     */
+    mentionUserId?: string;
+  }) => Promise<CallOutcome<null>>;
 };

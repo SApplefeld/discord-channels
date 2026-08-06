@@ -2,6 +2,7 @@
 // error: the broker runs its registry and its hook intake with no Discord connection at all, which
 // is what every test and every local debugging run does.
 import { readFileSync } from "node:fs";
+import { SNOWFLAKE } from "../security/senders.ts";
 import { assertTokenFileIsProtected } from "./credentials.ts";
 
 export type DiscordConfig = {
@@ -43,9 +44,6 @@ function flag(raw: string | undefined): boolean {
   return value === "1" || value === "true" || value === "yes";
 }
 
-/** Discord identifiers are snowflakes. This one is interpolated into a token-bearing request path. */
-const SNOWFLAKE = /^\d{17,20}$/;
-
 /**
  * The token, from the environment or from a file named by the environment. A file is the shape an
  * installed service wants, since a scheduled task's environment is visible to anything that can
@@ -86,6 +84,8 @@ export function loadDiscordConfig(
   // from starting.
   const channelId = env.CHANNEL_DISCORD_CHANNEL?.trim();
   if (!channelId) return null;
+  // The channel ID is interpolated into a token-bearing request path, so its shape is checked
+  // rather than trusted.
   if (!SNOWFLAKE.test(channelId)) {
     throw new Error(
       `CHANNEL_DISCORD_CHANNEL must be a Discord snowflake, got ${JSON.stringify(channelId)}`,

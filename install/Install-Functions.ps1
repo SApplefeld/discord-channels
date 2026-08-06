@@ -379,8 +379,8 @@ function Get-ChannelEnvFile {
 Every environment variable Start-Broker.ps1 is willing to set from broker.env.
 
 .DESCRIPTION
-Exactly the variables broker/config.ts and broker/discord/config.ts read, plus CHANNEL_ALLOWED_USER_ID
-(reserved for Section 6). Named explicitly rather than setting whatever key happens to be in the
+Exactly the variables broker/config.ts, broker/discord/config.ts, and broker/security/senders.ts
+read. Named explicitly rather than setting whatever key happens to be in the
 file: write access to broker.env would otherwise be arbitrary environment injection into the process
 that then reads the bot token file, and something like NODE_OPTIONS in that file is a code-execution
 primitive with no hook or ACL bypass required at all. CHANNEL_NODE_EXE and CHANNEL_TASK_USER are

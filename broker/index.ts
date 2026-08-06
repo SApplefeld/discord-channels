@@ -18,6 +18,9 @@ import { toView } from "./discord/state.ts";
 import { loadBindings, saveBindings } from "./discord/bindings.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { ThreadMessenger } from "./discord/transport.ts";
+import { createPermissionDesk } from "./security/permission.ts";
+import type { PermissionDesk } from "./security/permission.ts";
+import { loadSenderGate } from "./security/senders.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
@@ -101,9 +104,22 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     writer,
     log: note,
   });
+  // Replaced below when Discord is configured. Without a channel there is no thread to ask in and
+  // no operator to ask, so a prompt is reported and dropped rather than held: the session is at a
+  // terminal, which is where its permission dialog already is.
+  let permissions: PermissionDesk = {
+    request: async () => {
+      note("broker: a permission prompt arrived but discord is not configured");
+      return false;
+    },
+    resolve: async () => {},
+  };
   const relayRoutes = createRelayRoutes({
     relays,
     outbound,
+    // The asking half only. Answering a prompt belongs to the Discord side, behind the sender
+    // gate, and this layer is reachable by any local process that holds a pipe.
+    permissions: { request: (processToken, request) => permissions.request(processToken, request) },
     maxBodyBytes: config.maxBodyBytes,
     streamIdleMs: RELAY_READ_TIMEOUT_MS,
     log: note,
@@ -195,9 +211,39 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     }, discord.refreshIntervalMs);
     threadFor = (sessionId) => surface.threadFor(sessionId);
 
+    // Read here rather than beside the other configuration: it is only meaningful for a broker
+    // that has a channel to be steered through, and it throws when it is missing, which stops a
+    // broker with a Discord connection from ever running without an allowlist.
+    //
+    // The reason is written to the log file before the throw leaves this function. Under the
+    // scheduled task there is no console for it to reach, so an unlogged refusal is a broker that
+    // fails at every logon and leaves a zero-byte log saying nothing about why.
+    let gate;
+    try {
+      gate = loadSenderGate(process.env);
+    } catch (error) {
+      clearInterval(sweep);
+      clearInterval(heartbeat);
+      stopRefresh();
+      const message = `broker: refusing to start with a discord connection: ${String(error)}`;
+      console.error(message);
+      logger.error(message);
+      throw error;
+    }
+    permissions = createPermissionDesk({
+      registry,
+      relays,
+      threadFor: (sessionId) => surface.threadFor(sessionId),
+      writer,
+      operatorId: gate.operatorId,
+      now: Date.now,
+      log: note,
+    });
     const inbound = createInboundRouter({
       registry,
       relays,
+      gate,
+      permissions,
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer,
       now: Date.now,
@@ -216,7 +262,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // later as messages that silently never arrive.
     await gateway.start();
 
-    note(`broker: discord surfaces on, threads open in channel ${discord.channelId}`);
+    note(
+      `broker: discord surfaces on, threads open in channel ${discord.channelId}, ` +
+        `steered by user ${gate.operatorId} and nobody else`,
+    );
   }
 
   await new Promise<void>((resolve, reject) => {

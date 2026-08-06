@@ -13,6 +13,11 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { DEFAULT_PORT } from "../broker/config.ts";
 import { runDirectly } from "../broker/entrypoint.ts";
 import { createBrokerClient } from "./broker.ts";
+import {
+  PermissionRequestNotificationSchema,
+  channelCapabilities,
+  permissionNotification,
+} from "./permission.ts";
 import { INSTRUCTIONS, REPLY_TOOL, REPLY_TOOL_NAME, channelNotification } from "./protocol.ts";
 
 /** What the model is told when a reply had nowhere to land. */
@@ -42,10 +47,7 @@ export async function startRelay(env: NodeJS.ProcessEnv = process.env): Promise<
   const server = new Server(
     { name: "channel-relay", version: "0.1.0" },
     {
-      // `claude/channel` alone. The permission capability is declared with its handler, in Section
-      // 6: Claude Code routes a permission request only at a server declaring both, so declaring it
-      // early would aim prompts at a server that drops them, and a dropped prompt parks the session.
-      capabilities: { experimental: { "claude/channel": {} }, tools: {} },
+      capabilities: { experimental: channelCapabilities(Boolean(processToken)), tools: {} },
       instructions: INSTRUCTIONS,
     },
   );
@@ -60,8 +62,39 @@ export async function startRelay(env: NodeJS.ProcessEnv = process.env): Promise<
         process.stderr.write(`relay: could not deliver a channel message: ${String(error)}\n`);
       });
     },
+    onVerdict: (verdict) => {
+      // Fire and forget, for the same reason an inbound message is: the operator's answer is not
+      // something the broker waits on, and a failed write must not take the pipe down.
+      void server.notification(permissionNotification(verdict)).catch((error: unknown) => {
+        process.stderr.write(`relay: could not deliver a permission verdict: ${String(error)}\n`);
+      });
+    },
     log: (message) => process.stderr.write(`${message}\n`),
   });
+
+  if (processToken) {
+    // Registered with the capability above and never without it. The prompt is handed straight to
+    // the broker: this process is a child of the session the prompt is about, so it is the last
+    // thing that should be deciding whether the tool call is allowed.
+    server.setNotificationHandler(PermissionRequestNotificationSchema, (notification) => {
+      const params = notification.params;
+      void broker
+        .permissionRequest({
+          requestId: params.request_id,
+          toolName: params.tool_name,
+          description: params.description ?? "",
+          inputPreview: params.input_preview ?? "",
+        })
+        .then((taken) => {
+          if (!taken) {
+            process.stderr.write("relay: the broker did not take a permission prompt\n");
+          }
+        })
+        .catch((error: unknown) => {
+          process.stderr.write(`relay: could not hand over a permission prompt: ${String(error)}\n`);
+        });
+    });
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [REPLY_TOOL] }));
 

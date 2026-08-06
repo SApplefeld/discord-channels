@@ -64,9 +64,10 @@ test("the instructions are a static literal with nothing interpolated into them"
 });
 
 test("the instructions do not claim a sender the transport cannot identify", () => {
-  // No event carries who wrote it, and nothing gates on the sender until Section 6. Telling the
-  // model the text came from the operator would hand anyone with access to the thread the
-  // operator's standing, and it contradicts the data-not-instruction sentence beside it.
+  // No event carries who wrote it. The broker gates on the author's Discord user ID before a
+  // message is ever handed over, but that is a fact about the broker and not something this
+  // transport can establish, so telling the model the text came from the operator would be a
+  // provenance claim the protocol cannot back, and it contradicts the sentence beside it.
   assert.match(
     INSTRUCTIONS,
     /not verified at this layer/,

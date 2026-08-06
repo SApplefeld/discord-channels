@@ -1,11 +1,11 @@
 // Every message this broker posts into a thread goes through here.
 //
-// The surfaces edit a card and rename a thread on a timer, and Chapter 4 built a budget for that
-// because a write Discord refuses is a write repeated forever. A reply and a rejection notice are a
-// different route and a different bucket, but the same hazard, and a worse one: they are the only
-// writes an outsider can provoke. Until Section 6's sender gate exists, anyone who can post in the
-// channel gets one bot message back per message they send, so a budget and a per-thread floor are
-// what stand between that and the channel this fleet is watched from.
+// The surfaces edit a card and rename a thread on a timer, and there is a budget for that because
+// a write Discord refuses is a write repeated forever. A reply, a rejection notice, and a
+// permission prompt are a different route and a different bucket, but the same hazard, and a worse
+// one: they are the only writes something outside this machine can provoke. The sender gate means
+// only the operator can provoke them, so the budget and the notice floor are what stand between an
+// accident or a runaway session and the channel this fleet is watched from.
 //
 // Nothing is queued, for the same reason nothing is queued in the surfaces: a reply that lands
 // minutes late answers a question the operator has stopped asking, and a notice that lands late
@@ -29,6 +29,16 @@ export type ThreadWriter = {
    * was written. A dropped notice is not retried: the next message provokes the next one.
    */
   notice: (threadId: string, text: string) => Promise<boolean>;
+  /**
+   * Posts a message that mentions one user, or nobody when the caller passes null. Returns true
+   * when it was written.
+   *
+   * The same bucket as the other two, deliberately: this is the write that reaches a phone, so a
+   * flood of them is the loudest failure available here, and it is bounded by the budget rather
+   * than exempted from it. It carries no per-thread floor, because unlike a notice it is the only
+   * thing a waiting session can be answered through, and one silently dropped is a parked session.
+   */
+  alert: (threadId: string, text: string, mentionUserId: string | null) => Promise<boolean>;
 };
 
 export type ThreadWriterOptions = {
@@ -44,7 +54,11 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
   const budget: Budget = createBudget();
   const lastNotice = new Map<string, number>();
 
-  async function post(threadId: string, text: string): Promise<CallOutcome<null>> {
+  async function post(
+    threadId: string,
+    text: string,
+    mentionUserId?: string,
+  ): Promise<CallOutcome<null>> {
     const at = options.now();
     if (!budget.affordable(at)) {
       log(`routing: a message to thread ${threadId} was dropped, the bucket is empty`);
@@ -58,7 +72,13 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
         rate: { remaining: null, resetAfterMs: null, retryAfterMs: null },
       };
     }
-    const outcome = await options.messenger.postToThread({ threadId, text: body });
+    // The field is left off entirely rather than sent as undefined, so the only write that carries
+    // a mentionable user is the one that meant to.
+    const outcome = await options.messenger.postToThread({
+      threadId,
+      text: body,
+      ...(mentionUserId === undefined ? {} : { mentionUserId }),
+    });
     // A failed call's headers are deliberately not observed, the same rule the surfaces follow: a
     // 4xx reports a bucket with room in it, and letting that clear a standing block turns a refusal
     // into a retry storm.
@@ -79,6 +99,11 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
       // thread for the next minute as well.
       lastNotice.set(threadId, at);
       return true;
+    },
+
+    async alert(threadId, text, mentionUserId) {
+      const outcome = await post(threadId, text, mentionUserId ?? undefined);
+      return outcome.status === "ok";
     },
   };
 }

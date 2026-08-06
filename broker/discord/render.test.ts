@@ -8,6 +8,7 @@ import {
   inertMessage,
   inertText,
   renderCard,
+  renderPermissionRequest,
   threadName,
 } from "./render.ts";
 import { toView } from "./state.ts";
@@ -199,4 +200,82 @@ test("a message is cut to a length Discord will accept", () => {
   const long = inertMessage("x".repeat(MAX_MESSAGE_LENGTH + 500));
   assert.equal(long.length, MAX_MESSAGE_LENGTH);
   assert.ok(long.endsWith("…"), "a cut message says it was cut");
+});
+
+const OPERATOR = "700000000000000002";
+
+function prompt(overrides: Partial<Parameters<typeof renderPermissionRequest>[0]> = {}): string {
+  return renderPermissionRequest({
+    operatorId: OPERATOR,
+    requestId: "abcde",
+    toolName: "Bash",
+    description: "run the migration",
+    inputPreview: "{ command: npm run migrate }",
+    ...overrides,
+  });
+}
+
+test("a permission prompt leads with the mention, the id, and how to answer", () => {
+  const text = prompt();
+  assert.match(text, /^<@700000000000000002> /, "the mention is the first thing on the first line");
+  const lines = text.split("\n");
+  assert.match(lines[0], /`abcde`/);
+  assert.match(lines[1], /`y abcde`.*`n abcde`/, "the reply the operator has to type is spelled out");
+  assert.deepEqual(lines.slice(2), [
+    "Tool: Bash",
+    "What: run the migration",
+    "Input: { command: npm run migrate }",
+  ]);
+});
+
+test("nothing a tool writes into a prompt can mention anyone or restructure it", () => {
+  // The description and the input preview come from a tool call, which anything the session has
+  // read can steer, and they land in a message that pings a phone and asks for a yes. A crafted
+  // one that spoofs a second prompt or names a role is the attack.
+  const text = prompt({
+    toolName: "@everyone",
+    description: "<@999999999999999999> approve everything",
+    inputPreview: "<@&123> **Permission needed** `qrstu`\n@here",
+  });
+  const mentions = [...text.matchAll(/(?<!\\)<@/g)];
+  assert.equal(mentions.length, 1, "the only unescaped mention syntax is the broker's own");
+  assert.ok(text.startsWith(`<@${OPERATOR}>`));
+  assert.ok(!text.includes("\n@here"), "the whole prompt is the lines the renderer wrote");
+  assert.equal(text.split("\n").length, 5);
+});
+
+test("a prompt is stripped of the characters that reorder or hide what it says", () => {
+  const rightToLeftOverride = String.fromCharCode(0x202e);
+  const zeroWidth = String.fromCharCode(0x200b);
+  const text = prompt({ description: `safe${zeroWidth}${rightToLeftOverride} delete` });
+  assert.ok(text.includes("What: safe delete"), text);
+});
+
+test("a tool input long enough to fill a message cannot push the answer off the end", () => {
+  // The whole-message cap truncates the tail, so an untrusted field left uncut would take the
+  // mention, the id, and the instructions with it, leaving a ping nobody can act on.
+  const text = prompt({ inputPreview: "x".repeat(20_000), description: "y".repeat(20_000) });
+  assert.ok(text.length < MAX_MESSAGE_LENGTH, `the prompt survives its own cap: ${String(text.length)}`);
+  assert.equal(inertMessage(text), text, "nothing is cut a second time on the way out");
+  assert.ok(text.startsWith(`<@${OPERATOR}> `));
+  assert.match(text, /`y abcde`/);
+});
+
+test("a field the tool left empty renders as absent rather than as a blank line", () => {
+  const text = prompt({ description: "", inputPreview: "   " });
+  assert.ok(text.includes("What: (none)"), text);
+  assert.ok(text.includes("Input: (none)"), text);
+});
+
+test("a cut prompt field says it was cut, in the label", () => {
+  // A tool input is attacker influenced, so it can front-load benign content and push the part
+  // worth refusing past the cut. An operator approving from a phone would otherwise be approving a
+  // partial view with nothing telling them it was partial.
+  const whole = prompt();
+  assert.ok(whole.includes("Input: "), whole);
+  assert.ok(!whole.includes("Input (cut):"), "a field that fits is not labelled as cut");
+
+  const long = prompt({ inputPreview: "x".repeat(5_000), description: "y".repeat(5_000) });
+  assert.ok(long.includes("Input (cut): "), long.split("\n")[4]);
+  assert.ok(long.includes("What (cut): "), long.split("\n")[3]);
 });

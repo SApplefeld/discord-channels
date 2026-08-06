@@ -198,10 +198,17 @@ export function createDiscordTransport(
     // addressed to the thread instead of the parent. It carries the same two suppressions every
     // other write here does: the text is Claude's own output, steered by whatever arrived from
     // Discord, so it is no more trusted than a session name.
-    postToThread: async ({ threadId, text }): Promise<CallOutcome<null>> => {
+    postToThread: async ({ threadId, text, mentionUserId }): Promise<CallOutcome<null>> => {
       const posted = await write(`/channels/${threadId}/messages`, "POST", {
         content: text,
-        allowed_mentions: NO_MENTIONS,
+        // The empty `parse` list still stands: no mention class is resolved from the content, so
+        // `@everyone`, `@here`, a role, and any user the text happens to name all stay inert. A
+        // permission prompt adds exactly one user ID to the users list, which is a whitelist and
+        // not a widening: that one ID is the only mention Discord will resolve, and the renderer
+        // has escaped the mention syntax out of every untrusted field, so the only mention in the
+        // message is the one the broker wrote.
+        allowed_mentions:
+          mentionUserId === undefined ? NO_MENTIONS : { ...NO_MENTIONS, users: [mentionUserId] },
         flags: SUPPRESS_EMBEDS,
       });
       return posted.status === "ok" ? { status: "ok", value: null, rate: posted.rate } : posted;

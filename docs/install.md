@@ -23,6 +23,11 @@ identity, and so a revoked token takes down one machine rather than all of them.
 6. Create a text channel for the host and copy its ID (right-click the channel with Developer Mode
    on). Copy your own user ID the same way; it is the only account permitted to steer a session.
 
+**Make that channel private to you and the bot.** The sender allowlist governs who can *write* into
+a session, not who can read. Everyone with access to the channel sees every message, and a tool
+approval prompt carries the tool's actual input: the shell command, the patch body, file contents.
+That is the only thing in this system that leaves the machine, and Discord retains it.
+
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a
 starter message successfully and then cannot open a thread on it.
 

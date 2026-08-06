@@ -1,6 +1,7 @@
-// The one place a message is posted into a thread. Both callers reach Discord only through here,
-// because both are provoked from outside the machine and Section 6's sender gate does not exist
-// yet: without a budget in front of them, anyone in the channel earns a bot message per message.
+// The one place a message is posted into a thread. Every caller reaches Discord only through here,
+// because all three are provoked from outside the machine: the sender gate narrows that to one
+// account, and the budget is what keeps that account's accident or a runaway session from filling
+// the channel this fleet is watched from.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NO_RATE_INFO } from "../discord/transport.ts";
@@ -10,7 +11,7 @@ import { createThreadWriter } from "./writer.ts";
 const THREAD = "900000000000000001";
 
 function fakeMessenger(outcomes: Array<CallOutcome<null>> = []) {
-  const posts: Array<{ threadId: string; text: string }> = [];
+  const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
@@ -111,4 +112,50 @@ test("the notice floor is per thread", async () => {
   assert.equal(await writer.notice("thread-a", "ended"), true);
   assert.equal(await writer.notice("thread-b", "ended"), true);
   assert.equal(posts.length, 2, "one busy thread must not silence another session's");
+});
+
+test("an alert carries the one user it may mention and shares the bucket", async () => {
+  // The write that reaches a phone is the loudest failure available here, so it is inside the
+  // budget rather than exempt from it. It carries no per-thread floor: unlike a notice, it is the
+  // only way a waiting session can be answered, and one silently dropped is a parked session.
+  const { messenger, posts } = fakeMessenger([
+    { status: "ok", value: null, rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: null } },
+  ]);
+  let now = 1_000;
+  const writer = createThreadWriter({ messenger, now: () => now });
+
+  assert.equal(await writer.alert(THREAD, "<@700000000000000002> permission needed", "700000000000000002"), true);
+  assert.deepEqual(posts, [
+    {
+      threadId: THREAD,
+      text: "<@700000000000000002> permission needed",
+      mentionUserId: "700000000000000002",
+    },
+  ]);
+
+  assert.equal(
+    await writer.alert(THREAD, "second", "700000000000000002"),
+    false,
+    "the bucket the replies and notices spend is the bucket this spends",
+  );
+  assert.equal(posts.length, 1);
+
+  now += 5_000;
+  assert.equal(await writer.alert(THREAD, "third", "700000000000000002"), true);
+  assert.equal(posts.length, 2, "back to back alerts are allowed once the bucket refills");
+});
+
+test("a reply and a notice name no user to mention at all", async () => {
+  const { messenger, posts } = fakeMessenger();
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  await writer.reply(THREAD, "done");
+  await writer.notice(THREAD, "this session has ended");
+  for (const post of posts) {
+    assert.equal(
+      (post as { mentionUserId?: string }).mentionUserId,
+      undefined,
+      "only the permission prompt is allowed to ping",
+    );
+  }
 });

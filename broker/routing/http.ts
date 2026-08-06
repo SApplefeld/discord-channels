@@ -14,12 +14,25 @@
 //     -> 200 {"status": "sent" | "no-session" | "no-thread" | "failed"}
 //     -> 403 when the key does not match the pipe currently held for that token
 //
+//   POST /relay/permission
+//     the same two headers
+//     body: {"request_id": "abcde", "tool_name": "...", "description": "...", "input_preview": "..."}
+//     -> 200 {"status": "received" | "dropped"}, where dropped means the prompt never reached the
+//        operator and no answer is coming
+//     -> 403 on the same terms as a reply
+//
+//     The verdict does not come back on this response. It arrives whenever the operator answers,
+//     down the stream as a `permission` event, because the answer can be minutes away and a
+//     request held open that long is a socket the relay's own read timeout would drop.
+//
 // Two things about that shape are deliberate. The body carries no chat_id: routing by session is
 // the design, and the way to make that true rather than merely intended is to give the wire no
 // field to route by. And the reply key exists because a process token is not a credential: every
 // shell subprocess a session spawns inherits it, so without the key any of them could post into the
 // operator's thread as Claude. The key is issued per attachment and only ever written down the
-// pipe, so presenting it means holding the pipe.
+// pipe, so presenting it means holding the pipe. A permission request is held to the same bar for
+// a sharper reason: it is the one message the broker writes that rings the operator's phone and
+// asks for a yes.
 //
 // Both guards the hook intake applies are applied here too, before anything is read: the socket
 // peer must be loopback, and the Host header must name a loopback name, which is what closes DNS
@@ -27,6 +40,7 @@
 // are composed in front of it and would otherwise be reachable without either.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAllowedHost, isLoopback } from "../intake.ts";
+import type { PermissionDesk } from "../security/permission.ts";
 import type { OutboundRouter } from "./outbound.ts";
 import type { RelayConnection, RelayEvent, RelayHub } from "./relays.ts";
 
@@ -42,6 +56,12 @@ const MAX_QUEUED_BYTES = 1 << 20;
 export type RelayRoutesOptions = {
   relays: RelayHub;
   outbound: OutboundRouter;
+  /**
+   * The asking half of the permission desk and nothing else. This layer is what a local process
+   * holding a pipe talks to, so handing it the answering half would put the ability to resolve a
+   * prompt behind the pipe: a verdict is the operator's, and it arrives over Discord.
+   */
+  permissions: Pick<PermissionDesk, "request">;
   /** Hard cap on a reply body. A reply longer than a Discord message cannot be posted anyway. */
   maxBodyBytes: number;
   /**
@@ -112,7 +132,9 @@ export function createRelayRoutes(
 
   return (request, response) => {
     const route = (request.url ?? "/").split("?")[0];
-    if (route !== "/relay/stream" && route !== "/relay/reply") return false;
+    if (route !== "/relay/stream" && route !== "/relay/reply" && route !== "/relay/permission") {
+      return false;
+    }
 
     if (!isLoopback(request.socket.remoteAddress) || !isAllowedHost(request.headers.host)) {
       send(response, 403, { error: "loopback only" });
@@ -168,10 +190,10 @@ export function createRelayRoutes(
     }
 
     // Checked before the body is read. Knowing the process token is not standing to write into the
-    // operator's thread as Claude; holding the pipe is.
+    // operator's thread as Claude, or to ring their phone; holding the pipe is.
     const replyKey = header(request, "x-channel-reply-key");
     if (replyKey === null || !options.relays.holdsPipe(processToken, replyKey)) {
-      log("relay: refused a reply that did not come from the attached pipe");
+      log(`relay: refused a post to ${route} that did not come from the attached pipe`);
       send(response, 403, { error: "the reply key does not match the attached relay" });
       return true;
     }
@@ -189,10 +211,34 @@ export function createRelayRoutes(
         send(response, 400, { error: "body is not valid JSON" });
         return;
       }
-      const text =
+      const fields =
         typeof payload === "object" && payload !== null && !Array.isArray(payload)
-          ? (payload as Record<string, unknown>).text
-          : undefined;
+          ? (payload as Record<string, unknown>)
+          : {};
+
+      if (route === "/relay/permission") {
+        const request_id = fields.request_id;
+        const tool_name = fields.tool_name;
+        if (typeof request_id !== "string" || typeof tool_name !== "string") {
+          send(response, 400, { error: "body has no request_id and tool_name" });
+          return;
+        }
+        // The two descriptive fields are optional on the wire. They are written by a tool and are
+        // the parts most likely to be missing or malformed, and a prompt that arrives without them
+        // is still a prompt the session is parked on: refusing it would park the session for good.
+        const accepted = await options.permissions.request(processToken, {
+          requestId: request_id,
+          toolName: tool_name,
+          description: typeof fields.description === "string" ? fields.description : "",
+          inputPreview: typeof fields.input_preview === "string" ? fields.input_preview : "",
+        });
+        // Reported honestly rather than always as taken. A relay told a prompt was received will
+        // wait for a verdict that is never coming, and say nothing about it anywhere.
+        send(response, 200, { status: accepted ? "received" : "dropped" });
+        return;
+      }
+
+      const text = fields.text;
       if (typeof text !== "string") {
         send(response, 400, { error: "body has no text string" });
         return;
@@ -201,8 +247,8 @@ export function createRelayRoutes(
       const result = await options.outbound.reply(processToken, text);
       send(response, 200, result);
     })().catch((error: unknown) => {
-      if (!response.headersSent) send(response, 500, { error: "reply failed" });
-      log(`relay: reply route failed: ${String(error)}`);
+      if (!response.headersSent) send(response, 500, { error: "the request failed" });
+      log(`relay: the ${route} route failed: ${String(error)}`);
     });
     return true;
   };

@@ -34,6 +34,12 @@ export type RelayEvent =
       chatId: string;
       text: string;
     }
+  /**
+   * The operator's answer to one tool permission prompt. It travels the pipe rather than any
+   * route keyed on the process token, so a subprocess that read the token off its environment
+   * cannot approve its own tool call: only the relay holding the pipe ever sees this.
+   */
+  | { type: "permission"; requestId: string; behavior: "allow" | "deny" }
   /** Liveness in both directions: it holds the session out of the sweep and proves the pipe drains. */
   | { type: "ping" };
 

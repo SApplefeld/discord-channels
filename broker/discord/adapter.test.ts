@@ -73,6 +73,28 @@ test("every message this bot writes suppresses all mentions and every embed", as
   }
 });
 
+test("a thread message resolves no mention unless one user is named, and then only that one", async () => {
+  // The permission prompt is the one message this broker writes that is meant to reach a phone.
+  // The empty parse list still stands, so no mention class is resolved from the content: the users
+  // list is a whitelist of exactly one id, and the renderer has escaped Discord's mention syntax
+  // out of every untrusted field, so the only mention in the message is the one the broker wrote.
+  const { sent, transport } = transportWith(() => respond(null));
+
+  await transport.postToThread({ threadId: "thread-77", text: "@everyone a reply" });
+  await transport.postToThread({
+    threadId: "thread-77",
+    text: "<@700000000000000002> permission needed",
+    mentionUserId: "700000000000000002",
+  });
+
+  assert.deepEqual(sent[0].body.allowed_mentions, { parse: [] });
+  assert.deepEqual(sent[1].body.allowed_mentions, {
+    parse: [],
+    users: ["700000000000000002"],
+  });
+  for (const call of sent) assert.equal(call.body.flags, 4);
+});
+
 test("the card is edited in place on the message the broker posted", async () => {
   const { sent, transport } = transportWith(() => respond(null));
 

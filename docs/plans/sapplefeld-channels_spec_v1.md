@@ -927,3 +927,69 @@ Everything below that boundary is confirmed live; the boundary itself is not.
 Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads)
 Next: 6. Sender gating and permission relay
 Commit Model: Commit-and-Push
+
+### Chapter 7 - 2026-08-06
+Completed: 6. Sender gating and permission relay. **All seven sections are implemented.**
+Implemented By: implementer-opus (one build round, one review-fix round via the same agent); main
+session for `docs/` and for repairing the operator's settings file
+Metrics: 1 review round (security at default, blind at fable; the first security dispatch died on an
+API error and was re-run); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **No Criticals, and both reviewers independently verified the boundary this
+section exists to build.** The gate is genuinely first and unreachable-around: it runs before the
+thread lookup, the verdict pattern, the rate window and the pipe; a message edit never re-delivers;
+a webhook is bot-authored and dropped; and no wiring exists where a gateway runs without a gate.
+Verdicts cannot be forged, replayed or cross-applied. `/relay/permission` sits behind the same
+reply-key check as `/relay/reply`. That is the section's whole point, and it holds.
+The wire shape was read out of the Claude Code binary rather than guessed: the notification names,
+the params, the literal ID alphabet `abcdefghijkmnopqrstuvwxyz`, and the fact that the verdict
+handler is registered only when the permission capability is declared. The `[a-km-z]{5}` pattern in
+the spec is therefore coupled to a Claude Code internal, and the code logs a refusal naming that
+cause so a future alphabet change is diagnosable rather than silent.
+**The ping tension was real and resolved rather than waved through.** The Standing Brief Amendment
+says every Discord write suppresses all pings; this section's acceptance says the permission message
+pings. Resolved by keeping the empty `parse` list, which is what stops content ever resolving a
+mention, and adding a one-ID `users` whitelist naming the validated operator. A crafted description
+still cannot mention anyone, and a test counts unescaped mention syntax to prove it.
+**Deviation accepted, argued rather than assumed.** I asked for one per-thread ceiling on alerts.
+The implementer shipped two, because a single ceiling that drops prompts parks the session that sent
+them, and "one unanswered prompt parks a session indefinitely" is the carried decision this project
+exists to honour: a local process could otherwise park every session on the host by spending the
+ceiling first, turning phishing into denial. Past three prompts a minute per thread the message
+still arrives and is still answerable but stops mentioning the operator; only past twelve is one
+dropped. Literal deviation from "a new message that pings" for prompts four through twelve in a
+minute, reversible in one branch of `volumeFor`.
+Review Findings: 0 Critical. 6 Major fixed: a refused alert lost the prompt permanently, because the
+open entry was inserted before the post and the dedupe then swallowed every re-send, parking the
+session with only a log line (entries are now inserted on success and a failed alert is surfaced
+in-thread); the open-request table is in-memory while the broker restarts at every logon, so an
+unmatched verdict was swallowed in silence, which from a phone reads as success (an unmatched
+verdict is now answered in-thread, chosen over persistence as the smaller surface); `loadSenderGate`
+threw with nothing catching it and the scheduled task discards stderr, so a misconfigured host got a
+broker that failed every logon with a zero-byte log, the same class Chapter 5 fixed; the pipe-race
+residual grew a phishing dimension; `/relay/permission` reported success for prompts it had dropped;
+and two documents no longer described the system, one claiming all pings are suppressed and neither
+recording the tool-input egress. 9 Minor fixed, including a shared invisible-character class that
+omitted the Unicode tag block, which is the standard hidden-ASCII smuggling range and reaches both
+the render site and the model.
+One Minor was **not reproduced and correctly not "fixed"**: the reviewer's unreachable-413 finding
+was probed three ways against the real handler and returned 413 to the peer every time. The
+implementer left working code alone and added a durable pin instead, which is the right call.
+Gate delta: lint exit 0 throughout; tests 273 (Chapter 6 baseline) → 316 after the build → 332
+passing, 1 skipped, 0 failing, identical across five consecutive full runs. 48 mutations across the
+two rounds. Three came back green and were chased rather than accepted, and the pattern is worth
+keeping: each time the *test* was wrong, not the code. One assertion (`gaps[last] > gaps[0]`) was
+satisfied by scheduling noise and passed for the wrong reason until tightened to an absolute floor.
+The implementer also found a **pre-existing flake** in `relay/broker.test.ts`, failing roughly one
+run in three at the base commit, and fixed it with a deterministic barrier; blind independently
+verified the barrier proves what it claims.
+Incident closed this chapter: the hooks a test wrongly merged into the operator's live
+`~/.claude/settings.json` were removed with his explicit authorization, after a backup, changing only
+that one key. The cause was fixed in `2ed4a3e`; **the damage sat on his machine for hours while this
+session kept building**, which is the process failure worth remembering: fixing the generator is not
+fixing the harm, and the operator reported the same incident twice before it was cleared.
+Not proven, and it needs a person at the keyboard: a permission prompt reaching the model and a
+verdict round-tripping, because Claude Code registers a channel only from its interactive REPL; and
+whether `allowed_mentions.users` actually pings, since no live bot has ever run.
+Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads)
+Next: finishing-work
+Commit Model: Commit-and-Push

@@ -15,6 +15,7 @@ import { createOutboundRouter } from "./outbound.ts";
 import { createRelayRoutes } from "./http.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { ThreadMessenger } from "../discord/transport.ts";
+import type { PermissionRequest } from "../security/permission.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
@@ -36,6 +37,10 @@ type Harness = {
   registry: Registry;
   relays: ReturnType<typeof createRelayHub>;
   posts: Array<{ threadId: string; text: string }>;
+  /** What the permission route handed the desk, which is where the loopback contract ends. */
+  prompts: Array<{ processToken: string; request: PermissionRequest }>;
+  /** Makes the desk refuse the next prompt, the way an unpostable one is refused in production. */
+  refusePrompts: () => void;
   close: () => Promise<void>;
 };
 
@@ -53,6 +58,10 @@ async function harness(t: TestContext): Promise<Harness> {
       return { status: "ok", value: null, rate: NO_RATE_INFO };
     },
   };
+  const prompts: Array<{ processToken: string; request: PermissionRequest }> = [];
+  // What the desk reports back about a prompt. A desk that could not post one says so, and the
+  // route has to carry that answer rather than reporting every prompt as taken.
+  let accept = true;
   const routes = createRelayRoutes({
     relays,
     outbound: createOutboundRouter({
@@ -60,6 +69,12 @@ async function harness(t: TestContext): Promise<Harness> {
       threadFor: () => THREAD,
       writer: createThreadWriter({ messenger, now: Date.now }),
     }),
+    permissions: {
+      request: async (processToken, request) => {
+        prompts.push({ processToken, request });
+        return accept;
+      },
+    },
     maxBodyBytes: 64 * 1024,
     streamIdleMs: 60_000,
   });
@@ -79,6 +94,10 @@ async function harness(t: TestContext): Promise<Harness> {
     registry,
     relays,
     posts,
+    prompts,
+    refusePrompts: () => {
+      accept = false;
+    },
     close,
   };
 }
@@ -286,6 +305,146 @@ test("a reply stops being accepted once its pipe is gone", async (t) => {
     "x-channel-reply-key": key,
   });
   assert.equal(answer.status, 403);
+});
+
+test("a permission prompt is taken off the pipe and handed to the desk", async (t) => {
+  const context = await harness(t);
+  const lines: string[] = [];
+  const stream = await openStream(context.port, (line) => lines.push(line));
+  await until(() => lines.length > 0);
+
+  const answer = await post(
+    context.port,
+    "/relay/permission",
+    JSON.stringify({
+      request_id: "abcde",
+      tool_name: "Bash",
+      description: "run the migration",
+      input_preview: "{ command: npm run migrate }",
+    }),
+    { "x-channel-reply-key": replyKeyOf(lines) },
+  );
+  assert.equal(answer.status, 200);
+  assert.deepEqual(JSON.parse(answer.body), { status: "received" });
+  assert.deepEqual(context.prompts, [
+    {
+      processToken: TOKEN,
+      request: {
+        requestId: "abcde",
+        toolName: "Bash",
+        description: "run the migration",
+        inputPreview: "{ command: npm run migrate }",
+      },
+    },
+  ]);
+
+  stream.destroy();
+});
+
+test("a prompt missing its descriptive fields is still taken", async (t) => {
+  // Refusing it would turn a cosmetic gap into a session parked on a question nobody is asked.
+  const context = await harness(t);
+  const lines: string[] = [];
+  const stream = await openStream(context.port, (line) => lines.push(line));
+  await until(() => lines.length > 0);
+
+  const answer = await post(
+    context.port,
+    "/relay/permission",
+    JSON.stringify({ request_id: "abcde", tool_name: "Bash", description: 7 }),
+    { "x-channel-reply-key": replyKeyOf(lines) },
+  );
+  assert.equal(answer.status, 200);
+  assert.deepEqual(context.prompts[0].request, {
+    requestId: "abcde",
+    toolName: "Bash",
+    description: "",
+    inputPreview: "",
+  });
+
+  stream.destroy();
+});
+
+test("a prompt the desk could not put in front of the operator reports as dropped", async (t) => {
+  // A relay told its prompt was received waits for a verdict that is never coming, and says so
+  // nowhere. The wire has to carry the difference.
+  const context = await harness(t);
+  const lines: string[] = [];
+  const stream = await openStream(context.port, (line) => lines.push(line));
+  await until(() => lines.length > 0);
+  context.refusePrompts();
+
+  const answer = await post(
+    context.port,
+    "/relay/permission",
+    JSON.stringify({ request_id: "abcde", tool_name: "Bash" }),
+    { "x-channel-reply-key": replyKeyOf(lines) },
+  );
+  assert.equal(answer.status, 200);
+  assert.deepEqual(JSON.parse(answer.body), { status: "dropped" });
+
+  stream.destroy();
+});
+
+test("a body past the cap is refused with a 413 the relay actually receives", async (t) => {
+  // The refusal is written after the read gives up on the body, so this drives a real oversized
+  // POST rather than trusting that the response survives abandoning the request stream.
+  const context = await harness(t);
+  const lines: string[] = [];
+  const stream = await openStream(context.port, (line) => lines.push(line));
+  await until(() => lines.length > 0);
+
+  const answer = await post(
+    context.port,
+    "/relay/reply",
+    JSON.stringify({ text: "x".repeat(200 * 1024) }),
+    { "x-channel-reply-key": replyKeyOf(lines) },
+  );
+  assert.equal(answer.status, 413, "the peer was told why, rather than having its socket dropped");
+  assert.deepEqual(JSON.parse(answer.body), { error: "body too large" });
+  assert.deepEqual(context.posts, []);
+
+  stream.destroy();
+});
+
+test("a prompt with no request id at all is refused rather than posted", async (t) => {
+  const context = await harness(t);
+  const lines: string[] = [];
+  const stream = await openStream(context.port, (line) => lines.push(line));
+  await until(() => lines.length > 0);
+
+  const answer = await post(
+    context.port,
+    "/relay/permission",
+    JSON.stringify({ tool_name: "Bash" }),
+    { "x-channel-reply-key": replyKeyOf(lines) },
+  );
+  assert.equal(answer.status, 400);
+  assert.deepEqual(context.prompts, []);
+
+  stream.destroy();
+});
+
+test("a permission prompt from a token holder that does not hold the pipe is refused", async (t) => {
+  // The same bar a reply is held to, for a sharper reason: this is the write that rings the
+  // operator's phone and asks them for a yes, so a subprocess that scraped the process token out
+  // of its environment must not be able to send one.
+  const context = await harness(t);
+  const lines: string[] = [];
+  const stream = await openStream(context.port, (line) => lines.push(line));
+  await until(() => lines.length > 0);
+
+  const body = JSON.stringify({ request_id: "abcde", tool_name: "Bash" });
+  const forged = await post(context.port, "/relay/permission", body, {
+    "x-channel-reply-key": "guessed",
+  });
+  assert.equal(forged.status, 403);
+
+  const bare = await post(context.port, "/relay/permission", body);
+  assert.equal(bare.status, 403, "knowing the token alone is not standing to ring a phone");
+  assert.deepEqual(context.prompts, []);
+
+  stream.destroy();
 });
 
 test("a request with no process token is refused", async (t) => {

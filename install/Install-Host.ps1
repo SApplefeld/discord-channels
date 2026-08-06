@@ -24,8 +24,9 @@ The Discord channel this host's threads are opened in. A snowflake (17-20 digits
 
 .PARAMETER AllowedUserId
 The Discord user ID allowed to send this host's sessions messages and approve their permission
-prompts. A snowflake. Stored in the same config file the broker reads; not yet consumed by the
-broker itself, which is Section 6's sender gate.
+prompts. A snowflake. Stored in the same config file the broker reads, where its sender gate is the
+only thing that admits an inbound message. A broker with a Discord connection refuses to start
+without it.
 
 .PARAMETER BotToken
 The bot token, as a SecureString rather than plain text: a plain-text parameter lands in
@@ -222,9 +223,8 @@ Set-ChannelEnvFile -Path $envFile -Values ([ordered]@{
     CHANNEL_BROKER_PORT        = $Port
     CHANNEL_DISCORD_CHANNEL    = $ChannelId
     CHANNEL_DISCORD_TOKEN_FILE = $tokenFile
-    # Not read by the broker yet; Section 6's sender gate is what checks an inbound message's
-    # author against this. Captured now so a host provisioned today does not need re-provisioning
-    # once that section lands.
+    # The broker's sender gate checks every inbound message's author against this, and refuses to
+    # start without it whenever Discord is configured.
     CHANNEL_ALLOWED_USER_ID    = $AllowedUserId
     CHANNEL_BROKER_LOG_FILE    = (Join-Path $StateRoot 'broker.log')
     CHANNEL_BROKER_STATE       = (Join-Path $StateRoot 'broker-state.json')
