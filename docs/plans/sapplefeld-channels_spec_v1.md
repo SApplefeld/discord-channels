@@ -248,7 +248,34 @@ Folded verbatim into every dispatch brief from here on.
 
 ## Prerequisite gate
 
-**This gate blocks S5 and S6 only.** It is unproven that a channel survives
+**PASSED, 2026-08-06. S5 and S6 are unblocked.** Scott ran all four operator checks and every one
+met its pass condition. A channel keeps delivering across three consecutive `cswap` rotations, so
+the message path this project rests on is confirmed rather than merely reasoned about, and the
+pre-provisioned-bot fallback is not needed.
+
+Two results change the design beyond simply unblocking:
+
+- **Check B is confirmed with captured payloads**, not just a pass report: `/clear` fires
+  `SessionStart` with `source: "clear"` and a **new `session_id`**, which is exactly what S2's
+  supersession branch assumes. The capture also shows `SessionEnd` fires on a clean exit, carrying
+  the ending session's ID. That does not change the carried decision (a hard kill still fires no
+  hook, so relay stdio close and the heartbeat remain the death signals), but it is a free, precise
+  signal for the clean case and S5 may use it.
+- **Check D passed, which resolves the most valuable unknown.** A local managed-settings file **is**
+  honored on a personal account with no organization. So `channelsEnabled` and
+  `allowedChannelPlugins` can be set per machine, machine-scoped rather than account-scoped, which
+  permanently closes the silent-delivery-death hole on every host including SCOTT: a rotation onto
+  an account without channels enabled can no longer kill delivery. It also means **SCOTT can drop
+  `--dangerously-load-development-channels`**, and with it the launch dialog, once the relay is
+  packaged as a plugin and named in that file. Until the relay exists, SCOTT keeps the flag, because
+  the allowlist route requires a plugin to allowlist. Removing the dialog everywhere restores the
+  option of an unattended supervisor that restarts a crashed session, which the Approach previously
+  recorded as foreclosed.
+
+The original statement of the gate follows, kept because it records what was at stake and what the
+fallback would have been.
+
+**This gate blocked S5 and S6 only.** It was unproven that a channel survives
 a `claude-swap` seat rotation. The reasoning that it does is sound (a channel is a local subprocess
 with no cloud object to orphan, `claude-swap` rewrites credential files without restarting Claude
 Code, and it states that it preserves live MCP server state across swaps) but nobody has observed it.
@@ -470,8 +497,20 @@ Files in scope: `install/`, `docs/install.md`, `docs/operations.md`.
 
 ## Open Questions
 
-The first three are the operator checks in [`docs/operator-checks.md`](../operator-checks.md), which
-carries runnable steps, pass criteria, and what each answer changes. Owner is Scott for all three.
+**All four are resolved as of 2026-08-06.** The three operator checks in
+[`docs/operator-checks.md`](../operator-checks.md) were run and all passed; the fourth is answered by
+S4's implementation. The original questions are kept below with their answers, because what each one
+would have changed is the reason the design has the shape it does.
+
+1. **Resolved, yes.** A local managed-settings file is honored on a personal account. See the
+   prerequisite gate above for what it unlocks: machine-scoped channel settings on every host, and
+   the removal of SCOTT's development flag once the relay is a plugin.
+2. **Resolved, yes, with captured payloads.** `SessionStart` fires with `source: "clear"` and a new
+   session ID. The fallback (detecting a changed `session_id` on any hook event) is not needed.
+3. **Resolved, yes.** The thread name stays pinned in the mobile header while scrolling, so the
+   in-thread header and the thread-list dashboard both work as designed.
+4. **Answered by construction.** The rename budget is read from live response headers rather than
+   assumed, so no number was ever hard-coded and none needs measuring.
 
 1. **Does a local managed-settings file control channels on this machine?** (Check D.) Partly
    resolved: `channelsEnabled` and `allowedChannelPlugins` are **managed-settings only**, and on
