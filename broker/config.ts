@@ -22,7 +22,13 @@ export type BrokerConfig = {
   maxSessions: number;
 };
 
-const DEFAULT_PORT = 8787;
+/**
+ * Exported because it is a shared literal, not a private default: hooks/settings-fragment.json
+ * hardcodes this port into two hook URLs and hooks/session-start.ps1 falls back to it, and a hook
+ * pointed at a port nothing listens on fails silently. settings-fragment.test.ts pins the fragment
+ * against this value so the three cannot drift apart.
+ */
+export const DEFAULT_PORT = 8787;
 const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 15 * 1000;
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;

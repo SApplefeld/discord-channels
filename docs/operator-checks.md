@@ -47,6 +47,10 @@ failed permanently after repeated ones. A single passing swap proves nothing.
    browser. The reply direction matters as much as the inbound one; they are different code paths.
    The first reply triggers a permission prompt in the terminal. Approve it.
 
+   `fakechat` serves its UI on 8787, which is also the broker's default port. If the broker is
+   installed by the time this check runs, stop it first; otherwise one of the two fails to bind and
+   the check measures the wrong thing.
+
 5. In a second terminal, rotate the seat:
    ```
    cswap switch

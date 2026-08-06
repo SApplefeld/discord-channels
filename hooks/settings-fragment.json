@@ -1,0 +1,51 @@
+{
+  "_comment": "This is a fragment, not a full settings file: merge the \"hooks\" object below into the user-level ~/.claude/settings.json. It belongs there rather than in a project file because the sessions being watched live in arbitrary repositories, not in this one. Two consequences follow. First, the SessionStart command names its script by a drive-rooted absolute path: a hook runs with the monitored session's own project as its working directory, so a relative path resolves against the wrong repository for every session this project exists to watch, and an environment variable in its place would mean the executed path is attacker-controllable on a machine where anything can set one. That absolute path is specific to this checkout; Section 7's installer substitutes the real one, and wrapper/Enter-ClaudeSession.ps1 refuses to launch when it disagrees with the checkout it is running from. Second, these hooks fire for every session on the machine, including ones started without the wrapper: those carry no CHANNEL_PROCESS_TOKEN, and hooks/session-start.ps1 exits without opening a socket while the broker answers the http hooks with a 400 it ignores. Every url here must agree with broker/config.ts's DEFAULT_PORT and hooks/session-start.ps1's own literal; settings-fragment.test.ts pins all three together, because a hook posting into a port nothing is listening on fails silently and makes a working session look unannounced.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"D:\\sapplefeld-channels\\hooks\\session-start.ps1\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8787/hook",
+            "headers": {
+              "X-Channel-Hook-Event": "PostToolUse",
+              "X-Channel-Process-Token": "${CHANNEL_PROCESS_TOKEN}",
+              "X-Channel-Session-Name": "${CHANNEL_SESSION}"
+            },
+            "allowedEnvVars": ["CHANNEL_PROCESS_TOKEN", "CHANNEL_SESSION"],
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8787/hook",
+            "headers": {
+              "X-Channel-Hook-Event": "Stop",
+              "X-Channel-Process-Token": "${CHANNEL_PROCESS_TOKEN}",
+              "X-Channel-Session-Name": "${CHANNEL_SESSION}"
+            },
+            "allowedEnvVars": ["CHANNEL_PROCESS_TOKEN", "CHANNEL_SESSION"],
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

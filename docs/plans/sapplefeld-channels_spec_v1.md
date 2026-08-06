@@ -54,6 +54,18 @@ hooks and reading the payloads, not from documentation:
   `CHANNEL_SESSION` and `CHANNEL_PROBE_TOKEN` before launch and the hook read both back. This is the
   join key that binds a hook to the relay running in the same process.
 - `PostToolUse` delivers `tool_name`, `tool_input`, `tool_response`, `duration_ms`, and `prompt_id`.
+  It also delivers `session_id` and `hook_event_name`, along with `transcript_path`, `cwd`,
+  `tool_use_id`, `permission_mode`, and `effort`. Every hook payload carries `session_id`, so the
+  broker's session-ID-based event routing is a reliable path rather than an opportunistic hedge.
+- **An environment variable set by the launch wrapper reaches an `http` hook request through header
+  interpolation.** A `headers` value written `"${CHANNEL_PROCESS_TOKEN}"` (the `$VAR` form works
+  identically) is substituted, provided the name is also listed in `allowedEnvVars`. The allowlist
+  authorizes and does not itself inject: listing a variable without referencing it in `headers` puts
+  it nowhere in the request. Confirmed against build 2.1.222 with a hardcoded-literal control run to
+  distinguish a non-interpolating reference from a hook that never fired.
+  The event name stays in a header rather than moving to the body's `hook_event_name`, even though
+  that field exists: `X-Channel-Hook-Event` is not a CORS simple header, so it forces a preflight
+  the broker never answers, which is a second line of defense against a cross-site POST.
 - `Stop` delivers `last_assistant_message`, `background_tasks`, and `session_crons`.
 - **Hook transport is not uniform, and the split is fixed by observation.** The `http` hook type
   (documented fields `url`, `headers`, `allowedEnvVars`, `timeout`) delivers `PostToolUse` correctly:
@@ -206,6 +218,19 @@ Folded verbatim into every dispatch brief from here on.
   session with any name it likes, so this is a real input, not a hypothetical one.
 - **Never render a `SessionRecord` wholesale.** `processToken` is the forgery key for hook posts and
   is already stripped from `GET /sessions`; a surface that serializes a whole record re-leaks it.
+- **The process token authenticates reports about a session, never instructions to one.** The token
+  is set in the launching process's environment, so the session inherits it and so does every shell
+  subprocess its tools spawn. A session can therefore read its own forgery key and post hook events
+  about itself. That is tolerable for status, which is the only thing it can currently distort, and
+  it is why `GET /sessions` withholds the token. It stops being tolerable the moment the token
+  authorizes anything inbound: **S5's message routing and S6's permission verdicts must not treat
+  possession of a process token as authorization.** S6's sender gate is on the Discord user ID and
+  is the only authority for inbound action.
+- **A hook must never make a session slower, louder, or dependent on the broker.** Timeouts are
+  measured against the per-tool-call path, not the once-per-session one; nothing writes to a
+  `SessionStart` hook's stdout, because that stdout is injected into the session's context; and a
+  session started without the launch wrapper carries no token, is not being watched, and must
+  no-op without opening a socket.
 
 ### Decisions carried in
 
@@ -302,6 +327,12 @@ Acceptance:
   event: `SessionStart` as a `command` hook (it does not deliver over `http`), `PostToolUse` and
   `Stop` as `http` hooks with `url` pointing at the broker. Do not re-litigate this; it was settled by
   probe and the reasoning is in the Approach.
+- The fragment installs into the **user-level** settings file, because the sessions being watched
+  live in arbitrary repositories. A hook runs with the monitored session's project as its working
+  directory, so the `SessionStart` command names its script by a drive-rooted absolute path, which
+  S7's installer substitutes per host. The path is a literal rather than an environment variable:
+  a hook command is interpolated, so a variable there would make the executed path settable by
+  anything on the machine that can persist one, and it runs under `-ExecutionPolicy Bypass`.
 - Hooks fail open. `http` hooks get this for free (non-2xx responses, connection failures, and
   timeouts are all documented as non-blocking errors that let execution continue), so the work is
   making the `SessionStart` command hook match that behavior: it exits zero and silently whatever the
@@ -395,7 +426,15 @@ Acceptance:
 - The broker runs as a Windows scheduled task at logon, restarts on failure, and logs to a rotating
   file.
 - An install script provisions one host: bot token, channel ID, allowlisted user ID, port, and host
-  name, writing config outside the repo.
+  name, writing config outside the repo. It also substitutes the absolute `SessionStart` script path
+  into the settings fragment for that host's checkout, and hardens the ACL on the executed hook
+  script and the wrapper: both currently inherit `Authenticated Users: Modify` from the `D:\` root
+  on the SCOTT host, and the hook runs under `-ExecutionPolicy Bypass` at every session start, so
+  write access to that path is code execution in the operator's context.
+- `docs/security-model.md` states the trust boundary this design actually has: what the process
+  token authenticates (reports about a session) and what it must never authorize (anything inbound),
+  that hook payloads cross loopback in cleartext with `tool_input` and `tool_response` in them, and
+  the ACL requirement above.
 - `docs/install.md` covers the Discord application setup (bot creation, Message Content Intent, the
   OAuth scopes, the invite), and, for NEO and ASR, packaging the relay as a plugin and adding it to
   `allowedChannelPlugins` alongside `channelsEnabled`.
@@ -535,4 +574,86 @@ crashing.
 Stamps: adjudicated 1, stamped 1 (`typescript-runs-unbuilt-under-node-type-stripping`, which shaped
 this section's brief and the import convention its code follows)
 Next: 3. Session lifecycle hooks and the launch wrapper
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-05
+Completed: 3. Session lifecycle hooks and the launch wrapper
+Implemented By: adopted from a prior session, then verified, repaired, and reviewed by the main
+session (the originating agent no longer existed to resume, so the review-fix round ran inline)
+Metrics: 1 review round (adversarial + blind at opus, security at default); 0 NEEDS_CONTEXT; 0
+escalations; advisor opus
+Decisions / Surprises: **The section arrived as untracked files again**, the same way S1 did: a
+prior session built the hooks, the wrapper, and a shape test, wrote its probe findings into the
+Approach, and was terminated before any of it was reviewed or committed. It was re-verified from
+scratch rather than assumed good, and that was load-bearing: the inherited fragment ran the
+SessionStart script by a **working-directory-relative path**, which is silently wrong for every
+session this project exists to watch. A hook runs with the *monitored* session's project as its
+working directory, and those sessions live in other repositories, so the path resolved only for
+sessions launched from this checkout. Measured with the broker live: a session started from a
+non-repo directory never appeared in `GET /sessions` at all, while the identical run from the
+repository root produced a complete record. Nothing about the failure is visible from inside a
+running session.
+The fix went through two reversals worth recording. It was first fixed with `${CHANNEL_HOOK_SCRIPT}`,
+after a probe confirmed that a `command` hook interpolates environment variables (it does, and
+unlike the `http` header case it needs no `allowedEnvVars` entry). The security reviewer then
+pointed out what that buys: the *executed* path becomes settable by anything on the machine that
+can persist an environment variable, and it runs under `-ExecutionPolicy Bypass` at every session
+start. Two guard forms that would have let an unwrapped session no-op were probed and **both
+failed**, because Claude Code interpolates the bare `$VAR` form too and ate the `$env:` in each.
+So the design landed where all three reviewers and the advisor independently pointed: a drive-rooted
+absolute literal in the fragment, substituted per host by S7's installer, with the "am I watched?"
+guard moved inside the script where it is testable. The wrapper now refuses to launch when the
+fragment's path disagrees with its own checkout, which is what keeps a moved clone loud.
+Two findings are accepted risks rather than fixes, both recorded as Standing Brief Amendments
+because they bind later sections. The process token is inherited by every tool subprocess a session
+spawns, so a session can read its own forgery key and post status about itself; that is tolerable
+for status and **must not** become tolerable for S5's inbound routing or S6's permission verdicts,
+which is now written into the brief. And hook payloads cross loopback in cleartext carrying
+`tool_input` and `tool_response`, which S7's `docs/security-model.md` states rather than hides.
+The adversarial reviewer flagged one thing for adjudication rather than as a defect: the wrapper's
+`Test-Path` guard is the only place in this section that can stop a session from starting, and the
+spec's fail-open language covers the hook, not the launcher. Kept deliberately - failing loudly at
+the keyboard beats running a twelve-hour session that is silently unwatched.
+Surprise worth keeping: the live runs incidentally proved S2's staleness sweep under real wall
+time, which Chapter 2 listed as unproven. Two records aged from `live` to `stale` on their own
+while later probes ran. The 24h retention horizon is still only locked by the injected-clock test.
+Review Findings: 3 Critical fixed - the wrapper leaked `CHANNEL_SESSION` and `CHANNEL_PROCESS_TOKEN`
+into the dot-sourcing shell and never restored them, so a later bare `claude` in that shell inherited
+a live token and the broker read it as a supersession, marking the still-running session ended and
+crediting its events to the newcomer (now restored in a `finally`); a non-ASCII session name made
+`Invoke-RestMethod` throw client-side before opening the socket, inside the catch, so the session was
+permanently invisible with no signal (name now ASCII-validated at the wrapper, with the header
+dropped rather than the announcement as a second line); and the 10s `http` hook timeout was charged
+against every tool call of a twelve-hour session whenever the broker was slow rather than down, which
+Chapter 2's deliberate no-write-coalescing decision makes reachable (now 2s, pinned by test).
+1 Critical routed to S7 rather than fixed here: the executed hook script inherits
+`Authenticated Users: Modify` from the `D:\` root, verified with `Get-Acl`, which composes with
+`-ExecutionPolicy Bypass` into unattended code execution. Latent today (one enabled local account,
+verified) and the fix is an ACL change on a shared drive, which is Scott's call, not a code edit.
+5 Major fixed: `CHANNEL_HOST_NAME` carried two incompatible contracts (a free-form broker label and
+an exact wrapper table key), so the natural label for this machine broke the launcher - the env value
+now goes through the same matching as `COMPUTERNAME`; `CHANNEL_BROKER_PORT` was interpolated raw into
+the request URI, where a value like `80@evil.com` redirects the post and its token to a remote host,
+and it moved only two of the three port copies, so the override is gone and the literal is pinned
+three ways; the fail-open promise had no automated cover at all (now `session-start.test.ts`, which
+runs the real script against a dead broker and a hung one); and an unwrapped session spawned
+PowerShell that exited 127 on every session start machine-wide (now a silent no-op, proven live).
+6 Minor fixed: the relative-path guard's regex missed `..\`; PowerShell 5.1 decoded stdin as IBM437
+and re-encoded the body as Latin-1, corrupting non-ASCII payload fields (now byte-for-byte); the
+host prefix match classified `SCOTTSDALE-KIOSK` as SCOTT and would have handed it another host's
+channel flag; the unknown-host error named `COMPUTERNAME` when `CHANNEL_HOST_NAME` was the source;
+the `PostToolUse`/`Stop` entries never asserted their hook count; and the port-pin comments claimed
+a three-way guarantee the test did not implement.
+Gate delta: lint exit 0 unchanged; tests 47 (Chapter 2 baseline) → 53 with the inherited files →
+60 passing, 0 failing throughout. The three fragment guards were red-checked by mutation (each a
+single-test red, file restored and hash-verified). Verified live against build 2.1.222 with the
+broker running: a wrapped session from a non-repo directory registers with the right name, source,
+tool, and turn count; an unwrapped session in the same directory creates no record and opens no
+socket. Tree state was captured before and after the review round and was byte-identical.
+Not proven: any of this on NEO or ASR. Both the absolute script path and the channel flag differ
+per host, and only SCOTT was available. S7's installer is what makes the path correct there.
+Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads; the
+type-stripping record was already stamped in Chapter 2's window and shaped this section's new
+test files the same way)
+Next: 4. Discord surface: threads, rename budget, status card
 Commit Model: Commit-and-Push
