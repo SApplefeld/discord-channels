@@ -75,15 +75,18 @@ export function inertName(value: string): string {
 export const MAX_MESSAGE_LENGTH = 1_900;
 
 /**
- * Untrusted text for a message posted into a thread: a reply from Claude, or a notice the broker
- * writes beside one.
+ * Text for a message this broker composes and posts into a thread: a notice, a permission prompt,
+ * or a message a caller has already neutralized.
  *
- * Unlike a card, this keeps markdown. A reply is prose the operator reads, code blocks and lists
- * included, and escaping it would trade the whole readability of the surface for nothing: mentions
- * are already made inert by the transport's `allowed_mentions`, and the card's other reason to
- * escape (a `<t:...:R>` chip spoofing the heartbeat) has no counterpart in a message that carries
- * no rendered state. What is still stripped is the invisible class, which can reorder or hide text
- * with no visual trace at all, and which no reply has a use for.
+ * Unlike a card, this keeps markdown, and it keeps the chip syntax too. Both are load-bearing on
+ * this path: the permission prompt is the one message here that deliberately mentions someone, and
+ * escaping its `<@id>` would render the mention as characters and drop the ping a parked session is
+ * waiting to be answered through. That is safe only because every string arriving here is either
+ * composed by this renderer, with each untrusted field already through `inertText`, or neutralized
+ * by its caller. Text a model or a session authored reaches Discord through `inertReply` or
+ * `renderMirror` instead, and both of those neutralize the chip and quote syntax before it gets
+ * here. What is still stripped is the invisible class, which can reorder or hide text with no
+ * visual trace at all, and which no message has a use for.
  *
  * Whitespace is left exactly as it arrived, apart from the trim: a reply is multi-line by nature
  * and a code block in one carries meaning in its indentation, so collapsing runs of spaces would
@@ -91,6 +94,30 @@ export const MAX_MESSAGE_LENGTH = 1_900;
  */
 export function inertMessage(value: string): string {
   return fit(withoutInvisible(value).trim(), MAX_MESSAGE_LENGTH);
+}
+
+/**
+ * Untrusted text for a reply the model composed, on its way to the same thread the mirror posts
+ * into.
+ *
+ * A reply tool call's text is written by a model reading content it does not control, and it lands
+ * in the thread beside mirrored messages, so it gets the escape mirrored text gets: without it a
+ * reply can open with a line that renders exactly as the mirror's own attribution, or draw a
+ * `<@id>` pill or a `<t:...:R>` chip that mirrored text is not allowed to draw, in the one channel
+ * the operator answers permission prompts in. It is `withoutChips` itself rather than a second
+ * escape of the same shape, because two escapes are two readings of where a code fence is, and the
+ * one thing a disagreement between them costs is the chip or the forged attribution one of them
+ * believed it had removed. Fence-aware for the reason mirrored text is: a reply from a coding
+ * assistant is mostly code, and Discord processes no escapes inside a fence, so an escape there
+ * reaches the reader as a visible backslash on every generic and comparison.
+ *
+ * The message ceiling is not applied here; the writer holds it, so the reply is measured against it
+ * once. A cut landing between an inserted backslash and the character it neutralizes costs a
+ * visible backslash at the end of a truncated reply and nothing more, because what followed it is
+ * dropped rather than carried into a message that would open with a live chip.
+ */
+export function inertReply(value: string): string {
+  return withoutChips(withoutInvisible(value).trim());
 }
 
 /**
@@ -425,21 +452,34 @@ function headFitting(value: string, limit: number): string {
 }
 
 /**
- * Backs a hard cut off the two places it must not land.
+ * Backs a hard cut off the three places it must not land.
  *
  * Inside a run of backticks: half a delimiter in one message and half in the next is a fence the
  * text still has and neither message can see, and the escape has already decided what to neutralize
  * on the reading where the delimiter is whole. Straight after a backslash: that is the same hazard
  * one character wide, stranding an escape from the character it makes inert, so the next message
- * would open with a live chip or a live quote marker.
+ * would open with a live chip or a live quote marker. And inside a fence's info string: the
+ * delimiter is whole on both readings there, but the language word is not, so a cut through
+ * ```` ```typescript ```` leaves one message opening a block called `typ` and the next re-opening
+ * that block with `escript` as its first line of code. The whole opening line moves to the next
+ * message instead, which is where the code it introduces already is.
+ *
+ * That last pattern also matches a closing delimiter with prose after it on the same line, and
+ * moving the delimiter whole is right there too: what follows it is what the fence model already
+ * reads as ordinary markdown.
  *
  * The cut only ever shrinks, and never to nothing: a line of pure delimiters still has to advance,
- * and a cut that took nothing would repeat forever.
+ * and a cut that took nothing would repeat forever. So an info string longer than a whole message
+ * is cut through rather than moved, and both messages read it as the same fence.
  */
 function cutSafely(rest: string, head: string): string {
   const straddles = rest.length > head.length && rest[head.length] === "`";
   const backed = (straddles ? head.replace(/`+$/, "") : head).replace(/\\+$/, "");
-  return backed === "" ? head : backed;
+  // Measured at the cut as it now stands: a fence opening line the rest of the text continues on
+  // is in progress, where one the text ends or breaks the line after is already whole.
+  const midLine = rest.length > backed.length && rest[backed.length] !== "\n";
+  const whole = midLine ? backed.replace(/`{3,}[^\n`]*$/, "") : backed;
+  return whole === "" ? head : whole;
 }
 
 /**

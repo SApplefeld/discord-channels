@@ -363,6 +363,22 @@ test("a hard cut never lands between an escape and what it makes inert", () => {
   assert.equal(messages.map(said).join("").replace(/\\/g, ""), line);
 });
 
+test("a hard cut never lands inside a fence's language word", () => {
+  // The delimiter survives a cut here, whole on both sides of it, and the language word does not:
+  // one message opens a block called `typ`, the next re-opens that block, and `escript` is the first
+  // line of code the reader is shown. The whole opening line moves to the message the code is in.
+  const room = MAX_MESSAGE_LENGTH - attributionLength("reply") - 4;
+  const line = `${"a".repeat(room - 5)}\`\`\`typescript ${"b".repeat(80)}`;
+  const messages = renderMirror("reply", line);
+
+  assert.ok(messages.length >= 2, `${messages.length} message(s)`);
+  assert.ok(!messages[0].includes("`"), `a fence opening was cut in half: ${messages[0].slice(-40)}`);
+  assert.ok(said(messages[1]).startsWith("```typescript "), said(messages[1]).slice(0, 60));
+  for (const [index, message] of messages.entries()) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `message ${index}: ${message.length} characters`);
+  }
+});
+
 test("what follows a closing delimiter on its line is not treated as code", () => {
   // Discord ends the block at the closing delimiter and reads the rest of that line as markdown,
   // which makes it a surface a chip can be drawn on.

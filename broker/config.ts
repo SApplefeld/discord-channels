@@ -14,7 +14,11 @@ export type BrokerConfig = {
   staleAfterMs: number;
   /** How often the staleness sweep runs. */
   sweepIntervalMs: number;
-  /** Hard cap on an inbound request body. Anything larger is refused unread. */
+  /**
+   * Hard cap on a body posted to the content-free /hook route. Anything larger is drained and
+   * dropped with a 202 rather than refused, since a refusal is a visible error inside the session
+   * whose hook posted it; nothing over the cap is ever assembled or parsed.
+   */
   maxBodyBytes: number;
   /**
    * How often each attached relay is pinged. It is also the bound on the acceptance criterion that

@@ -131,7 +131,9 @@ test("without -NoMirror, the launched environment carries no CHANNEL_SESSION_MIR
  * once because the function under test requires both mirror hooks to carry the switch, and the
  * "missing entirely" and "present but stale" cases both have to reach the same throw.
  */
-function fixtureSettings(mirrorState: "current" | "stale" | "missing" | "not-installed"): unknown {
+function fixtureSettings(
+  mirrorState: "current" | "stale" | "static" | "missing" | "not-installed",
+): unknown {
   const sessionStartCommand =
     mirrorState === "not-installed"
       ? 'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\some\\other\\tool\\session-start.ps1"'
@@ -143,8 +145,10 @@ function fixtureSettings(mirrorState: "current" | "stale" | "missing" | "not-ins
       "X-Channel-Process-Token": "${CHANNEL_PROCESS_TOKEN}",
     };
     const allowedEnvVars = ["CHANNEL_PROCESS_TOKEN"];
-    if (mirrorState === "current") {
-      headers["X-Channel-Mirror"] = "${CHANNEL_SESSION_MIRROR}";
+    if (mirrorState === "current" || mirrorState === "static") {
+      // A fixed value where the interpolation belongs: the header is present on every request from
+      // every session, and carries no session's own setting.
+      headers["X-Channel-Mirror"] = mirrorState === "static" ? "on" : "${CHANNEL_SESSION_MIRROR}";
       allowedEnvVars.push("CHANNEL_SESSION_MIRROR");
     }
     return { type: "http", url: "http://127.0.0.1:8787/mirror", headers, allowedEnvVars, timeout: 5 };
@@ -205,6 +209,20 @@ test("-NoMirror throws when the mirror hooks are absent entirely from an otherwi
   const { status, stderr } = runMirrorSwitchCheck(dir, fixtureSettings("missing"));
   assert.notEqual(status, 0, "an install that predates the mirror hooks entirely must also fail the check");
   assert.match(stderr, /-NoMirror cannot be honored/);
+});
+
+test("-NoMirror throws when the installed switch header carries a fixed value", (t) => {
+  // The header being present is not the property that makes -NoMirror work. A hook sending a fixed
+  // value sends it from every session on the machine, so CHANNEL_SESSION_MIRROR reaches the broker
+  // from none of them: the session would mirror in full while this check reported it suppressed,
+  // which is the fail-open-and-silent shape this whole check exists to refuse.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-mirror-switch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const { status, stderr } = runMirrorSwitchCheck(dir, fixtureSettings("static"));
+  assert.notEqual(status, 0, "a header that carries no session's own value must fail the check");
+  assert.match(stderr, /-NoMirror cannot be honored/);
+  assert.match(stderr, /X-Channel-Mirror/);
 });
 
 test("-NoMirror does not throw when the installed mirror hooks carry the switch header", (t) => {

@@ -11,17 +11,19 @@ is built and installable.
 
 | Document | What it is |
 |---|---|
-| [`architecture.md`](architecture.md) | The system in one page: the four components per host, the split between hooks (which carry identity) and the channel (which carries messages), the data flow, the external integrations, and the no-build-step runtime model. Read this first. |
+| [`architecture.md`](architecture.md) | The system in one page: the four components per host, the split between hooks (which carry identity, activity, and the conversation outward) and the channel (which is the only path carrying a message in), the data flow across the three route groups, the external integrations, and the no-build-step runtime model. Read this first. |
 | [`install.md`](install.md) | Standing a host up: creating the Discord application, provisioning the host, registering the broker's scheduled task, and launching a session. |
 | [`operations.md`](operations.md) | Running a host: where state and logs live, how to read a thread, how to answer a permission prompt, the tunables, and what to do when something is wrong. |
 | [`security-model.md`](security-model.md) | The trust boundary: what the process token authenticates, what the sender gate is the only authority for, what the permission prompt and the mirror send off the machine, and which files must not be writable. |
-| [`operator-checks.md`](operator-checks.md) | Four checks that need a human at a terminal, a phone, or an Administrator prompt. All four have been run and passed; the file records each result and keeps the procedure for re-running it on a new host. |
+| [`operator-checks.md`](operator-checks.md) | Five checks that need a human at a terminal, a phone, or an Administrator prompt. A through D have been run and passed; E, covering how the mirror renders and whether the per-session off switch holds on a real host, is open. The file records each result and keeps the procedure for re-running it on a new host. |
 
 ## Plans
 
+No plan is open. Both are archived, most recent first.
+
 | Plan | Status | What it is |
 |---|---|---|
-| [`plans/channel-mirroring_spec_v1.md`](plans/channel-mirroring_spec_v1.md) | In Progress | Console-to-channel mirroring: every console prompt and every turn's final reply posted into the session's thread, making the return path structural rather than dependent on the model choosing the reply tool. |
+| [`archive/plans/channel-mirroring_spec_v1.md`](archive/plans/channel-mirroring_spec_v1.md) | Complete | Console-to-channel mirroring: every console prompt and every turn's final reply posted into the session's thread, making the return path structural rather than dependent on the model choosing the reply tool. Five Chapters, including the measurement that removed a whole planned script and the finishing pass that closed four cross-section gaps. |
 | [`archive/plans/sapplefeld-channels_spec_v1.md`](archive/plans/sapplefeld-channels_spec_v1.md) | Complete | The design and build record for the whole system, in seven sections, with a Chapter per section covering what shipped, the decisions, and the surprises. |
 
 [`backlog.md`](backlog.md) carries cross-effort next-steps that belong to no single open plan.

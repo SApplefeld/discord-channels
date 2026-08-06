@@ -12,8 +12,9 @@ nothing but the source.
 
 ## The load-bearing split
 
-Hooks report what a session is and what it is doing. The channel carries messages in and out.
-Neither can do the other's job, and that constraint is what shapes every component below.
+Hooks report what a session is, what it is doing, and what was said in it. The channel carries
+messages in, and it is the only path that can carry one in. That asymmetry is what shapes every
+component below.
 
 A channel server is never told the session identity. A `notifications/claude/channel` event carries
 `content` plus a `meta` bag the server itself authors, and nothing in the protocol hands it a session
@@ -25,6 +26,15 @@ a `source` field, and a hook command inherits environment variables set by the l
 inheritance is the join key: the wrapper mints a `CHANNEL_PROCESS_TOKEN` per launch, the hooks report
 under it, and the relay running in the same process connects to the broker with the same value.
 
+The conversation leaves the machine on hooks rather than on the channel, and that is a correctness
+choice rather than a convenience. The channel's outbound path is the model choosing to call the
+relay's `reply` tool, so a session that never calls it leaves a silent thread while the pipe sits
+healthy. A `UserPromptSubmit` hook fires on every prompt and a `Stop` hook fires at every turn end
+whether or not the model cooperates, and the `Stop` payload already carries
+`last_assistant_message`, the turn's final assistant text whole with thinking excluded. The mirror
+is therefore structural, and the `reply` tool remains for what the model wants to say on its own
+initiative.
+
 ## Components
 
 Four pieces per host, plus an installer.
@@ -35,8 +45,11 @@ Four pieces per host, plus an installer.
   environment variables are restored when `claude` exits, because a token left behind in the
   operator's shell would be inherited by the next session and read as a supersession.
 - **Hooks** (`hooks/`). `SessionStart` is a `command` hook running `session-start.ps1`, which posts
-  identity to the broker. `PostToolUse` and `Stop` are `http` hooks posting straight to the broker.
-  The transport split is fixed by observation: the `http` type never delivered `SessionStart`.
+  identity to the broker. `PostToolUse` and a `Stop` liveness tick are content-free `http` hooks
+  posting straight to the broker. `UserPromptSubmit` and a second `Stop` entry are the mirror: `http`
+  hooks posting their whole payload, which already carries the console prompt and the turn's final
+  assistant reply, to the content-bearing route. The transport split is fixed by observation: the
+  `http` type never delivered `SessionStart`.
 - **Relay** (`relay/`). A stdio MCP child of one Claude Code process. It declares
   `claude/channel` and `claude/channel/permission`, exposes a `reply` tool, and holds one HTTP
   stream open to the broker for the life of the process.
@@ -49,7 +62,7 @@ Four pieces per host, plus an installer.
 
 ## Data flow
 
-The broker listens on `127.0.0.1:8787` by default and serves two unrelated groups of routes on one
+The broker listens on `127.0.0.1:8787` by default and serves three unrelated groups of routes on one
 listener.
 
 1. **Identity and activity, session to broker.** `POST /hook` takes a `SessionStart`, `PostToolUse`,
@@ -58,14 +71,24 @@ listener.
    count, turn count, and last-seen timestamp. A `SessionStart` with `source: "clear"` supersedes
    the prior record for that token rather than mutating it. `GET /sessions` publishes the registry
    for debugging, with the process token withheld.
-2. **Messages, both directions.** `GET /relay/stream` is the held-open pipe: its first line carries
+2. **Conversation, session to broker.** `POST /mirror` is the one content-bearing route, dedicated
+   rather than folded into `/hook` so the larger ceiling and the log-suppression rule hold in one
+   place. It takes a `UserPromptSubmit` or `Stop` payload under the same three identity headers plus
+   `X-Channel-Mirror`, authenticates on the process token alone, and hands the payload's `prompt` or
+   `last_assistant_message` to the routing layer for the session's bound thread. Every drop path
+   answers 202, and the content never reaches the broker log at any level.
+3. **Messages, both directions.** `GET /relay/stream` is the held-open pipe: its first line carries
    a reply key, later lines carry inbound messages and permission verdicts, and its closing is the
    session's death signal. `POST /relay/reply` and `POST /relay/permission` carry the other
    direction and must present that key.
-3. **Discord inbound.** A gateway message is gated on the sender's user ID, then either resolved as
+4. **Discord inbound.** A gateway message is gated on the sender's user ID, then either resolved as
    a permission verdict or handed to the session bound to that thread.
-4. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
-   thread names, the starter-message card, and any reply or notice waiting to be written.
+5. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
+   thread names, the starter-message card, and any reply, mirrored message, or notice waiting to be
+   written. Mirror posts spend their own rate-limit budget rather than the one permission prompts
+   spend, so a reply arriving as twenty messages cannot starve the alert a parked session waits on.
+   Posts are ordered per thread, so a turn's reply, the prompt after it, and a reply-tool call reach
+   the thread in the order the broker received them.
 
 The registry persists to a JSON file on every mutation, and the thread bindings persist beside it,
 so a restart at logon rebinds existing threads rather than opening duplicates.
@@ -100,9 +123,10 @@ green when it matched no test files).
 ## End result
 
 A host running this has a Discord channel whose thread list is a live dashboard of every session on
-that machine, a card in each thread carrying what that session is doing right now, and a path for
-sending it a message or approving its tool calls from a phone. The status path and the message path
-fail independently, which is what makes a dead message path visible instead of silent.
+that machine, a card in each thread carrying what that session is doing right now, the conversation
+itself mirrored into the thread turn by turn, and a path for sending it a message or approving its
+tool calls from a phone. The status path, the message path, and the mirror fail independently, which
+is what makes a dead message path visible instead of silent.
 
 Installing a host is [`install.md`](install.md). Running one is [`operations.md`](operations.md).
 What the design trusts and what it does not is [`security-model.md`](security-model.md).

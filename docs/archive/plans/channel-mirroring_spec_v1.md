@@ -1,6 +1,6 @@
 # Console-to-Channel Mirroring
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: S2, per-section reviewer bumps above opus writers, finishing reviews
 Created: 2026-08-06
@@ -45,9 +45,10 @@ with a longer timeout.
 **Content already crosses the wire today.** The installed Stop hook posts its whole payload, and
 that payload has always contained `last_assistant_message`; the intake reads it and drops it at
 parse. Two consequences. Mirroring is not the first content on this socket, only the first content
-the broker keeps. And a reply larger than `maxBodyBytes` (64KB today) already earns a 413, which
-Claude Code surfaces as a visible error inside that session, so the mirror route's ceiling is a
-correctness fix and not only a new knob.
+the broker keeps. And a reply larger than `maxBodyBytes` (64KB) earned a 413, which Claude Code
+surfaces as a visible error inside that session, so the mirror route's ceiling is a correctness fix
+and not only a new knob. That 413 outlived this section's fix and was closed in the finishing pass:
+both hook routes now drain and answer 2xx, differing only in ceiling. See Chapter 5.
 
 **Broker side is a deliberate inversion of the content-free posture.** The intake today drops all
 content on purpose. Mirroring adds an explicit content path with the same discipline the content-free
@@ -207,7 +208,7 @@ positive control in the same run. See Chapter 1.
 
 ## Related
 
-- Builds on [`docs/archive/plans/sapplefeld-channels_spec_v1.md`](../archive/plans/sapplefeld-channels_spec_v1.md),
+- Builds on [`docs/archive/plans/sapplefeld-channels_spec_v1.md`](sapplefeld-channels_spec_v1.md),
   which built the broker, relay, hooks, and installer this extends. That spec's "Mirroring terminal
   output" out-of-scope entry excluded scraping terminal rendering via the relay's stdio; this plan
   mirrors conversation content via hook payloads, the source that spec itself named as richer.
@@ -437,3 +438,59 @@ and fail criteria and what each failure would change.
 Stamps: none surfaced (zero unstamped reads in the section's span).
 Next: finishing-work
 Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-06
+Completed: finishing-work
+Implemented By: main session, with the qa-verifier, a fable security review, a fable adversarial
+review, the docs-curator, and one implementer-opus fix round
+Metrics: QA PASS; 2 finishing reviews; 1 fix round; advisor opus
+Decisions / Surprises: **The finishing reviews earned their keep, because both found the same gap
+that four per-section rounds structurally could not see.** Section 3 spent a whole review round
+making mirrored text unable to draw a mention pill, a timestamp chip, or the renderer's own
+attribution line. The relay's reply tool posts into that same thread through a different writer,
+which escaped none of it, so a reply-tool message beginning with the attribution marker rendered
+identically to a real one. Each section was correct alone; the invariant failed across the seam
+between two writers into one thread. The fix routes reply-tool text through the mirror's own escape
+rather than a second one, because two escapes are two readings of where a code fence is, and a
+disagreement between them costs exactly the chip one of them believed it had removed.
+
+Three more cross-seam findings, all fixed. The `-NoMirror` gate accepted any non-empty switch header,
+so a settings file carrying a fixed `"on"` value passed both host-side gates and the switch failed
+open again, in a new shape, after Section 4's round had fixed it in the old one. The installer's URL
+pin allowed any port, so a tampered fragment could point the mirror hooks at another local port and
+receive every prompt and reply plus the process token, persistently, with the broker running
+healthy. And the liveness route still answered 413 to an oversized `Stop` payload: Chapter 1 assigned
+raising that ceiling to Section 2, only the mirror route's ceiling landed, and a 413 is a visible
+in-session error at the end of exactly the longest turns. That one is a spec item that fell through
+the cracks, caught here rather than by an operator.
+
+The docs curator found one stale claim that predates this effort: `docs/operations.md` said the
+`needs you` thread state "is fed by nothing", which the sender-gate effort falsified when it wired
+`permissions.waiting()` into the surface. Verified against `broker/index.ts` and
+`broker/discord/state.ts` before correcting: the code is right and the doc was stale, so this is a
+doc fix rather than a code defect.
+Review Findings: QA PASS with every acceptance criterion verified or classified operator-only.
+Security review: no Critical, one Major (the reply-tool escape) and three Minors, all fixed.
+Adversarial review: APPROVED_WITH_CONCERNS, three Majors and four Minors, all fixed or documented as
+stated limits. Two limits are stated in code rather than fixed: mirror posts reach the ordering chain
+in body-read-completion order rather than arrival order (the window needs a large body still being
+read when the next post lands, and a turn's reply and the next prompt are separated by human typing
+time), and trailing whitespace at a message boundary is not preserved.
+Stamps: see the close-out; the sweep ran at every Chapter and again here.
+Next: none. The effort is complete.
+Commit Model: Commit-and-Push
+
+## Operator-pending
+
+One verification is not Claude's to close and does not hold this plan open. `docs/operator-checks.md`
+check E covers it, with pass and fail criteria and the confined fix if it fails:
+
+- Whether Discord renders a mention pill or a timestamp chip inside a fenced code block, and whether
+  a backslash-escaped `>` opens a blockquote. The chip escape is fence-aware on the premise that it
+  does neither. If either is false, the fix is confined to `withoutChips` in
+  `broker/discord/render.ts`: drop the fence exemption and accept visible backslashes in code.
+- Whether `-NoMirror` stops mirror posts on a real host while another session mirrors on. Every leg
+  short of the live seam is pinned by tests; the seam where Claude Code interpolates an allowlisted
+  environment variable into a hook header cannot be exercised from this repository.
+
+A failure of either reopens the work as a new round.

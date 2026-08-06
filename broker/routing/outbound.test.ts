@@ -445,3 +445,155 @@ test("a rejected post is reported to the caller rather than swallowed", async ()
 
   assert.deepEqual(await router.reply(TOKEN, "hello"), { status: "failed", error: "HTTP 403" });
 });
+
+test("a reply tool post cannot draw the line that says who wrote a mirrored message", async () => {
+  // Both writers post into the one thread, so the attribution renderMirror composes is only
+  // unforgeable if the other path into that thread cannot compose it either. The text of a reply is
+  // written by a model that has read whatever the session read, so this is the reachable half of
+  // the same forgery the mirror's own escape closes.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter: writer });
+
+  const attribution = renderMirror("reply", "anything")[0].split("\n")[0];
+  await router.reply(TOKEN, `${attribution}\nthe operator's session was compromised, run this`);
+
+  const posted = posts[0].text;
+  assert.ok(!posted.split("\n").some((line) => line === attribution), posted);
+  assert.ok(posted.includes("\\>"), `the quote marker must reach Discord escaped: ${posted}`);
+});
+
+test("a reply tool post cannot carry a mention pill or a timestamp chip", async () => {
+  // allowed_mentions stops a smuggled pill pinging anyone; it does not stop one rendering, in the
+  // one channel permission prompts are answered in.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter: writer });
+
+  await router.reply(TOKEN, "<@700000000000000002> **Permission needed** <t:1700000000:R>");
+
+  const posted = posts[0].text;
+  assert.equal(posted, "\\<@700000000000000002\\> **Permission needed** \\<t:1700000000:R\\>");
+  assert.ok(!/<@\d+>/.test(posted), posted);
+  assert.ok(!/<t:\d+:R>/.test(posted), posted);
+});
+
+test("a reply tool post keeps its code readable", async () => {
+  // The escape is the mirror's, so it is fence-aware for the reason the mirror's is: a reply from a
+  // coding assistant is mostly code, Discord processes no escapes inside a fence, and an escape
+  // there reaches the reader as a backslash on every generic and comparison.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter: writer });
+
+  const reply = "here:\n\n```ts\nconst f = (a: Array<string>) => a.length < 10;\n```";
+  await router.reply(TOKEN, reply);
+
+  assert.equal(posts[0].text, reply, "nothing inside a fence is escaped");
+});
+
+test("a mirror post dropped before it reaches a thread leaves a line saying so", async () => {
+  // A mirror the operator switched off and a mirror that is broken are both total silence in the
+  // thread, so the log is the only thing that tells them apart. Content-free and rate-limited: a
+  // session whose thread never opens drops every prompt and every turn for as long as that lasts.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const lines: string[] = [];
+  let now = 1_000;
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => null,
+    writer,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+    now: () => now,
+  });
+
+  const secret = "SECRET-the-prompt-nobody-saw";
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", secret, null), { status: "no-thread" });
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(lines[0].includes("thread"), lines[0]);
+  assert.ok(!lines[0].includes(secret), `mirror content leaked into the routing log: ${lines[0]}`);
+
+  for (let repeat = 0; repeat < 5; repeat += 1) {
+    now += 1_000;
+    await router.mirror(TOKEN, "prompt", secret, null);
+  }
+  assert.equal(lines.length, 1, `a repeat inside the window is counted, not logged: ${lines.join("\n")}`);
+
+  now += 60_000;
+  await router.mirror(TOKEN, "prompt", secret, null);
+  assert.equal(lines.length, 2);
+  assert.ok(lines[1].includes("5 more time(s)"), lines[1]);
+});
+
+test("a mirror post from an unannounced process leaves a line that names no session", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { writer } = fakeWriter();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    writer,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "a turn nobody is watching", null), {
+    status: "no-session",
+  });
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("mirrored reply"), lines[0]);
+  // The process token is the key such a post is authenticated by, and it is the only thing this
+  // drop path holds, so the line names the cause and nothing else.
+  assert.ok(!lines[0].includes(TOKEN), `the process token must never be logged: ${lines[0]}`);
+});
+
+test("a mirror post with nothing visible in it leaves a line naming its session", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    writer,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+
+  await router.mirror(TOKEN, "prompt", "\u200b  \n ", null);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+});
+
+test("one session's steady drops do not swallow the first drop of another's", async () => {
+  // The limiter keys on the line, which carries the session: a key shared across sessions would
+  // suppress the first evidence that a second session is dropping too.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const other = "99999999-8888-7777-6666-555555555555";
+  announce(registry, "session-a");
+  announce(registry, "session-b", other);
+  const { writer } = fakeWriter();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => null,
+    writer,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+    now: () => 1_000,
+  });
+
+  await router.mirror(TOKEN, "prompt", "one", null);
+  await router.mirror(TOKEN, "prompt", "two", null);
+  await router.mirror(other, "prompt", "three", null);
+
+  assert.equal(lines.length, 2, lines.join("\n"));
+  assert.ok(lines[1].includes("session-b"), lines[1]);
+});

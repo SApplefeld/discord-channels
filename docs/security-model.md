@@ -24,9 +24,16 @@ reachable without either of the first two:
   `X-Channel-Hook-Event`, and this server answers no `OPTIONS` request. Adding an `OPTIONS` handler,
   or moving the event name into the body, removes that property silently.
 
-A request body is capped at 64 KB and refused unread past it, and refusal logging is rate-limited by
-reason, so a local process cannot flood the log with its own refused posts to push earlier evidence
-of the same behavior out through rotation.
+Every route caps its request body, and what a route does past the cap is decided by who posts to it.
+`POST /hook` and `POST /mirror` are posted by hooks that fire in every Claude Code session on the
+machine, so an oversized body on either is drained and answered 2xx rather than refused: Claude Code
+surfaces a non-2xx hook response as a visible error inside that session, at the end of exactly its
+longest turns. The two differ only in ceiling. `/hook` holds `CHANNEL_MAX_BODY_BYTES`, 64 KB by
+default, and `/mirror` carries a conversation, so it holds `CHANNEL_MIRROR_MAX_BYTES`, 256 KB by
+default and bounded 64 KB to 4 MB. The relay's own routes have no watched session to disturb and
+refuse an oversized body with a 413. The drain itself is bounded, so an endless body cannot hold a
+connection open. Refusal logging is rate-limited by reason, so a local process cannot flood the log
+with its own refused posts to push earlier evidence of the same behavior out through rotation.
 
 `GET /sessions` withholds `processToken`, and the record is serialized field by field so that a
 field added later has to be published deliberately rather than arriving on its own.
@@ -176,6 +183,21 @@ and both apply it:
   ID. Content still cannot produce one.
 - **The log file.** Untrusted fields pass through the same neutralization before they land, so a
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
+
+**Conversation text is neutralized on a narrower rule than a name is.** A mirrored prompt, a
+mirrored reply, and a `reply` tool call are prose with code in them, so escaping the whole of
+markdown would trade the readability of the surface away. All three go through one fence-aware
+escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote marker and
+leaves the rest alone. `renderMirror` applies it to mirrored text and `inertReply` applies it to the
+reply tool's, both before the text reaches the message path. That is what stops either from drawing
+a mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one
+channel the operator answers permission prompts in.
+
+The quote marker is escaped inside a code fence as well as outside it, so the attribution's
+unforgeability does not rest on this project's reading of where a fence is agreeing with Discord's.
+Where the two readings do differ, the cost is bounded to a chip left unescaped in a region this
+project called code and Discord called prose, which `allowed_mentions` still keeps from pinging
+anyone. Operator check E is what confirms the rendering half against the real client.
 
 `processToken` never reaches either.
 

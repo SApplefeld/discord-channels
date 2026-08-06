@@ -178,8 +178,34 @@ if (-not (Test-Path -LiteralPath $fragmentPath)) {
 # same literal, hardcoded and unmoved by this installer, so -Port is validated against the fragment
 # rather than substituted into it: rewriting the fragment's copies and not the script's would
 # silently reintroduce exactly the drift settings-fragment.test.ts's port pin exists to catch.
+#
+# Every http url is read, not one of them. The broker is opened on the port this resolves to, so a
+# single url checked here would leave the other hooks free to name a different local port: whatever
+# is listening there would receive this machine's console prompts, assistant replies, and process
+# token, from a fragment that installs cleanly and a broker that runs healthy on the real port.
 $fragmentPreview = ConvertTo-OrderedHashtable (Get-Content -LiteralPath $fragmentPath -Raw | ConvertFrom-Json)
-$fragmentPort = [int]([uri]$fragmentPreview['hooks']['PostToolUse'][0]['hooks'][0]['url']).Port
+$fragmentPort = $null
+foreach ($eventName in $fragmentPreview['hooks'].Keys) {
+    foreach ($entry in @($fragmentPreview['hooks'][$eventName])) {
+        foreach ($hook in @($entry['hooks'])) {
+            # SessionStart's is a command hook and has no url to read.
+            if ([string]$hook['type'] -ne 'http') { continue }
+            $hookPort = [int]([uri][string]$hook['url']).Port
+            if ($null -eq $fragmentPort) { $fragmentPort = $hookPort }
+            if ($hookPort -ne $fragmentPort) {
+                throw "Install-Host: the http hooks in '$fragmentPath' do not agree on a port " +
+                    "($fragmentPort and $hookPort). The broker is opened on one port, so the hooks " +
+                    "naming another would post this machine's hook traffic, and the mirror's " +
+                    "content, to whatever is listening there. Fix the fragment before installing."
+            }
+        }
+    }
+}
+if ($null -eq $fragmentPort) {
+    throw "Install-Host: '$fragmentPath' declares no http hook, so there is no port to install " +
+        "against. A fragment without them installs a session announcement and nothing that reports " +
+        "a session is alive."
+}
 if (-not $Port) { $Port = $fragmentPort }
 if ($Port -ne $fragmentPort) {
     throw "Install-Host: -Port $Port disagrees with the port already baked into " +

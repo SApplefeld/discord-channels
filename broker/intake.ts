@@ -9,7 +9,10 @@
 //     X-Channel-Process-Token:  the CHANNEL_PROCESS_TOKEN GUID the launch wrapper minted
 //     X-Channel-Session-Name:   the CHANNEL_SESSION human name (optional)
 //     Content-Type:             application/json
-//     body: the hook payload verbatim, exactly as Claude Code emits it
+//     body: the hook payload verbatim, exactly as Claude Code emits it, kept only as far as the
+//     fields the registry stores; a body past maxBodyBytes is drained and dropped with a 202,
+//     because the Stop payload carries the turn's final assistant message and a refusal there is a
+//     visible error inside the session at the end of its longest turns.
 //
 // The event name rides in a header rather than the body because two of the three hooks are `http`
 // hooks, whose body is authored by Claude Code and cannot be wrapped. A header is static per hook
@@ -230,35 +233,28 @@ function send(response: ServerResponse, status: number, body: unknown): void {
   response.end(text);
 }
 
-async function readBody(request: IncomingMessage, maxBodyBytes: number): Promise<string | null> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = chunk as Buffer;
-    size += buffer.length;
-    if (size > maxBodyBytes) return null;
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
+/**
+ * How far past a route's ceiling the drain keeps consuming before the connection is destroyed.
+ * The drain exists so an honestly-oversized post still gets its quiet 2xx, but an unbounded drain
+ * would let a local process stream an endless chunked body and hold the connection and this loop
+ * forever. Past this multiple the sender is not an installed hook, and it loses the quiet answer
+ * along with the socket.
+ */
+const DRAIN_LIMIT_FACTOR = 4;
 
 /**
- * How far past the mirror ceiling the drain keeps consuming before the connection is destroyed.
- * The drain exists so an honestly-oversized post still gets its quiet 202, but an unbounded drain
- * would let a token-holding local process stream an endless chunked body and hold the connection
- * and this loop forever. Past this multiple the sender is not an installed hook, and it loses the
- * quiet answer along with the socket.
+ * Reads a body up to the calling route's ceiling. Past the ceiling, what was buffered is released
+ * and the rest of the stream is consumed and discarded, so an oversized post costs at most the
+ * ceiling in memory while still leaving the connection drained and usable under keep-alive; past
+ * the drain limit the connection is destroyed instead. Only the byte count comes back on the
+ * over-ceiling paths: the caller logs the count, never the text.
+ *
+ * Both routes read through this one function. Their ceilings differ, and nothing else about the
+ * read does: a post over either one is a post from an installed hook that fires in every session on
+ * the machine, and refusing one puts a visible error inside that session at the end of exactly its
+ * longest turns.
  */
-const MIRROR_DRAIN_LIMIT_FACTOR = 4;
-
-/**
- * Reads a mirror body up to its own ceiling. Past the ceiling, what was buffered is released and
- * the rest of the stream is consumed and discarded, so an oversized post costs at most the ceiling
- * in memory while still leaving the connection drained and usable under keep-alive; past the drain
- * limit the connection is destroyed instead. Only the byte count comes back on the over-ceiling
- * paths: the caller logs the count, never the text.
- */
-async function readMirrorBody(
+async function readCappedBody(
   request: IncomingMessage,
   maxBytes: number,
 ): Promise<{ body: string } | { droppedBytes: number; destroyed: boolean }> {
@@ -273,7 +269,7 @@ async function readMirrorBody(
         over = true;
         chunks.length = 0;
       }
-      if (size > maxBytes * MIRROR_DRAIN_LIMIT_FACTOR) {
+      if (size > maxBytes * DRAIN_LIMIT_FACTOR) {
         request.destroy();
         return { droppedBytes: size, destroyed: true };
       }
@@ -439,7 +435,7 @@ export function createHandler(
       return;
     }
 
-    const read = await readMirrorBody(request, options.mirror.maxBytes);
+    const read = await readCappedBody(request, options.mirror.maxBytes);
     if ("droppedBytes" in read) {
       if (read.destroyed) {
         // The connection is already gone, so there is no response to write; the log line is the
@@ -555,13 +551,31 @@ export function createHandler(
     }
 
     void (async () => {
-      const body = await readBody(request, options.maxBodyBytes);
-      if (body === null) {
-        send(response, 413, { error: "body too large" });
+      const read = await readCappedBody(request, options.maxBodyBytes);
+      if ("droppedBytes" in read) {
+        if (read.destroyed) {
+          // The connection is already gone, so there is no response to write; the log line is the
+          // only witness. The count is logged; the body is not.
+          refusals.warn(
+            "hook drain cut off",
+            `${read.droppedBytes} bytes in; the connection was destroyed`,
+          );
+          return;
+        }
+        // Drained and dropped with a 202, never a 413. The Stop payload carries the turn's final
+        // assistant message, so the longest turns are the ones that push a liveness post past this
+        // ceiling, and a refusal there is a visible error inside the session at the end of exactly
+        // those turns. What the drop costs is one tick of the status card, which the next hook post
+        // supplies. The count is logged; the body is not, and nothing here has parsed it.
+        refusals.warn(
+          "hook post over the size cap",
+          `${read.droppedBytes} bytes dropped unread`,
+        );
+        send(response, 202, { ignored: true });
         return;
       }
 
-      const parsed = parseIntake(request, body);
+      const parsed = parseIntake(request, read.body);
       if ("unwatched" in parsed) {
         refusals.warn(
           "hook without a process token",

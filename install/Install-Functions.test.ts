@@ -545,6 +545,54 @@ test("Merge-ChannelSettingsFile refuses the mirror switch header on a liveness h
   assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
 });
 
+test("Merge-ChannelSettingsFile refuses a mirror switch header that does not interpolate the variable", (t) => {
+  // A fixed value is sent identically from every session on the machine, so the broker reads the
+  // switch from none of them: -NoMirror sets a variable nothing carries, the wrapper's own launch
+  // check sees a header that is present and lets the session run, and the session mirrors in full
+  // during precisely the work the switch exists for. Only the interpolation form is merged.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+
+  const { status, stderr } = runFunctionsExpectingFailure(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['hooks']['UserPromptSubmit'][0]['hooks'][0]['headers']['X-Channel-Mirror'] = 'on'`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    ].join("\n"),
+    dir,
+  );
+
+  assert.notEqual(status, 0, "a fixed switch value must be refused, not merged");
+  assert.match(stderr, /X-Channel-Mirror/);
+  assert.match(stderr, /'on'/);
+  assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
+});
+
+test("Merge-ChannelSettingsFile refuses http hooks that do not agree on one port", (t) => {
+  // Loopback alone is not the whole pin. A local process is the cheapest thing an attacker who can
+  // write this file has, and two urls pointed at a port of their choosing hand it every console
+  // prompt, every reply, and the process token in a header, persistently, while the broker keeps
+  // running healthy on the real port and every surface looks right.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+
+  const { status, stderr } = runFunctionsExpectingFailure(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['hooks']['Stop'][1]['hooks'][0]['url'] = 'http://127.0.0.1:9999/mirror'`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    ].join("\n"),
+    dir,
+  );
+
+  assert.notEqual(status, 0, "a second local port must be refused, not merged");
+  assert.match(stderr, /port/i);
+  assert.match(stderr, /9999/);
+  assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
+});
+
 test("Merge-ChannelSettingsFile prunes old backups beyond the retention count", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

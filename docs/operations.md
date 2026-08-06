@@ -54,10 +54,12 @@ has to survive truncation.
 ```
 
 `working` and `idle` are derived from how recently hook traffic arrived. `exited` means the session
-ended, or that it went silent past the presumed-dead horizon. A fourth state, `needs you`, is
-rendered by the code with a ⏸ glyph but is fed by nothing: the broker never marks a session as
-waiting on you, so no thread carries it today. A pending permission prompt reaches you as a message
-that pings, not as a state on the thread name.
+ended, or that it went silent past the presumed-dead horizon. `needs you`, the ⏸ glyph, means that
+session has a permission prompt open and is parked until you answer it. It is recomputed on every
+refresh from the set of prompts still waiting, so it clears on its own when you answer, and it is
+urgent enough to spend a rename immediately rather than waiting out the dwell window. A pending
+prompt therefore reaches you twice: as a message that pings, and as the thread's own name in the
+list.
 
 Renames are the scarcest resource here. Discord documents no limit on channel or thread modification
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
@@ -223,9 +225,17 @@ content. The post is answered normally rather than refused, deliberately: refusi
 as a visible error inside the session at the end of exactly its longest turns. Raise the knob if you
 want those replies, remembering that the whole reply then arrives as many messages.
 
+**A mirrored message shows backslashes in front of `<` and `>`.** That is the escape that stops
+mirrored text drawing a mention pill, a timestamp chip, or a copy of the attribution line saying who
+wrote the message. Discord renders `\<` as `<` in ordinary prose, so the backslash is visible only
+where Discord processes no escapes: inside an inline code span, and in front of a line-leading `>`
+inside a code block. A fenced code block is otherwise left exactly as it was written, which is why a
+mirrored reply full of generics and comparisons reads normally. A message posted by the `reply` tool
+carries the same escape, because it lands in the same thread beside mirrored text.
+
 **A long reply arrives cut short with the thread otherwise healthy.** A multi-message reply stops at
-the first message Discord refuses and does not post the rest, and the log names how far it got. The
-log line names the refusal. One cause is the mirror's rate-limit budget, which is deliberately
+the first message Discord refuses and does not post the rest, and the log names how far it got and
+what the refusal was. One cause is the mirror's rate-limit budget, which is deliberately
 separate from the budget the permission prompts and notices spend, so a long reply can exhaust its
 own writes without costing you a prompt you were waiting on.
 

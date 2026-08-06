@@ -143,6 +143,20 @@ variable to the route rather than admitting them everywhere keeps a liveness hoo
 header settings-fragment.test.ts's own liveness/mirror split forbids it from carrying.
 settings-fragment.test.ts pins the same shapes, but it runs in this repository, not on the host at
 install time, which is where the fragment is read.
+
+Loopback alone is not enough on the url, so every http hook in the fragment must also name the same
+port. A local process is what an attacker who can write this file most cheaply has, and two of these
+urls pointed at a port of their choosing would hand that process every console prompt, every turn's
+reply, and the process token in a header, persistently, while the broker keeps running healthy and
+every surface looks right. Install-Host.ps1 holds the other half, checking -Port against every url
+rather than the first, so the port they agree on is also the port the broker is opened on.
+
+The switch header's value is pinned as well as its name. A hook carrying a literal
+'X-Channel-Mirror: on' passes a name-only check and sends that value from every session on the
+machine, at which point -NoMirror sets a variable no request carries and the wrapper's own
+Assert-InstalledMirrorSwitch sees a header that is present: a privacy switch that fails open and
+silent, which is the one failure mode worse than not having it. Only the interpolation form is
+merged, and Claude Code substitutes the session's own value into it at request time.
 #>
 $script:AllowedChannelPermissionRules = @('mcp__channel-relay__reply')
 
@@ -151,11 +165,19 @@ function Assert-ValidChannelFragment {
 
     $allowedEvents = @('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
     $allowedTypes = @('command', 'http')
-    $allowedUrl = '^http://127\.0\.0\.1:\d+/(hook|mirror)\z'
+    $allowedUrl = '^http://127\.0\.0\.1:(\d+)/(hook|mirror)\z'
     $coreHeaders = @('X-Channel-Hook-Event', 'X-Channel-Process-Token', 'X-Channel-Session-Name')
     $mirrorOnlyHeaders = @('X-Channel-Mirror')
     $coreEnvVars = @('CHANNEL_PROCESS_TOKEN', 'CHANNEL_SESSION')
     $mirrorOnlyEnvVars = @('CHANNEL_SESSION_MIRROR')
+    # The one form of the switch header this installer merges. Single-quoted: in double quotes
+    # PowerShell would read ${CHANNEL_SESSION_MIRROR} as one of its own variables and compare every
+    # header against the empty string.
+    $mirrorHeaderValue = '${CHANNEL_SESSION_MIRROR}'
+    # The port the first http hook named, and the url it came from, so a later disagreement can name
+    # both sides of it.
+    $port = $null
+    $portUrl = $null
 
     # The permission rules are held to an exact list for the same reason the command string is: this
     # fragment inherits Authenticated Users: Modify on at least one host, and a permission rule
@@ -214,6 +236,22 @@ function Assert-ValidChannelFragment {
                             "url naming any other address would send this machine's hook traffic, " +
                             "and the process token in its headers, wherever the fragment says."
                     }
+                    # Read from the match above rather than parsed again here, so one reading of a
+                    # url decides both that it is allowed and which port it named. -notmatch fills
+                    # $Matches on the runs where the pattern matched, which is every run that
+                    # reaches this line, and it is read before the /mirror test below overwrites it.
+                    $hookPort = $Matches[1]
+                    if ($null -eq $port) {
+                        $port = $hookPort
+                        $portUrl = $url
+                    } elseif ($hookPort -ne $port) {
+                        throw "Assert-ValidChannelFragment: the fragment's $eventName hook posts to " +
+                            "'$url' while another posts to '$portUrl'. Every http hook here must name " +
+                            "the one port this project's broker is opened on: a hook split off onto " +
+                            "another local port hands whatever is listening there this machine's " +
+                            "console prompts, assistant replies, and process token, and nothing about " +
+                            "a healthy broker on the real port would show it."
+                    }
                     # The switch header and its env var are legitimate only on a hook posting to
                     # /mirror: a liveness hook posting to /hook carries no content for a per-session
                     # mirror switch to govern, and settings-fragment.test.ts holds that split as a
@@ -228,6 +266,17 @@ function Assert-ValidChannelFragment {
                                 throw "Assert-ValidChannelFragment: the fragment's $eventName hook " +
                                     "sets a header this installer does not merge on this route: " +
                                     "'$headerName'. Only $($allowedHeadersHere -join ', ') are allowed here."
+                            }
+                            if ([string]$headerName -eq 'X-Channel-Mirror' -and
+                                ([string]$hook['headers'][$headerName]) -ne $mirrorHeaderValue) {
+                                throw "Assert-ValidChannelFragment: the fragment's $eventName hook " +
+                                    "sends X-Channel-Mirror as " +
+                                    "'$([string]$hook['headers'][$headerName])' rather than " +
+                                    "'$mirrorHeaderValue'. A fixed value is sent by every session on " +
+                                    "the machine and reads as none of them: -NoMirror would set a " +
+                                    "variable no request carries, and the launch check that exists to " +
+                                    "catch that would see the header present and let the session run " +
+                                    "mirrored."
                             }
                         }
                     }

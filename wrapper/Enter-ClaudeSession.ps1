@@ -392,8 +392,11 @@ Silence still means no opinion where nothing of this project is installed at all
 Assert-InstalledHookPath holds: an absent settings file, or one with no SessionStart hook naming this
 checkout's script, means there is no mirror traffic to suppress either way, and -NoMirror has nothing
 to disagree with. Once this checkout's SessionStart hook is installed, both mirror hooks (
-UserPromptSubmit's, and the Stop entry posting to /mirror) must carry the switch header and its
-allowedEnvVars entry, or this throws naming the fix.
+UserPromptSubmit's, and the Stop entry posting to /mirror) must send the switch header as the
+interpolation of CHANNEL_SESSION_MIRROR and list that variable in allowedEnvVars, or this throws
+naming the fix. The value is checked and not only the header's presence, because a hook sending a
+fixed value sends it identically from every session on the machine: -NoMirror would set a variable
+nothing reads, and a presence-only check would pass the one settings file it exists to refuse.
 #>
 function Assert-InstalledMirrorSwitch {
     param(
@@ -430,6 +433,15 @@ function Assert-InstalledMirrorSwitch {
     }
     if (-not $installed) { return }
 
+    # What the header has to carry, not merely that it carries something. A hook sending a fixed
+    # value sends it from every session on the machine, so CHANNEL_SESSION_MIRROR reaches the broker
+    # from none of them and -NoMirror mirrors in full while this check sees a header and passes.
+    # Single-quoted: in double quotes PowerShell would expand ${CHANNEL_SESSION_MIRROR} as one of its
+    # own variables and compare every installed header against the empty string.
+    # install/Install-Functions.ps1's Assert-ValidChannelFragment refuses any other value at merge
+    # time; this is the same rule read from the settings file that actually runs.
+    $switchHeaderValue = '${CHANNEL_SESSION_MIRROR}'
+
     $stale = [System.Collections.Generic.List[string]]::new()
     foreach ($eventName in @('UserPromptSubmit', 'Stop')) {
         $found = $false
@@ -441,7 +453,9 @@ function Assert-InstalledMirrorSwitch {
                 $found = $true
                 $header = if ($hook.headers) { [string]$hook.headers.'X-Channel-Mirror' } else { '' }
                 $allowed = @($hook.allowedEnvVars)
-                if ($header -ne '' -and $allowed -contains 'CHANNEL_SESSION_MIRROR') { $carriesSwitch = $true }
+                if ($header -eq $switchHeaderValue -and $allowed -contains 'CHANNEL_SESSION_MIRROR') {
+                    $carriesSwitch = $true
+                }
             }
         }
         if (-not $found -or -not $carriesSwitch) { $stale.Add($eventName) }
@@ -449,9 +463,9 @@ function Assert-InstalledMirrorSwitch {
 
     if ($stale.Count -gt 0) {
         throw "Enter-ClaudeSession: -NoMirror cannot be honored. The installed settings file " +
-            "'$SettingsPath' has a $($stale -join ', ') mirror hook that does not carry the " +
-            "X-Channel-Mirror switch header, so this session's console prompts and turn replies " +
-            "would mirror exactly as if -NoMirror had not been given. Re-run " +
+            "'$SettingsPath' has a $($stale -join ', ') mirror hook that does not send the " +
+            "X-Channel-Mirror switch header as '$switchHeaderValue', so this session's console " +
+            "prompts and turn replies would mirror exactly as if -NoMirror had not been given. Re-run " +
             "install/Install-Host.ps1 from this checkout to install the current fragment, then " +
             "launch again."
     }

@@ -289,19 +289,62 @@ test("malformed JSON is a 400 and mutates nothing", async () => {
   assert.deepEqual(registry.list(), []);
 });
 
-test("an oversized body is refused before it is parsed", async () => {
-  const { registry, handle } = harness();
+test("a body at the /hook cap is read; one byte over is drained and dropped, never parsed", async () => {
+  // The Stop payload carries the turn's final assistant message, so the posts that reach this
+  // ceiling are the liveness ticks at the end of exactly the longest turns, and a refusal there is
+  // a visible error inside that session. Over the cap the post is dropped with the same 2xx every
+  // other drop on this route answers, and nothing over the cap is assembled or parsed.
+  const body = JSON.stringify({ session_id: "session-a", source: "startup" });
+  const exact = Buffer.byteLength(body);
+  const request = (): IncomingMessage =>
+    fakeRequest("127.0.0.1", { headers: hookHeaders("SessionStart"), body });
 
+  const atCap = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const accepted = await call(
+    createHandler({ registry: atCap, maxBodyBytes: exact, mirror: fakeMirror().mirror }),
+    request(),
+  );
+  assert.equal(accepted.status, 200, "a body exactly at the cap is inside it");
+  assert.equal(atCap.list().length, 1);
+
+  const overCap = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const dropped = await call(
+    createHandler({ registry: overCap, maxBodyBytes: exact - 1, mirror: fakeMirror().mirror }),
+    request(),
+  );
+  assert.equal(dropped.status, 202, "over the cap is a drop with a 2xx, never a 413");
+  assert.deepEqual(dropped.body, { ignored: true });
+  assert.deepEqual(overCap.list(), [], "an oversized body reaches nothing that could store it");
+});
+
+test("an oversized /hook post is logged by its size, with nothing of its body", async () => {
+  const lines: string[] = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 32,
+    log: {
+      info: (message: string) => lines.push(message),
+      warn: (message: string) => lines.push(message),
+      error: (message: string) => lines.push(message),
+    },
+    mirror: fakeMirror().mirror,
+  });
+
+  const secret = "SECRET-the-longest-turn-of-the-day";
   const result = await call(
     handle,
     fakeRequest("127.0.0.1", {
-      headers: hookHeaders("SessionStart"),
-      body: JSON.stringify({ session_id: "session-a", padding: "x".repeat(4096) }),
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ session_id: "session-a", last_assistant_message: secret }),
     }),
   );
 
-  assert.equal(result.status, 413);
-  assert.deepEqual(registry.list(), []);
+  assert.equal(result.status, 202);
+  const captured = lines.join("\n");
+  assert.ok(captured.includes("over the size cap"), captured);
+  assert.ok(/\d+ bytes/.test(captured), captured);
+  assert.ok(!captured.includes(secret), `hook content leaked into the log: ${captured}`);
 });
 
 test("a post with no recognized event header is a 400", async () => {
@@ -1010,14 +1053,15 @@ test("the broker serves a real request on a bound loopback port", async () => {
     assert.equal(body.sessions[0].lastTool, "Bash");
     assert.equal(body.sessions[0].toolCount, 1);
 
-    // Over the cap on a real socket, where refusing mid-stream could have reset the connection
+    // Over the cap on a real socket, where draining mid-stream could have reset the connection
     // before the response was written.
     const oversized = await fetch(`${base}/hook`, {
       method: "POST",
       headers: { "content-type": "application/json", ...hookHeaders("PostToolUse") },
       body: JSON.stringify({ tool_name: "Bash", padding: "x".repeat(128 * 1024) }),
     });
-    assert.equal(oversized.status, 413);
+    assert.equal(oversized.status, 202, "an oversized liveness post is drained and dropped, not refused");
+    assert.deepEqual(await oversized.json(), { ignored: true });
 
     // A whole turn's reply to the mirror route on a real socket, well past the same cap. The fake
     // request in the unit tests above cannot show this: only a real connection proves the drained
