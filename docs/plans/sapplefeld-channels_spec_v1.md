@@ -666,3 +666,74 @@ type-stripping record was already stamped in Chapter 2's window and shaped this 
 test files the same way)
 Next: 4. Discord surface: threads, rename budget, status card
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-06
+Completed: 4. Discord surface: threads, rename budget, status card
+Implemented By: implementer-opus (one build round, two review-fix rounds via the same agent)
+Metrics: 2 review rounds (adversarial + blind at fable, security at default on round 1; adversarial +
+blind at fable on round 2); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **Built against a seam, because there is no bot token until S7.** The two hard
+acceptance criteria (a refused rename is dropped, and flapping produces at most one rename) are not
+testable against `discord.js`, so the transport is a narrow interface with a real adapter over
+`discord.js` and a fake that returns synthetic rate-limit headers and 429s. Exactly one file imports
+`discord.js`, so the suite never loads it. Time is injected, reusing S2's clock pattern rather than
+inventing a second one.
+The spec named four surface states (working, needs you, idle, exited) while the registry speaks three
+(live, stale, ended), and never wrote the mapping. Resolved in one function: `ended` to exited,
+recent hook traffic to working, quiet to idle, and `needs you` modelled but fed by nothing until S6.
+The interesting part was `stale`, which the second review round caught: rendering it as idle meant a
+**hard-killed session showed the success glyph forever**, contradicting the carried decision that "a
+heartbeat timeout is the backstop" for session death. Since nothing marks a record ended before S5
+exists, that is the S1-S4 product's only death signal. Resolved with a second, longer, configurable
+horizon (four hours) past which a stale record renders exited with the warning glyph. Only a *stale*
+record can reach it, so S5's relay liveness will hold a live session out of it for free.
+Two rate-limit facts stayed marked rather than assumed: Discord documents no channel-modification
+limit, and the stricter bucket is community-reported and undocumented. Nothing hard-codes a number;
+the budget acts only on observed headers. The second round found the budget was keyed globally while
+Discord's bucket is per-thread, which meant one flapping session could hold an urgent `needs you`
+rename hostage on a different thread, spending the design's scarcest signal on the wrong surface.
+Surprise worth keeping: `@discordjs/rest` **throws on a 4xx rather than returning the response**, so
+the first attempt at "detect a rejected token once and stop" never fired; the live run caught it and
+the adapter now translates the error back into a response carrying its status. A second: a failed
+call's own headers were being folded into the budget, so a 4xx reporting `remaining > 0` cleared a
+block it had no business clearing. A failed call is no longer evidence about a bucket.
+Deliberate deviation, accepted by both reviewers: `allowed_mentions` rides on the two message writes
+and not on the channel PATCH that renames. It is a message-object field, the Modify Channel route
+does not define it, and a thread title resolves no mentions, so sending it risks a refused rename for
+no security gain. The rename body is pinned as exactly `{ name }`.
+Review Findings: Round 1 - 1 Critical fixed: `createThread` was two writes, and a failed thread-open
+discarded the posted message id, so a persistent 4xx reposted the starter card every five seconds
+forever, roughly 17k messages a day into the dashboard channel. That is the exact message-churn
+failure the Approach names as the design's enemy, and it violated "never re-posted". Split into two
+calls with the message id recorded the moment the post lands, creates put under their own budget, and
+a per-pass call ceiling added. 5 Major fixed: thread bindings were memory-only while the registry
+persists, so every restart opened duplicate threads for live sessions **and** brand-new threads for
+up to 24h of retained dead ones (S7 restarts at every logon, so this was routine); a session that
+vanished from the registry was never driven to its terminal render; `<` was missing from the escape
+class, so Discord chip syntax survived into the card and could spoof the heartbeat the card exists to
+carry; the global rename budget; and the bot token file was read with no permission check.
+Round 2 - 0 Critical, 7 Major fixed: `retire()` had no terminal exit, so a permanently refused final
+rename retried forever across restarts; `retire()` painted the title but not the card, leaving a
+thread titled exited over a card still claiming working; a 404 or 403 on a bound object was retried
+every tick forever; the POSIX permission check rejected mode 0400, so a correctly hardened read-only
+credential aborted startup; the broad-principal check was a denylist that missed domain groups and
+raw SIDs, now inverted to an allowlist; the token file's own ACL was checked but not its parent
+directory's, so a file in an attacker-writable directory could be deleted and re-created with a clean
+ACL; and the stale-renders-as-success problem above. 20+ Minor fixed across both rounds.
+Gate delta: lint exit 0 unchanged; tests 60 (Chapter 3 baseline) → 107 after the build → 134 → 153
+passing, 1 skipped (a POSIX-only permission test on Windows), 0 failing throughout. 34 mutations were
+applied across the two fix rounds, each reddening its target test, with files restored and
+hash-verified byte-identical afterwards. Two mutations initially came back green, which is how the
+budget-evidence rule and the split create budgets got the tests they were missing. The token-file
+gate was proved against a **real Windows ACL**: `icacls` granting Authenticated Users on the file,
+and separately on its directory, and both were refused. Tree state was captured before and after both
+review rounds and was byte-identical each time.
+Not proven, and it needs a live bot: that `auto_archive_duration: 10080` is accepted by the guild,
+the real shape of a successful create response, and a real bindings write after a successful post.
+Everything Discord actually returns on success is fake-driven. That live walk belongs to S7, which is
+where the token, the channel, and the invite exist.
+Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads; the
+type-stripping record remains stamped from Chapter 2's window and shaped this section's imports)
+Next: 5. Relay MCP channel server and message routing (blocked on the prerequisite gate, operator
+Check A in docs/operator-checks.md, which only Scott can run)
+Commit Model: Commit-and-Push

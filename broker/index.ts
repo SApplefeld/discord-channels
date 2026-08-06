@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import path, { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
@@ -10,6 +10,11 @@ import { createHandler } from "./intake.ts";
 import { createRegistry } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { loadSessions, saveSessions } from "./persistence.ts";
+import { loadDiscordConfig } from "./discord/config.ts";
+import { createDiscordTransport } from "./discord/adapter.ts";
+import { createSurface } from "./discord/surface.ts";
+import { toView } from "./discord/state.ts";
+import { loadBindings, saveBindings } from "./discord/bindings.ts";
 
 export type Broker = {
   server: Server;
@@ -50,8 +55,71 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     }
   }, config.sweepIntervalMs);
 
+  // The Discord surfaces are optional: with no token and no channel configured the broker is its
+  // registry and its intake, which is what a local debugging run and every test wants. The refresh
+  // timer lives here for the same reason the sweep does, so the surface itself is drivable by an
+  // injected clock.
+  const discord = loadDiscordConfig(process.env, { staleAfterMs: config.staleAfterMs });
+  let refresh: NodeJS.Timeout | null = null;
+  let inFlight: Promise<void> = Promise.resolve();
+  if (discord !== null) {
+    // Imported here rather than at the top so that discord.js, the one dependency with a network
+    // client in it, is loaded only by a broker that is actually configured to reach Discord.
+    const { createRestRequest } = await import("./discord/rest.ts");
+    // Beside the registry snapshot, and for the same reason: without it a restart would open a
+    // second thread for every session the registry still holds.
+    const bindingsFile = path.join(path.dirname(config.stateFile), "discord-threads.json");
+    const stopRefresh = (): void => {
+      if (refresh !== null) clearInterval(refresh);
+      refresh = null;
+    };
+    const surface = createSurface({
+      transport: createDiscordTransport({
+        channelId: discord.channelId,
+        request: createRestRequest(discord.token),
+      }),
+      now: Date.now,
+      dwellMs: discord.dwellMs,
+      idleAfterMs: discord.idleAfterMs,
+      exitedAfterMs: discord.exitedAfterMs,
+      archiveOnEnd: discord.archiveOnEnd,
+      bindings: loadBindings(bindingsFile),
+      onBind: (bindings) => {
+        try {
+          saveBindings(bindingsFile, bindings);
+        } catch (error) {
+          console.error(
+            `broker: cannot write the thread bindings to ${bindingsFile}: ${String(error)}`,
+          );
+        }
+      },
+      log: (message) => console.log(message),
+      onFatal: (message) => {
+        console.error(message);
+        stopRefresh();
+      },
+    });
+    refresh = setInterval(() => {
+      // A rejection here would be fatal to the process under Node 24, taking the hook intake down
+      // with the Discord surface, and the intake is the half that has to keep running. The pass is
+      // kept so that shutdown can wait for it: clearing the timer does not cancel a call already
+      // on the wire, or the binding write that follows it.
+      inFlight = surface
+        .tick(registry.list().map((record) => toView(record)))
+        .catch((error: unknown) => console.error(`broker: discord refresh failed: ${String(error)}`));
+    }, discord.refreshIntervalMs);
+    console.log(`broker: discord surfaces on, threads open in channel ${discord.channelId}`);
+  }
+
   await new Promise<void>((resolve, reject) => {
-    const failedToBind = (error: Error): void => reject(error);
+    const failedToBind = (error: Error): void => {
+      // A broker that never bound has no business still writing to Discord on a timer, or sweeping
+      // a registry nothing can reach.
+      clearInterval(sweep);
+      if (refresh !== null) clearInterval(refresh);
+      refresh = null;
+      reject(error);
+    };
     server.once("error", failedToBind);
     // Bound to loopback as well as filtered per request: an off-box connection cannot even be
     // established, and the per-request check covers anything that gets past that.
@@ -69,6 +137,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
 
   async function stop(): Promise<void> {
     clearInterval(sweep);
+    if (refresh !== null) clearInterval(refresh);
+    // Clearing the timer does not cancel the pass already running, which may still be waiting on a
+    // Discord call and will write the bindings file when it returns.
+    await inFlight;
     // Keep-alive sockets would otherwise hold close() open until they time out.
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -1,0 +1,71 @@
+// The seam between the surface logic and Discord.
+//
+// Every call reports what the response said about the rate-limit bucket, because the budget is the
+// scarce resource this design is built around and Discord's real one for a thread rename is
+// undocumented. Nothing above this interface knows about HTTP, discord.js, or a token; nothing
+// below it knows about sessions or states.
+
+/**
+ * What one call learned about its bucket. All times are milliseconds, converted at the adapter:
+ * Discord sends `X-RateLimit-Reset-After` and a 429 body's `retry_after` in seconds.
+ */
+export type RateLimitObservation = {
+  /** `X-RateLimit-Remaining`: calls left in this bucket. Null when the response carried none. */
+  remaining: number | null;
+  /** `X-RateLimit-Reset-After`: how long until the bucket refills. */
+  resetAfterMs: number | null;
+  /** `retry_after` from a 429. Null unless the call was refused for rate limiting. */
+  retryAfterMs: number | null;
+};
+
+/** A response that said nothing about the bucket, which is how a transport error reports. */
+export const NO_RATE_INFO: RateLimitObservation = {
+  remaining: null,
+  resetAfterMs: null,
+  retryAfterMs: null,
+};
+
+export type CallOutcome<T> =
+  | { status: "ok"; value: T; rate: RateLimitObservation }
+  | { status: "rate-limited"; rate: RateLimitObservation }
+  | {
+      status: "failed";
+      error: string;
+      rate: RateLimitObservation;
+      /**
+       * True when the credential itself was rejected. Retrying cannot fix it, and the REST client
+       * discards the token on a 401, so every later call would fail with a message about a missing
+       * token rather than a refused one.
+       */
+      fatal?: boolean;
+      /**
+       * True when Discord refused the request itself rather than the moment: a 4xx that is not a
+       * 429. The same call will be refused the same way on every later pass, so a caller that
+       * retries it forever is a caller that writes forever.
+       */
+      permanent?: boolean;
+      /**
+       * True when the object the call named is gone (404). Whatever identifier the call carried is
+       * dead and cannot be reused.
+       */
+      missing?: boolean;
+    };
+
+export type DiscordTransport = {
+  /** Posts the card to the host's channel. The message a thread is later opened on. */
+  postCard: (input: { card: string }) => Promise<CallOutcome<{ messageId: string }>>;
+  /**
+   * Opens a thread on a message this bot posted. Separate from posting it because the two can fail
+   * independently: a broker that reposted the card whenever thread creation failed would fill the
+   * channel with orphans, and a bot that creates a thread from its own message owns that message
+   * permanently, so the posted one is worth keeping and retrying against.
+   */
+  openThread: (input: {
+    messageId: string;
+    name: string;
+  }) => Promise<CallOutcome<{ threadId: string }>>;
+  /** Rewrites the starter message in place. It is never re-posted. */
+  editCard: (input: { messageId: string; card: string }) => Promise<CallOutcome<null>>;
+  renameThread: (input: { threadId: string; name: string }) => Promise<CallOutcome<null>>;
+  archiveThread: (input: { threadId: string }) => Promise<CallOutcome<null>>;
+};

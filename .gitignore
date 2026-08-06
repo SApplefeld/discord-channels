@@ -19,5 +19,9 @@ config.local.json
 # the repo, but CHANNEL_BROKER_STATE can point it anywhere, so the name is ignored here too.
 broker-state*.json
 
+# The broker's session-to-thread map, written beside the registry snapshot. Not a secret, but it
+# is per-host runtime state and never source.
+discord-threads.json
+
 # Output of the hook-capture harness in tools/.
 tools/hook-capture.jsonl
