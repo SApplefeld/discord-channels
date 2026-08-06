@@ -1,11 +1,11 @@
 # Operator checks
 
-Four checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
+Five checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
 proves, its result, the exact steps, and what the answer settled.
 
-**All four were run on 2026-08-06 and all four passed.** The procedures are kept because they are
-also how to re-check a new host: none of these results is inferable from the code, and two of them
-would change the design if a future host answered differently.
+**Checks A through D were run on 2026-08-06 and all four passed. Check E is open.** The procedures
+are kept because they are also how to re-check a new host: none of these results is inferable from
+the code, and two of them would change the design if a future host answered differently.
 
 Two results changed the design rather than merely confirming it. Check D means channel settings are
 machine-scoped, which permanently closes the silent-delivery-death hole on every host, and it means
@@ -96,9 +96,10 @@ fallback (detecting a changed `session_id` on any hook event) is not needed and 
 
 The same capture shows `SessionEnd` fires on a clean exit, carrying the ending session's ID. **The
 broker does not use it.** A hard kill fires no hook, so relay stdio closing and the heartbeat
-backstop remain the death signals, and the intake accepts only `SessionStart`, `PostToolUse`, and
-`Stop`. A `SessionEnd` post would be refused with a 400. The signal exists and is free if a later
-change wants a precise clean-exit case.
+backstop remain the death signals, and the content-free intake accepts only `SessionStart`,
+`PostToolUse`, and `Stop`. A `SessionEnd` post would be refused with a 400. The mirror route keeps
+its own vocabulary of `UserPromptSubmit` and `Stop` and shares nothing with that list. The signal
+exists and is free if a later change wants a precise clean-exit case.
 
 **Proves:** that an outside process can tell a session was replaced inside a still-running process.
 The whole thread-per-work-topic behavior depends on it.
@@ -208,3 +209,41 @@ entirely, so any shipped channel plugin still wanted must be listed alongside th
 **On a host where it fails:** an organization-owned host uses server-managed settings through the
 admin console instead, and a personal-account host keeps
 `--dangerously-load-development-channels` and its one keypress at launch.
+
+---
+
+## E. Does the mirror render as the escape assumes, and does `-NoMirror` stop it?
+
+**Status: open.** This is the one behavior no test in this repository can reach. The mirror's
+sanitization is built on two claims about how Discord renders a message, and the per-session switch
+depends on Claude Code interpolating an environment variable into a hook header, which only a real
+session can exercise. Everything either side of that seam is pinned by tests; the seam itself is not.
+
+**What it proves.** That mirrored content cannot draw a mention pill, a timestamp chip, or a copy of
+the renderer's own attribution line inside the channel where tool approvals are answered, and that
+the per-session off switch actually stops mirror posts on a real host.
+
+### Steps
+
+1. From a wrapped session, get Claude to reply with a fenced code block containing
+   `<@000000000000000000>` and `<t:1700000000:R>` on their own lines, and a line beginning `> `.
+2. Read the thread on a phone. **Pass:** all three arrive as literal text inside the code block, no
+   pill, no relative-time chip, no second blockquote beside the message's own attribution line.
+   **Fail:** any of them renders. The fix is confined to the escape in `broker/discord/render.ts`:
+   drop the fence exemption so those characters are escaped everywhere, accepting the visible
+   backslashes in code that the exemption exists to avoid.
+3. Repeat with the same three constructs outside a code block. They must arrive escaped either way;
+   this half is pinned by tests and is here to confirm the tests describe the real surface.
+4. Launch a second session with `Enter-ClaudeSession -NoMirror` while the first keeps running. Type a
+   prompt in each. **Pass:** the first session's thread carries both the prompt and the reply, the
+   second session's thread carries neither, and the second session's status card keeps ticking.
+   **Fail either way round:** an unmirrored session that mirrors is a privacy control that failed
+   open, and a mirrored session that goes quiet means the header is reaching the broker from the
+   wrong session.
+5. On a host installed before the switch existed, confirm `-NoMirror` refuses to launch and names the
+   installer, rather than starting a session that mirrors.
+
+### Recording the result
+
+Write the outcome of each step here the way checks A through D record theirs. Step 2 is the one that
+can change the design; the rest confirm the wiring.

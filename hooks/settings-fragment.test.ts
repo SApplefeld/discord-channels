@@ -49,6 +49,26 @@ function httpHooks(): Array<{ event: string; hook: HookEntry["hooks"][number] }>
   return found;
 }
 
+/**
+ * Every hook the fragment declares, command and http alike, tagged with its event. Unlike
+ * httpHooks(), this also reaches SessionStart's command hook, which a check for "nothing outside
+ * the mirror route carries the switch header" has to cover to mean what its name says: a check that
+ * silently narrows to http hooks would pass even if the header leaked onto a command hook, since a
+ * command hook is never in httpHooks()'s result at all.
+ */
+function allHooks(): Array<{ event: string; hook: HookEntry["hooks"][number] }> {
+  const fragment = loadFragment();
+  const found: Array<{ event: string; hook: HookEntry["hooks"][number] }> = [];
+  for (const [event, entries] of Object.entries(fragment.hooks)) {
+    for (const entry of entries) {
+      for (const hook of entry.hooks) {
+        found.push({ event, hook });
+      }
+    }
+  }
+  return found;
+}
+
 /** The `-File <path>` argument of the SessionStart command, quoted or bare. */
 function sessionStartScriptPath(command: string): string | null {
   const quoted = command.match(/-File\s+"([^"]+)"/);
@@ -153,6 +173,42 @@ test("every http hook posts to a broker route with the token wired through", () 
             `or the header is silently dropped from every request`,
         );
       }
+    }
+  }
+});
+
+test("only the mirror hooks carry X-Channel-Mirror; every other hook carries no content switch", () => {
+  // The generic check above would pass unchanged if X-Channel-Mirror leaked onto a liveness hook or
+  // even onto SessionStart's command hook, since it only requires that whatever is interpolated is
+  // allowlisted and says nothing about which hooks may carry the header at all. So the negative half
+  // is asserted explicitly here, over allHooks() rather than httpHooks(): the command hook has no
+  // headers or allowedEnvVars at all, and a check narrowed to http hooks would never see it, passing
+  // even if it somehow carried the switch.
+  for (const { event, hook } of allHooks()) {
+    const isMirror = hook.type === "http" && (hook.url ?? "").endsWith("/mirror");
+    const headers = hook.headers ?? {};
+    const allowed = hook.allowedEnvVars ?? [];
+
+    if (isMirror) {
+      assert.match(
+        headers["X-Channel-Mirror"] ?? "",
+        /^\$\{?CHANNEL_SESSION_MIRROR\}?$/,
+        `${event}'s mirror hook must forward -NoMirror's per-session switch as X-Channel-Mirror`,
+      );
+      assert.ok(
+        allowed.includes("CHANNEL_SESSION_MIRROR"),
+        `${event}'s mirror hook interpolates CHANNEL_SESSION_MIRROR but does not allowlist it`,
+      );
+    } else {
+      assert.equal(
+        headers["X-Channel-Mirror"],
+        undefined,
+        `${event}'s ${hook.type} hook must not carry X-Channel-Mirror; it posts no content for a mirror switch to govern`,
+      );
+      assert.ok(
+        !allowed.includes("CHANNEL_SESSION_MIRROR"),
+        `${event}'s ${hook.type} hook must not allowlist CHANNEL_SESSION_MIRROR`,
+      );
     }
   }
 });

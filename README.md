@@ -3,13 +3,18 @@
 Watch and steer long-running Claude Code sessions from Discord.
 
 Every running session gets its own Discord thread, so the thread list is a live dashboard of the
-fleet and opening a thread shows what that session is doing now. A message in a thread reaches that
-session, and a tool permission prompt can be approved from a phone with a five-letter reply.
+fleet and opening a thread shows what that session is doing now. The conversation is mirrored into
+the thread turn by turn, a message in a thread reaches that session, and a tool permission prompt can
+be approved from a phone with a five-letter reply.
 
-All seven sections of the build are implemented. What has never run is the Discord half against a
-real bot: no token exists yet, so every outbound surface is proven against a fake, and a permission
-prompt reaching the model needs an interactive session at a keyboard. Install a host per
-[`docs/install.md`](docs/install.md) and that is the walk that closes it.
+The system is installed and running against a real bot: threads open, cards tick, and messages cross
+in both directions. What still needs a human rather than a test is recorded in
+[`docs/operator-checks.md`](docs/operator-checks.md), which keeps each check's procedure and result.
+Install a host per [`docs/install.md`](docs/install.md).
+
+**Mirroring means the conversation leaves the machine.** Prompts and replies are posted to Discord
+and retained there. [`docs/install.md`](docs/install.md) says what that covers and how to turn it
+off, per host or per session.
 
 The addressing is entirely local, on a Discord bot token, so rotating the Anthropic account paying
 for a session (as `claude-swap` does mid-run) cannot break it. That is the failure this exists to
@@ -22,7 +27,7 @@ stops accepting input permanently once the seat rotates out from under it.
 |---|---|
 | `broker/` | The per-host daemon: Discord gateway, session registry, the surfaces |
 | `relay/` | The MCP channel server, a stdio child of one Claude Code session |
-| `hooks/` | Session-lifecycle hooks that report identity and activity to the broker |
+| `hooks/` | Session-lifecycle hooks: identity and activity to the broker, and the conversation to the mirror |
 | `wrapper/` | PowerShell launcher that names a session and starts it with the channel |
 | `docs/` | [Index](docs/README.md), plans, and operator runbooks |
 

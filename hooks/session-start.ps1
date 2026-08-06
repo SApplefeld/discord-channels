@@ -16,12 +16,12 @@
 
 $ProgressPreference = 'SilentlyContinue'
 
-# The port is a literal rather than an environment override on purpose. The two `http` hooks in
-# hooks/settings-fragment.json carry their port inside a URL that no environment variable can move,
+# The port is a literal rather than an environment override on purpose. Every `http` hook in
+# hooks/settings-fragment.json carries its port inside a URL that no environment variable can move,
 # so an override honored here and nowhere else produces the worst reachable state: the session
 # announces itself, then never sends another event, and the broker's sweep marks a working session
-# stale. One literal, pinned against broker/config.ts's DEFAULT_PORT and the fragment's two URLs by
-# settings-fragment.test.ts, means all three move together or the gate fails.
+# stale. One literal, pinned against broker/config.ts's DEFAULT_PORT and every http hook URL in the
+# fragment by settings-fragment.test.ts, means all three move together or the gate fails.
 $brokerPort = 8787
 
 try {

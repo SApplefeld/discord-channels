@@ -49,9 +49,9 @@ export type BrokerConfig = {
 
 /**
  * Exported because it is a shared literal, not a private default: hooks/settings-fragment.json
- * hardcodes this port into two hook URLs and hooks/session-start.ps1 falls back to it, and a hook
- * pointed at a port nothing listens on fails silently. settings-fragment.test.ts pins the fragment
- * against this value so the three cannot drift apart.
+ * hardcodes this port into every http hook URL and hooks/session-start.ps1 falls back to it, and a
+ * hook pointed at a port nothing listens on fails silently. settings-fragment.test.ts pins the
+ * fragment against this value so the three cannot drift apart.
  */
 export const DEFAULT_PORT = 8787;
 const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
@@ -116,7 +116,13 @@ function bounded(
 }
 
 const FLAG_TRUE: readonly string[] = ["1", "true", "yes", "on"];
-const FLAG_FALSE: readonly string[] = ["0", "false", "no", "off"];
+/**
+ * Exported because broker/intake.ts's per-request `X-Channel-Mirror` header reads the same off
+ * vocabulary this config knob does. A second literal would let the two drift: a header spelling
+ * accepted here but not there would flip a session's mirror state depending on which of the two
+ * paths reads it.
+ */
+export const FLAG_FALSE: readonly string[] = ["0", "false", "no", "off"];
 
 /**
  * Refuses rather than guesses, holding the same line the numeric knobs hold: a boolean knob read

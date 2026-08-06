@@ -43,7 +43,21 @@ mark itself working or idle, or end its own record. It can also **post arbitrary
 session's Discord thread as the mirror**, because the mirror route authenticates on the process token
 alone. So a shell subprocess of a wrapped session can put words on the operator's phone that read as
 the session's own prompts and replies. The token is withheld from `GET /sessions` for this reason,
-and `CHANNEL_MIRROR=off` removes the text half of it.
+and either mirror switch removes the text half of it: `CHANNEL_MIRROR=off` in `broker.env` for the
+host, or `Enter-ClaudeSession -NoMirror` for one session.
+
+**The per-session switch is advisory, and only the host-wide one is enforced.** `-NoMirror` travels
+as a header the mirror hooks send, so it suppresses what the hooks post; a process holding the token
+can post without that header and be mirrored from a session the operator marked no-mirror. That is
+not a hole this switch could close, because such a process can already post arbitrary mirror content
+under the paragraph above. The switch exists for the operator's privacy from their own session, not
+as a defense against a process that holds the token. `CHANNEL_MIRROR=off` is decided at the broker
+and holds against any poster.
+
+That also makes an environment variable a privacy control surface, alongside the files below:
+anything that can set `CHANNEL_SESSION_MIRROR` for a session influences whether that session is
+mirrored, and anything that can set `CHANNEL_MIRROR` in the broker's own environment influences the
+host.
 
 No key stronger than the token is available to close this. The mirror hooks are `http` hooks whose
 only credential is an environment variable Claude Code interpolates into a header, and any variable

@@ -18,16 +18,19 @@
 //
 //   POST /mirror
 //     the same three headers, with X-Channel-Hook-Event naming UserPromptSubmit or Stop, carrying
-//     a console prompt or a turn's final assistant reply in the hook payload. This is the one
-//     content-bearing route: a token-authenticated post has its prompt or last_assistant_message
-//     extracted and handed to the routing layer for the session's bound thread, and every drop
-//     path (no token, unknown token, mirroring off, body over its own ceiling, field absent)
-//     answers 202, because the installed hooks post here from every session on the machine and a
-//     non-2xx is a visible error inside that session. The content itself never appears in the
-//     broker log at any level; see handleMirror.
+//     a console prompt or a turn's final assistant reply in the hook payload, plus one more:
+//     X-Channel-Mirror, present only when the launching session set CHANNEL_SESSION_MIRROR
+//     (wrapper's -NoMirror does), carrying that session's own escape from the host-wide mirror
+//     switch. This is the one content-bearing route: a token-authenticated post has its prompt or
+//     last_assistant_message extracted and handed to the routing layer for the session's bound
+//     thread, and every drop path (no token, unknown token, mirroring off host-wide or for this
+//     session, body over its own ceiling, field absent) answers 202, because the installed hooks
+//     post here from every session on the machine and a non-2xx is a visible error inside that
+//     session. The content itself never appears in the broker log at any level; see handleMirror.
 //
 //   GET /sessions  -> the registry as JSON, for debugging.
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { FLAG_FALSE } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { HookEvent, HookIntake, Registry, SessionRecord } from "./registry.ts";
 import type { MirrorKind } from "./routing/outbound.ts";
@@ -398,9 +401,40 @@ export function createHandler(
     // and dropped, exactly as /hook drops the same traffic, so a replayed or forged post learns
     // nothing from the response. The process token itself is never logged; it is the forgery key,
     // and this is exactly the traffic a forged one would produce.
-    if (options.registry.current(processToken) === null) {
+    const holder = options.registry.current(processToken);
+    if (holder === null) {
       request.resume();
       refusals.warn("mirror post dropped", "no live session holds this process token");
+      send(response, 202, { ignored: true });
+      return;
+    }
+
+    // The per-session escape: wrapper/Enter-ClaudeSession.ps1's -NoMirror sets
+    // CHANNEL_SESSION_MIRROR in the launched session's own environment, and the mirror hooks
+    // forward it as this header. Checked here, after the token has identified a live session,
+    // rather than alongside the anonymous checks above: it is a property of a known session, not
+    // of an arbitrary request, and checking it earlier would let an off header on a forged or
+    // unrecognized token take the same quiet 202 path as a legitimate suppression, swallowing the
+    // "no live session holds this process token" line above, which is the only record of that
+    // traffic.
+    //
+    // The off vocabulary is FLAG_FALSE, imported from broker/config.ts rather than re-listed here,
+    // so the header and the config knob read one shared spelling of "off" rather than two that
+    // could drift. The read is deliberately permissive where the config knob's strictFlag is not:
+    // CHANNEL_MIRROR the env var refuses an unrecognized spelling at broker startup, where a thrown
+    // error is the operator's to see and fix before anything runs. This header arrives per request
+    // from a session's own environment, and the only way to refuse a request is a non-2xx response,
+    // which Claude Code surfaces as a visible error inside that session on every prompt and every
+    // turn end. So an absent header (every session that never set CHANNEL_SESSION_MIRROR, the
+    // overwhelming majority) and an unrecognized spelling both fall through to mirroring normally;
+    // only a value in FLAG_FALSE turns this one post off.
+    const sessionMirror = header(request, "x-channel-mirror");
+    if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
+      request.resume();
+      // Static and session-identifying only, never content and never the token: without this line,
+      // a session the operator suppressed and a mirror that is silently broken both read as total
+      // silence in the log, with no way to tell which is happening.
+      refusals.warn("mirror post suppressed by session switch", `session=${holder.sessionId}`);
       send(response, 202, { ignored: true });
       return;
     }

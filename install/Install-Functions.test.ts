@@ -494,6 +494,57 @@ test("Merge-ChannelSettingsFile refuses an http hook authorizing an environment 
   assert.ok(!existsSync(settingsPath));
 });
 
+test("Merge-ChannelSettingsFile admits the mirror switch header and env var on a mirror-route hook", (t) => {
+  // X-Channel-Mirror and CHANNEL_SESSION_MIRROR are the pair Section 4 adds, legitimate only on a
+  // hook posting to /mirror. Driven against UserPromptSubmit (already a mirror-route hook in the
+  // shipped fragment) with the header and env var set again explicitly, so this exercises the
+  // allowlists' own admission logic rather than only the fact that the fragment on disk agrees
+  // with them.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+
+  const result = runFunctions<{ merged: boolean }>(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['hooks']['UserPromptSubmit'][0]['hooks'][0]['headers']['X-Channel-Mirror'] = '$` + `{CHANNEL_SESSION_MIRROR}'`,
+      `$fragment['hooks']['UserPromptSubmit'][0]['hooks'][0]['allowedEnvVars'] = @('CHANNEL_PROCESS_TOKEN', 'CHANNEL_SESSION', 'CHANNEL_SESSION_MIRROR')`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment | Out-Null`,
+      `(@{ merged = $true } | ConvertTo-Json) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
+    ].join("\n"),
+    dir,
+  );
+
+  assert.equal(result.merged, true);
+  assert.ok(existsSync(settingsPath), "an admitted header and env var must reach the settings file");
+});
+
+test("Merge-ChannelSettingsFile refuses the mirror switch header on a liveness hook", (t) => {
+  // X-Channel-Mirror is legitimate on a /mirror hook and forbidden on /hook: the fix ties the
+  // header and its env var to the route rather than admitting them everywhere. A flat allowlist
+  // would accept this fragment, the exact shape settings-fragment.test.ts's liveness/mirror split
+  // forbids, so this is the discriminating negative half of the route-tying fix: the positive test
+  // above passes identically whether or not the route tie exists, and only this one distinguishes
+  // "widened for /mirror" from "widened everywhere."
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+
+  const { status, stderr } = runFunctionsExpectingFailure(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['hooks']['PostToolUse'][0]['hooks'][0]['headers']['X-Channel-Mirror'] = '$` + `{CHANNEL_SESSION_MIRROR}'`,
+      `$fragment['hooks']['PostToolUse'][0]['hooks'][0]['allowedEnvVars'] = @('CHANNEL_PROCESS_TOKEN', 'CHANNEL_SESSION', 'CHANNEL_SESSION_MIRROR')`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    ].join("\n"),
+    dir,
+  );
+
+  assert.notEqual(status, 0, "the switch header must be refused on a liveness hook, not merged");
+  assert.match(stderr, /header/i);
+  assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
+});
+
 test("Merge-ChannelSettingsFile prunes old backups beyond the retention count", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -475,6 +475,124 @@ test("with the mirror off, a post is accepted, drained, and nothing is delivered
   assert.equal(request.bodyConsumed, false, "off also means the body is never assembled");
 });
 
+test("a per-session X-Channel-Mirror off value stops that post, unread, without touching the host-wide switch", async () => {
+  // wrapper/Enter-ClaudeSession.ps1's -NoMirror sets CHANNEL_SESSION_MIRROR in one session's own
+  // environment; the mirror hooks forward it as this header. options.mirror.enabled here stays
+  // true throughout, so this is the header alone doing the work, not the config knob's off path
+  // this file already covers above.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  for (const value of ["off", "0", "false", "no", "OFF", " off "]) {
+    const request = fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": value }),
+      body: JSON.stringify({ prompt: "sensitive work" }),
+    });
+    const result = await call(handle, request);
+    await settled();
+
+    assert.equal(result.status, 202, `off value ${JSON.stringify(value)} must stay quiet, never refuse`);
+    assert.equal(request.bodyConsumed, false, `off value ${JSON.stringify(value)} must drain the body unread`);
+  }
+  assert.deepEqual(deliveries, [], "no off value may deliver anything");
+});
+
+test("an absent X-Channel-Mirror header, and an unrecognized value, both mirror normally", async () => {
+  // The vast majority of sessions never set CHANNEL_SESSION_MIRROR, so absence is the steady state and
+  // must never be read as off; that would silently disable the feature for every session on the
+  // host. An unrecognized spelling also falls through rather than refusing the post: this header
+  // arrives per request from a session's own environment, and the only way to refuse a request is
+  // a non-2xx, which Claude Code surfaces as a visible error inside that session.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  const cases: Array<{ label: string; headers: Record<string, string> }> = [
+    { label: "absent", headers: hookHeaders("UserPromptSubmit") },
+    { label: "on", headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "on" }) },
+    { label: "unrecognized", headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "maybe" }) },
+  ];
+  for (const { label, headers } of cases) {
+    const request = fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers,
+      body: JSON.stringify({ prompt: `delivered despite ${label}` }),
+    });
+    const result = await call(handle, request);
+    await settled();
+    assert.equal(result.status, 202, label);
+  }
+
+  assert.deepEqual(
+    deliveries.map((delivery) => delivery.text),
+    ["delivered despite absent", "delivered despite on", "delivered despite unrecognized"],
+    "an absent header, an on value, and an unrecognized value must all deliver",
+  );
+});
+
+test("a per-session suppression is logged with the session id, never content", async () => {
+  // Without this line, a session the operator suppressed with -NoMirror and a mirror that has
+  // silently broken both read as total silence in the log, with no way to tell them apart. The line
+  // is static and names the session; it must never carry the prompt or reply text.
+  const lines: string[] = [];
+  const logger = { info: () => {}, warn: (message: string) => lines.push(message), error: () => {} };
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror, deliveries } = fakeMirror();
+  const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, mirror });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    sessionId: "session-suppressed",
+    source: "startup",
+    toolName: null,
+  });
+
+  const secret = "SECRET-suppressed-prompt";
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+      body: JSON.stringify({ prompt: secret }),
+    }),
+  );
+  await settled();
+
+  const captured = lines.join("\n");
+  assert.ok(!captured.includes(secret), "the suppression line must not carry mirror content");
+  assert.ok(captured.includes("session-suppressed"), "the suppression line must name the session");
+  assert.deepEqual(deliveries, []);
+});
+
+test("an off header on a forged or unrecognized token still produces the unknown-token refusal", async () => {
+  // The header check runs after the token and registry checks specifically so this case is still
+  // visible: an off value alongside a token no live session holds must not take the same quiet path
+  // a legitimate per-session suppression gets, or the one record of forged mirror traffic disappears.
+  const lines: string[] = [];
+  const logger = { info: () => {}, warn: (message: string) => lines.push(message), error: () => {} };
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror, deliveries } = fakeMirror();
+  const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, mirror });
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+    body: JSON.stringify({ prompt: "a forged post carrying the off header too" }),
+  });
+  const result = await call(handle, request);
+  await settled();
+
+  assert.equal(result.status, 202);
+  assert.deepEqual(deliveries, []);
+  assert.ok(
+    lines.some((line) => line.includes("no live session holds this process token")),
+    "the unknown-token refusal must still fire even when the post also carries the off header",
+  );
+});
+
 test("a tokenless mirror post is dropped before its body is ever read", async () => {
   // An unwrapped session on this machine posts its full prompt and reply here on every turn. The
   // token check runs before the body read, so that content transits the socket and is discarded

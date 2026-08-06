@@ -74,8 +74,11 @@ so a restart at logon rebinds existing threads rather than opening duplicates.
 
 Three, and each one fails in its own way.
 
-- **Claude Code's hook protocol.** The user-level settings file registers three hooks. All of them
-  fail open: a broker that is down cannot slow or block a session.
+- **Claude Code's hook protocol.** The user-level settings file registers four events and five hooks:
+  `SessionStart`, `PostToolUse`, and a `Stop` liveness tick carry no content, while
+  `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the turn's final
+  assistant reply to the mirror. All of them fail open: a broker that is down cannot slow or block a
+  session.
 - **Claude Code's channel protocol.** The relay registers only from the interactive REPL, and only
   when `channelsEnabled` is on and the plugin is allowlisted. Claude Code refuses a channel whose
   negotiated protocol revision is at or past `2026-07-28`.

@@ -168,6 +168,8 @@ splitter and the poster agree on the ceiling by construction rather than by coin
 
 ### 4. Wrapper toggle and the honest docs
 Model: sonnet
+Locus: split. The code (wrapper switch, hook header, installer allowlists, broker honoring it) is
+dispatched; every write under `docs/` is the main thread's, which is where doc authoring belongs.
 `Enter-ClaudeSession -NoMirror` sets the per-session off switch; the mirror hooks forward it as a
 header interpolated from an allowlisted environment variable, and the broker honors it per post. Docs: `docs/install.md`'s privacy paragraph rewritten to state what leaves the machine with
 mirroring on and how to turn it off; `docs/operations.md` gains the mirror failure modes (mirror
@@ -385,4 +387,53 @@ the reviewers caught here in a comment claiming one shared fence scanner made di
 and `claude-code-channel-and-hook-facts`, whose measured payload fields the mirror event vocabulary
 is built from).
 Next: 4. Wrapper toggle and the honest docs
+Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-06
+Completed: 4. Wrapper toggle and the honest docs
+Implemented By: implementer-sonnet for the code, main session for every write under `docs/`, one
+review-fix round
+Metrics: 1 review round (adversarial + blind at opus, security at default), 1 fix round; 0
+NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **Two of the round's worst findings were things the orchestrator had already
+noticed and waved off**, which is the lesson worth keeping. The per-session switch was originally
+given the same environment variable name as the broker's own host-wide knob, `CHANNEL_MIRROR`, on
+the reasoning that the two live in different processes. They do not stay there: the broker inherits
+its environment, `broker.env` only overrides keys it actually contains, and `Install-Host.ps1` never
+writes that key, so a broker started from a `-NoMirror` shell comes up with mirroring off for every
+session on the host, while the runbook's first diagnostic step points at a file that does not
+mention it. Renamed to `CHANNEL_SESSION_MIRROR`, which removes the class rather than the instance.
+
+The Critical: `-NoMirror` silently did nothing on this machine as installed. The switch rides a
+header the mirror hooks carry, and the settings file merged onto this host predates that header, so
+the wrapper would set the variable, no header would be sent, and the session would mirror in full
+while the operator believed otherwise. A privacy control that fails open silently is worse than
+none, so the wrapper now verifies the installed mirror hooks carry the switch and refuses to launch,
+naming the installer, rather than running the session mirrored.
+
+Decided: the switch stays advisory rather than enforced. Recording the preference on the session
+record at `SessionStart` would stop a token holder omitting the header, but a token holder can
+already post arbitrary mirror content, so enforcement closes nothing that is open. The switch is the
+operator's privacy from their own session, and `docs/security-model.md` now says exactly that.
+
+Also decided: the honesty sweep goes wider than the plan's file list. `docs/install.md` claimed
+`-NoMirror` covers "sensitive work", which is untrue of the code: the switch stops the conversation
+and nothing else, and a tool approval prompt from that session still carries the shell command and
+file contents to Discord. The root `README.md` still said no bot token existed and the Discord half
+had never run, contradicted by the install commits and by this session posting to the thread.
+Review Findings: Critical and both Majors fixed and pinned red-first. All twelve Minors fixed,
+including three the sweep had missed (stale "two http hooks" counts in `hooks/session-start.ps1`,
+`broker/config.ts`, and `Install-Host.ps1`'s operator-facing help text), the per-session header check
+running ahead of the token check and thereby erasing the only log line that witnesses forged mirror
+traffic, an installer allowlist that admitted the switch header on a liveness hook while the repo's
+own test forbade it (two gates in one changeset encoding opposite rules), and a fragment test whose
+name claimed full coverage while iterating only http hooks, so the SessionStart command hook was
+never examined.
+
+A new operator check E was added rather than a test: the seam between Claude Code interpolating an
+allowlisted variable into a hook header and the broker reading it cannot be exercised by anything in
+this repository, and neither can Discord's rendering of the escape. Both are written up with pass
+and fail criteria and what each failure would change.
+Stamps: none surfaced (zero unstamped reads in the section's span).
+Next: finishing-work
 Commit Model: Commit-and-Push

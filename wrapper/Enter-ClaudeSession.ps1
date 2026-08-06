@@ -14,6 +14,18 @@
 #
 # -ClaudeArgs passes extra arguments straight through to `claude` after the channel flag and the
 # relay's server name: a -p prompt, or anything else.
+#
+# -NoMirror sets CHANNEL_SESSION_MIRROR to an off value for this one launch, restored along with the
+# other two on exit. It is the per-session escape from the host-wide CHANNEL_MIRROR default in
+# broker.env: the launched session's console prompts and turn replies are not mirrored to its thread,
+# while every other session on the host keeps mirroring. Named differently from the broker's own
+# CHANNEL_MIRROR on purpose, so the two never alias: the broker inherits its process environment, and
+# a broker started from inside a -NoMirror session must not come up with mirroring off for every
+# session on the host. Absent, CHANNEL_SESSION_MIRROR is cleared for the launch regardless of what
+# the calling shell already had, so the launched session never carries a value this wrapper did not
+# set. -NoMirror also verifies the installed settings file's mirror hooks actually forward the
+# switch header, and throws rather than launching a session that mirrors exactly as it would without
+# the switch; see Assert-InstalledMirrorSwitch.
 
 # Which flag opens channels on each host. Plain --channels loads a channel only when its plugin is
 # on an allowlist; otherwise the launch is refused, and a refused channel is this project's worst
@@ -108,6 +120,24 @@ function Enter-ClaudeSession {
 
     .PARAMETER ClaudeArgs
     Extra arguments passed through to `claude` after the channel flag.
+
+    .PARAMETER NoMirror
+    Turns off the mirror for this one session only. Sets CHANNEL_SESSION_MIRROR to an off value in
+    the launched process's environment; the mirror hooks (hooks/settings-fragment.json's
+    UserPromptSubmit and second Stop entries) forward it as the X-Channel-Mirror header, and
+    broker/intake.ts drops that session's mirror posts without touching CHANNEL_MIRROR's host-wide
+    default, which other sessions keep mirroring under. Named apart from that host-wide variable so
+    the two can never alias: the broker inherits its own process environment, and a broker started
+    from inside a -NoMirror session must not thereby lose mirroring for every session on the host.
+    Absent, the launched environment carries no CHANNEL_SESSION_MIRROR, whether or not the calling
+    shell already had one set: a value left over from an earlier -NoMirror launch, or set by hand,
+    is cleared rather than carried through to a session that never asked for it.
+
+    Before setting anything, verifies the installed settings file's mirror hooks actually carry the
+    X-Channel-Mirror header (see Assert-InstalledMirrorSwitch) and throws if they do not, because a
+    settings file merged before this parameter existed has mirror hooks that forward nothing: the
+    session would mirror exactly as it would without -NoMirror, silently, during the sensitive work
+    the switch exists for.
     #>
     param(
         [Parameter(Mandatory)]
@@ -115,7 +145,9 @@ function Enter-ClaudeSession {
         [ValidateLength(1, 64)]
         [string]$Name,
 
-        [string[]]$ClaudeArgs = @()
+        [string[]]$ClaudeArgs = @(),
+
+        [switch]$NoMirror
     )
 
     $resolved = Resolve-ChannelHost
@@ -138,6 +170,12 @@ function Enter-ClaudeSession {
     # session silently fails to announce, so the disagreement is made loud here.
     Assert-InstalledHookPath
 
+    # A privacy switch that fails open must fail loudly. Checked only when asked for: a launch with
+    # no -NoMirror carries no expectation about the mirror hooks at all.
+    if ($NoMirror) {
+        Assert-InstalledMirrorSwitch
+    }
+
     Assert-HookScriptProtected
 
     if (-not (Test-Path -LiteralPath $script:RelayScript)) {
@@ -148,21 +186,36 @@ function Enter-ClaudeSession {
     $mcpConfig = New-ChannelMcpConfig
 
     $previous = @{
-        CHANNEL_SESSION       = $env:CHANNEL_SESSION
-        CHANNEL_PROCESS_TOKEN = $env:CHANNEL_PROCESS_TOKEN
+        CHANNEL_SESSION        = $env:CHANNEL_SESSION
+        CHANNEL_PROCESS_TOKEN  = $env:CHANNEL_PROCESS_TOKEN
+        CHANNEL_SESSION_MIRROR = $env:CHANNEL_SESSION_MIRROR
     }
     try {
         $env:CHANNEL_SESSION = $Name
         $env:CHANNEL_PROCESS_TOKEN = [guid]::NewGuid().ToString()
+        # CHANNEL_SESSION_MIRROR rides into an HTTP header via the fragment's allowedEnvVars with no
+        # validation beyond what Claude Code's own interpolation performs, unlike CHANNEL_SESSION
+        # (pattern-validated above) and CHANNEL_PROCESS_TOKEN (a GUID this wrapper mints itself). Set
+        # to the literal 'off' when asked, and cleared otherwise rather than left at whatever the
+        # calling shell already had: an ambient value (left behind by an earlier crashed -NoMirror
+        # session, or set by hand) must not silently carry into a session that never asked for it.
+        if ($NoMirror) {
+            $env:CHANNEL_SESSION_MIRROR = 'off'
+        } else {
+            $env:CHANNEL_SESSION_MIRROR = $null
+        }
 
         & claude --mcp-config $mcpConfig $channelFlag "server:$($script:ChannelServerName)" @ClaudeArgs
     } finally {
         # Restored whether claude exited, threw, or was interrupted. A token left behind in a
         # dot-sourced shell is inherited by the next `claude` started from it, and the broker reads
         # a second session on a live token as a supersession: the running session is marked ended
-        # and its events are credited to the newcomer.
+        # and its events are credited to the newcomer. CHANNEL_SESSION_MIRROR is restored for the
+        # same reason: a bare `claude` run later from this shell must not silently inherit
+        # -NoMirror's off value from a session that has since exited.
         $env:CHANNEL_SESSION = $previous.CHANNEL_SESSION
         $env:CHANNEL_PROCESS_TOKEN = $previous.CHANNEL_PROCESS_TOKEN
+        $env:CHANNEL_SESSION_MIRROR = $previous.CHANNEL_SESSION_MIRROR
     }
 }
 
@@ -319,5 +372,87 @@ function Assert-InstalledHookPath {
                 "start and never announce themselves. Re-run install/Install-Host.ps1 from this " +
                 "checkout to point the installed hook at it."
         }
+    }
+}
+
+<#
+.SYNOPSIS
+Throws when -NoMirror cannot be honored because the installed settings file's mirror hooks do not
+carry the per-session switch header.
+
+.DESCRIPTION
+-NoMirror only works by setting CHANNEL_SESSION_MIRROR in the launched process's environment; the
+mirror hooks have to forward it as X-Channel-Mirror for the broker to ever act on it. A settings file
+merged before this parameter existed has UserPromptSubmit and Stop mirror hooks that interpolate
+nothing, so the switch does nothing: the session mirrors exactly as it would without -NoMirror,
+silently, during precisely the sensitive work the switch exists for. A privacy control fails closed
+and loud, never open and quiet.
+
+Silence still means no opinion where nothing of this project is installed at all, the same rule
+Assert-InstalledHookPath holds: an absent settings file, or one with no SessionStart hook naming this
+checkout's script, means there is no mirror traffic to suppress either way, and -NoMirror has nothing
+to disagree with. Once this checkout's SessionStart hook is installed, both mirror hooks (
+UserPromptSubmit's, and the Stop entry posting to /mirror) must carry the switch header and its
+allowedEnvVars entry, or this throws naming the fix.
+#>
+function Assert-InstalledMirrorSwitch {
+    param(
+        # Defaulted the same way Assert-InstalledHookPath is, and for the same reason: $HOME is
+        # read-only in PowerShell, so a test drives this against an explicit fixture path instead.
+        [string]$SettingsPath = (Join-Path $HOME '.claude\settings.json')
+    )
+
+    if (-not (Test-Path -LiteralPath $SettingsPath)) { return }
+
+    try {
+        $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+    } catch {
+        # A settings file this cannot parse is Claude Code's problem to report, not the launcher's.
+        return
+    }
+
+    $actualFull = [System.IO.Path]::GetFullPath($script:SessionStartHook)
+    $installed = $false
+    foreach ($entry in @($settings.hooks.SessionStart)) {
+        foreach ($hook in @($entry.hooks)) {
+            $command = [string]$hook.command
+            if ($command -notmatch '-File\s+(?:"([^"]+)"|([^\s"]+))') { continue }
+            $declared = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+            try {
+                if ([System.IO.Path]::GetFileName($declared) -ieq 'session-start.ps1' -and
+                    [System.IO.Path]::GetFullPath($declared) -ieq $actualFull) {
+                    $installed = $true
+                }
+            } catch {
+                continue
+            }
+        }
+    }
+    if (-not $installed) { return }
+
+    $stale = [System.Collections.Generic.List[string]]::new()
+    foreach ($eventName in @('UserPromptSubmit', 'Stop')) {
+        $found = $false
+        $carriesSwitch = $false
+        foreach ($entry in @($settings.hooks.$eventName)) {
+            foreach ($hook in @($entry.hooks)) {
+                if ([string]$hook.type -ne 'http') { continue }
+                if (([string]$hook.url) -notlike '*/mirror') { continue }
+                $found = $true
+                $header = if ($hook.headers) { [string]$hook.headers.'X-Channel-Mirror' } else { '' }
+                $allowed = @($hook.allowedEnvVars)
+                if ($header -ne '' -and $allowed -contains 'CHANNEL_SESSION_MIRROR') { $carriesSwitch = $true }
+            }
+        }
+        if (-not $found -or -not $carriesSwitch) { $stale.Add($eventName) }
+    }
+
+    if ($stale.Count -gt 0) {
+        throw "Enter-ClaudeSession: -NoMirror cannot be honored. The installed settings file " +
+            "'$SettingsPath' has a $($stale -join ', ') mirror hook that does not carry the " +
+            "X-Channel-Mirror switch header, so this session's console prompts and turn replies " +
+            "would mirror exactly as if -NoMirror had not been given. Re-run " +
+            "install/Install-Host.ps1 from this checkout to install the current fragment, then " +
+            "launch again."
     }
 }

@@ -42,11 +42,11 @@ an operator-chosen directory outside the root this installer owns is how a `-Bot
 strips a whole drive's ACL down to three entries. Mutually exclusive with -BotToken.
 
 .PARAMETER Port
-The broker's listening port. Must equal the port already baked into hooks/settings-fragment.json's
-two http hook URLs, because nothing here rewrites hooks/session-start.ps1's own copy of that literal,
-and settings-fragment.test.ts pins broker/config.ts's DEFAULT_PORT against both. A -Port that
-disagreed with the fragment would open the broker on one port while every hook posts into another,
-failing silently. Defaults to the fragment's own literal.
+The broker's listening port. Must equal the port already baked into every http hook URL in
+hooks/settings-fragment.json, because nothing here rewrites hooks/session-start.ps1's own copy of
+that literal, and settings-fragment.test.ts pins broker/config.ts's DEFAULT_PORT against both. A
+-Port that disagreed with the fragment would open the broker on one port while every hook posts into
+another, failing silently. Defaults to the fragment's own literal.
 
 .PARAMETER RepoRoot
 This checkout's root, defaulting to the directory this script's parent lives in. Overridable so a

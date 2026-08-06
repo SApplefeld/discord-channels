@@ -30,8 +30,21 @@ approval prompt carries the tool's actual input: the shell command, the patch bo
 
 **With mirroring on, which is the default, the conversation itself leaves the machine too.** Every
 prompt typed at the console and every turn's final assistant reply is posted into that session's
-thread, in full, so the operator can read and steer from a phone. Discord retains all of it. Set
-`CHANNEL_MIRROR=off` in `broker.env` to turn the mirror off for every session on the host.
+thread, in full, so the operator can read and steer from a phone. Discord retains all of it.
+
+Two switches turn it off. `CHANNEL_MIRROR=off` in `broker.env` covers every session on the host, and
+`Enter-ClaudeSession -NoMirror` covers one session while every other session keeps mirroring.
+
+**Neither switch makes a session private.** They stop the conversation being mirrored, and nothing
+else. A tool approval prompt from that session still carries the tool's actual input to Discord, as
+the paragraph above describes, because that is how the prompt is answerable at all. A session where
+the shell commands and file contents themselves are sensitive should not be answering approvals over
+the channel either.
+
+The per-session switch needs the hooks installed from this version of the repository: it works by a
+header the mirror hooks carry, so a host installed before the switch existed has no such header. The
+wrapper refuses to launch with `-NoMirror` against settings that lack it rather than mirroring the
+session anyway, and the fix is re-running the installer.
 
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a
 starter message successfully and then cannot open a thread on it.
@@ -54,16 +67,17 @@ Unelevated is a requirement, not a convenience: a file created by an elevated sh
 machine's Administrators group rather than by the account, and the broker's credential guard reads
 that owner shift as a planted token file and refuses to start. Elevation belongs only to step 3.
 
-`-Port` must agree with the two hook URLs in `hooks/settings-fragment.json` and the literal in
-`hooks/session-start.ps1`. Those three are pinned together by the test suite, and the installer
+`-Port` must agree with every hook URL in `hooks/settings-fragment.json` and the literal in
+`hooks/session-start.ps1`. They are pinned together by the test suite, and the installer
 refuses a port that disagrees rather than moving one copy and silently disconnecting the hooks.
 
 The installer:
 
 - writes `broker.env` and the token file under `%LOCALAPPDATA%\sapplefeld-channels\`, outside the
   repository,
-- substitutes this checkout's absolute path into the `SessionStart` hook and merges the three hooks
-  and the relay's one reply-tool permission rule into your user-level `~/.claude/settings.json`,
+- substitutes this checkout's absolute path into the `SessionStart` hook and merges every hook the
+  fragment declares, plus the relay's one reply-tool permission rule, into your user-level
+  `~/.claude/settings.json`,
   backing it up first and preserving every hook, rule, and setting that is not this project's,
 - hardens the access control lists on the whole execution surface: `hooks/`, `relay/`, `wrapper/`,
   `install/`, and `broker/` as directories, the bot token file, and the state root,

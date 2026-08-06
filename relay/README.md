@@ -10,6 +10,12 @@ operator's answer comes back down the stream as the verdict Claude Code is waiti
 without a token declares only `claude/channel`, because a prompt aimed at a server that cannot
 reach the broker is a prompt nobody is asked.
 
+The reply tool is not the only way text reaches a thread. The mirror posts every console prompt and
+every turn's final assistant reply through the hooks, without the model choosing to call anything,
+which is why a thread stays a faithful record even when Claude never uses this tool. A reply here is
+the model speaking to the operator on purpose, and it rides its own path: the reply key, delivered
+only down this stream, authenticates it, while the mirror authenticates on the process token alone.
+
 A channel server is never told what session it belongs to: the protocol hands it `content` and a
 `meta` bag it authors itself, and a channel is a child of the *process*, so a `/clear` mints a new
 session underneath it without its knowing. Identity therefore travels over hooks, and the broker

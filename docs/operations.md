@@ -127,6 +127,8 @@ the process that reads the bot token.
 | `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working` |
 | `CHANNEL_DISCORD_EXITED_AFTER_MS` | 4 h | Silence after which a stale session is presumed dead and reads `exited` |
 | `CHANNEL_DISCORD_ARCHIVE_ON_END` | off | Whether an ended session's thread is archived |
+| `CHANNEL_MIRROR` | on | Whether console prompts and turn replies are mirrored into the thread |
+| `CHANNEL_MIRROR_MAX_BYTES` | 256 KB | Largest mirror post accepted; a larger one is dropped |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to
 `node` pinned at install time, which `Start-Broker.ps1` reads directly so it never resolves `node`
@@ -148,10 +150,10 @@ Three windows are ordered and the broker refuses a configuration where they cros
 before it could ever render idle, and `CHANNEL_DISCORD_EXITED_AFTER_MS` must be above it, or every
 quiet session is instantly called dead.
 
-`CHANNEL_BROKER_PORT` is the trap. Moving it here moves the broker only. The two `http` hook URLs in
+`CHANNEL_BROKER_PORT` is the trap. Moving it here moves the broker only. Every `http` hook URL in
 `hooks/settings-fragment.json` and the literal in `hooks/session-start.ps1` carry their own copies,
 and the installer refuses a `-Port` that disagrees with the fragment for exactly that reason. Change
-all three, and `broker/config.ts`'s `DEFAULT_PORT` with them.
+them all, and `broker/config.ts`'s `DEFAULT_PORT` with them.
 
 ## When something is wrong
 
@@ -199,6 +201,33 @@ process cannot take the channel from a relay that already holds it. What it can 
 first, before the relay attaches. Nothing detects that, and the status card keeps ticking either way.
 If a session's replies do not match what it is doing, stop the session rather than steering it, and
 see [`security-model.md`](security-model.md).
+
+**The thread shows a session working normally but carries none of the conversation.** The mirror is
+off somewhere, and there are two switches. `CHANNEL_MIRROR` in `broker.env` turns it off for the
+whole host, which is the first thing to check because it survives restarts and nothing on the thread
+says so. The second is per session: a session launched with `Enter-ClaudeSession -NoMirror` sends a
+header that turns the mirror off for that session alone, and every other session on the host keeps
+mirroring. A suppressed post is logged as such, naming the session and no content, which is what
+tells a deliberately quiet mirror apart from a broken one. The status card, the tool counts, and the
+permission prompts all keep working either way, because the liveness path carries no content and is
+not affected by either switch.
+
+`-NoMirror` depends on a header the mirror hooks carry, so it needs the hooks installed from a
+version of this repository that has it. The wrapper refuses to launch rather than running the
+session mirrored when the installed settings lack it, so this shows up as a refused launch naming
+the installer, never as a session you believed was unmirrored.
+
+**A very long reply never reaches the thread, but shorter ones do.** A mirror post larger than
+`CHANNEL_MIRROR_MAX_BYTES` is drained and dropped, and the log says so with a byte count and no
+content. The post is answered normally rather than refused, deliberately: refusing it would surface
+as a visible error inside the session at the end of exactly its longest turns. Raise the knob if you
+want those replies, remembering that the whole reply then arrives as many messages.
+
+**A long reply arrives cut short with the thread otherwise healthy.** A multi-message reply stops at
+the first message Discord refuses and does not post the rest, and the log names how far it got. The
+log line names the refusal. One cause is the mirror's rate-limit budget, which is deliberately
+separate from the budget the permission prompts and notices spend, so a long reply can exhaust its
+own writes without costing you a prompt you were waiting on.
 
 **A closed session takes half a minute to show as exited.** That is the design, not a lag. The relay
 reconnects on its own, and a pipe that closed and came back is a reconnect rather than a death, so

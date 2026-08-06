@@ -135,10 +135,14 @@ headers, and allowedEnvVars are otherwise merged verbatim, so a url pointing off
 every console prompt and every assistant reply on the machine, plus the process token riding in a
 header, to whatever address the fragment names, on the next routine re-install. The url must
 therefore name loopback and one of this project's own routes; a header name must be one of the three
-this project sets; and an allowedEnvVars entry must be one of the two variables those headers
-interpolate, since that list is what authorizes an environment variable to be read into a request at
-all. settings-fragment.test.ts pins the same shapes, but it runs in this repository, not on the host
-at install time, which is where the fragment is read.
+core headers every http hook carries, or, on a hook posting to /mirror only, the fourth,
+X-Channel-Mirror; and an allowedEnvVars entry must be one of the two variables the core headers
+interpolate, or, again only on a /mirror hook, CHANNEL_SESSION_MIRROR, since that list is what
+authorizes an environment variable to be read into a request at all. Tying the switch header and its
+variable to the route rather than admitting them everywhere keeps a liveness hook from carrying a
+header settings-fragment.test.ts's own liveness/mirror split forbids it from carrying.
+settings-fragment.test.ts pins the same shapes, but it runs in this repository, not on the host at
+install time, which is where the fragment is read.
 #>
 $script:AllowedChannelPermissionRules = @('mcp__channel-relay__reply')
 
@@ -148,8 +152,10 @@ function Assert-ValidChannelFragment {
     $allowedEvents = @('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
     $allowedTypes = @('command', 'http')
     $allowedUrl = '^http://127\.0\.0\.1:\d+/(hook|mirror)\z'
-    $allowedHeaders = @('X-Channel-Hook-Event', 'X-Channel-Process-Token', 'X-Channel-Session-Name')
-    $allowedEnvVars = @('CHANNEL_PROCESS_TOKEN', 'CHANNEL_SESSION')
+    $coreHeaders = @('X-Channel-Hook-Event', 'X-Channel-Process-Token', 'X-Channel-Session-Name')
+    $mirrorOnlyHeaders = @('X-Channel-Mirror')
+    $coreEnvVars = @('CHANNEL_PROCESS_TOKEN', 'CHANNEL_SESSION')
+    $mirrorOnlyEnvVars = @('CHANNEL_SESSION_MIRROR')
 
     # The permission rules are held to an exact list for the same reason the command string is: this
     # fragment inherits Authenticated Users: Modify on at least one host, and a permission rule
@@ -208,22 +214,31 @@ function Assert-ValidChannelFragment {
                             "url naming any other address would send this machine's hook traffic, " +
                             "and the process token in its headers, wherever the fragment says."
                     }
+                    # The switch header and its env var are legitimate only on a hook posting to
+                    # /mirror: a liveness hook posting to /hook carries no content for a per-session
+                    # mirror switch to govern, and settings-fragment.test.ts holds that split as a
+                    # pinned property of the shipped fragment.
+                    $isMirrorRoute = $url -match '/mirror$'
+                    $allowedHeadersHere = if ($isMirrorRoute) { $coreHeaders + $mirrorOnlyHeaders } else { $coreHeaders }
+                    $allowedEnvVarsHere = if ($isMirrorRoute) { $coreEnvVars + $mirrorOnlyEnvVars } else { $coreEnvVars }
+
                     if ($null -ne $hook['headers']) {
                         foreach ($headerName in @($hook['headers'].Keys)) {
-                            if ($allowedHeaders -notcontains [string]$headerName) {
+                            if ($allowedHeadersHere -notcontains [string]$headerName) {
                                 throw "Assert-ValidChannelFragment: the fragment's $eventName hook " +
-                                    "sets a header this installer does not merge: '$headerName'. " +
-                                    "Only $($allowedHeaders -join ', ') are this project's own."
+                                    "sets a header this installer does not merge on this route: " +
+                                    "'$headerName'. Only $($allowedHeadersHere -join ', ') are allowed here."
                             }
                         }
                     }
                     foreach ($envVar in @($hook['allowedEnvVars'])) {
                         if ($null -eq $envVar) { continue }
-                        if ($allowedEnvVars -notcontains [string]$envVar) {
+                        if ($allowedEnvVarsHere -notcontains [string]$envVar) {
                             throw "Assert-ValidChannelFragment: the fragment's $eventName hook " +
-                                "authorizes an environment variable this installer does not merge: " +
-                                "'$envVar'. Only $($allowedEnvVars -join ', ') are read into a " +
-                                "request, and the list is what permits a variable to be read at all."
+                                "authorizes an environment variable this installer does not merge on " +
+                                "this route: '$envVar'. Only $($allowedEnvVarsHere -join ', ') are " +
+                                "read into a request here, and the list is what permits a variable " +
+                                "to be read at all."
                         }
                     }
                 }
