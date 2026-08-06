@@ -16,6 +16,11 @@
 // declaration, so each declaration names its own event, and the SessionStart `command` hook posts
 // its stdin with the same three headers. One shape for all three transports.
 //
+//   POST /mirror
+//     the same three headers, carrying a console prompt or a turn's final assistant reply. The
+//     route answers 202 and discards the body unread; the content-bearing intake behind it does not
+//     exist yet.
+//
 //   GET /sessions  -> the registry as JSON, for debugging.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Logger } from "./log.ts";
@@ -283,6 +288,24 @@ export function createHandler(
 
     if (request.method === "GET" && route === "/sessions") {
       send(response, 200, { sessions: options.registry.list().map(redact) });
+      return;
+    }
+
+    if (request.method === "POST" && route === "/mirror") {
+      // The content-bearing route accepts and discards. hooks/settings-fragment.json installs a
+      // UserPromptSubmit hook and a second Stop hook posting the console prompt and the turn's final
+      // reply here, at user level, for every session on the machine; Claude Code surfaces any non-2xx
+      // hook response as a visible error inside that session, so an unserved route would put an error
+      // on every prompt and every turn end of every session, watched or not.
+      //
+      // The body is drained rather than read: it carries the operator's full prompt or the whole
+      // assistant reply, and nothing here is authenticated or rendered yet, so it must not be
+      // assembled in broker memory. Draining rather than ignoring is what keeps the socket usable
+      // under keep-alive, where an unread request body stalls the next request on the connection.
+      // Nothing about the post is logged at any level, which is the same posture the content-free
+      // path holds: this route exists so the hooks are quiet, not so their content is recorded.
+      request.resume();
+      send(response, 202, { ignored: true });
       return;
     }
 

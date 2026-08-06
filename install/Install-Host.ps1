@@ -174,10 +174,10 @@ if (-not (Test-Path -LiteralPath $fragmentPath)) {
     throw "Install-Host: expected file not found at '$fragmentPath'. Is -RepoRoot correct?"
 }
 
-# The port the fragment's two http hooks already post to. hooks/session-start.ps1 carries the same
-# literal, hardcoded and unmoved by this installer, so -Port is validated against the fragment
-# rather than substituted into it: rewriting only two of the three copies would silently reintroduce
-# exactly the drift settings-fragment.test.ts's three-way pin exists to catch.
+# The port every http hook in the fragment already posts to. hooks/session-start.ps1 carries the
+# same literal, hardcoded and unmoved by this installer, so -Port is validated against the fragment
+# rather than substituted into it: rewriting the fragment's copies and not the script's would
+# silently reintroduce exactly the drift settings-fragment.test.ts's port pin exists to catch.
 $fragmentPreview = ConvertTo-OrderedHashtable (Get-Content -LiteralPath $fragmentPath -Raw | ConvertFrom-Json)
 $fragmentPort = [int]([uri]$fragmentPreview['hooks']['PostToolUse'][0]['hooks'][0]['url']).Port
 if (-not $Port) { $Port = $fragmentPort }

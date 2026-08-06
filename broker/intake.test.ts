@@ -56,6 +56,12 @@ function fakeRequest(
     // for one. A test that cares about Host overrides it.
     headers: { host: "127.0.0.1:8787", ...(init.headers ?? {}) },
     socket: { remoteAddress },
+    // The route that drains rather than reads its body calls this. It stands in for the real
+    // stream's flowing-mode switch; what the tests below assert about it is that the body never
+    // reaches the handler, which the absent asyncIterator consumption already shows.
+    resume() {
+      return this;
+    },
     async *[Symbol.asyncIterator]() {
       if (body !== "") yield Buffer.from(body, "utf8");
     },
@@ -256,6 +262,77 @@ test("an unknown route is a 404", async () => {
   assert.equal(result.status, 404);
 });
 
+test("a mirror post is accepted with and without a process token, never 404", async () => {
+  // The installed fragment posts the console prompt and the turn's final reply here for every
+  // session on the machine, and Claude Code surfaces any non-2xx hook response as a visible error
+  // inside that session. A 404 here would put one on every prompt and every turn end, in wrapped and
+  // unwrapped sessions alike, since route dispatch decides before any token is looked at.
+  const { registry, handle } = harness();
+
+  for (const headers of [
+    hookHeaders("UserPromptSubmit"),
+    { "x-channel-hook-event": "Stop" },
+  ]) {
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers,
+        body: JSON.stringify({ prompt: "what is the state of the tree" }),
+      }),
+    );
+    assert.equal(result.status, 202, JSON.stringify(headers));
+    assert.deepEqual(result.body, { ignored: true });
+  }
+
+  assert.deepEqual(registry.list(), [], "a mirror post must not reach the registry");
+});
+
+test("a mirror post larger than the body cap is drained rather than refused", async () => {
+  // The cap belongs to the route that reads a body. This one discards its body unread, so a reply
+  // far past the cap is accepted rather than answered 413, which is what the session would show as
+  // an error at the end of exactly the longest turns.
+  const { handle } = harness();
+
+  const result = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ last_assistant_message: "x".repeat(64 * 1024) }),
+    }),
+  );
+
+  assert.equal(result.status, 202);
+});
+
+test("nothing about a mirror post reaches the log", async () => {
+  // The mirror body is the operator's own prompt and Claude's own reply. Until the authenticated
+  // content path exists, this route holds the same content-free posture the rest of the intake
+  // holds: not even a refusal line, which would otherwise carry detail captured from the wire.
+  const lines: string[] = [];
+  const logger = {
+    info: (message: string) => lines.push(message),
+    warn: (message: string) => lines.push(message),
+    error: (message: string) => lines.push(message),
+  };
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger });
+
+  const secret = "the operator's console prompt";
+  const result = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: JSON.stringify({ prompt: secret }),
+    }),
+  );
+
+  assert.equal(result.status, 202);
+  assert.deepEqual(lines, [], `a mirror post must write no log line at all, got ${JSON.stringify(lines)}`);
+});
+
 test("payload fields that are not strings are ignored rather than stored", () => {
   const parsed = parseIntake(
     fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse") }),
@@ -419,6 +496,20 @@ test("the broker serves a real request on a bound loopback port", async () => {
       body: JSON.stringify({ tool_name: "Bash", padding: "x".repeat(128 * 1024) }),
     });
     assert.equal(oversized.status, 413);
+
+    // A whole turn's reply to the mirror route on a real socket, well past the same cap. The fake
+    // request in the unit tests above cannot show this: only a real connection proves the drained
+    // body neither stalls the response nor leaves the socket unusable for what follows it.
+    const mirrored = await fetch(`${base}/mirror`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...hookHeaders("Stop") },
+      body: JSON.stringify({ last_assistant_message: "x".repeat(256 * 1024) }),
+    });
+    assert.equal(mirrored.status, 202);
+    assert.deepEqual(await mirrored.json(), { ignored: true });
+
+    const afterMirror = await fetch(`${base}/sessions`);
+    assert.equal(afterMirror.status, 200, "the connection must still serve the next request");
 
     // The rebinding shape on a real connection, where the Host header is the only thing that
     // differs from a legitimate request. Sent over node:http because fetch treats Host as a

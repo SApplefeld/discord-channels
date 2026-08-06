@@ -22,23 +22,32 @@ infrastructure demonstrated the problem: `first-light` used the tool and its thr
 `Test-Channel` never called it and its thread got silence while the relay pipe sat healthy. Hooks
 fire whether or not the model cooperates, so the mirror rides on hooks.
 
-**Prompt side.** The `UserPromptSubmit` hook payload carries the prompt text. Hook transport is not
-uniform (measured: `SessionStart` cannot deliver over an `http` hook; `PostToolUse` and `Stop` can),
-and whether `UserPromptSubmit` delivers over `http` is unmeasured. Section 1 measures it first. If
-`http` delivers, the prompt mirror is a fragment entry and an intake change only, because an `http`
-hook posts its whole payload as the request body. If not, it is a command script shaped like
-`hooks/session-start.ps1`.
+**Both sides are `http` hooks, and neither reads a transcript.** Hook transport is not uniform
+(`SessionStart` cannot deliver over an `http` hook; `PostToolUse` and `Stop` can), and the two facts
+this design turned on were measured before any of it was wired:
 
-**Reply side.** No hook payload carries the reply text; the `Stop` payload carries the transcript
-file's path. A new command script, `hooks/stop-mirror.ps1`, reads the transcript session-side,
-extracts the turn's final assistant message, and posts it to the broker authenticated by the same
-process token the other hooks use. The read happens in the hook, in the session's own process tree,
-so the broker never opens a file named by data from the wire. The existing `http` Stop hook stays:
-it is the fast liveness tick (2s timeout), while the mirror script gets a longer timeout for the
-transcript read. Both constraints from `session-start.ps1` apply to any new script: absolute paths
-only (a hook's working directory is the watched session's own project), exit 0 without a token and
-without opening a socket, and byte-clean posting (Windows PowerShell 5.1 corrupts non-ASCII when a
-payload round-trips through a string; post bytes).
+- `UserPromptSubmit` **does** deliver over an `http` hook, and its payload carries the prompt text in
+  a `prompt` field alongside `session_id`, `transcript_path`, `cwd`, `prompt_id`, and
+  `permission_mode`.
+- The `Stop` payload carries **`last_assistant_message`**: the turn's final assistant text, whole.
+  Thinking blocks are excluded from it, and a turn that dispatched subagents carries the main
+  agent's reply rather than any subagent's report.
+
+So neither mirror hook is a script. Both are fragment entries posting their whole payload as the
+request body, which also keeps them off the one hazard a command hook has here: a `UserPromptSubmit`
+hook's stdout is injected into the session's context, exactly as `SessionStart`'s is, and an `http`
+hook has no stdout to leak into it.
+
+The existing `http` Stop hook stays unchanged as the fast liveness tick (2s timeout, content-free
+`/hook` route). The mirror rides a second Stop entry beside it, posting to the content-bearing route
+with a longer timeout.
+
+**Content already crosses the wire today.** The installed Stop hook posts its whole payload, and
+that payload has always contained `last_assistant_message`; the intake reads it and drops it at
+parse. Two consequences. Mirroring is not the first content on this socket, only the first content
+the broker keeps. And a reply larger than `maxBodyBytes` (64KB today) already earns a 413, which
+Claude Code surfaces as a visible error inside that session, so the mirror route's ceiling is a
+correctness fix and not only a new knob.
 
 **Broker side is a deliberate inversion of the content-free posture.** The intake today drops all
 content on purpose. Mirroring adds an explicit content path with the same discipline the content-free
@@ -70,26 +79,28 @@ per-session `-NoMirror` escape on the wrapper for sensitive work.
 
 ## Sections of Work
 
-### 1. Measure UserPromptSubmit, wire the hooks
+### 1. Wire the mirror hooks
 Model: opus
-Captures real payloads on this machine before any wiring: `UserPromptSubmit` over `http` and over a
-`command` hook (does it deliver, what does the payload carry), and a real `Stop` payload confirming
-the transcript path field's name and shape. Findings land in the Chapter and in the
-`claude-code-channel-and-hook-facts` project memory. Then: the fragment gains the `UserPromptSubmit`
-hook (transport per the measurement) and the `Stop` mirror script entry; `hooks/stop-mirror.ps1`
-(and `hooks/prompt-mirror.ps1` if the measurement forces a script) extract and post content;
-`install/Install-Functions.ps1`'s merge handles the new entries; the installer substitutes absolute
-script paths exactly as it does for `session-start.ps1`.
+The measurement is done (see the Approach section and Chapter 1); no script is needed on either
+side. The fragment gains two `http` entries posting to the content-bearing route `/mirror` on the
+same broker port: a `UserPromptSubmit` entry, and a second `Stop` entry beside the existing
+liveness one. Both carry the same three identity headers the existing hooks carry
+(`X-Channel-Hook-Event`, `X-Channel-Process-Token`, `X-Channel-Session-Name`) with the same
+`allowedEnvVars`, and both take a timeout longer than the liveness tick's 2s but still small.
+`install/Install-Functions.ps1` admits `UserPromptSubmit` to its allowed-event list so
+`Assert-ValidChannelFragment` stops refusing the fragment, and its identity match keeps recognizing
+this project's own entries so a re-install replaces rather than duplicates them.
 Acceptance: in a fresh wrapped session, a console prompt and the turn's reply both arrive at the
-broker (visible in its log as mirror intake events, not content); an unwrapped session produces
-zero visible hook errors and zero mirror posts; `settings-fragment.test.ts` pins every hook URL to
-the one port.
-Files in scope: `hooks/settings-fragment.json`, `hooks/stop-mirror.ps1` (new),
-`hooks/prompt-mirror.ps1` (only if measured necessary), `hooks/session-start.test.ts` siblings,
-`install/Install-Functions.ps1`, `hooks/settings-fragment.test.ts`.
-Tests: at minimum, lock both directions of the token gate for each new script (no token: exits
-without a socket; token: posts) and the fragment-to-script port pin. The silent failure is the
-expensive one: a mirror script that never posts looks identical to a session nobody typed in.
+broker; an unwrapped session produces zero visible hook errors and zero mirror content kept;
+`settings-fragment.test.ts` pins every hook URL, the two mirror entries included, to the one port;
+merging the fragment twice leaves one copy of each entry.
+Files in scope: `hooks/settings-fragment.json`, `install/Install-Functions.ps1`,
+`hooks/settings-fragment.test.ts`, `install/Install-Functions.test.ts`.
+Tests: at minimum, the port pin extended over the new entries, the allowlist-versus-header
+consistency check extended over them, the installer's idempotent-merge case with two Stop entries
+present, and a pin that the liveness Stop entry still targets `/hook` with its 2s timeout. The
+silent failure is the expensive one: a mirror hook posting into a route nothing serves looks
+identical to a session nobody typed in.
 
 ### 2. Broker mirror intake
 Model: fable
@@ -97,10 +108,14 @@ The content-bearing intake path: accepts the prompt and reply posts from Section
 authenticated by process token, associates them with the session via the registry, and hands them
 to the routing layer for the bound thread. Tokenless and unknown-token posts drop with 202 like the
 existing intake. New config: `CHANNEL_MIRROR` (default on) and `CHANNEL_MIRROR_MAX_BYTES` (default
-256KB, the intake-side ceiling; `maxBodyBytes` for the mirror route must admit it), each registered
+256KB, the intake-side ceiling; the mirror route's own body limit must admit it), each registered
 in both `broker/config.ts` and the installer's env allowlist. Mirror content never appears in the
-broker log at any level. Whether this extends `POST /hook` with content-bearing events or adds a
-dedicated route is the implementer's call within those constraints.
+broker log at any level. The route is `POST /mirror`, dedicated rather than folded into `POST /hook`
+(decided 2026-08-06): it leaves the content-free path byte-for-byte as it is, confines the larger
+body ceiling to the one route where content is expected, and gives the log-suppression rule a single
+place to hold, which is what makes this section's security review tractable. A tokenless post is
+answered 202 without its body ever being assembled into a string, so an unwrapped session's prompts
+and replies transit the socket and are discarded unread rather than buffered.
 Acceptance: a token-authenticated mirror post reaches the thread queue; every refusal and drop path
 answers exactly like the existing intake's equivalents; `CHANNEL_MIRROR=off` results in accepted,
 dropped, unposted content.
@@ -132,9 +147,8 @@ splitter and the poster agree on the ceiling by construction rather than by coin
 
 ### 4. Wrapper toggle and the honest docs
 Model: sonnet
-`Enter-ClaudeSession -NoMirror` sets the per-session off switch; the hooks forward it (header from
-an allowlisted env var, or the scripts reading `$env:CHANNEL_MIRROR`), and the broker honors it per
-post. Docs: `docs/install.md`'s privacy paragraph rewritten to state what leaves the machine with
+`Enter-ClaudeSession -NoMirror` sets the per-session off switch; the mirror hooks forward it as a
+header interpolated from an allowlisted environment variable, and the broker honors it per post. Docs: `docs/install.md`'s privacy paragraph rewritten to state what leaves the machine with
 mirroring on and how to turn it off; `docs/operations.md` gains the mirror failure modes (mirror
 silent but session healthy, and the off-switch as the first check); `relay/README.md` and fragment
 comments updated where they describe the content posture.
@@ -142,8 +156,12 @@ Acceptance: `-NoMirror` provably stops mirror posts for that session while anoth
 on; a sweep of `docs/` finds no surviving claim that permission prompts are the only content
 leaving the machine.
 Files in scope: `wrapper/Enter-ClaudeSession.ps1`, `relay/reply-permission.test.ts` (if the launch
-line moves), `docs/install.md`, `docs/operations.md`, `relay/README.md`,
-`hooks/settings-fragment.json` comments.
+line moves), `docs/install.md`, `docs/operations.md`, `docs/security-model.md`, `relay/README.md`,
+`hooks/settings-fragment.json` comments. `docs/security-model.md` carries two statements mirroring
+falsifies: that a permission prompt is the only surface sending content off the machine, and an
+accepted-risk bullet describing the loopback socket's cleartext in terms of tool metadata alone.
+The doc sweep also has counts to correct: several docs say the fragment declares two http hooks or
+three events.
 Tests: at minimum, both directions of `-NoMirror`.
 
 ## Out of Scope
@@ -158,10 +176,11 @@ Tests: at minimum, both directions of `-NoMirror`.
 
 ## Open Questions
 
-- Does `UserPromptSubmit` deliver over an `http` hook? Owner: Section 1's measurement, first thing
-  it does; the section is written to absorb either answer.
 - Prompt paste cap default (proposed 16KB before the shortening marker). Owner: Scott; adjustable
-  during execution without design impact.
+  during execution without design impact. Running with 16KB unless told otherwise.
+
+Resolved: `UserPromptSubmit` delivers over an `http` hook, measured 2026-08-06 with a `PostToolUse`
+positive control in the same run. See Chapter 1.
 
 ## Related
 
@@ -171,3 +190,61 @@ Tests: at minimum, both directions of `-NoMirror`.
   mirrors conversation content via hook payloads, the source that spec itself named as richer.
 
 ## Chapters
+
+### Chapter 1 - 2026-08-06
+Completed: 1. Wire the mirror hooks
+Implemented By: implementer-opus, two review-fix rounds on the same agent
+Metrics: 1 review round (adversarial + blind at fable, security at default), then 2 fix rounds; 0
+NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **The measurement overturned the reply-side design before a line was
+written.** The `Stop` hook payload carries `last_assistant_message`, the turn's final assistant text
+in full: measured whole at 34,892 characters, thinking excluded, and carrying the main agent's reply
+rather than a subagent's report on a turn that dispatched subagents. The spec had assumed no payload
+carried reply text and budgeted `hooks/stop-mirror.ps1` to read the transcript session-side. That
+script is not needed and was never written. `UserPromptSubmit` also delivers over `http`, measured
+with a `PostToolUse` positive control in the same run so a null result could be told apart from a
+probe harness that never loaded. Both sides are therefore fragment entries, which additionally
+dodges a hazard a script would have had: a `UserPromptSubmit` command hook's stdout is injected into
+the watched session's context exactly as `SessionStart`'s is.
+
+The route is `POST /mirror`, dedicated rather than folded into `POST /hook`, so the content-free
+path stays as it is and the larger body ceiling is confined to where content is expected.
+
+A consequence found while measuring, not previously known: the installed `Stop` hook has always
+posted `last_assistant_message`, so content already crosses this socket in every session on the
+machine and a reply over the 64KB cap already earns a 413. Section 2 owns raising that ceiling.
+
+Deviation from the spec as written: Sections 1's two PowerShell scripts are gone and the section is
+declaration, installer, and tests. The Approach and Section 1 text were rewritten to match before
+implementation started.
+Review Findings: Both reviewers independently returned the same Critical: the fragment shipped hooks
+at `/mirror` while the broker answered 404 there, and a non-2xx hook response is a visible in-session
+error, machine-wide, on every prompt and every turn end. Fixed by landing an accept-and-drop stub for
+`POST /mirror` that answers 202, drains the body without assembling it, and logs nothing, which makes
+the section independently safe to push under Commit-and-Push. Second Critical (adversarial, echoed as
+a Major by the security review): `Assert-ValidChannelFragment` pinned command hooks but validated
+nothing about an http hook, so anyone who can write the fragment could point a url off-host and
+exfiltrate every prompt on the machine at the next re-install. Fixed by pinning http urls to
+loopback and this project's two routes, and holding header names and `allowedEnvVars` to exact
+allowlists. Security Major, accepted and fixed: the widened event list admitted a `command` hook
+under `UserPromptSubmit` with an attacker-chosen directory, so `command` is now refused on every
+event but `SessionStart`. All Minors fixed: exact liveness timeout pin, a mirror-timeout floor,
+`matchAll` so a header interpolating two variables has both checked, the substitution test extended
+over every http url, and a stale comment in `Install-Host.ps1`.
+
+Two findings were adjudicated and discarded, both from the blind reviewer, which by contract had
+neither the spec nor the measurement: that the fragment comment is wrong to say the `Stop` payload
+carries the reply (it does, measured), and that the `session-start.ps1` port pin had been dropped (it
+is live at `hooks/settings-fragment.test.ts:237-243`, read directly).
+
+Deferred with reason: the merge sweeps only the events the fragment declares, so an event later
+removed from the fragment leaves orphaned entries in the operator's settings with no uninstall path.
+Pre-existing, not triggered by a change that only adds events. The security review's doc findings
+(`docs/security-model.md` claims mirroring falsifies) are routed to Section 4, whose file list now
+names that doc.
+Stamps: adjudicated 2, stamped 2 (`typescript-runs-unbuilt-under-node-type-stripping`,
+`a-test-that-drives-an-installer-can-install`; both were forwarded into the dispatch brief and shaped
+the import convention and the installer-test isolation). The measured hook facts were written to the
+`claude-code-channel-and-hook-facts` project memory.
+Next: 2. Broker mirror intake
+Commit Model: Commit-and-Push

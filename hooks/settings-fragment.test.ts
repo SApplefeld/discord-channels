@@ -30,6 +30,25 @@ function loadFragment(): { hooks: Record<string, HookEntry[]> } {
   return JSON.parse(text) as { hooks: Record<string, HookEntry[]> };
 }
 
+/**
+ * Every http hook the fragment declares, in any event and any entry, tagged with the event it
+ * belongs to. The checks below run over this rather than over a hand-written list of events, so an
+ * entry added later is held to the same rules the moment it exists instead of the day someone
+ * remembers to add it here.
+ */
+function httpHooks(): Array<{ event: string; hook: HookEntry["hooks"][number] }> {
+  const fragment = loadFragment();
+  const found: Array<{ event: string; hook: HookEntry["hooks"][number] }> = [];
+  for (const [event, entries] of Object.entries(fragment.hooks)) {
+    for (const entry of entries) {
+      for (const hook of entry.hooks) {
+        if (hook.type === "http") found.push({ event, hook });
+      }
+    }
+  }
+  return found;
+}
+
 /** The `-File <path>` argument of the SessionStart command, quoted or bare. */
 function sessionStartScriptPath(command: string): string | null {
   const quoted = command.match(/-File\s+"([^"]+)"/);
@@ -42,9 +61,14 @@ test("the fragment is valid JSON", () => {
   assert.doesNotThrow(() => loadFragment());
 });
 
-test("declares exactly SessionStart, PostToolUse, and Stop", () => {
+test("declares exactly SessionStart, UserPromptSubmit, PostToolUse, and Stop", () => {
   const fragment = loadFragment();
-  assert.deepEqual(Object.keys(fragment.hooks).sort(), ["PostToolUse", "SessionStart", "Stop"]);
+  assert.deepEqual(Object.keys(fragment.hooks).sort(), [
+    "PostToolUse",
+    "SessionStart",
+    "Stop",
+    "UserPromptSubmit",
+  ]);
 });
 
 test("SessionStart is a command hook with a short timeout, never http", () => {
@@ -99,18 +123,18 @@ test("SessionStart runs this repository's own hook script", () => {
   );
 });
 
-for (const event of ["PostToolUse", "Stop"] as const) {
-  test(`${event} is an http hook posting to the broker with the token wired through`, () => {
-    const fragment = loadFragment();
-    const [entry] = fragment.hooks[event];
-    assert.equal(entry.hooks.length, 1, `${event} must declare exactly one hook`);
-    const [hook] = entry.hooks;
+test("every http hook posts to a broker route with the token wired through", () => {
+  const hooks = httpHooks();
+  assert.equal(hooks.length, 4, "the fragment declares four http hooks: two liveness, two mirror");
 
-    assert.equal(hook.type, "http");
+  for (const { event, hook } of hooks) {
     assert.equal(typeof hook.url, "string");
-    assert.match(hook.url as string, /^http:\/\/127\.0\.0\.1:\d+\/hook$/);
+    assert.match(hook.url as string, /^http:\/\/127\.0\.0\.1:\d+\/(hook|mirror)$/);
 
     const headers = hook.headers ?? {};
+    // The event name in the header is what the broker routes on. A hook whose header names a
+    // different event than the one it fires for is indistinguishable at the broker from a session
+    // sending the wrong signal entirely.
     assert.equal(headers["X-Channel-Hook-Event"], event);
     assert.match(headers["X-Channel-Process-Token"] ?? "", /\$\{?CHANNEL_PROCESS_TOKEN\}?/);
 
@@ -119,42 +143,99 @@ for (const event of ["PostToolUse", "Stop"] as const) {
     // and does not itself inject, so a name referenced but not listed leaves the header empty and
     // the request looks like an unannounced session rather than failing loudly.
     for (const [name, value] of Object.entries(headers)) {
-      const referenced = value.match(/\$\{?([A-Z0-9_]+)\}?/)?.[1];
-      if (referenced === undefined) continue;
-      assert.ok(
-        allowed.includes(referenced),
-        `${event} header ${name} interpolates ${referenced}, which must appear in allowedEnvVars ` +
-          `or the header is silently dropped from every request`,
-      );
+      // Every name in the value, not just the first: a header interpolating two variables with only
+      // one of them allowlisted is the same silent drop, and it is invisible to a check that stops
+      // at the first match.
+      for (const match of value.matchAll(/\$\{?([A-Z0-9_]+)\}?/g)) {
+        assert.ok(
+          allowed.includes(match[1]),
+          `${event} header ${name} interpolates ${match[1]}, which must appear in allowedEnvVars ` +
+            `or the header is silently dropped from every request`,
+        );
+      }
     }
-
-    // These fire on every tool call of a twelve-hour session. A broker that is down costs nothing
-    // (a refused loopback connection returns immediately), but one that accepts and answers slowly
-    // charges this timeout against every tool call before the result returns to the model.
-    assert.ok(
-      typeof hook.timeout === "number" && hook.timeout > 0 && hook.timeout <= 3,
-      `${event} timeout must be small; it is paid per tool call against a slow broker`,
-    );
-  });
-}
-
-test("the two http hooks agree on the same broker URL", () => {
-  const fragment = loadFragment();
-  const postToolUseUrl = fragment.hooks.PostToolUse[0].hooks[0].url;
-  const stopUrl = fragment.hooks.Stop[0].hooks[0].url;
-  assert.equal(postToolUseUrl, stopUrl, "PostToolUse and Stop must target the same broker port");
+  }
 });
 
-test("all three copies of the broker port agree", () => {
-  // Three literals name this port: broker/config.ts (where the broker binds), this fragment's two
-  // http URLs, and session-start.ps1's own. Nothing at runtime notices a disagreement; the hooks
-  // post into a port nothing is listening on, and every affected session looks unannounced or goes
-  // stale while it is actively working.
-  const fragment = loadFragment();
-  for (const event of ["PostToolUse", "Stop"] as const) {
-    const url = fragment.hooks[event][0].hooks[0].url ?? "";
+test("the liveness hooks keep the short timeout they are paid at per tool call", () => {
+  // PostToolUse and the content-free Stop entry fire on every tool call and every turn of a
+  // twelve-hour session. A broker that is down costs nothing (a refused loopback connection returns
+  // immediately), but one that accepts and answers slowly charges this timeout against every one of
+  // them before the result returns to the model.
+  const liveness = httpHooks().filter(({ hook }) => (hook.url ?? "").endsWith("/hook"));
+  assert.deepEqual(
+    liveness.map(({ event }) => event).sort(),
+    ["PostToolUse", "Stop"],
+    "the content-free route is for the PostToolUse and Stop liveness ticks",
+  );
+  for (const { event, hook } of liveness) {
     assert.equal(
-      new URL(url).port,
+      hook.timeout,
+      2,
+      `${event}'s liveness timeout is 2s, the value the design budgets against a slow broker`,
+    );
+  }
+});
+
+test("the mirror hooks post content to their own route on their own timeout", () => {
+  // The mirror carries the console prompt and the turn's final reply, which are larger and slower to
+  // accept than a liveness tick. They ride a separate route so that cost is confined to them: a Stop
+  // mirror entry that drifted onto /hook would put content-bearing posts back on the path the status
+  // card's freshness depends on, and neither surface would say so.
+  const mirror = httpHooks().filter(({ hook }) => (hook.url ?? "").endsWith("/mirror"));
+  assert.deepEqual(
+    mirror.map(({ event }) => event).sort(),
+    ["Stop", "UserPromptSubmit"],
+    "the content-bearing route is for the UserPromptSubmit and Stop mirror posts",
+  );
+  for (const { event, hook } of mirror) {
+    // Bounded on both sides. The ceiling keeps a slow broker from stalling a turn; the floor is what
+    // stops a later edit from quietly cutting the content-bearing post to the liveness tick's budget,
+    // which would abandon the largest replies, the ones the mirror exists to carry.
+    assert.ok(
+      typeof hook.timeout === "number" && hook.timeout >= 3 && hook.timeout <= 10,
+      `${event}'s mirror timeout must leave room for a whole reply and still bound the turn`,
+    );
+  }
+});
+
+test("Stop declares the liveness tick and the mirror post as separate entries", () => {
+  // Two entries rather than two hooks in one entry, and the liveness one keeps its own short
+  // timeout: the tick that decides whether a session looks alive must not wait on the post that
+  // carries a whole assistant reply.
+  const fragment = loadFragment();
+  assert.equal(fragment.hooks.Stop.length, 2);
+  const urls = fragment.hooks.Stop.map((entry) => {
+    assert.equal(entry.hooks.length, 1, "each Stop entry declares exactly one hook");
+    return entry.hooks[0].url;
+  });
+  assert.deepEqual(
+    [...urls].sort(),
+    [`http://127.0.0.1:${DEFAULT_PORT}/hook`, `http://127.0.0.1:${DEFAULT_PORT}/mirror`],
+    "Stop must post the liveness tick to /hook and the mirror to /mirror",
+  );
+});
+
+test("UserPromptSubmit is a single mirror hook and never a command hook", () => {
+  // A UserPromptSubmit command hook's stdout is injected into the watched session's context exactly
+  // as SessionStart's is, so a script here would feed its own output back to the model on every
+  // prompt of every session on the machine. An http hook has no stdout to leak.
+  const fragment = loadFragment();
+  assert.equal(fragment.hooks.UserPromptSubmit.length, 1);
+  const [entry] = fragment.hooks.UserPromptSubmit;
+  assert.equal(entry.hooks.length, 1);
+  assert.equal(entry.hooks[0].type, "http");
+  assert.equal(entry.hooks[0].url, `http://127.0.0.1:${DEFAULT_PORT}/mirror`);
+});
+
+test("all copies of the broker port agree", () => {
+  // Three places name this port: broker/config.ts (where the broker binds), every http URL in this
+  // fragment, and session-start.ps1's own literal. Nothing at runtime notices a disagreement; the
+  // hooks post into a port nothing is listening on, and every affected session looks unannounced or
+  // goes stale while it is actively working.
+  for (const { event, hook } of httpHooks()) {
+    assert.equal(
+      new URL(hook.url ?? "").port,
       String(DEFAULT_PORT),
       `${event} posts to a port the broker does not default to`,
     );

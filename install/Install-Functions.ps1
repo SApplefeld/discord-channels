@@ -81,11 +81,13 @@ Identifies a SessionStart entry by matching the exact invocation shape Get-Subst
 generates (powershell, the fixed flags, -File, a path ending in session-start.ps1), not merely by
 the presence of that filename anywhere in the command: a substring match would also delete an
 unrelated tool's own hook that happens to run a same-named script, silently, on the next install.
-A PostToolUse or Stop entry is identified by carrying the X-Channel-Hook-Event header this
-project's fragment always sets, which is specific enough on its own. Neither identity depends on
-the broker port or the substituted script path, because both are exactly what re-running the
-installer is expected to update: this is what lets Merge-ChannelHooksFragment replace a stale entry
-instead of leaving it beside a fresh one.
+Every other event's entry is identified by carrying the X-Channel-Hook-Event header this project's
+fragment always sets, which is specific enough on its own. That covers an event declaring more than
+one entry, as Stop does with its liveness tick and its mirror post: both carry the header, so both
+are recognized together and neither survives into a re-install as a stale twin of the other.
+Neither identity depends on the broker port or the substituted script path, because both are exactly
+what re-running the installer is expected to update: this is what lets Merge-ChannelHooksFragment
+replace a stale entry instead of leaving it beside a fresh one.
 #>
 function Test-IsChannelHookEntry {
     param(
@@ -119,14 +121,35 @@ attacker who can write that one file can otherwise turn a routine re-install int
 persistent hook of their own choosing. This is checked in addition to hardening the file, not
 instead of it: allowed event names, allowed hook types, and no `command` string other than the one
 SessionStart entry this installer itself substitutes.
+
+A `command` hook is refused under every event but SessionStart. That is the only command hook this
+project declares, every other event is http by design, and it is the only one whose path
+Get-SubstitutedFragment rewrites for the host: a command hook under any other event carries the
+directory the fragment names, unsubstituted, into the operator's settings and back out of every
+later re-install. The path pattern still gates SessionStart's own invocation, but the pattern
+constrains the script's filename rather than the directory it sits in, so restricting which event
+may carry a command at all is what keeps that to one entry this installer writes itself.
+
+An http hook is pinned just as tightly, and for a threat the command pin does not cover. Its url,
+headers, and allowedEnvVars are otherwise merged verbatim, so a url pointing off-host would send
+every console prompt and every assistant reply on the machine, plus the process token riding in a
+header, to whatever address the fragment names, on the next routine re-install. The url must
+therefore name loopback and one of this project's own routes; a header name must be one of the three
+this project sets; and an allowedEnvVars entry must be one of the two variables those headers
+interpolate, since that list is what authorizes an environment variable to be read into a request at
+all. settings-fragment.test.ts pins the same shapes, but it runs in this repository, not on the host
+at install time, which is where the fragment is read.
 #>
 $script:AllowedChannelPermissionRules = @('mcp__channel-relay__reply')
 
 function Assert-ValidChannelFragment {
     param([Parameter(Mandatory)][hashtable]$Fragment)
 
-    $allowedEvents = @('SessionStart', 'PostToolUse', 'Stop')
+    $allowedEvents = @('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
     $allowedTypes = @('command', 'http')
+    $allowedUrl = '^http://127\.0\.0\.1:\d+/(hook|mirror)\z'
+    $allowedHeaders = @('X-Channel-Hook-Event', 'X-Channel-Process-Token', 'X-Channel-Session-Name')
+    $allowedEnvVars = @('CHANNEL_PROCESS_TOKEN', 'CHANNEL_SESSION')
 
     # The permission rules are held to an exact list for the same reason the command string is: this
     # fragment inherits Authenticated Users: Modify on at least one host, and a permission rule
@@ -152,7 +175,7 @@ function Assert-ValidChannelFragment {
     foreach ($eventName in $Fragment['hooks'].Keys) {
         if ($allowedEvents -notcontains $eventName) {
             throw "Assert-ValidChannelFragment: the fragment declares an unrecognized hook event " +
-                "'$eventName'. Only SessionStart, PostToolUse, and Stop are merged."
+                "'$eventName'. Only SessionStart, UserPromptSubmit, PostToolUse, and Stop are merged."
         }
         foreach ($entry in @($Fragment['hooks'][$eventName])) {
             foreach ($hook in @($entry['hooks'])) {
@@ -162,12 +185,46 @@ function Assert-ValidChannelFragment {
                         "unrecognized type '$type'. Only 'command' and 'http' are merged."
                 }
                 if ($type -eq 'command') {
+                    if ($eventName -ne 'SessionStart') {
+                        throw "Assert-ValidChannelFragment: the fragment declares a 'command' hook " +
+                            "under $eventName. SessionStart's is this project's only command hook, " +
+                            "and it is the only one Get-SubstitutedFragment rewrites the path of, so " +
+                            "a command hook under any other event names a directory nothing here " +
+                            "controls and is refused rather than merged."
+                    }
                     $command = [string]$hook['command']
                     if ($command -notmatch
                         '^\s*powershell\s+-NoProfile\s+-ExecutionPolicy\s+Bypass\s+-File\s+"[^"]*session-start\.ps1"\s*$') {
                         throw "Assert-ValidChannelFragment: the fragment's $eventName command is not " +
                             "the SessionStart invocation this installer substitutes: '$command'. A " +
                             "command hook naming anything else is refused rather than merged."
+                    }
+                }
+                if ($type -eq 'http') {
+                    $url = [string]$hook['url']
+                    if ($url -notmatch $allowedUrl) {
+                        throw "Assert-ValidChannelFragment: the fragment's $eventName hook posts to " +
+                            "'$url', which is not one of this project's own loopback routes. A hook " +
+                            "url naming any other address would send this machine's hook traffic, " +
+                            "and the process token in its headers, wherever the fragment says."
+                    }
+                    if ($null -ne $hook['headers']) {
+                        foreach ($headerName in @($hook['headers'].Keys)) {
+                            if ($allowedHeaders -notcontains [string]$headerName) {
+                                throw "Assert-ValidChannelFragment: the fragment's $eventName hook " +
+                                    "sets a header this installer does not merge: '$headerName'. " +
+                                    "Only $($allowedHeaders -join ', ') are this project's own."
+                            }
+                        }
+                    }
+                    foreach ($envVar in @($hook['allowedEnvVars'])) {
+                        if ($null -eq $envVar) { continue }
+                        if ($allowedEnvVars -notcontains [string]$envVar) {
+                            throw "Assert-ValidChannelFragment: the fragment's $eventName hook " +
+                                "authorizes an environment variable this installer does not merge: " +
+                                "'$envVar'. Only $($allowedEnvVars -join ', ') are read into a " +
+                                "request, and the list is what permits a variable to be read at all."
+                        }
                     }
                 }
             }
@@ -180,11 +237,13 @@ function Assert-ValidChannelFragment {
 Merges the channel hooks fragment into a settings ordered dictionary, in place, and returns it.
 
 .DESCRIPTION
-For each event the fragment declares, drops any existing entry that Test-IsChannelHookEntry
-recognizes as this project's own, then appends the fragment's entry. Every other hook already
-present, for the same event or a different one, is left exactly as it was. Calling this twice with
-the same fragment leaves the settings unchanged the second time: the first call's entries are
-recognized and replaced by the second, not duplicated beside it.
+For each event the fragment declares, drops every existing entry that Test-IsChannelHookEntry
+recognizes as this project's own, then appends all of that event's entries from the fragment. Every
+other hook already present, for the same event or a different one, is left exactly as it was.
+Calling this twice with the same fragment leaves the settings unchanged the second time: the first
+call's entries are recognized and replaced by the second, not duplicated beside it. That holds for
+an event carrying several entries, such as Stop's liveness tick and mirror post, because the whole
+per-event array is rebuilt from the kept entries plus the fragment's, never appended to.
 
 Both parameters are typed as OrderedDictionary rather than the more permissive [hashtable]: passing
 an OrderedDictionary through a [hashtable]-typed parameter coerces it to a plain Hashtable at the
