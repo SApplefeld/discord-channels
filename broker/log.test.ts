@@ -158,6 +158,10 @@ test("bidi and zero-width characters are stripped from a logged name", () => {
 // and never sees the process token, the forgery key those same posts carry.
 const TOKEN = "5f0c2e4a-0000-4000-8000-000000000099";
 
+// These tests exercise the content-free /hook paths; the handler's required mirror seam is
+// satisfied with one that drops everything.
+const MIRROR = { enabled: false, maxBytes: 1024, deliver: async (): Promise<null> => null };
+
 function fakeRequest(
   remoteAddress: string | undefined,
   init: { method?: string; url?: string; headers?: Record<string, string>; body?: string } = {},
@@ -198,7 +202,7 @@ test("a hook post accepted and dropped by the registry is logged, without the pr
   try {
     const logger = createLogger({ file, maxBytes: 1024 * 1024, maxFiles: 3 });
     const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger });
+    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, mirror: MIRROR });
 
     const { response, done } = fakeResponse();
     handle(
@@ -228,7 +232,7 @@ test("a Host header logged on refusal is capped rather than written verbatim", a
   try {
     const logger = createLogger({ file, maxBytes: 1024 * 1024, maxFiles: 3 });
     const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger });
+    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, mirror: MIRROR });
 
     const hugeHost = "a".repeat(20_000);
     const { response, done } = fakeResponse();
@@ -256,7 +260,7 @@ test("repeated refusals of the same reason are aggregated rather than logged one
     const logger = createLogger({ file, maxBytes: 1024 * 1024, maxFiles: 3 });
     const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
     let now = 0;
-    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, now: () => now });
+    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, now: () => now, mirror: MIRROR });
 
     for (let i = 0; i < 50; i += 1) {
       const { response, done } = fakeResponse();
@@ -289,7 +293,7 @@ test("a refused non-loopback request is logged", async () => {
   try {
     const logger = createLogger({ file, maxBytes: 1024 * 1024, maxFiles: 3 });
     const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger });
+    const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger, mirror: MIRROR });
 
     const { response, done } = fakeResponse();
     handle(

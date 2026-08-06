@@ -98,10 +98,22 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     now: Date.now,
     log: note,
   });
+  // A second writer, and therefore a second budget bucket, for mirror posts alone. Mirror volume
+  // arrives on every prompt and every turn end of every wrapped session, and a writer's budget
+  // blocks on what Discord reports, so one shared writer would let a mirror-earned block drop the
+  // permission alerts and notices a parked session is waiting on. The split creates no Discord
+  // capacity; it only keeps the mirror's rate-limit state from starving the paths that reach a
+  // phone.
+  const mirrorWriter = createThreadWriter({
+    messenger: { postToThread: (input) => messenger.postToThread(input) },
+    now: Date.now,
+    log: note,
+  });
   const outbound = createOutboundRouter({
     registry,
     threadFor: (sessionId) => threadFor(sessionId),
     writer,
+    mirrorWriter,
     log: note,
   });
   // Replaced below when Discord is configured. Without a channel there is no thread to ask in and
@@ -126,7 +138,17 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
   });
 
-  const hooks = createHandler({ registry, maxBodyBytes: config.maxBodyBytes, log: logger });
+  const hooks = createHandler({
+    registry,
+    maxBodyBytes: config.maxBodyBytes,
+    log: logger,
+    mirror: {
+      enabled: config.mirror,
+      maxBytes: config.mirrorMaxBytes,
+      deliver: (processToken, kind, text, sessionId) =>
+        outbound.mirror(processToken, kind, text, sessionId),
+    },
+  });
   const server = createServer((request, response) => {
     // The relay routes answer first and report whether they took the request; everything else,
     // including every route that does not exist, stays the hook intake's to answer.

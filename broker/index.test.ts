@@ -21,6 +21,8 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     maxSessions: 500,
     logMaxBytes: 5 * 1024 * 1024,
     logMaxFiles: 5,
+    mirror: true,
+    mirrorMaxBytes: 256 * 1024,
     ...overrides,
   };
 }

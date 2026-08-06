@@ -119,9 +119,17 @@ and replies transit the socket and are discarded unread rather than buffered.
 Acceptance: a token-authenticated mirror post reaches the thread queue; every refusal and drop path
 answers exactly like the existing intake's equivalents; `CHANNEL_MIRROR=off` results in accepted,
 dropped, unposted content.
+The honesty-critical doc corrections land in this section rather than Section 4, because this is the
+change that makes them false and the Approach commits to rewriting such a promise in the same
+change. Two claims in `docs/security-model.md` go: that posting into the operator's thread as Claude
+requires holding the relay pipe rather than merely knowing the process token (the mirror posts on
+the token alone, and that token is inherited by every subprocess a wrapped session spawns), and that
+what a session can distort is only its own status. `docs/install.md`'s promise that tool-approval
+prompts are the only content leaving the machine goes with them. Section 4 keeps the rest of the doc
+work, including the `-NoMirror` switch it documents.
 Files in scope: `broker/intake.ts`, `broker/registry.ts` (only if association needs it),
 `broker/routing/outbound.ts`, `broker/config.ts`, `install/Install-Functions.ps1`,
-matching test files.
+`docs/security-model.md`, `docs/install.md`, matching test files.
 Tests: at minimum, both directions of `CHANNEL_MIRROR`, the size cap at and over the boundary, the
 token gate in both directions, and a pin that mirror content is absent from log output. The
 security review for this section is the changeset's priority: this is the section that inverts the
@@ -134,8 +142,19 @@ render as Claude's text. The splitter breaks on paragraph boundaries, falls back
 hard boundaries, re-opens an interrupted code fence in the next message, and emits as many messages
 as the reply needs with no count ceiling. Prompts beyond the paste cap are shortened with a visible
 `(long paste shortened in mirror)` marker. All limits derive from `MAX_MESSAGE_LENGTH` in
-`broker/discord/render.ts`; no consumer holds its own literal. Untrusted text goes through the
-existing sanitization (`inert*` helpers) so a prompt cannot smuggle mentions or timestamps.
+`broker/discord/render.ts`; no consumer holds its own literal.
+
+Sanitization needs building here, not merely calling. `inertMessage` applies `withoutInvisible` and
+`fit` and never the markdown escape `inertText` uses, so text posted through it keeps `<@id>` mention
+pills and `<t:...:R>` timestamp chips. Discord's `allowed_mentions` stops those from pinging anyone
+but not from rendering, so mirrored text can draw a convincing copy of a permission prompt or a
+broker notice inside the very channel the operator answers prompts in. Mirrored text therefore gets
+the chip syntax neutralized while keeping markdown readable, and every mirrored message carries a
+renderer-composed attribution that mirrored content cannot forge.
+
+Ordering is this section's to build, not to assume: mirror delivery is fire-and-forget at the
+Section 2 seam, so per-thread sequencing between a turn's reply, the next prompt, and a reply-tool
+post has to be made real here.
 Acceptance: a reply longer than several messages arrives whole and in order; a code block spanning
 a boundary is fenced correctly in both messages; a boundary-length message does not split; ordering
 between mirror posts, reply-tool posts, and card edits is per-thread sequential.
@@ -247,4 +266,61 @@ Stamps: adjudicated 2, stamped 2 (`typescript-runs-unbuilt-under-node-type-strip
 the import convention and the installer-test isolation). The measured hook facts were written to the
 `claude-code-channel-and-hook-facts` project memory.
 Next: 2. Broker mirror intake
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-06
+Completed: 2. Broker mirror intake
+Implemented By: implementer-fable, one review-fix round on the same agent
+Metrics: 1 review round (adversarial + blind at fable, security at default), then 1 fix round; 0
+NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **The honesty-critical doc corrections were pulled forward from Section 4
+into this section.** The security review found `docs/security-model.md` promising that posting into
+the operator's thread as Claude requires holding the relay pipe rather than merely knowing the
+process token. The mirror route makes that false: it posts on the token alone, and that token is
+inherited by every subprocess a wrapped session spawns. Under Commit-and-Push the section reaches
+origin as soon as it passes, so deferring the correction would leave an untrue security document on
+the remote across sections, against the Approach's own rule that a promise is rewritten in the same
+change that falsifies it. The route was deliberately NOT gated behind a stronger key: the mirror
+hooks are `http` hooks whose only credential is an environment variable interpolated into a header,
+so any new key would be inherited by exactly the subprocesses in question and would buy the
+appearance of a control rather than a control. The guarantee is restated with its real blast radius
+instead. `docs/install.md` and `docs/security-model.md` were corrected in the main thread; Section 4
+keeps the rest of the doc work.
+
+Two knobs land: `CHANNEL_MIRROR` (default on, strict boolean, refuses an unrecognized spelling the
+way the numeric knobs refuse a bad value) and `CHANNEL_MIRROR_MAX_BYTES` (default 256KB, bounded
+64KB to 4MB). Both are registered in `broker/config.ts` and the installer's env allowlist, now under
+a mechanical pin, which did not previously exist.
+
+An oversized mirror post is drained and answered 202 rather than 413. A 413 is a visible error
+inside the session, at the end of exactly the longest turns, which is the failure Section 1 spent a
+round removing. The cost is that a reply past the ceiling misses the thread with only a log line
+saying so, which Section 4's failure-modes documentation names.
+Review Findings: Blind found, by execution, that the mirror event gate was bypassable through the
+prototype chain: `constructor` or `__proto__` as the event header resolved to a mapping, skipped the
+400, and ran the authenticated path with an undefined field, delivering `{"undefined":"text"}` with
+an undefined kind. Fixed with an `Object.hasOwn` guard and pinned with a test driving four prototype
+keys. Security found two more Majors, both fixed: mirror posts spent the same Discord write budget
+as permission prompts, so mirror volume could hold the shared rate-limit block and drop the alerts a
+parked session waits on (the mirror now has its own bucket, which creates no Discord capacity and is
+only a starvation guard, as its comment says); and mirror posts resolved on the process token alone
+while the liveness path honors a payload `session_id` opportunistically, so a straggler `Stop` post
+arriving after `/clear` replaced the session would post the previous conversation's reply into the
+new session's thread. All eight Minors fixed: a response-body token-validity oracle (`{accepted:true}`
+versus `{ignored:true}`), an unbounded drain a live-token holder could hold open, three refusal
+causes sharing one rate-limiter key so one masked the others, an over-cap log line that overstated
+what had been buffered, a missing `resume()` on one early exit, a config floor that accepted a value
+silently disabling the feature, duplicated resolution logic between `reply()` and `mirror()`, and a
+leak test whose comment claimed coverage of every branch while four went undriven. That last one is
+the repo's own recurring defect shape, caught by both reviewers.
+
+The central invariant holds and was traced branch by branch by two reviewers independently: mirror
+content reaches the log at no level, including inside a caught parse error (V8 embeds a source
+excerpt, so the error object is discarded rather than logged) and inside the delivery rejection.
+Review Findings deferred with reason: the mirror still truncates at `MAX_MESSAGE_LENGTH` and still
+posts unordered, and `inertMessage` does not escape mention or timestamp chip syntax. All three are
+Section 3's, and the spec's Section 3 text was corrected: it had premised the work on the `inert*`
+helpers already neutralizing chips, which is false for the message path.
+Stamps: none surfaced (zero unstamped reads in the section's span; Chapter 1's sweep took both).
+Next: 3. Rendering and the splitter
 Commit Model: Commit-and-Push

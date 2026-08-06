@@ -38,9 +38,16 @@ is set in the launching process's environment, so the session inherits it, **and
 subprocess its tools spawn.** A session can therefore read its own forgery key and post hook events
 about itself.
 
-This is an accepted risk, with a hard limit. What a session can distort is its own status: it can
-mark itself working or idle, or end its own record. That is tolerable, and it is why the token is
-withheld from `GET /sessions`.
+This is an accepted risk, and mirroring sets its limit. A token holder can distort its own status:
+mark itself working or idle, or end its own record. It can also **post arbitrary text into that
+session's Discord thread as the mirror**, because the mirror route authenticates on the process token
+alone. So a shell subprocess of a wrapped session can put words on the operator's phone that read as
+the session's own prompts and replies. The token is withheld from `GET /sessions` for this reason,
+and `CHANNEL_MIRROR=off` removes the text half of it.
+
+No key stronger than the token is available to close this. The mirror hooks are `http` hooks whose
+only credential is an environment variable Claude Code interpolates into a header, and any variable
+the wrapper set would be inherited by exactly the subprocesses this describes.
 
 **It is not standing to do anything inbound**, and three checks enforce that:
 
@@ -53,8 +60,10 @@ withheld from `GET /sessions`.
   a malicious package postinstall or fetched script cannot take over the operator-to-Claude channel
   by attaching its own pipe.
 - **Each attachment is issued a reply key**, delivered only down that stream and stored nowhere the
-  token holder can read. Every reply must present it. Posting into the operator's thread as Claude
-  therefore requires holding the pipe, not merely knowing the token.
+  token holder can read. Every reply through the relay's reply tool must present it, so that path
+  requires holding the pipe rather than merely knowing the token. The mirror route is the exception
+  and is described above: it posts on the token alone, so the reply key bounds the reply tool, not
+  the thread.
 
 The residual is a race: a local process that attaches a stream *before* the relay does holds the
 token and its key until that pipe closes. Nothing detects it, and the operator's only signal is a
@@ -90,9 +99,10 @@ gate says nothing about who is at the other end of it.
 ## Tool approval over the channel
 
 **A permission prompt sends the tool's actual input off this machine.** `input_preview` is the shell
-command, the patch body, the file path and its contents. This is the only surface in the system that
-does that: hook payloads and relay traffic stay on loopback, and the log file records only a request
-ID. A prompt crosses to Discord's servers, is stored there under their retention, and is rendered on
+command, the patch body, the file path and its contents. The mirror is the other surface that sends
+content off the machine: with `CHANNEL_MIRROR` on, every console prompt and every turn's final
+assistant reply is posted into the session's thread in full. The log file records neither, and
+mirror content never reaches it at any level. A prompt crosses to Discord's servers, is stored there under their retention, and is rendered on
 a phone. **The sender gate governs who can write, not who can read**, so every member of the channel
 sees every prompt. The channel must be private to the operator, and `install.md` says so.
 
@@ -211,8 +221,12 @@ authenticated account or a non-administrative service account.
 ## Accepted, and worth stating
 
 - **Hook payloads and relay traffic cross loopback in cleartext.** `PostToolUse` carries
-  `tool_input` and `tool_response`, and the relay pipe carries the text of every message exchanged
-  with the operator. The broker drops the tool fields after parsing, but dropping after receipt is
+  `tool_input` and `tool_response`, the `UserPromptSubmit` and `Stop` mirror posts carry the console
+  prompt and the turn's final assistant reply in full, and the relay pipe carries the text of every
+  message exchanged with the operator. The mirror posts cross for every Claude Code session on the
+  host, including unwrapped sessions in unrelated repositories, because the hooks are installed at
+  user level; those posts carry no process token, and the broker answers them without assembling a
+  body. The broker drops the tool fields after parsing, but dropping after receipt is
   not the same as not transmitting: anything running as this user can read all of it off the
   loopback interface, and a local process that wins the race to bind the port before the broker
   starts sees it directly. The loopback bind and the `Host` check are what this rests on.

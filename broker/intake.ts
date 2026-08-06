@@ -17,17 +17,34 @@
 // its stdin with the same three headers. One shape for all three transports.
 //
 //   POST /mirror
-//     the same three headers, carrying a console prompt or a turn's final assistant reply. The
-//     route answers 202 and discards the body unread; the content-bearing intake behind it does not
-//     exist yet.
+//     the same three headers, with X-Channel-Hook-Event naming UserPromptSubmit or Stop, carrying
+//     a console prompt or a turn's final assistant reply in the hook payload. This is the one
+//     content-bearing route: a token-authenticated post has its prompt or last_assistant_message
+//     extracted and handed to the routing layer for the session's bound thread, and every drop
+//     path (no token, unknown token, mirroring off, body over its own ceiling, field absent)
+//     answers 202, because the installed hooks post here from every session on the machine and a
+//     non-2xx is a visible error inside that session. The content itself never appears in the
+//     broker log at any level; see handleMirror.
 //
 //   GET /sessions  -> the registry as JSON, for debugging.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Logger } from "./log.ts";
 import type { HookEvent, HookIntake, Registry, SessionRecord } from "./registry.ts";
+import type { MirrorKind } from "./routing/outbound.ts";
 import { clean } from "./sanitize.ts";
 
 const HOOK_EVENTS: readonly HookEvent[] = ["SessionStart", "PostToolUse", "Stop"];
+
+/**
+ * The mirror route's own event vocabulary, mapped to what each payload's text means. Deliberately
+ * not HOOK_EVENTS and not the HookEvent type: those belong to the content-free liveness path, no
+ * liveness hook sends UserPromptSubmit, and widening either would let a mirror post masquerade as
+ * a liveness event or the reverse.
+ */
+const MIRROR_EVENTS: Readonly<Record<string, { kind: MirrorKind; field: string }>> = {
+  UserPromptSubmit: { kind: "prompt", field: "prompt" },
+  Stop: { kind: "reply", field: "last_assistant_message" },
+};
 
 /** The only names this listener answers to. A port suffix is allowed on any of them. */
 const ALLOWED_HOSTS: readonly string[] = ["127.0.0.1", "localhost", "[::1]"];
@@ -222,6 +239,49 @@ async function readBody(request: IncomingMessage, maxBodyBytes: number): Promise
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * How far past the mirror ceiling the drain keeps consuming before the connection is destroyed.
+ * The drain exists so an honestly-oversized post still gets its quiet 202, but an unbounded drain
+ * would let a token-holding local process stream an endless chunked body and hold the connection
+ * and this loop forever. Past this multiple the sender is not an installed hook, and it loses the
+ * quiet answer along with the socket.
+ */
+const MIRROR_DRAIN_LIMIT_FACTOR = 4;
+
+/**
+ * Reads a mirror body up to its own ceiling. Past the ceiling, what was buffered is released and
+ * the rest of the stream is consumed and discarded, so an oversized post costs at most the ceiling
+ * in memory while still leaving the connection drained and usable under keep-alive; past the drain
+ * limit the connection is destroyed instead. Only the byte count comes back on the over-ceiling
+ * paths: the caller logs the count, never the text.
+ */
+async function readMirrorBody(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<{ body: string } | { droppedBytes: number; destroyed: boolean }> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let over = false;
+  for await (const chunk of request) {
+    const buffer = chunk as Buffer;
+    size += buffer.length;
+    if (size > maxBytes) {
+      if (!over) {
+        over = true;
+        chunks.length = 0;
+      }
+      if (size > maxBytes * MIRROR_DRAIN_LIMIT_FACTOR) {
+        request.destroy();
+        return { droppedBytes: size, destroyed: true };
+      }
+      continue;
+    }
+    chunks.push(buffer);
+  }
+  if (over) return { droppedBytes: size, destroyed: false };
+  return { body: Buffer.concat(chunks).toString("utf8") };
+}
+
 export type HandlerOptions = {
   registry: Registry;
   maxBodyBytes: number;
@@ -233,6 +293,29 @@ export type HandlerOptions = {
   log?: Logger;
   /** Drives the refusal-log rate limiter. Injected so a test can move the window without sleeping. */
   now?: () => number;
+  /**
+   * The mirror route's knobs and its seam into the routing layer. Required rather than optional,
+   * so a caller cannot wire the handler and silently leave the mirror unrouted: a mirror hook
+   * posting into a route that drops everything looks identical to a session nobody typed in.
+   */
+  mirror: {
+    /** Off, every mirror post is accepted, drained, and dropped; nothing is delivered. */
+    enabled: boolean;
+    /** The mirror route's own body ceiling. maxBodyBytes above keeps governing /hook alone. */
+    maxBytes: number;
+    /**
+     * Hands one authenticated prompt or reply to the routing layer, with the session the payload
+     * names (null when it names none) so the router can drop a straggler from a replaced session.
+     * The returned promise is observed only to contain a rejection; the response is already
+     * written when it settles, so the hook never waits on Discord.
+     */
+    deliver: (
+      processToken: string,
+      kind: MirrorKind,
+      text: string,
+      sessionId: string | null,
+    ) => Promise<unknown>;
+  };
 };
 
 /**
@@ -265,6 +348,136 @@ export function createHandler(
 ): (request: IncomingMessage, response: ServerResponse) => void {
   const refusals = createRefusalLog(options.log, options.now ?? Date.now);
 
+  // The content-bearing intake. This function is the one place broker code holds mirror content,
+  // and the invariant every branch of it upholds is that the content never appears in the broker
+  // log at any level: not in a refusal line, not in an error path, not truncated, not as a byte
+  // preview. Every log call here carries a static message or a byte count, and every caught error
+  // object is discarded unread, because a thrown error can quote the text that produced it.
+  async function handleMirror(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    // An event outside the mirror's own vocabulary is refused with the same 400 the /hook route
+    // gives the same class of malformed post. The installed mirror hooks carry one of these two
+    // values as a static header, so whatever sent this is not a hook and the 400 cannot surface
+    // as an in-session error. The logged detail is static; nothing captured from the wire rides
+    // in it.
+    //
+    // Object.hasOwn, never a bare index: MIRROR_EVENTS is a plain object, and a bare lookup
+    // answers prototype keys, so a header naming "constructor" or "__proto__" would skip this 400
+    // and run the authenticated path with an undefined mapping.
+    const event = header(request, "x-channel-hook-event");
+    const mapping =
+      event !== null && Object.hasOwn(MIRROR_EVENTS, event) ? MIRROR_EVENTS[event] : undefined;
+    if (mapping === undefined) {
+      request.resume();
+      refusals.warn("mirror event rejected", "unknown or missing X-Channel-Hook-Event");
+      send(response, 400, { error: "unknown or missing X-Channel-Hook-Event" });
+      return;
+    }
+
+    // Off means accepted, drained, and dropped: the hooks are installed machine-wide and keep
+    // posting whether or not the operator wants content mirrored, so the off switch has to be
+    // quiet at the socket rather than refusing anything.
+    if (!options.mirror.enabled) {
+      request.resume();
+      send(response, 202, { ignored: true });
+      return;
+    }
+
+    // The token header is checked before any of the body is read. An unwrapped session on this
+    // machine posts its full prompt and reply here on every turn, and that content must transit
+    // the socket and be discarded unread, never assembled into a string in broker memory. Nothing
+    // is logged: tokenless mirror traffic is the steady state of every unwrapped session, not a
+    // fault, and a per-prompt log line would say nothing but that someone is using the machine.
+    const processToken = header(request, "x-channel-process-token");
+    if (processToken === null) {
+      request.resume();
+      send(response, 202, { ignored: true });
+      return;
+    }
+
+    // A token no live session holds, also decided before the body is read. Accepted off the wire
+    // and dropped, exactly as /hook drops the same traffic, so a replayed or forged post learns
+    // nothing from the response. The process token itself is never logged; it is the forgery key,
+    // and this is exactly the traffic a forged one would produce.
+    if (options.registry.current(processToken) === null) {
+      request.resume();
+      refusals.warn("mirror post dropped", "no live session holds this process token");
+      send(response, 202, { ignored: true });
+      return;
+    }
+
+    const read = await readMirrorBody(request, options.mirror.maxBytes);
+    if ("droppedBytes" in read) {
+      if (read.destroyed) {
+        // The connection is already gone, so there is no response to write; the log line is the
+        // only witness. The count is logged; the text is not.
+        refusals.warn(
+          "mirror drain cut off",
+          `${read.droppedBytes} bytes in; the connection was destroyed`,
+        );
+        return;
+      }
+      // Drained and dropped with a 202, never a 413: a 413 is a visible error inside the session
+      // at the end of exactly the longest turns. Up to the ceiling was buffered and released; only
+      // the excess was never buffered. The count is logged; the text is not.
+      refusals.warn(
+        "mirror post over the size cap",
+        `${read.droppedBytes} bytes dropped unposted`,
+      );
+      send(response, 202, { ignored: true });
+      return;
+    }
+
+    // Each refusal cause carries its own rate-limiter reason key: the limiter suppresses by
+    // reason, so a shared key would let one cause's burst mask the other causes' first
+    // occurrences for the length of the window.
+    let payload: unknown;
+    try {
+      payload = JSON.parse(read.body);
+    } catch {
+      // The parse error is discarded, not logged or echoed: V8 embeds an excerpt of the source
+      // text in its message, and here the source text is mirror content. The 400 matches /hook's
+      // answer for the same malformation, which no installed hook produces.
+      refusals.warn("mirror body not JSON", "the body does not parse; its text is not logged");
+      send(response, 400, { error: "body is not valid JSON" });
+      return;
+    }
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      refusals.warn("mirror body not an object", "the body is JSON but not an object");
+      send(response, 400, { error: "body is not a JSON object" });
+      return;
+    }
+    const fields = payload as Record<string, unknown>;
+
+    // Extracted raw rather than through payloadString: clean() caps at MAX_FIELD_LENGTH, and a
+    // mirrored reply is exactly the string that must survive whole. Rendering safety belongs to
+    // the posting side, which neutralizes the text at the Discord boundary. An absent or empty
+    // field is a real case, not an error: a turn can end with an empty final message.
+    const value = fields[mapping.field];
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text === "") {
+      send(response, 202, { ignored: true });
+      return;
+    }
+
+    // The session the payload says it belongs to, forwarded so the router can drop a straggler
+    // from a session that a /clear has since replaced under the same process token. An identity
+    // field, so payloadString's cap is correct here.
+    const sessionId = payloadString(fields, "session_id");
+
+    // Answered before delivery, so the session's hook never waits on Discord: the mirror hook's
+    // timeout is small, and a slow post charged against it would surface inside the session on
+    // every prompt. The body is byte-identical to every drop's answer, so the response carries no
+    // token-validity oracle; what remains is the timing difference the token-before-body ordering
+    // buys, and that trade is deliberate, because the ordering is what keeps an unwrapped
+    // session's content out of broker memory. A delivery failure is the routing layer's to
+    // report; the rejection observed here is recorded without its detail, which can quote the
+    // text it failed to post.
+    send(response, 202, { ignored: true });
+    void options.mirror.deliver(processToken, mapping.kind, text, sessionId).catch(() => {
+      refusals.warn("mirror delivery failed", "the error detail is withheld; it can carry content");
+    });
+  }
+
   return (request, response) => {
     // Both checks run before the body is read, so a refused request cannot reach the registry.
     if (!isLoopback(request.socket.remoteAddress)) {
@@ -292,20 +505,13 @@ export function createHandler(
     }
 
     if (request.method === "POST" && route === "/mirror") {
-      // The content-bearing route accepts and discards. hooks/settings-fragment.json installs a
-      // UserPromptSubmit hook and a second Stop hook posting the console prompt and the turn's final
-      // reply here, at user level, for every session on the machine; Claude Code surfaces any non-2xx
-      // hook response as a visible error inside that session, so an unserved route would put an error
-      // on every prompt and every turn end of every session, watched or not.
-      //
-      // The body is drained rather than read: it carries the operator's full prompt or the whole
-      // assistant reply, and nothing here is authenticated or rendered yet, so it must not be
-      // assembled in broker memory. Draining rather than ignoring is what keeps the socket usable
-      // under keep-alive, where an unread request body stalls the next request on the connection.
-      // Nothing about the post is logged at any level, which is the same posture the content-free
-      // path holds: this route exists so the hooks are quiet, not so their content is recorded.
-      request.resume();
-      send(response, 202, { ignored: true });
+      void handleMirror(request, response).catch(() => {
+        // The error is discarded, never stringified into a log line: a throw out of the mirror
+        // path can quote the body text that produced it. A rate-limited refusal line records that
+        // it happened, and the 202 keeps even a broken mirror path invisible inside the session.
+        refusals.warn("mirror intake failed", "the error detail is withheld; it can carry content");
+        if (!response.headersSent) send(response, 202, { ignored: true });
+      });
       return;
     }
 

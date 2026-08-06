@@ -608,6 +608,42 @@ test("Set-ChannelBrokerEnvironment applies only allowlisted keys", (t) => {
   assert.equal(applied.randomVar, null, "an unrecognized key must never be set");
 });
 
+test("every knob broker/config.ts reads is on the installer's env allowlist", () => {
+  // The two are the same set by contract: a knob in broker/config.ts but not on
+  // $script:ChannelBrokerEnvAllowlist can never reach an installed broker, because
+  // Set-ChannelBrokerEnvironment skips it with a warning at every start, and that failure is
+  // otherwise invisible until someone wonders why a documented knob does nothing.
+  const configSource = readFileSync(
+    path.join(path.dirname(INSTALL_DIR), "broker", "config.ts"),
+    "utf8",
+  );
+  const configKnobs = new Set(
+    [...configSource.matchAll(/env\.(CHANNEL_[A-Z0-9_]+)/g)].map((match) => match[1]),
+  );
+
+  const functionsSource = readFileSync(FUNCTIONS_PATH, "utf8");
+  const blockStart = functionsSource.indexOf("$script:ChannelBrokerEnvAllowlist");
+  assert.ok(blockStart !== -1, "the allowlist assignment must exist to be pinned against");
+  const block = functionsSource.slice(blockStart, functionsSource.indexOf(")", blockStart));
+  const allowlisted = new Set(
+    [...block.matchAll(/'(CHANNEL_[A-Z0-9_]+)'/g)].map((match) => match[1]),
+  );
+
+  // Guards the extraction itself: a regex that silently matched nothing would make the subset
+  // check below pass while pinning nothing.
+  assert.ok(configKnobs.size >= 12, `expected the config's knobs, found ${configKnobs.size}`);
+  assert.ok(configKnobs.has("CHANNEL_MIRROR"));
+  assert.ok(configKnobs.has("CHANNEL_MIRROR_MAX_BYTES"));
+
+  for (const knob of configKnobs) {
+    assert.ok(
+      allowlisted.has(knob),
+      `${knob} is read by broker/config.ts but missing from $script:ChannelBrokerEnvAllowlist, ` +
+        "so an installed broker can never receive it",
+    );
+  }
+});
+
 test("Register-BrokerTask's function throws before touching the Task Scheduler when not elevated", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -51,6 +51,7 @@ async function broker(t: TestContext) {
       registry,
       threadFor: () => THREAD,
       writer: createThreadWriter({ messenger, now: Date.now }),
+      mirrorWriter: createThreadWriter({ messenger, now: Date.now }),
     }),
     permissions: {
       request: async (_processToken, request) => {

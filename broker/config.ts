@@ -32,6 +32,19 @@ export type BrokerConfig = {
   logMaxBytes: number;
   /** Total log files kept on disk, the active one plus its rotated predecessors. */
   logMaxFiles: number;
+  /**
+   * Whether the mirror intake posts console prompts and turn replies to the session's thread. Off,
+   * the mirror route still answers 202 and drops everything, because the installed hooks post to it
+   * from every session on the machine and a refused post is a visible error inside that session.
+   */
+  mirror: boolean;
+  /**
+   * Body ceiling for the mirror route alone. Separate from maxBodyBytes, which keeps governing the
+   * content-free /hook route: a mirror body carries a whole turn's reply, and a reply past this
+   * ceiling is drained and dropped with a 202 rather than refused, since a 413 surfaces as a visible
+   * error inside the session at the end of exactly the longest turns.
+   */
+  mirrorMaxBytes: number;
 };
 
 /**
@@ -44,6 +57,15 @@ export const DEFAULT_PORT = 8787;
 const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 15 * 1000;
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+// 256KB. The measured ceiling it must clear is a real turn's final reply, observed whole at ~35K
+// characters; the headroom above that is for a reply several times longer, not for arbitrary data.
+const DEFAULT_MIRROR_MAX_BYTES = 256 * 1024;
+// The floor is the operational hazard: the mirror route answers 202 whether or not the body fit,
+// so a ceiling small enough to drop every post is indistinguishable from nobody typing. 64KB keeps
+// every ordinarily-sized turn deliverable; the 4MB ceiling bounds what one post can make the
+// broker buffer.
+const MIN_MIRROR_MAX_BYTES = 64 * 1024;
+const MAX_MIRROR_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * How long the relay waits on a silent stream before it presumes the pipe is dead and reconnects.
@@ -93,6 +115,24 @@ function bounded(
   return value;
 }
 
+const FLAG_TRUE: readonly string[] = ["1", "true", "yes", "on"];
+const FLAG_FALSE: readonly string[] = ["0", "false", "no", "off"];
+
+/**
+ * Refuses rather than guesses, holding the same line the numeric knobs hold: a boolean knob read
+ * permissively turns a typo like `CHANNEL_MIRROR=fasle` into whichever default the parser leans
+ * toward, and a knob silently moved is a knob whose behavior nobody can reason about later.
+ */
+function strictFlag(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim().toLowerCase();
+  if (FLAG_TRUE.includes(value)) return true;
+  if (FLAG_FALSE.includes(value)) return false;
+  throw new Error(
+    `expected one of ${[...FLAG_TRUE, ...FLAG_FALSE].join(", ")}, got ${JSON.stringify(raw)}`,
+  );
+}
+
 /**
  * The state file lives outside the repository by default: the broker is installed as a service
  * and its runtime state is not source.
@@ -129,5 +169,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     logFile: env.CHANNEL_BROKER_LOG_FILE?.trim() || null,
     logMaxBytes: integerAtLeast(env.CHANNEL_BROKER_LOG_MAX_BYTES, 1024, DEFAULT_LOG_MAX_BYTES),
     logMaxFiles: integerAtLeast(env.CHANNEL_BROKER_LOG_MAX_FILES, 1, DEFAULT_LOG_MAX_FILES),
+    mirror: strictFlag(env.CHANNEL_MIRROR, true),
+    mirrorMaxBytes: bounded(
+      env.CHANNEL_MIRROR_MAX_BYTES,
+      MIN_MIRROR_MAX_BYTES,
+      MAX_MIRROR_MAX_BYTES,
+      DEFAULT_MIRROR_MAX_BYTES,
+    ),
   };
 }

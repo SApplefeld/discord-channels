@@ -27,7 +27,11 @@ identity, and so a revoked token takes down one machine rather than all of them.
 **Make that channel private to you and the bot.** The sender allowlist governs who can *write* into
 a session, not who can read. Everyone with access to the channel sees every message, and a tool
 approval prompt carries the tool's actual input: the shell command, the patch body, file contents.
-That is the only thing in this system that leaves the machine, and Discord retains it.
+
+**With mirroring on, which is the default, the conversation itself leaves the machine too.** Every
+prompt typed at the console and every turn's final assistant reply is posted into that session's
+thread, in full, so the operator can read and steer from a phone. Discord retains all of it. Set
+`CHANNEL_MIRROR=off` in `broker.env` to turn the mirror off for every session on the host.
 
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a
 starter message successfully and then cannot open a thread on it.

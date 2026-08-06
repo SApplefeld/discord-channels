@@ -46,27 +46,44 @@ test("isLoopback accepts only the loopback forms", () => {
 // be presented: a request from off-box cannot be originated against a socket bound to 127.0.0.1.
 function fakeRequest(
   remoteAddress: string | undefined,
-  init: { method?: string; url?: string; headers?: Record<string, string>; body?: string } = {},
-): IncomingMessage {
+  init: {
+    method?: string;
+    url?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    /** When set, the body stream throws this message after its data, like a connection dying mid-read. */
+    streamError?: string;
+  } = {},
+): IncomingMessage & { bodyConsumed: boolean; destroyed: boolean } {
   const body = init.body ?? "";
   const request = {
+    // Flips when the handler iterates the body stream. The drop paths that must discard a body
+    // without assembling it into a string call resume() instead, which leaves this false: that is
+    // the observable difference between draining a body and reading it.
+    bodyConsumed: false,
+    destroyed: false,
     method: init.method ?? "POST",
     url: init.url ?? "/hook",
     // A real client always sends Host, and the handler now requires it, so the default stands in
     // for one. A test that cares about Host overrides it.
     headers: { host: "127.0.0.1:8787", ...(init.headers ?? {}) },
     socket: { remoteAddress },
-    // The route that drains rather than reads its body calls this. It stands in for the real
-    // stream's flowing-mode switch; what the tests below assert about it is that the body never
-    // reaches the handler, which the absent asyncIterator consumption already shows.
+    // The routes that drain rather than read a body call this. It stands in for the real stream's
+    // flowing-mode switch.
     resume() {
       return this;
     },
+    destroy() {
+      this.destroyed = true;
+      return this;
+    },
     async *[Symbol.asyncIterator]() {
+      this.bodyConsumed = true;
       if (body !== "") yield Buffer.from(body, "utf8");
+      if (init.streamError !== undefined) throw new Error(init.streamError);
     },
   };
-  return request as unknown as IncomingMessage;
+  return request as unknown as IncomingMessage & { bodyConsumed: boolean; destroyed: boolean };
 }
 
 type Captured = { status: number; body: unknown };
@@ -113,13 +130,62 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     logFile: null,
     logMaxBytes: 5 * 1024 * 1024,
     logMaxFiles: 5,
+    mirror: true,
+    mirrorMaxBytes: 256 * 1024,
     ...overrides,
   };
 }
 
-function harness(): { registry: Registry; handle: ReturnType<typeof createHandler> } {
+type MirrorOptions = Parameters<typeof createHandler>[0]["mirror"];
+
+type Delivery = { processToken: string; kind: string; text: string; sessionId: string | null };
+
+/** A mirror seam that records what reaches it, standing in for the outbound router. */
+function fakeMirror(overrides: Partial<MirrorOptions> = {}): {
+  mirror: MirrorOptions;
+  deliveries: Delivery[];
+} {
+  const deliveries: Delivery[] = [];
+  return {
+    deliveries,
+    mirror: {
+      enabled: true,
+      maxBytes: 1024,
+      deliver: async (processToken, kind, text, sessionId) => {
+        deliveries.push({ processToken, kind, text, sessionId });
+        return null;
+      },
+      ...overrides,
+    },
+  };
+}
+
+function harness(mirror?: MirrorOptions): {
+  registry: Registry;
+  handle: ReturnType<typeof createHandler>;
+} {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-  return { registry, handle: createHandler({ registry, maxBodyBytes: 1024 }) };
+  return {
+    registry,
+    handle: createHandler({ registry, maxBodyBytes: 1024, mirror: mirror ?? fakeMirror().mirror }),
+  };
+}
+
+/** Announces a session holding TOKEN, so a mirror post authenticated by it has somewhere to go. */
+function announce(registry: Registry): void {
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+}
+
+/** Delivery happens after the 202 is written; one macrotask turn lets it land before asserting. */
+function settled(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 async function call(
@@ -262,75 +328,413 @@ test("an unknown route is a 404", async () => {
   assert.equal(result.status, 404);
 });
 
-test("a mirror post is accepted with and without a process token, never 404", async () => {
-  // The installed fragment posts the console prompt and the turn's final reply here for every
-  // session on the machine, and Claude Code surfaces any non-2xx hook response as a visible error
-  // inside that session. A 404 here would put one on every prompt and every turn end, in wrapped and
-  // unwrapped sessions alike, since route dispatch decides before any token is looked at.
-  const { registry, handle } = harness();
+test("a token-authenticated prompt reaches the mirror seam whole, with its kind", async () => {
+  const { mirror, deliveries } = fakeMirror({ maxBytes: 4096 });
+  const { registry, handle } = harness(mirror);
+  announce(registry);
 
-  for (const headers of [
-    hookHeaders("UserPromptSubmit"),
-    { "x-channel-hook-event": "Stop" },
-  ]) {
-    const result = await call(
-      handle,
-      fakeRequest("127.0.0.1", {
-        url: "/mirror",
-        headers,
-        body: JSON.stringify({ prompt: "what is the state of the tree" }),
-      }),
-    );
-    assert.equal(result.status, 202, JSON.stringify(headers));
-    assert.deepEqual(result.body, { ignored: true });
-  }
+  // Longer than MAX_FIELD_LENGTH on purpose: the identity-field path caps strings at 256, and a
+  // mirrored prompt run through it would be silently cut. The whole text must arrive.
+  const prompt = "p".repeat(600);
+  const result = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: JSON.stringify({ prompt }),
+    }),
+  );
+  await settled();
 
-  assert.deepEqual(registry.list(), [], "a mirror post must not reach the registry");
+  assert.equal(result.status, 202);
+  // Byte-identical to every drop's answer, so the response body cannot tell a local prober
+  // whether a token was honored.
+  assert.deepEqual(result.body, { ignored: true });
+  assert.deepEqual(deliveries, [
+    { processToken: TOKEN, kind: "prompt", text: prompt, sessionId: null },
+  ]);
 });
 
-test("a mirror post larger than the body cap is drained rather than refused", async () => {
-  // The cap belongs to the route that reads a body. This one discards its body unread, so a reply
-  // far past the cap is accepted rather than answered 413, which is what the session would show as
-  // an error at the end of exactly the longest turns.
-  const { handle } = harness();
+test("a Stop post delivers the turn's final reply as the reply kind", async () => {
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
 
   const result = await call(
     handle,
     fakeRequest("127.0.0.1", {
       url: "/mirror",
       headers: hookHeaders("Stop"),
-      body: JSON.stringify({ last_assistant_message: "x".repeat(64 * 1024) }),
+      body: JSON.stringify({ last_assistant_message: "the migration is done" }),
     }),
   );
+  await settled();
 
   assert.equal(result.status, 202);
+  assert.deepEqual(deliveries, [
+    { processToken: TOKEN, kind: "reply", text: "the migration is done", sessionId: null },
+  ]);
 });
 
-test("nothing about a mirror post reaches the log", async () => {
-  // The mirror body is the operator's own prompt and Claude's own reply. Until the authenticated
-  // content path exists, this route holds the same content-free posture the rest of the intake
-  // holds: not even a refusal line, which would otherwise carry detail captured from the wire.
+test("a payload's session_id rides to the seam; its absence rides as null", async () => {
+  // The router drops a straggler whose session_id names a replaced session, so the intake must
+  // forward the field faithfully rather than resolving on the token alone.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ session_id: "session-a", last_assistant_message: "named" }),
+    }),
+  );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ last_assistant_message: "unnamed" }),
+    }),
+  );
+  await settled();
+
+  assert.deepEqual(
+    deliveries.map((delivery) => ({ text: delivery.text, sessionId: delivery.sessionId })),
+    [
+      { text: "named", sessionId: "session-a" },
+      { text: "unnamed", sessionId: null },
+    ],
+  );
+});
+
+test("a prototype key in the event header is refused, not resolved through the chain", async () => {
+  // MIRROR_EVENTS is a plain object, and a bare index into one answers prototype keys: an event
+  // header naming "constructor" or "__proto__" would return a non-undefined mapping, skip the
+  // 400, and run the authenticated path with mapping.field === undefined, at which point a body
+  // keyed "undefined" delivers text with a kind outside MirrorKind. The gate must answer these
+  // exactly as it answers any unknown event.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  for (const event of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers: hookHeaders(event),
+        body: JSON.stringify({ undefined: "smuggled through the prototype chain" }),
+      }),
+    );
+    assert.equal(result.status, 400, event);
+  }
+  await settled();
+  assert.deepEqual(deliveries, []);
+});
+
+test("a body streaming far past the ceiling is cut off, not drained forever", async () => {
+  // The quiet drain exists for an honestly-oversized post; a token-holding local process
+  // streaming an endless chunked body is neither, and it must not get to hold the connection and
+  // the drain loop open. Past a multiple of the ceiling the connection is destroyed.
+  const { mirror, deliveries } = fakeMirror({ maxBytes: 100 });
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("Stop"),
+    body: JSON.stringify({ last_assistant_message: "x".repeat(2_000) }),
+  });
+  const { response } = fakeResponse();
+  handle(request, response);
+  await settled();
+  await settled();
+
+  assert.equal(request.destroyed, true, "the connection must be destroyed past the drain limit");
+  assert.deepEqual(deliveries, []);
+});
+
+test("with the mirror off, a post is accepted, drained, and nothing is delivered", async () => {
+  const { mirror, deliveries } = fakeMirror({ enabled: false });
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit"),
+    body: JSON.stringify({ prompt: "sensitive work" }),
+  });
+  const result = await call(handle, request);
+  await settled();
+
+  assert.equal(result.status, 202, "off must stay quiet at the socket, never refuse");
+  assert.deepEqual(deliveries, [], "off means unposted, not merely unrendered");
+  assert.equal(request.bodyConsumed, false, "off also means the body is never assembled");
+});
+
+test("a tokenless mirror post is dropped before its body is ever read", async () => {
+  // An unwrapped session on this machine posts its full prompt and reply here on every turn. The
+  // token check runs before the body read, so that content transits the socket and is discarded
+  // without ever being assembled into a string in broker memory.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  const tokenless: Record<string, string>[] = [
+    { "x-channel-hook-event": "UserPromptSubmit" },
+    { "x-channel-hook-event": "Stop", "x-channel-process-token": "" },
+  ];
+  for (const headers of tokenless) {
+    const request = fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers,
+      body: JSON.stringify({ prompt: "an unwrapped session's prompt" }),
+    });
+    const result = await call(handle, request);
+    assert.equal(result.status, 202, JSON.stringify(headers));
+    assert.equal(request.bodyConsumed, false, "the body must be drained, not read");
+  }
+  await settled();
+  assert.deepEqual(deliveries, []);
+});
+
+test("a mirror post from a token no live session holds is dropped unread", async () => {
+  const { mirror, deliveries } = fakeMirror();
+  const { handle } = harness(mirror);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit"),
+    body: JSON.stringify({ prompt: "a forged or replayed post" }),
+  });
+  const result = await call(handle, request);
+  await settled();
+
+  assert.equal(result.status, 202, "a drop answers exactly like /hook's equivalent, never a refusal");
+  assert.equal(request.bodyConsumed, false);
+  assert.deepEqual(deliveries, []);
+});
+
+test("a body at the mirror ceiling is delivered; one byte over is drained and dropped", async () => {
+  const body = JSON.stringify({ last_assistant_message: "r".repeat(500) });
+  const exact = Buffer.byteLength(body);
+
+  const atCap = fakeMirror({ maxBytes: exact });
+  {
+    const { registry, handle } = harness(atCap.mirror);
+    announce(registry);
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", { url: "/mirror", headers: hookHeaders("Stop"), body }),
+    );
+    await settled();
+    assert.equal(result.status, 202);
+    assert.equal(atCap.deliveries.length, 1, "a body exactly at the ceiling is inside it");
+  }
+
+  const overCap = fakeMirror({ maxBytes: exact - 1 });
+  {
+    const { registry, handle } = harness(overCap.mirror);
+    announce(registry);
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", { url: "/mirror", headers: hookHeaders("Stop"), body }),
+    );
+    await settled();
+    assert.equal(result.status, 202, "over the ceiling is a drop with a 2xx, never a 413");
+    assert.deepEqual(overCap.deliveries, [], "the over-cap content is dropped, not posted");
+  }
+});
+
+test("an absent or empty mirror field answers 2xx and posts nothing", async () => {
+  // A turn whose final assistant message is empty is a real case, and a payload without the field
+  // at all is indistinguishable from it on this side. Neither is an error.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  const cases: Array<{ event: string; body: string }> = [
+    { event: "UserPromptSubmit", body: JSON.stringify({}) },
+    { event: "UserPromptSubmit", body: JSON.stringify({ prompt: "" }) },
+    { event: "Stop", body: JSON.stringify({}) },
+    { event: "Stop", body: JSON.stringify({ last_assistant_message: "" }) },
+    { event: "Stop", body: JSON.stringify({ last_assistant_message: 7 }) },
+  ];
+  for (const { event, body } of cases) {
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", { url: "/mirror", headers: hookHeaders(event), body }),
+    );
+    assert.equal(result.status, 202, `${event} ${body}`);
+  }
+  await settled();
+  assert.deepEqual(deliveries, []);
+});
+
+test("a mirror post with an event outside the mirror vocabulary is a 400, like /hook", async () => {
+  // The installed hooks carry UserPromptSubmit or Stop as static headers, so nothing that can show
+  // an in-session error ever sends anything else; whatever did is malformed traffic of the same
+  // class /hook answers 400.
+  const { mirror, deliveries } = fakeMirror();
+  const { registry, handle } = harness(mirror);
+  announce(registry);
+
+  for (const event of ["SessionStart", "PostToolUse", "SessionEnd"]) {
+    const result = await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers: hookHeaders(event),
+        body: JSON.stringify({ prompt: "hello" }),
+      }),
+    );
+    assert.equal(result.status, 400, event);
+  }
+  await settled();
+  assert.deepEqual(deliveries, []);
+});
+
+test("mirror content never appears in the log, on any path, at any level", async (t) => {
+  // The section's central invariant, asserted the discriminating way: a logger that captures every
+  // line at every level, every branch of the route driven with a distinct secret, and the assert is
+  // on the secrets being absent from the captured output, not on how many lines were written.
   const lines: string[] = [];
   const logger = {
     info: (message: string) => lines.push(message),
     warn: (message: string) => lines.push(message),
     error: (message: string) => lines.push(message),
   };
-  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-  const handle = createHandler({ registry, maxBodyBytes: 1024, log: logger });
+  const originalConsoleError = console.error;
+  console.error = (...parts: unknown[]) => lines.push(parts.map(String).join(" "));
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
 
-  const secret = "the operator's console prompt";
-  const result = await call(
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  // A delivery that throws an error quoting the text it failed to post: the hardest case, because
+  // the one place the content could legitimately reach a catch block is here.
+  const deliver = async (_token: string, _kind: string, text: string): Promise<null> => {
+    throw new Error(`delivery exploded while posting: ${text}`);
+  };
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    log: logger,
+    mirror: { enabled: true, maxBytes: 200, deliver },
+  });
+  announce(registry);
+
+  const secrets = {
+    delivered: "SECRET-delivered-prompt",
+    tokenless: "SECRET-unwrapped-session-prompt",
+    unknownToken: "SECRET-forged-post-reply",
+    overCap: "SECRET-oversized-reply",
+    malformed: "SECRET-inside-broken-json",
+    unknownEvent: "SECRET-behind-a-bad-event",
+    nonObject: "SECRET-body-that-is-a-bare-string",
+    mirrorOff: "SECRET-posted-while-off",
+    streamError: "SECRET-quoted-by-a-dying-stream",
+  };
+
+  await call(
     handle,
     fakeRequest("127.0.0.1", {
       url: "/mirror",
       headers: hookHeaders("UserPromptSubmit"),
-      body: JSON.stringify({ prompt: secret }),
+      body: JSON.stringify({ prompt: secrets.delivered }),
     }),
   );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: { "x-channel-hook-event": "UserPromptSubmit" },
+      body: JSON.stringify({ prompt: secrets.tokenless }),
+    }),
+  );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("Stop", { "x-channel-process-token": "not-the-announced-token" }),
+      body: JSON.stringify({ last_assistant_message: secrets.unknownToken }),
+    }),
+  );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ last_assistant_message: secrets.overCap + "x".repeat(400) }),
+    }),
+  );
+  // V8's JSON.parse error message embeds an excerpt of the source text, so a caught-and-logged
+  // parse error is a leak even though no code ever touched the parsed content.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: `{ "prompt": "${secrets.malformed}"`,
+    }),
+  );
+  // An unknown event still arrives with a content-bearing body; the 400 must not describe it.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("SessionEnd"),
+      body: JSON.stringify({ prompt: secrets.unknownEvent }),
+    }),
+  );
+  // Valid JSON whose whole body is the secret, refused as a non-object.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: JSON.stringify(secrets.nonObject),
+    }),
+  );
+  // The off switch drains a content-bearing post; off must also mean unlogged.
+  const offHandle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    log: logger,
+    mirror: { enabled: false, maxBytes: 200, deliver },
+  });
+  await call(
+    offHandle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: JSON.stringify({ prompt: secrets.mirrorOff }),
+    }),
+  );
+  // A stream that dies mid-read throws out of the body loop into the route's outer catch, and the
+  // error message can quote body text; the catch must discard it unread.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: `{ "prompt": "`,
+      streamError: `connection burst while carrying: ${secrets.streamError}`,
+    }),
+  );
+  await settled();
 
-  assert.equal(result.status, 202);
-  assert.deepEqual(lines, [], `a mirror post must write no log line at all, got ${JSON.stringify(lines)}`);
+  const captured = lines.join("\n");
+  for (const [name, secret] of Object.entries(secrets)) {
+    assert.ok(!captured.includes(secret), `${name} content leaked into the log: ${captured}`);
+  }
+  // The logger was demonstrably live: the drop and failure paths above do write content-free
+  // refusal lines, so an empty capture would mean the logger was unplugged, not that nothing
+  // leaked.
+  assert.ok(lines.length > 0, "expected content-free refusal lines to prove the logger was live");
 });
 
 test("payload fields that are not strings are ignored rather than stored", () => {
