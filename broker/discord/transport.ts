@@ -69,3 +69,13 @@ export type DiscordTransport = {
   renameThread: (input: { threadId: string; name: string }) => Promise<CallOutcome<null>>;
   archiveThread: (input: { threadId: string }) => Promise<CallOutcome<null>>;
 };
+
+/**
+ * The one write that posts a new message rather than editing the card. Separate from
+ * `DiscordTransport` because the two have different callers and different cadences: the surfaces
+ * reconcile passive state on a timer and must never post, while the message routing posts only what
+ * a person is meant to be pinged about.
+ */
+export type ThreadMessenger = {
+  postToThread: (input: { threadId: string; text: string }) => Promise<CallOutcome<null>>;
+};

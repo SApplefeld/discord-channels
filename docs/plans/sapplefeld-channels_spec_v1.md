@@ -850,3 +850,80 @@ verified by inspection only, since forcing that failure deterministically needs 
 Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads)
 Next: BLOCKED on operator Check A. Sections 5 and 6 are the only work left and the gate blocks both.
 Commit Model: Commit-and-Push
+
+### Chapter 6 - 2026-08-06
+Completed: 5. Relay MCP channel server and message routing
+Implemented By: implementer-opus (one build round, one review-fix round via the same agent); main
+session for `docs/` and the incident fix below
+Metrics: 1 review round (adversarial + blind at fable, security at default, retried once after an API
+failure); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **An incident opened this stretch, not a section.** Scott reported a hook error
+on every Claude Code launch, naming a path under a temp directory. It was not the hooks design: a
+test in `install/Install-Host.test.ts` omitted `-SettingsPath`, so the installer fell through to its
+own default and merged this project's hooks into his **live** `~/.claude/settings.json`, pointing
+`SessionStart` at a fixture the test then deleted. The suite stayed green throughout, because the
+installer did exactly what it was asked. The S7 implementer had reported "no real settings-file
+change was made to this machine"; that claim was false and only the operator's own observation caught
+it. The harness now refuses any run without a fixture settings path and state root, **and** hands the
+child a fixture HOME, USERPROFILE and LOCALAPPDATA so a default cannot reach the real profile either.
+Locked by a test, and verified by hashing the real settings file across a full suite run.
+The lesson worth keeping is not "pass the parameter". It is that a test which drives a real installer
+is a test that can install, and the only durable guard is the one that makes the destination
+unreachable rather than merely unspecified.
+**The section itself was built out of order and against a live channel.** The gate passed, so S5 was
+unblocked; SCOTT still carries the development flag, which meant the relay could be loaded against a
+real Claude Code session rather than only fakes. That paid for itself: the handshake, the broker
+binding, the reply key, the refused second stream, the grace window and the forged-SessionStart
+refusal were all confirmed live rather than reasoned about.
+Two design facts were read out of the Claude Code binary and shaped the code. Claude Code refuses to
+register a channel whose negotiated protocol revision is at or past `2026-07-28`, and the SDK's
+latest is `2025-11-25`, so a future SDK bump would silently kill delivery; a test pins the bound.
+And stdio version probing starts the server, hard-closes it, and respawns it, which is why the relay
+opens its broker pipe only at `oninitialized` and the hub's detach is identity-checked.
+**The implementer overrode the fix brief on one point, correctly.** I instructed it to register the
+relay via an `mcpServers` key in the settings fragment. It implemented that, then measured build
+2.1.223 applying the `permissions.allow` from such a file while starting **no server at all** from
+its `mcpServers` key. It reverted and moved registration to the wrapper, which writes a
+`--mcp-config` per launch from its own location. That is better scoped anyway: a user-scope
+registration would start a relay for every session on the machine, including the unwrapped ones the
+Standing Brief Amendment requires to no-op. Primary evidence beat my instruction, which is the
+outcome the brief's marked-assertions rule exists to produce.
+Review Findings: 4 Critical fixed. A forged `SessionStart` could overwrite a live record and steal
+its thread, because `start()` never checked the existing record's token: session IDs are published by
+`GET /sessions`, so the operator's messages would route to the forger and its replies land in the
+real thread. **That was a pre-existing S2 defect that S5 turned into full takeover**, and it is the
+second time the token-match condition had to be added to a path Chapter 2 only fixed in `route()`.
+Stream attachment treated token possession as inbound authorization, so any tool subprocess could
+attach its own pipe and man-in-the-middle the operator; fixed by first-claim-wins plus a per-
+attachment reply key that never travels where the token holder can read it. A transient pipe close
+permanently tombstoned a live session, with the relay's own read-timeout recovery as a trigger, so
+the client's reconnect logic and the server's close-is-death rule contradicted each other; fixed with
+a grace window, which also matches the acceptance criterion's "within one heartbeat interval" more
+exactly than the original did. And the relay's `instructions` asserted that channel text came from
+the operator, a provenance the transport cannot establish, which undercut the data-not-instruction
+paragraph directly above it.
+7 Major fixed: reply authorship (closed by the reply key), a `reply()` that could hang forever
+(blind probed the exact Node 24 behavior: a peer dying mid-body emits `aborted`/`error`/`close` and
+never `end`), bidi and zero-width characters reaching the model on the one path with no render site,
+unbounded stream buffering and connection count, replies and notices bypassing the rate-limit budget
+entirely, and the relay-registration gap. 10 Minor fixed.
+Deliberate deviation, recorded: the in-thread rejection notice stops once the ended record is pruned
+at the 24h horizon, after which a message into that thread is ignored in silence. Fixing it needs a
+tombstone outliving the registry record, which is a retention change rather than a routing one. It is
+in `docs/operations.md` instead.
+Gate delta: lint exit 0 throughout; tests 195 (the real Chapter 5 baseline, which the implementer
+measured against a clean `git archive` and corrected from my stated 194) → 245 after the build → 273
+passing, 1 skipped, 0 failing. 53 mutations across the two rounds. Four came back green and were
+chased rather than accepted: two were wrong anchors or unreachable test directions, one was a test
+passing for the wrong reason (`closeAllConnections` before the connection existed), and one is a
+genuine redundant pair. Worth recording honestly: **no single settle-handler on the reply path is
+individually necessary** on Node 24.19; only removing every path but the clean `end` reddens. The
+redundancy is deliberate for a promise that must always settle, and the implementer reported the
+green rather than implying otherwise.
+Not proven, and it needs a person at the keyboard: an inbound event reaching the model, and a `reply`
+tool call round-tripping. Claude Code registers a channel only from its interactive REPL, so a
+headless `claude -p` run never registers one at all and the notification is delivered to nothing.
+Everything below that boundary is confirmed live; the boundary itself is not.
+Stamps: adjudicated 1, stamped 0 (`memq unstamped --since 1d` returned no unapplied reads)
+Next: 6. Sender gating and permission relay
+Commit Model: Commit-and-Push

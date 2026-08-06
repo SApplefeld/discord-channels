@@ -91,3 +91,16 @@ stops its Discord surfaces after one rejection rather than retrying forever, and
 **The broker will not start.** It refuses a token file that any account on the machine can read or
 write, and it refuses one whose directory is that permissive, naming the file and the principal. Re-
 run the installer, which sets both.
+
+**A message into an old thread gets no answer at all.** A message sent to a session that has ended
+is normally answered in-thread with a notice saying so. That only works while the broker still holds
+the ended record, which is `CHANNEL_RETAIN_TERMINAL_MS` (24 hours by default). Past that horizon the
+thread is unknown to the broker and a message there is ignored in silence. Threads are left open on
+purpose, so old ones stay in the list and stay writable; a silent one is old, not broken.
+
+**Messages reach a session but its answers read wrong.** The relay holds its pipe on a
+first-claim-wins basis and every reply must present a key issued only down that pipe, so a second
+process cannot take the channel from a relay that already holds it. What it can do is get there
+first, before the relay attaches. Nothing detects that, and the status card keeps ticking either
+way. If a session's replies do not match what it is doing, stop the session rather than steering it,
+and see `security-model.md`.

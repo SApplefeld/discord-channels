@@ -153,12 +153,16 @@ if (-not $SkipAcl -and -not $insideStateRoot) {
 }
 
 $sessionStartScript = Join-Path $RepoRoot 'hooks\session-start.ps1'
+# Claude Code runs this at the start of every session on the machine, from the user-level settings
+# file, so it is hardened alongside the hook script rather than trusted.
+$relayScript = Join-Path $RepoRoot 'relay\index.ts'
 $wrapperScript = Join-Path $RepoRoot 'wrapper\Enter-ClaudeSession.ps1'
 $hooksDir = Join-Path $RepoRoot 'hooks'
+$relayDir = Join-Path $RepoRoot 'relay'
 $wrapperDir = Join-Path $RepoRoot 'wrapper'
 $installDir = Join-Path $RepoRoot 'install'
 $brokerDir = Join-Path $RepoRoot 'broker'
-foreach ($required in @($sessionStartScript, $wrapperScript, $hooksDir, $wrapperDir, $installDir, $brokerDir)) {
+foreach ($required in @($sessionStartScript, $relayScript, $wrapperScript, $hooksDir, $relayDir, $wrapperDir, $installDir, $brokerDir)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Install-Host: expected path not found at '$required'. Is -RepoRoot correct?"
     }
@@ -199,6 +203,9 @@ if (-not $SkipAcl) {
     # and neither was hardened before. Directories are hardened as containers so a file added to
     # either tree later inherits the same three-trustee grant rather than arriving open.
     Protect-ChannelPath -Path $hooksDir
+    # relay/ joins them: the merged settings file names relay\index.ts as an MCP server command, so
+    # Claude Code executes it at the start of every session on the machine.
+    Protect-ChannelPath -Path $relayDir
     Protect-ChannelPath -Path $wrapperDir
     Protect-ChannelPath -Path $installDir
     Protect-ChannelPath -Path $brokerDir

@@ -32,15 +32,47 @@ is set in the launching process's environment, so the session inherits it, **and
 subprocess its tools spawn.** A session can therefore read its own forgery key and post hook events
 about itself.
 
-This is an accepted risk, with a hard limit. What a session can currently distort is its own status:
-it can mark itself working or idle, or end its own record. That is tolerable, and it is why the token
-is withheld from `GET /sessions`.
+This is an accepted risk, with a hard limit. What a session can distort is its own status: it can
+mark itself working or idle, or end its own record. That is tolerable, and it is why the token is
+withheld from `GET /sessions`.
 
-**It stops being tolerable the moment the token authorizes anything inbound.** Message routing and
-permission verdicts must not treat possession of a process token as authorization. The authority for
-any inbound action is the Discord sender's user ID, checked against a one-entry allowlist, and it is
-gated on the sender rather than the channel or thread: gating on the room would let anyone with
-access to the channel inject text into a running session.
+**It is not standing to do anything inbound**, and three checks enforce that:
+
+- **A `SessionStart` naming a session ID that another live token already holds is refused.** Session
+  IDs are published by `GET /sessions` and are not secrets. Without this, a local process could mint
+  a token, announce a running session's ID, and overwrite that record in place. Thread bindings key
+  on session ID and persist, so the operator's messages would route to the forger and the forger's
+  replies would land in the real thread as that session, while the real session went dark.
+- **The first relay stream to claim a token holds it.** A second is refused rather than promoted, so
+  a malicious package postinstall or fetched script cannot take over the operator-to-Claude channel
+  by attaching its own pipe.
+- **Each attachment is issued a reply key**, delivered only down that stream and stored nowhere the
+  token holder can read. Every reply must present it. Posting into the operator's thread as Claude
+  therefore requires holding the pipe, not merely knowing the token.
+
+The residual is a race: a local process that attaches a stream *before* the relay does holds the
+token and its key until that pipe closes. Nothing detects it, and the operator's only signal is a
+session whose status card keeps ticking while its answers read wrong. Closing it would need the
+broker to learn the relay's process identity, which the channel protocol does not carry.
+
+The authority for any inbound action is the Discord sender's user ID, checked against a one-entry
+allowlist, and it is gated on the sender rather than the channel or thread: gating on the room would
+let anyone with access to the channel inject text into a running session.
+
+**A channel event tells the model that its sender is unverified.** The relay's instructions say so
+explicitly and make no claim that a message came from the operator, because at that layer nothing
+establishes who wrote it. Text arriving over the channel carries less authority than what the
+operator typed at the keyboard, and the model is told that in the same breath as it is told the
+events exist.
+
+**The reply tool's allow rule is a machine-wide pre-approval.** `mcp__channel-relay__reply` is merged
+into the user-level settings file, so it applies to every Claude Code session on the machine, not
+only wrapped ones, and any MCP server registered under the name `channel-relay` has its `reply` tool
+pre-approved with no prompt. The relay is registered per launch by the wrapper rather than at user
+scope, so an unwrapped session normally has no such server, but a project `.mcp.json` in a repository
+a session is working in can squat the name. The installer refuses to merge any permission rule
+outside its own one-entry allowlist, which stops the fragment being used to widen this; it does not
+stop the squat.
 
 ## Untrusted strings
 
@@ -105,11 +137,12 @@ authenticated account or a non-administrative service account.
 
 ## Accepted, and worth stating
 
-- **Hook payloads cross loopback in cleartext**, and `PostToolUse` carries `tool_input` and
-  `tool_response`. The broker drops both after parsing, but dropping after receipt is not the same as
-  not transmitting: a local process that wins the race to bind the port before the broker starts
-  would see full tool traffic, not just status. The loopback bind and the `Host` check are what this
-  rests on.
+- **Hook payloads and relay traffic cross loopback in cleartext.** `PostToolUse` carries
+  `tool_input` and `tool_response`, and the relay pipe carries the text of every message exchanged
+  with the operator. The broker drops the tool fields after parsing, but dropping after receipt is
+  not the same as not transmitting: anything running as this user can read all of it off the
+  loopback interface, and a local process that wins the race to bind the port before the broker
+  starts sees it directly. The loopback bind and the `Host` check are what this rests on.
 - **One allowlisted Discord user per host.** There is no multi-user model and no per-user
   permissions.
 - **A session cannot be started or restarted remotely.** A channel injects into a running session; it

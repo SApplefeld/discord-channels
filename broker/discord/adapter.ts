@@ -3,7 +3,12 @@
 // This file holds the wire shape: routes, request bodies, and the header parsing that turns a
 // response into a rate-limit observation. It deliberately imports no Discord library, so the shape
 // of every outgoing write is testable without a token, a network, or a gateway connection.
-import type { CallOutcome, DiscordTransport, RateLimitObservation } from "./transport.ts";
+import type {
+  CallOutcome,
+  DiscordTransport,
+  RateLimitObservation,
+  ThreadMessenger,
+} from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
 
 /** What one HTTP attempt produced. A refusal for rate limiting is its own result, never an error. */
@@ -119,7 +124,9 @@ export type AdapterOptions = {
   request: RawRequest;
 };
 
-export function createDiscordTransport(options: AdapterOptions): DiscordTransport {
+export function createDiscordTransport(
+  options: AdapterOptions,
+): DiscordTransport & ThreadMessenger {
   const { channelId, request } = options;
 
   async function write(
@@ -185,6 +192,19 @@ export function createDiscordTransport(options: AdapterOptions): DiscordTranspor
     renameThread: async ({ threadId, name }): Promise<CallOutcome<null>> => {
       const renamed = await write(`/channels/${threadId}`, "PATCH", { name });
       return renamed.status === "ok" ? { status: "ok", value: null, rate: renamed.rate } : renamed;
+    },
+
+    // A thread is a channel, so a message posted into one goes to the same route the card does,
+    // addressed to the thread instead of the parent. It carries the same two suppressions every
+    // other write here does: the text is Claude's own output, steered by whatever arrived from
+    // Discord, so it is no more trusted than a session name.
+    postToThread: async ({ threadId, text }): Promise<CallOutcome<null>> => {
+      const posted = await write(`/channels/${threadId}/messages`, "POST", {
+        content: text,
+        allowed_mentions: NO_MENTIONS,
+        flags: SUPPRESS_EMBEDS,
+      });
+      return posted.status === "ok" ? { status: "ok", value: null, rate: posted.rate } : posted;
     },
 
     archiveThread: async ({ threadId }): Promise<CallOutcome<null>> => {

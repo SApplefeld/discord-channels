@@ -38,6 +38,7 @@ function fixtureRepoRoot(): string {
   mkdirSync(path.join(root, "wrapper"), { recursive: true });
   mkdirSync(path.join(root, "install"), { recursive: true });
   mkdirSync(path.join(root, "broker"), { recursive: true });
+  mkdirSync(path.join(root, "relay"), { recursive: true });
   copyFileSync(
     path.join(REAL_REPO_ROOT, "hooks", "settings-fragment.json"),
     path.join(root, "hooks", "settings-fragment.json"),
@@ -45,6 +46,9 @@ function fixtureRepoRoot(): string {
   writeFileSync(path.join(root, "hooks", "session-start.ps1"), "# fixture hook\n", "utf8");
   writeFileSync(path.join(root, "wrapper", "Enter-ClaudeSession.ps1"), "# fixture wrapper\n", "utf8");
   writeFileSync(path.join(root, "broker", "index.ts"), "// fixture broker entry\n", "utf8");
+  // The merged settings file names this as an MCP server command, so Claude Code runs it at the
+  // start of every session and the installer hardens it alongside the hook script.
+  writeFileSync(path.join(root, "relay", "index.ts"), "// fixture relay entry\n", "utf8");
   copyFileSync(INSTALL_HOST_SCRIPT, path.join(root, "install", "Install-Host.ps1"));
   copyFileSync(
     path.join(INSTALL_DIR, "Install-Functions.ps1"),
@@ -207,6 +211,7 @@ test("Install-Host provisions config, merges hooks, hardens the fixture tree, an
   assert.ok(existsSync(settingsPath));
   const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
     hooks: { SessionStart: [{ hooks: [{ command: string }] }] };
+    permissions?: { allow?: string[] };
   };
   const command = settings.hooks.SessionStart[0].hooks[0].command;
   assert.match(command, /session-start\.ps1/);
@@ -215,6 +220,11 @@ test("Install-Host provisions config, merges hooks, hardens the fixture tree, an
       command.includes(path.join(repoRoot, "hooks", "session-start.ps1").replace(/\\/g, "\\\\")),
     `expected the fixture's own hook path in ${command}`,
   );
+
+  // The allow rule lands in the file that actually runs. The relay's own registration does not
+  // come from here: a settings file's mcpServers key is read by nothing, so the wrapper writes a
+  // --mcp-config per launch instead.
+  assert.deepEqual(settings.permissions?.allow, ["mcp__channel-relay__reply"]);
 });
 
 test("Install-Host rejects both -BotToken and -BotTokenFile together", (t) => {

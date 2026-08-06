@@ -73,6 +73,22 @@ export type Registry = {
   list: () => SessionRecord[];
   /** The live or stale record currently held by a process token, if any. */
   current: (processToken: string) => SessionRecord | null;
+  /**
+   * Records that the relay running in this process is alive, which holds its session out of the
+   * staleness sweep on a path independent of hook traffic. Returns the touched record, or null when
+   * no session holds the token yet.
+   */
+  relaySeen: (processToken: string) => SessionRecord | null;
+  /**
+   * Marks one named session ended, which is what a relay's stdio closing and staying closed
+   * signals. This is the death signal rather than a `SessionEnd` hook because a hard kill fires no
+   * hook at all, and the relay's pipe closes either way.
+   *
+   * The session is named rather than looked up from the token because the two can disagree by the
+   * time this runs: a `/clear` moves the token to a new session while the old pipe is still
+   * closing, and ending "whatever this token holds now" would kill the replacement.
+   */
+  relayClosed: (processToken: string, sessionId: string) => SessionRecord | null;
 };
 
 const DEFAULT_RETAIN_TERMINAL_MS = 24 * 60 * 60 * 1000;
@@ -102,7 +118,18 @@ export function createRegistry(options: RegistryOptions): Registry {
     return null;
   }
 
-  function start(intake: HookIntake, sessionId: string): SessionRecord {
+  function start(intake: HookIntake, sessionId: string): SessionRecord | null {
+    // A session ID is not a secret: GET /sessions publishes every one of them. Without this, a
+    // local process could mint a token, announce a SessionStart carrying a running session's ID,
+    // and overwrite that record in place with one holding its own token. Thread bindings key on
+    // session ID and persist, so the operator's messages would then route to the impostor and its
+    // replies would land in the real thread as that session, while the real one went dark.
+    //
+    // Only a record still holding the ID is protected. An ended one is a tombstone, and a session
+    // ID that is genuinely reused is a case the supersession path below already handles.
+    const held = sessions.get(sessionId);
+    if (held && held.state !== "ended" && held.processToken !== intake.processToken) return null;
+
     const previous = current(intake.processToken);
 
     if (previous && previous.sessionId === sessionId) {
@@ -167,6 +194,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       // An unknown process token is the normal case here: SessionStart is the first announce.
       if (intake.sessionId === null) return null;
       const record = start(intake, intake.sessionId);
+      if (record === null) return null;
       mutated();
       return record;
     }
@@ -240,5 +268,32 @@ export function createRegistry(options: RegistryOptions): Registry {
     return changed;
   }
 
-  return { apply, sweep, list, current };
+  function relaySeen(processToken: string): SessionRecord | null {
+    const record = current(processToken);
+    if (!record) return null;
+    // A session the sweep had given up on is demonstrably alive: its relay is answering.
+    const revived = record.state !== "live";
+    record.lastRelayAt = now();
+    record.state = "live";
+    // Persisted only on the transition. This runs on every heartbeat of every attached relay, and
+    // the snapshot is written whole and synchronously, so persisting a timestamp each time would be
+    // thousands of full rewrites a day to record something a restart invalidates anyway: the pipe
+    // it measures does not survive one, and the relay re-announces itself within a heartbeat.
+    if (revived) mutated();
+    return record;
+  }
+
+  function relayClosed(processToken: string, sessionId: string): SessionRecord | null {
+    const record = sessions.get(sessionId);
+    // A record that is gone, already ended, or held by another process is not this pipe's to end.
+    // A repeated close is therefore a no-op rather than a second end with a later timestamp.
+    if (!record) return null;
+    if (record.state === "ended" || record.processToken !== processToken) return null;
+    record.state = "ended";
+    record.endedAt = now();
+    mutated();
+    return record;
+  }
+
+  return { apply, sweep, list, current, relaySeen, relayClosed };
 }

@@ -375,3 +375,89 @@ test("every mutation notifies the persistence hook", () => {
 
   assert.deepEqual(snapshots, [1, 1, 1], "ignored events and empty sweeps do not write");
 });
+
+test("a SessionStart cannot take over a session another process token holds", () => {
+  // A session ID is not a secret: GET /sessions publishes every one of them. Without this refusal a
+  // local process could mint a token, announce a SessionStart carrying a running session's ID, and
+  // overwrite that record in place with one holding its own token. Thread bindings key on session
+  // ID and persist, so the operator's messages would route to the impostor and its replies would
+  // land in the real thread as that session, while the real one went dark.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const victim = "11111111-1111-1111-1111-111111111111";
+  const attacker = "22222222-2222-2222-2222-222222222222";
+
+  registry.apply({
+    event: "SessionStart",
+    processToken: victim,
+    sessionName: "neo-warden",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+
+  const stolen = registry.apply({
+    event: "SessionStart",
+    processToken: attacker,
+    sessionName: "neo-warden",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+
+  assert.equal(stolen, null, "the takeover is refused, not merged");
+  assert.equal(registry.list().length, 1);
+  assert.equal(registry.list()[0].processToken, victim, "the record still belongs to the real session");
+  assert.equal(registry.current(attacker), null, "the attacker holds nothing");
+  assert.equal(registry.current(victim)?.sessionId, "session-a");
+});
+
+test("a session ID left behind by an ended session can be announced again", () => {
+  // Only a record still holding the ID is protected. A tombstone is not a claim on the identifier,
+  // and refusing there would make a genuine reuse look like an attack.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const first = "11111111-1111-1111-1111-111111111111";
+  const second = "22222222-2222-2222-2222-222222222222";
+
+  registry.apply({
+    event: "SessionStart",
+    processToken: first,
+    sessionName: "one",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+  registry.relayClosed(first, "session-a");
+
+  const reused = registry.apply({
+    event: "SessionStart",
+    processToken: second,
+    sessionName: "two",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+  assert.notEqual(reused, null);
+  assert.equal(registry.current(second)?.processToken, second);
+});
+
+test("relayClosed ends only the session it names, held by the token that names it", () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const token = "11111111-1111-1111-1111-111111111111";
+  registry.apply({
+    event: "SessionStart",
+    processToken: token,
+    sessionName: "one",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+
+  assert.equal(registry.relayClosed("another-token", "session-a"), null, "not this token's to end");
+  assert.equal(registry.list()[0].state, "live");
+  assert.equal(registry.relayClosed(token, "session-missing"), null, "no such session");
+  assert.equal(registry.list()[0].state, "live");
+
+  assert.notEqual(registry.relayClosed(token, "session-a"), null);
+  assert.equal(registry.list()[0].state, "ended");
+  assert.equal(registry.relayClosed(token, "session-a"), null, "a repeated close is a no-op");
+});

@@ -101,6 +101,7 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     staleAfterMs: 60_000,
     sweepIntervalMs: 60_000,
     maxBodyBytes: 64 * 1024,
+    relayHeartbeatMs: 60_000,
     retainTerminalMs: 24 * 60 * 60 * 1000,
     maxSessions: 500,
     logFile: null,

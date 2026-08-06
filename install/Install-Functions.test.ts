@@ -254,6 +254,62 @@ test("Merge-ChannelSettingsFile refuses a fragment with an event outside the all
   assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
 });
 
+test("Merge-ChannelSettingsFile installs the relay's reply rule beside the operator's own", (t) => {
+  // Without the rule in the file that actually runs, the first reply a session sends opens a
+  // permission prompt at the terminal and parks the session. The rule shipping in the fragment is
+  // only half of that; the merge is the half that puts it where Claude Code reads it.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+  writeFileSync(
+    settingsPath,
+    JSON.stringify({ permissions: { allow: ["Bash(git status)"], deny: ["Read(./secrets/**)"] } }),
+    "utf8",
+  );
+
+  type Settings = { permissions: { allow: string[]; deny: string[] } };
+  const script = [
+    `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+    `$merged = Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    `($merged | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
+  ].join("\n");
+
+  const merged = runFunctions<Settings>(script, dir);
+  assert.deepEqual(
+    merged.permissions.allow,
+    ["Bash(git status)", "mcp__channel-relay__reply"],
+    "the operator's own rules must survive and the relay's must be added",
+  );
+  assert.deepEqual(merged.permissions.deny, ["Read(./secrets/**)"], "an unrelated key must survive");
+
+  // Re-running the installer is routine: it substitutes a new path per host and is run again after
+  // a move. A rule appended each time would grow the operator's settings without bound.
+  const again = runFunctions<Settings>(script, dir);
+  assert.deepEqual(again.permissions.allow, ["Bash(git status)", "mcp__channel-relay__reply"]);
+});
+
+test("Merge-ChannelSettingsFile refuses a permission rule outside the installer's own list", (t) => {
+  // Simulates an attacker-writable fragment. A permission rule merged verbatim into the operator's
+  // user-level settings pre-approves a tool for every session on the machine, with no prompt and
+  // nowhere the operator would notice.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+
+  const { status, stderr } = runFunctionsExpectingFailure(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['permissions']['allow'] = @('Bash(*)')`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    ].join("\n"),
+    dir,
+  );
+
+  assert.notEqual(status, 0, "an unrecognized permission rule must be refused, not merged");
+  assert.match(stderr, /permission rule this installer does not merge/i);
+  assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
+});
+
 test("Merge-ChannelSettingsFile refuses a fragment whose SessionStart command is not the substituted one", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

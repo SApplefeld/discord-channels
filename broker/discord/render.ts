@@ -5,6 +5,7 @@
 // at the render site, rather than at intake: intake owns storage safety (bounded, no control
 // characters) and the renderer owns display safety. Suppressing pings is the transport's half of
 // the same job, via `allowed_mentions`.
+import { isInvisible, sliceCodePoints, withoutInvisible } from "../sanitize.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 
 /**
@@ -32,21 +33,25 @@ export const MAX_THREAD_NAME_LENGTH = 100;
  */
 export const MAX_CARD_LENGTH = 1_900;
 
-// C0, DEL, the bidirectional overrides and isolates, the zero-width family, and the byte order
-// mark. All of them can reorder or hide text a reader is relying on to tell one session from
-// another, and none of them has any business in a name or a tool label. Written as escapes
-// because a literal control character in source is invisible to review.
-const INVISIBLE = /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
-
 // Display syntax that would otherwise let a name change the shape of the card around it. The
 // angle bracket is in here with the markdown because Discord's chip syntax lives inside it:
 // `<t:...:R>` renders as a live relative timestamp, which would spoof the heartbeat this card
 // exists to carry, and `<@id>`, `<#id>`, and `<:name:id>` render as a mention or an emoji.
 const MARKDOWN = /[\\`*_~|<>#[\]()]/g;
 
-/** Strips the invisible reordering characters and collapses runs of whitespace to one space. */
+/**
+ * Strips the invisible reordering characters and collapses runs of whitespace to one space.
+ *
+ * For a title or a card field, which are single-line by construction. The class itself is shared
+ * with the path that carries text to the model, so the two cannot come to disagree about which
+ * characters are allowed to be invisible.
+ */
 function visible(value: string): string {
-  return value.replace(INVISIBLE, "").replace(/\s+/g, " ").trim();
+  return [...value]
+    .filter((character) => !isInvisible(character.codePointAt(0) ?? 0))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -64,6 +69,28 @@ export function inertText(value: string): string {
  */
 export function inertName(value: string): string {
   return visible(value);
+}
+
+/** Discord's ceiling on a message, less room for the cut marker this renderer adds. */
+export const MAX_MESSAGE_LENGTH = 1_900;
+
+/**
+ * Untrusted text for a message posted into a thread: a reply from Claude, or a notice the broker
+ * writes beside one.
+ *
+ * Unlike a card, this keeps markdown. A reply is prose the operator reads, code blocks and lists
+ * included, and escaping it would trade the whole readability of the surface for nothing: mentions
+ * are already made inert by the transport's `allowed_mentions`, and the card's other reason to
+ * escape (a `<t:...:R>` chip spoofing the heartbeat) has no counterpart in a message that carries
+ * no rendered state. What is still stripped is the invisible class, which can reorder or hide text
+ * with no visual trace at all, and which no reply has a use for.
+ *
+ * Whitespace is left exactly as it arrived, apart from the trim: a reply is multi-line by nature
+ * and a code block in one carries meaning in its indentation, so collapsing runs of spaces would
+ * mangle the most useful thing a reply can contain.
+ */
+export function inertMessage(value: string): string {
+  return fit(withoutInvisible(value).trim(), MAX_MESSAGE_LENGTH);
 }
 
 /** The label a session is known by. A session launched without the wrapper carries no name. */
@@ -97,7 +124,7 @@ function fit(value: string, limit: number): string {
 
   // Cut on code points, then keep dropping them until the UTF-16 length fits too. Which of the
   // two Discord counts is not worth guessing at: holding both bounds is correct either way.
-  let kept = characters.slice(0, Math.max(limit - 1, 0));
+  let kept = [...sliceCodePoints(value, Math.max(limit - 1, 0))];
   let fitted = `${kept.join("")}…`;
   while (fitted.length > limit && kept.length > 0) {
     kept = kept.slice(0, -1);

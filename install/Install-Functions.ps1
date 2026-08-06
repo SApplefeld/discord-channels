@@ -120,11 +120,30 @@ persistent hook of their own choosing. This is checked in addition to hardening 
 instead of it: allowed event names, allowed hook types, and no `command` string other than the one
 SessionStart entry this installer itself substitutes.
 #>
+$script:AllowedChannelPermissionRules = @('mcp__channel-relay__reply')
+
 function Assert-ValidChannelFragment {
     param([Parameter(Mandatory)][hashtable]$Fragment)
 
     $allowedEvents = @('SessionStart', 'PostToolUse', 'Stop')
     $allowedTypes = @('command', 'http')
+
+    # The permission rules are held to an exact list for the same reason the command string is: this
+    # fragment inherits Authenticated Users: Modify on at least one host, and a permission rule
+    # merged verbatim into the operator's real user-level settings pre-approves a tool for every
+    # session on the machine, with no prompt and no record anywhere the operator would look.
+    $declaredRules = @()
+    if ($Fragment.Contains('permissions') -and $null -ne $Fragment['permissions']) {
+        $declaredRules = @($Fragment['permissions']['allow'])
+    }
+    foreach ($rule in $declaredRules) {
+        if ($null -eq $rule) { continue }
+        if ($script:AllowedChannelPermissionRules -notcontains [string]$rule) {
+            throw "Assert-ValidChannelFragment: the fragment declares a permission rule this " +
+                "installer does not merge: '$rule'. Only $($script:AllowedChannelPermissionRules -join ', ') " +
+                "is allowed, and it is the relay's own reply tool."
+        }
+    }
 
     if (-not $Fragment.Contains('hooks') -or $null -eq $Fragment['hooks']) {
         throw "Assert-ValidChannelFragment: the fragment declares no 'hooks' object."
@@ -191,6 +210,26 @@ function Merge-ChannelHooksFragment {
         }
         $kept = @($existing | Where-Object { -not (Test-IsChannelHookEntry -Entry $_ -EventName $eventName) })
         $Settings['hooks'][$eventName] = @($kept + @($Fragment['hooks'][$eventName]))
+    }
+
+    # The permission rules merge the same way the hooks do: this project's own rules are removed and
+    # re-added, and every other rule the operator has is left exactly where it was. Without the
+    # relay's reply rule installed, the first reply a session sends opens a permission prompt at the
+    # terminal and parks the session, which is the failure the whole design is built to avoid.
+    $rules = @()
+    if ($Fragment.Contains('permissions') -and $null -ne $Fragment['permissions']) {
+        $rules = @($Fragment['permissions']['allow']) | Where-Object { $null -ne $_ }
+    }
+    if ($rules.Count -gt 0) {
+        if (-not $Settings.Contains('permissions') -or $null -eq $Settings['permissions']) {
+            $Settings['permissions'] = [ordered]@{}
+        }
+        $existingRules = @()
+        if ($Settings['permissions'].Contains('allow') -and $null -ne $Settings['permissions']['allow']) {
+            $existingRules = @($Settings['permissions']['allow'])
+        }
+        $keptRules = @($existingRules | Where-Object { $rules -notcontains [string]$_ })
+        $Settings['permissions']['allow'] = @($keptRules + $rules)
     }
 
     return $Settings

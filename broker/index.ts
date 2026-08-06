@@ -1,10 +1,9 @@
 // Broker entry point. Run as source under Node's type stripping: `node broker/index.ts`.
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { realpathSync } from "node:fs";
-import path, { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { loadConfig } from "./config.ts";
+import path from "node:path";
+import { runDirectly } from "./entrypoint.ts";
+import { RELAY_READ_TIMEOUT_MS, loadConfig } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import { createHandler } from "./intake.ts";
 import { createLogger } from "./log.ts";
@@ -17,6 +16,14 @@ import { createDiscordTransport } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { toView } from "./discord/state.ts";
 import { loadBindings, saveBindings } from "./discord/bindings.ts";
+import { NO_RATE_INFO } from "./discord/transport.ts";
+import type { ThreadMessenger } from "./discord/transport.ts";
+import { createRelayHub } from "./routing/relays.ts";
+import { createInboundRouter } from "./routing/inbound.ts";
+import { createOutboundRouter } from "./routing/outbound.ts";
+import { createRelayRoutes } from "./routing/http.ts";
+import { createThreadWriter } from "./routing/writer.ts";
+import type { MessageSource } from "./routing/gateway.ts";
 
 export type Broker = {
   server: Server;
@@ -58,9 +65,59 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     },
   });
 
-  const server = createServer(
-    createHandler({ registry, maxBodyBytes: config.maxBodyBytes, log: logger }),
-  );
+  const note = (message: string): void => {
+    console.log(message);
+    logger.info(message);
+  };
+
+  // The Discord half of message routing is only wired when Discord is configured, but the relay
+  // half is not: a session's relay attaches, holds its session out of the staleness sweep, and
+  // marks it ended when its stdio closes, with or without a bot token. Until a transport is
+  // installed below, a reply reports that it had nowhere to go rather than being queued.
+  const relays = createRelayHub({
+    registry,
+    // One heartbeat of grace. The relay reconnects by design, so a pipe that closed and came back
+    // is a reconnect and not a death, and `ended` is terminal: calling it the instant a socket went
+    // would strand a working session as exited with no way back.
+    graceMs: config.relayHeartbeatMs,
+    log: note,
+  });
+  let threadFor: (sessionId: string) => string | null = () => null;
+  let messenger: ThreadMessenger = {
+    postToThread: async () => ({
+      status: "failed",
+      error: "discord is not configured",
+      rate: NO_RATE_INFO,
+    }),
+  };
+  const writer = createThreadWriter({
+    messenger: { postToThread: (input) => messenger.postToThread(input) },
+    now: Date.now,
+    log: note,
+  });
+  const outbound = createOutboundRouter({
+    registry,
+    threadFor: (sessionId) => threadFor(sessionId),
+    writer,
+    log: note,
+  });
+  const relayRoutes = createRelayRoutes({
+    relays,
+    outbound,
+    maxBodyBytes: config.maxBodyBytes,
+    streamIdleMs: RELAY_READ_TIMEOUT_MS,
+    log: note,
+  });
+
+  const hooks = createHandler({ registry, maxBodyBytes: config.maxBodyBytes, log: logger });
+  const server = createServer((request, response) => {
+    // The relay routes answer first and report whether they took the request; everything else,
+    // including every route that does not exist, stays the hook intake's to answer.
+    if (relayRoutes(request, response)) return;
+    hooks(request, response);
+  });
+
+  const heartbeat = setInterval(() => relays.heartbeat(), config.relayHeartbeatMs);
 
   // The registry owns no timer of its own so that unit tests can drive it with an injected clock.
   // The sweep that turns a silent session stale lives here instead.
@@ -79,6 +136,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   const discord = loadDiscordConfig(process.env, { staleAfterMs: config.staleAfterMs });
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
+  let gateway: MessageSource | null = null;
   if (discord !== null) {
     // Imported here rather than at the top so that discord.js, the one dependency with a network
     // client in it, is loaded only by a broker that is actually configured to reach Discord.
@@ -90,11 +148,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
     };
+    const transport = createDiscordTransport({
+      channelId: discord.channelId,
+      request: createRestRequest(discord.token),
+    });
+    messenger = transport;
     const surface = createSurface({
-      transport: createDiscordTransport({
-        channelId: discord.channelId,
-        request: createRestRequest(discord.token),
-      }),
+      transport,
       now: Date.now,
       dwellMs: discord.dwellMs,
       idleAfterMs: discord.idleAfterMs,
@@ -133,9 +193,30 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         logger.error(message);
       });
     }, discord.refreshIntervalMs);
-    const message = `broker: discord surfaces on, threads open in channel ${discord.channelId}`;
-    console.log(message);
-    logger.info(message);
+    threadFor = (sessionId) => surface.threadFor(sessionId);
+
+    const inbound = createInboundRouter({
+      registry,
+      relays,
+      threadFor: (sessionId) => surface.threadFor(sessionId),
+      writer,
+      now: Date.now,
+      log: note,
+    });
+    // Same reason the REST client is imported here: this module is the only one in the routing
+    // layer that loads discord.js, and a broker with no Discord configured never touches it.
+    const { createGatewayMessageSource } = await import("./routing/gateway.ts");
+    gateway = createGatewayMessageSource({
+      token: discord.token,
+      channelId: discord.channelId,
+      onMessage: (message) => inbound.deliver(message),
+      log: note,
+    });
+    // Awaited: a login failure belongs to startup, where it is reported, rather than surfacing
+    // later as messages that silently never arrive.
+    await gateway.start();
+
+    note(`broker: discord surfaces on, threads open in channel ${discord.channelId}`);
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -143,8 +224,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // A broker that never bound has no business still writing to Discord on a timer, or sweeping
       // a registry nothing can reach.
       clearInterval(sweep);
+      clearInterval(heartbeat);
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
+      // The gateway logs in before the listener binds, so a port conflict would otherwise leave a
+      // connected bot behind in a process that is about to throw: the bot would show online, and a
+      // second broker starting later would have two of them reading the same channel.
+      if (gateway !== null) void gateway.stop().catch(() => {});
       // Logged here, not just rethrown: under a scheduled task there is no console to catch the
       // rejection this throws into, and a broker that never bound would otherwise leave a zero-byte
       // log with no signal that anything went wrong at all.
@@ -174,10 +260,15 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
 
   async function stop(): Promise<void> {
     clearInterval(sweep);
+    clearInterval(heartbeat);
     if (refresh !== null) clearInterval(refresh);
+    if (gateway !== null) await gateway.stop();
     // Clearing the timer does not cancel the pass already running, which may still be waiting on a
     // Discord call and will write the bindings file when it returns.
     await inFlight;
+    // The broker going down is not a session dying, so the pipes are dropped without ending
+    // anything. The relays reconnect; the sessions behind them keep working either way.
+    relays.closeAll();
     // Keep-alive sockets would otherwise hold close() open until they time out.
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -186,30 +277,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   return { server, registry, port, logger, stop };
 }
 
-/**
- * True when this module is the program Node was told to run, rather than an import.
- *
- * Compared as resolved file URLs, and case-insensitively on Windows, where the same file reaches
- * argv as `D:\...` or `d:\...` or an 8.3 short path. A plain string comparison makes
- * `node broker/index.ts` exit zero having started nothing.
- */
-function runDirectly(): boolean {
-  const entry = process.argv[1];
-  if (!entry) return false;
-  let real = resolve(entry);
-  try {
-    // Expands an 8.3 short path to the long form import.meta.url carries.
-    real = realpathSync.native(real);
-  } catch {
-    // A path that cannot be resolved cannot be this module either.
-  }
-  const invoked = pathToFileURL(real).href;
-  return process.platform === "win32"
-    ? invoked.toLowerCase() === import.meta.url.toLowerCase()
-    : invoked === import.meta.url;
-}
-
-if (runDirectly()) {
+if (runDirectly(import.meta.url)) {
   let config: BrokerConfig;
   try {
     config = loadConfig();

@@ -12,9 +12,8 @@
 # would inherit a live token, and the broker would read the second session as a supersession of the
 # first, mark the still-running session ended, and credit its tool calls to the wrong record.
 #
-# -ClaudeArgs passes extra arguments straight through to `claude` after the channel flag: a channel
-# plugin spec once one exists (relay is Section 5, its NEO/ASR plugin packaging is Section 7), a
-# -p prompt, or anything else. This script does not know or need to know what channel is loaded.
+# -ClaudeArgs passes extra arguments straight through to `claude` after the channel flag and the
+# relay's server name: a -p prompt, or anything else.
 
 # Which flag opens channels on each host, per the spec's Approach: NEO and ASR are organization-
 # owned and allowlist the relay plugin through managed settings, so plain --channels opens it with
@@ -26,6 +25,18 @@ $script:ChannelFlagByHost = @{
     'ASR'   = '--channels'
     'SCOTT' = '--dangerously-load-development-channels'
 }
+
+# Both channel flags are variadic and take server names, not a bare switch. This is the name the
+# relay is registered under, and it is also what Claude Code builds the reply tool's permission rule
+# from. It is passed explicitly rather than left to the caller: a flag given no value silently
+# swallows whatever argument follows it, and a session that loaded no channel starts and runs
+# normally with no signal that it cannot be steered. hooks/settings-fragment.json's allow rule and
+# relay/reply-permission.test.ts hold the copies together.
+$script:ChannelServerName = 'channel-relay'
+
+# The relay itself, resolved from this file's own location so it is correct wherever the repository
+# is checked out.
+$script:RelayScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'relay\index.ts'
 
 # Absolute path to the SessionStart hook script, resolved from this file's own location so it is
 # correct wherever the repository is checked out.
@@ -117,6 +128,13 @@ function Enter-ClaudeSession {
 
     Assert-HookScriptProtected
 
+    if (-not (Test-Path -LiteralPath $script:RelayScript)) {
+        throw "Enter-ClaudeSession: the relay is missing at '$script:RelayScript'. Without it the " +
+            "session starts with no channel: it can be watched but not answered, and nothing in " +
+            "the session says so."
+    }
+    $mcpConfig = New-ChannelMcpConfig
+
     $previous = @{
         CHANNEL_SESSION       = $env:CHANNEL_SESSION
         CHANNEL_PROCESS_TOKEN = $env:CHANNEL_PROCESS_TOKEN
@@ -125,7 +143,7 @@ function Enter-ClaudeSession {
         $env:CHANNEL_SESSION = $Name
         $env:CHANNEL_PROCESS_TOKEN = [guid]::NewGuid().ToString()
 
-        & claude $channelFlag @ClaudeArgs
+        & claude --mcp-config $mcpConfig $channelFlag $script:ChannelServerName @ClaudeArgs
     } finally {
         # Restored whether claude exited, threw, or was interrupted. A token left behind in a
         # dot-sourced shell is inherited by the next `claude` started from it, and the broker reads
@@ -134,6 +152,61 @@ function Enter-ClaudeSession {
         $env:CHANNEL_SESSION = $previous.CHANNEL_SESSION
         $env:CHANNEL_PROCESS_TOKEN = $previous.CHANNEL_PROCESS_TOKEN
     }
+}
+
+<#
+.SYNOPSIS
+Writes the --mcp-config file that registers the relay for one launch, and returns its path.
+
+.DESCRIPTION
+The relay is registered per launch rather than installed into a settings file, for two reasons.
+
+It has to work: an `mcpServers` key in a settings file is read by nothing. Measured against build
+2.1.223, a session started with such a file applies the permission rules beside it and starts no
+server at all, with the relay's absence reported nowhere.
+
+And it is the right scope anyway. A user-scope registration would start the relay for every Claude
+Code session on the machine, including the ones this project deliberately leaves alone; a session
+launched without this wrapper carries no process token, is not being watched, and has no thread to
+reach. Registering here means exactly the wrapped sessions get a relay.
+
+Written to a file rather than passed as an inline JSON string because this is Windows PowerShell
+5.1, whose native-argument quoting mangles embedded double quotes. Regenerated from $PSScriptRoot on
+every launch, so unlike the installed hook path it cannot come to name a checkout that has moved.
+#>
+function New-ChannelMcpConfig {
+    param(
+        # Defaulted rather than read inline so a test can drive this against a temp directory.
+        # Mirrors broker/config.ts's defaultStateFile and install/Install-Functions.ps1's
+        # Get-ChannelStateRoot: one directory holds everything this project writes at runtime, and
+        # the installer hardens it.
+        [string]$Directory = (Join-Path $env:LOCALAPPDATA 'sapplefeld-channels')
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Directory)) {
+        throw "Enter-ClaudeSession: cannot resolve a directory for the relay's MCP config " +
+            "(LOCALAPPDATA is not set)."
+    }
+    if (-not (Test-Path -LiteralPath $Directory)) {
+        New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    }
+
+    $config = [ordered]@{
+        mcpServers = [ordered]@{
+            $script:ChannelServerName = [ordered]@{
+                command = 'node'
+                args    = @($script:RelayScript)
+            }
+        }
+    }
+    $path = Join-Path $Directory 'relay-mcp.json'
+    # UTF-8 with no byte-order mark: Claude Code parses this as JSON, and a BOM is a parse error.
+    [System.IO.File]::WriteAllText(
+        $path,
+        ($config | ConvertTo-Json -Depth 10),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    return $path
 }
 
 <#

@@ -16,6 +16,12 @@ export type BrokerConfig = {
   sweepIntervalMs: number;
   /** Hard cap on an inbound request body. Anything larger is refused unread. */
   maxBodyBytes: number;
+  /**
+   * How often each attached relay is pinged. It is also the bound on the acceptance criterion that
+   * a closed relay marks its session ended: a socket that closes cleanly is noticed at once, and
+   * this is the backstop for a pipe that is gone without having said so.
+   */
+  relayHeartbeatMs: number;
   /** How long an ended or stale record is kept before the sweep prunes it. */
   retainTerminalMs: number;
   /** Ceiling on total records. Terminal records are evicted oldest first to hold it. */
@@ -38,6 +44,21 @@ export const DEFAULT_PORT = 8787;
 const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 15 * 1000;
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * How long the relay waits on a silent stream before it presumes the pipe is dead and reconnects.
+ *
+ * Exported because it lives in the other process: relay/broker.ts is the only reader, and the two
+ * cannot see each other's configuration. The heartbeat below is clamped against it here, because a
+ * heartbeat slower than this timeout means every quiet relay drops and reconnects forever, and
+ * nothing at runtime would report that as anything but a working session.
+ */
+export const RELAY_READ_TIMEOUT_MS = 60 * 1000;
+
+/** Room for two missed heartbeats inside the relay's read timeout before it gives up on the pipe. */
+const MAX_RELAY_HEARTBEAT_MS = Math.floor(RELAY_READ_TIMEOUT_MS / 3);
+const MIN_RELAY_HEARTBEAT_MS = 1_000;
+const DEFAULT_RELAY_HEARTBEAT_MS = 15 * 1000;
 const DEFAULT_RETAIN_TERMINAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SESSIONS = 500;
 const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -48,6 +69,26 @@ function integerAtLeast(raw: string | undefined, minimum: number, fallback: numb
   const value = Number(raw);
   if (!Number.isInteger(value) || value < minimum) {
     throw new Error(`expected an integer of at least ${minimum}, got ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
+/**
+ * Refuses rather than clamps, the same way `integerAtLeast` does. A knob silently moved to a value
+ * the operator did not ask for is a knob whose behavior nobody can reason about later.
+ */
+function bounded(
+  raw: string | undefined,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(
+      `expected an integer between ${minimum} and ${maximum}, got ${JSON.stringify(raw)}`,
+    );
   }
   return value;
 }
@@ -72,6 +113,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     staleAfterMs: integerAtLeast(env.CHANNEL_STALE_AFTER_MS, 1, DEFAULT_STALE_AFTER_MS),
     sweepIntervalMs: integerAtLeast(env.CHANNEL_SWEEP_INTERVAL_MS, 1, DEFAULT_SWEEP_INTERVAL_MS),
     maxBodyBytes: integerAtLeast(env.CHANNEL_MAX_BODY_BYTES, 1, DEFAULT_MAX_BODY_BYTES),
+    relayHeartbeatMs: bounded(
+      env.CHANNEL_RELAY_HEARTBEAT_MS,
+      MIN_RELAY_HEARTBEAT_MS,
+      MAX_RELAY_HEARTBEAT_MS,
+      DEFAULT_RELAY_HEARTBEAT_MS,
+    ),
     retainTerminalMs: integerAtLeast(env.CHANNEL_RETAIN_TERMINAL_MS, 1, DEFAULT_RETAIN_TERMINAL_MS),
     maxSessions: integerAtLeast(env.CHANNEL_MAX_SESSIONS, 1, DEFAULT_MAX_SESSIONS),
     // Unset by default: a broker run at a terminal (every test, every local debugging session)

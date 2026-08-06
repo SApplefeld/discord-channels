@@ -1,5 +1,11 @@
 {
   "_comment": "This is a fragment, not a full settings file: merge the \"hooks\" object below into the user-level ~/.claude/settings.json. It belongs there rather than in a project file because the sessions being watched live in arbitrary repositories, not in this one. Two consequences follow. First, the SessionStart command names its script by a drive-rooted absolute path: a hook runs with the monitored session's own project as its working directory, so a relative path resolves against the wrong repository for every session this project exists to watch, and an environment variable in its place would mean the executed path is attacker-controllable on a machine where anything can set one. That absolute path is specific to this checkout; Section 7's installer substitutes the real one, and wrapper/Enter-ClaudeSession.ps1 refuses to launch when it disagrees with the checkout it is running from. Second, these hooks fire for every session on the machine, including ones started without the wrapper: those carry no CHANNEL_PROCESS_TOKEN, and hooks/session-start.ps1 exits without opening a socket while the broker answers the http hooks with a 400 it ignores. Every url here must agree with broker/config.ts's DEFAULT_PORT and hooks/session-start.ps1's own literal; settings-fragment.test.ts pins all three together, because a hook posting into a port nothing is listening on fails silently and makes a working session look unannounced.",
+  "_permissions_comment": "The relay's reply tool is pre-approved. Without this rule the first reply Claude sends opens a permission prompt at the terminal and parks the session until someone answers it at the keyboard, which is the failure this whole project exists to prevent: the operator is on their phone precisely because they are not at that keyboard. The rule name is Claude Code's own for an MCP tool, mcp__<server>__<tool>, built from the name the relay is registered under with every character outside [a-zA-Z0-9_-] replaced by an underscore. That name is wrapper/Enter-ClaudeSession.ps1's $script:ChannelServerName, which is where the relay is registered: an mcpServers key in a settings file is not read for MCP loading, so the wrapper writes a --mcp-config for each launch instead. Change the name and this must change with it; relay/reply-permission.test.ts pins them together.",
+  "permissions": {
+    "allow": [
+      "mcp__channel-relay__reply"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -24,7 +30,10 @@
               "X-Channel-Process-Token": "${CHANNEL_PROCESS_TOKEN}",
               "X-Channel-Session-Name": "${CHANNEL_SESSION}"
             },
-            "allowedEnvVars": ["CHANNEL_PROCESS_TOKEN", "CHANNEL_SESSION"],
+            "allowedEnvVars": [
+              "CHANNEL_PROCESS_TOKEN",
+              "CHANNEL_SESSION"
+            ],
             "timeout": 2
           }
         ]
@@ -41,7 +50,10 @@
               "X-Channel-Process-Token": "${CHANNEL_PROCESS_TOKEN}",
               "X-Channel-Session-Name": "${CHANNEL_SESSION}"
             },
-            "allowedEnvVars": ["CHANNEL_PROCESS_TOKEN", "CHANNEL_SESSION"],
+            "allowedEnvVars": [
+              "CHANNEL_PROCESS_TOKEN",
+              "CHANNEL_SESSION"
+            ],
             "timeout": 2
           }
         ]

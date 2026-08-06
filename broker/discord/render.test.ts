@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   MAX_CARD_LENGTH,
+  MAX_MESSAGE_LENGTH,
   MAX_THREAD_NAME_LENGTH,
   heartbeat,
+  inertMessage,
   inertText,
   renderCard,
   threadName,
@@ -172,4 +174,29 @@ test("neither the view nor the card can carry the process token", () => {
   assert.ok(!("processToken" in narrowed), Object.keys(narrowed).join(", "));
   assert.ok(!JSON.stringify(narrowed).includes(record.processToken));
   assert.ok(!renderCard(narrowed, "working", NOW).includes(record.processToken));
+});
+
+test("a message keeps its markdown and its line structure", () => {
+  // A reply is prose the operator reads. Escaping it the way a card is escaped would put
+  // backslashes through every code fence and list marker for no gain: mentions are already inert,
+  // because the transport sends allowed_mentions with an empty parse list on every write.
+  const reply = "Done:\n\n- **two** files changed\n- `npm test` is green";
+  assert.equal(inertMessage(reply), reply);
+});
+
+test("a message is stripped of the characters that reorder or hide text", () => {
+  const zeroWidth = String.fromCharCode(0x200b);
+  const rightToLeftOverride = String.fromCharCode(0x202e);
+  const bom = String.fromCharCode(0xfeff);
+  assert.equal(
+    inertMessage(`a${zeroWidth}b${rightToLeftOverride}c${bom}`),
+    "abc",
+    "the invisible class has no use in a reply and can hide what one says",
+  );
+});
+
+test("a message is cut to a length Discord will accept", () => {
+  const long = inertMessage("x".repeat(MAX_MESSAGE_LENGTH + 500));
+  assert.equal(long.length, MAX_MESSAGE_LENGTH);
+  assert.ok(long.endsWith("…"), "a cut message says it was cut");
 });
