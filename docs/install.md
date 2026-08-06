@@ -34,7 +34,7 @@ starter message successfully and then cannot open a thread on it.
 
 ## 2. Provision the host
 
-From the repository root, elevated is not required for this step:
+From the repository root, in a plain non-elevated session:
 
 ```powershell
 install\Install-Host.ps1 -HostName SCOTT -ChannelId <channel id> -AllowedUserId <your user id>
@@ -45,6 +45,10 @@ the command line**: PowerShell's history file keeps it in the clear indefinitely
 in the process command line and in transcription logs. `-BotToken` accepts only a `SecureString` for
 that reason. Use `-BotTokenFile <path>` instead to read a token from a file you already placed, and
 put that file inside the state root, which is where the installer hardens permissions.
+
+Unelevated is a requirement, not a convenience: a file created by an elevated shell is owned by the
+machine's Administrators group rather than by the account, and the broker's credential guard reads
+that owner shift as a planted token file and refuses to start. Elevation belongs only to step 3.
 
 `-Port` must agree with the two hook URLs in `hooks/settings-fragment.json` and the literal in
 `hooks/session-start.ps1`. Those three are pinned together by the test suite, and the installer
@@ -140,9 +144,9 @@ account without `channelsEnabled` from silently killing message delivery.
 plugin you also want must be listed alongside this project's.
 
 The wrapper picks the flag from a table keyed by host name
-(`wrapper/Enter-ClaudeSession.ps1`, `$script:ChannelFlagByHost`). NEO and ASR are configured for
-plain `--channels`; SCOTT carries `--dangerously-load-development-channels` and its one keypress.
-Add a new host to that table rather than branching elsewhere.
+(`wrapper/Enter-ClaudeSession.ps1`, `$script:ChannelFlagByHost`). Until the relay ships as a plugin,
+every host carries `--dangerously-load-development-channels` and its one keypress. Add a new host to
+that table rather than branching elsewhere.
 
 ## Packaging the relay as a plugin
 
@@ -155,12 +159,11 @@ keypress at the terminal cannot be automated away.
 Until the relay ships as a plugin in a marketplace, any host that would name it in
 `allowedChannelPlugins` has nothing to name, and SCOTT keeps its flag.
 
-**This is the one place a host can be installed into a half-working state.** The wrapper's table
-already gives NEO and ASR plain `--channels`, which is correct only once the relay is allowlisted
-there, and the relay is not on any allowlist yet. A host launched with plain `--channels` may
-therefore have its channel refused, in which case the session starts, the hooks announce it, the
-thread opens and the card ticks, and messages typed into the thread reach nothing. That is the same
-shape as the `channelsEnabled` failure [`operations.md`](operations.md) describes, and only SCOTT has
-ever been launched against a live channel. Until the relay is a plugin, give a new host
-`--dangerously-load-development-channels` in that table, and check the startup banner's channel line
-on the first launch after any change to it before trusting the message path.
+**This is the one place a host can be installed into a half-working state.** Plain `--channels` is
+correct only once the relay is allowlisted on that host, and the relay is not on any allowlist yet.
+A host launched with plain `--channels` may have its channel refused, in which case the session
+starts, the hooks announce it, the thread opens and the card ticks, and messages typed into the
+thread reach nothing. That is the same shape as the `channelsEnabled` failure
+[`operations.md`](operations.md) describes. Until the relay is a plugin, every entry in the
+wrapper's table stays on `--dangerously-load-development-channels`, and check the startup banner's
+channel line on the first launch after any change to that table before trusting the message path.
