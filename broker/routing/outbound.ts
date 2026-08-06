@@ -5,6 +5,8 @@
 // the thread this session owns now, and Claude may reply having received no event at all. Routing
 // by session is what makes an unprompted reply land correctly, and it is also what stops a reply
 // from being addressable: the relay never forwards a chat_id, so there is nothing here to honor.
+import { renderMirror } from "../discord/render.ts";
+import type { MirrorKind } from "../discord/render.ts";
 import type { Registry } from "../registry.ts";
 import type { ThreadWriter } from "./writer.ts";
 
@@ -34,9 +36,10 @@ export type ReplyResult =
 /**
  * What a mirror post carries: the operator's console prompt, or the turn's final assistant reply.
  * The kind rides the whole path from the intake so the rendering layer can attribute a prompt to
- * the console rather than presenting it as Claude's own text.
+ * the console rather than presenting it as Claude's own text. Defined by that renderer, and passed
+ * through here, so the intake asks for a kind the renderer knows how to draw.
  */
-export type MirrorKind = "prompt" | "reply";
+export type { MirrorKind };
 
 export type OutboundRouter = {
   /** Posts one reply from the session currently held by this process token. */
@@ -50,9 +53,12 @@ export type OutboundRouter = {
    * credited to the new session and posted into its thread. With no session id the token routes
    * alone, as reply does.
    *
-   * This is the seam where mirror text becomes Discord messages. Delivery is a single message
-   * through the mirror writer, whose renderer truncates at MAX_MESSAGE_LENGTH, so a reply longer
-   * than one message loses its tail here.
+   * This is the seam where mirror text becomes Discord messages. The renderer decides how many it
+   * takes, and they are posted in order through the mirror writer. A post refused part way through
+   * stops the run: the rest are dropped and never retried, so the thread shows a reply that ends
+   * early rather than a reply with an invisible hole in the middle, and the count that landed is
+   * logged. Retrying would be a second reason to write into a thread whose budget has already said
+   * no.
    */
   mirror: (
     processToken: string,
@@ -85,12 +91,49 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     return { sessionId: record.sessionId, threadId };
   }
 
+  // Per-thread ordering, held here because this router is the one place both conversation-carrying
+  // paths pass through: a mirrored prompt, a mirrored reply, and a reply-tool post. They reach
+  // Discord through two different writers, deliberately, so no single writer can order them, and
+  // delivery from the mirror intake is fire-and-forget, so nothing upstream orders one against the
+  // next either. Without this a turn's reply and the prompt that followed it race, and a reply
+  // split across twenty messages interleaves with whatever else the session posts mid-run.
+  //
+  // Keyed by thread, never global: two sessions' threads post concurrently, as they must, since a
+  // busy session would otherwise hold every other session's writes behind it.
+  //
+  // This is ordering, not queueing. A task waits only on the posts already on the wire for its own
+  // thread; nothing is held for a thread that has none, and nothing is retried or kept for later,
+  // which is the rule the whole routing layer follows: a message that lands minutes late answers a
+  // question the operator stopped asking. Alerts and notices do not come through here, which is
+  // what keeps a permission prompt from queueing behind a long mirrored reply.
+  const chains = new Map<string, Promise<void>>();
+
+  function inOrder<T>(threadId: string, task: () => Promise<T>): Promise<T> {
+    const previous = chains.get(threadId) ?? Promise.resolve();
+    const running = previous.then(task);
+    // What the next task waits on never rejects: a refused or failed post is that caller's to
+    // report, and letting it reject here would cancel every post queued behind it.
+    const settled = running.then(
+      () => {},
+      () => {},
+    );
+    chains.set(threadId, settled);
+    void settled.then(() => {
+      // Dropped once the thread is quiet, so the map holds the conversations in flight rather than
+      // one entry for every thread this broker has ever written to.
+      if (chains.get(threadId) === settled) chains.delete(threadId);
+    });
+    return running;
+  }
+
   return {
     async reply(processToken, text) {
       const located = locate(processToken);
       if ("status" in located) return located;
 
-      const posted = await options.writer.reply(located.threadId, text);
+      const posted = await inOrder(located.threadId, () =>
+        options.writer.reply(located.threadId, text),
+      );
       if (posted.status === "ok") return { status: "sent" };
 
       const error = posted.status === "rate-limited" ? "rate limited" : posted.error;
@@ -107,14 +150,37 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // into the new session's thread.
       if (sessionId !== null && sessionId !== located.sessionId) return { status: "no-session" };
 
-      const posted = await options.mirrorWriter.reply(located.threadId, text);
-      if (posted.status === "ok") return { status: "sent" };
+      const messages = renderMirror(kind, text);
+      // Nothing visible in the payload once the invisible class is stripped. Reported rather than
+      // posted: Discord refuses an empty message, and one would read in the thread as the session
+      // having answered with silence.
+      if (messages.length === 0) return { status: "failed", error: "the message was empty" };
 
-      const error = posted.status === "rate-limited" ? "rate limited" : posted.error;
-      // The kind and the transport's error class only. The text is the operator's prompt or
-      // Claude's reply, and mirror content never appears in the broker log at any level.
-      log(`routing: the mirrored ${kind} from session ${located.sessionId} was not posted: ${error}`);
-      return { status: "failed", error };
+      // The whole run is one task on the thread's chain, so nothing else this router posts lands
+      // between the messages of one reply.
+      const run = await inOrder(located.threadId, async () => {
+        let landed = 0;
+        for (const message of messages) {
+          const outcome = await options.mirrorWriter.reply(located.threadId, message);
+          if (outcome.status !== "ok") {
+            const failure = outcome.status === "rate-limited" ? "rate limited" : outcome.error;
+            return { landed, error: failure };
+          }
+          landed += 1;
+        }
+        return { landed, error: null as string | null };
+      });
+      if (run.error === null) return { status: "sent" };
+
+      // The kind, the counts, and the transport's error class only. The text is the operator's
+      // prompt or Claude's reply, and mirror content never appears in the broker log at any level.
+      // The counts are what make a reply that stopped early visible as that rather than as a reply
+      // Claude never finished.
+      log(
+        `routing: the mirrored ${kind} from session ${located.sessionId} stopped after ` +
+          `${run.landed} of ${messages.length} messages: ${run.error}`,
+      );
+      return { status: "failed", error: run.error };
     },
   };
 }

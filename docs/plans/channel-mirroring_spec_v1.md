@@ -157,7 +157,9 @@ Section 2 seam, so per-thread sequencing between a turn's reply, the next prompt
 post has to be made real here.
 Acceptance: a reply longer than several messages arrives whole and in order; a code block spanning
 a boundary is fenced correctly in both messages; a boundary-length message does not split; ordering
-between mirror posts, reply-tool posts, and card edits is per-thread sequential.
+between mirror posts and reply-tool posts is per-thread sequential. Card edits are outside that
+sequence by nature: a card edit rewrites a message that already exists rather than appending to the
+thread, so it cannot interleave in post order and has nothing to be sequenced against.
 Files in scope: `broker/discord/render.ts`, `broker/discord/surface.ts` or
 `broker/routing/outbound.ts` (whichever owns posting), matching test files.
 Tests: at minimum, fence-spanning, exact-boundary, code-point-safe splits (reuse
@@ -323,4 +325,64 @@ Section 3's, and the spec's Section 3 text was corrected: it had premised the wo
 helpers already neutralizing chips, which is false for the message path.
 Stamps: none surfaced (zero unstamped reads in the section's span; Chapter 1's sweep took both).
 Next: 3. Rendering and the splitter
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-06
+Completed: 3. Rendering and the splitter
+Implemented By: implementer-opus, one correction round and one review-fix round on the same agent,
+plus a resume after an API error killed the first run during orientation
+Metrics: 1 review round (adversarial + blind at fable, security at default), 2 fix rounds; 0
+NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **Sanitizing mirrored text turned out to be the hard part of this section,
+not the splitter.** The spec had premised the work on the existing `inert*` helpers already stopping
+smuggled mentions and timestamps. They do not: `inertMessage` applies `withoutInvisible` and `fit`
+and never the markdown escape, so anything posted through it keeps `<@id>` pills and `<t:...:R>`
+chips. Discord's `allowed_mentions` stops those from pinging but not from rendering, in the very
+channel where tool approvals are answered.
+
+The first implementation escaped every `<` and `>` unconditionally. Rendering a representative reply
+showed why that fails: Discord processes no escapes inside a code fence, so `const f = (a) =\> a \<
+10;` and `Array\<string\>` reach the reader with visible backslashes, and a coding assistant's
+replies are mostly code. The escape was made fence-aware, which then cost a full review round: all
+three reviewers returned Criticals in one family, because any divergence between our fence model and
+Discord's is a bypass. Two executed their repros. The bypasses were a hard cut slicing a ``` in half
+(after which the escape and the splitter disagreed about the whole remainder), a hard cut landing
+between an inserted backslash and the character it neutralized, and text after a CLOSING delimiter
+on the same line being treated as code when Discord renders it as prose.
+
+The most valuable finding was not a bypass at all. The unbounded fence info string was carried onto
+every subsequent message, driving the per-message budget negative and the splitter into a
+one-code-point-per-message fallback: 80KB of crafted input produced 78,119 messages and 148MB of
+strings in 24.4 seconds, synchronously, on the broker's only event loop, ahead of any budget check.
+That is not a mirroring failure, it stalls permission-prompt delivery and verdict intake for every
+session on the host. Bounding the info string and clamping the cut floor took the same shape to 141
+messages in 23ms at the intake's 256KB ceiling.
+
+Decided while fixing: the attribution's unforgeability no longer depends on the fence model being
+right. A line-leading `>` is escaped unconditionally, inside fences too, so a model divergence costs
+a visible backslash in front of a line of code rather than a forged `> ✨ Claude`. Inline code spans
+are deliberately NOT exempted from the escape, so `` `a \<= b` `` still shows a backslash: exempting
+them means modelling a second syntax, which is the class that just failed. A multi-message reply
+that fails part way stops, drops the rest, and reports how far it got, because a reply posted around
+a hole reads as text Claude never wrote. The spec's card-edit ordering criterion was amended rather
+than built: a card edit rewrites an existing message rather than appending, so it has nothing to be
+sequenced against.
+Review Findings: All Criticals and Majors fixed and pinned red-first, with the reviewers' own repro
+scripts flipped and re-run by the main session: the forged attribution now lands as escaped text
+with only the renderer's own quoted line, and the message-per-code-point explosion is gone. Minors
+fixed: an escaped backtick no longer reads as a delimiter, the shortening marker closes an open
+fence before appearing so it is not rendered as code, and four-or-more backtick runs toggle once.
+Two limits are stated in the code rather than fixed: trailing whitespace at a message boundary is
+not preserved, and a mid-line delimiter can still put the two fence models at odds. One reviewer
+wanted inline code spans exempted for readability and another argued against it; recorded above.
+
+Residual, and the reason the field pass matters: two rendering claims are INFERRED, not measured.
+That Discord draws no mention pill or timestamp chip inside a fenced code block, and that a
+backslash-escaped `>` does not open a blockquote. Both are cheap to retire with one look at the real
+channel, and if either is false the fix is confined to the escape.
+Stamps: adjudicated 2, stamped 2 (`two-components-agreeing-is-not-two-checks`, which is exactly what
+the reviewers caught here in a comment claiming one shared fence scanner made divergence impossible;
+and `claude-code-channel-and-hook-facts`, whose measured payload fields the mirror event vocabulary
+is built from).
+Next: 4. Wrapper toggle and the honest docs
 Commit Model: Commit-and-Push

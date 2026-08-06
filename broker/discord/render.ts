@@ -94,6 +94,91 @@ export function inertMessage(value: string): string {
 }
 
 /**
+ * What a mirrored message carries: the operator's console prompt, or the turn's final assistant
+ * reply.
+ *
+ * Named here rather than in the routing layer that delivers it, because the attribution and the
+ * splitting below are what the distinction is for, and one definition is what keeps the router
+ * asking for a kind this renderer knows how to draw.
+ */
+export type MirrorKind = "prompt" | "reply";
+
+/**
+ * The line every mirrored message opens with, composed here and by nothing else.
+ *
+ * A blockquote, because the quote marker is the one piece of syntax mirrored content cannot draw:
+ * `<` and `>` are escaped out of mirrored text, so a `>` arriving in a prompt or a reply reaches
+ * Discord as `\>`, which is the character rather than the marker. So the attribution can say who
+ * wrote the text under it and the text cannot say it back. It rides on every message of a split
+ * reply, not only the first: a message scrolled to on a phone carries its own attribution or it
+ * carries none.
+ */
+const ATTRIBUTION: Record<MirrorKind, string> = {
+  prompt: "> ⌨ typed at the console",
+  reply: "> ✨ Claude",
+};
+
+// Discord's chip syntax lives inside the angle brackets: `<@id>` draws a mention pill, `<t:...:R>`
+// a live relative timestamp, `<#id>` a channel link. Escaped, each renders as the characters that
+// were typed. That is what stops a mirrored prompt or reply from drawing a convincing copy of a
+// permission prompt or a broker notice inside the one channel the operator answers prompts in;
+// `allowed_mentions` stops those chips pinging anyone but not from rendering. It is also what makes
+// the attribution above unforgeable, since the quote marker is an escaped character too. Every
+// other piece of markdown survives, because a reply is prose with code blocks and lists in it and
+// escaping all of it would trade the whole readability of the surface away. What this does not stop
+// is content writing bold text that reads like a notice; what it does stop is content that renders
+// as one.
+//
+// The escape's contract is that it covers every character Discord can build a chip or a quote from
+// outside a fenced code block, and that it leaves the inside of a fence exactly as it was written.
+// Two reasons for the exemption. Discord shows a fence's contents as the characters they are, so
+// text there is not the surface a chip or a quoted line can be drawn on. And an escape there would
+// be visible: Discord processes no escapes inside a fence, so every arrow, generic, and comparison
+// in mirrored code would carry a backslash, which is most of what a mirrored reply is made of.
+//
+// Where the fence is, is `scanFences` below, and it is the same reading the splitter uses to
+// re-open an interrupted block. One model, deliberately: a second one beside it could disagree with
+// it, and the disagreement would be an unescaped chip in a region one of them thought was code.
+const CHIPS = /[<>]/g;
+
+/**
+ * The cap on a mirrored prompt, in code points. Beyond it the prompt is shortened and says so.
+ *
+ * The one capped mirrored surface. A prompt is frequently a paste of a log or a file, and the
+ * argument against truncating protects the assistant's replies, which are written to be read, not
+ * the operator's own dumps of text they already have. A reply is never cut at any length.
+ */
+export const MAX_MIRRORED_PROMPT_LENGTH = 16_384;
+
+/** What a shortened prompt carries in place of the tail, so the cut is visible rather than silent. */
+const SHORTENED = "(long paste shortened in mirror)";
+
+/** The code fence delimiter, and what closing and re-opening one across a boundary costs. */
+const FENCE = "```";
+
+/**
+ * How much of a fence's info string is carried across a message boundary before it is dropped.
+ *
+ * Derived from the message ceiling, and small: an info string is a language token, and what gets
+ * re-opened on every message of a split block has to leave that message room to carry code. An
+ * info string longer than this is carried as a bare fence rather than truncated, because half a
+ * language name is not the language. The bound is what keeps a crafted one out of the per-message
+ * overhead, where an unbounded one would leave no room for content and turn one reply into a
+ * message per character.
+ */
+const MAX_FENCE_INFO_LENGTH = Math.floor(MAX_MESSAGE_LENGTH / 100);
+
+/**
+ * The fewest code points a hard cut takes, whatever the per-message overhead works out to.
+ *
+ * Unreachable as the numbers stand, since the overhead is the attribution plus two fence lines
+ * against a ceiling of `MAX_MESSAGE_LENGTH`. It is here because the failure it forecloses is not
+ * proportionate: an overhead that swallowed the ceiling would emit a message per code point, which
+ * renders nothing and spends the event loop and the write budget doing it.
+ */
+const MIN_HARD_CUT = Math.floor(MAX_MESSAGE_LENGTH / 8);
+
+/**
  * Room for the two untrusted halves of a permission prompt.
  *
  * They are cut here, before the message is assembled, rather than left to the whole message's cap.
@@ -192,6 +277,253 @@ function fit(value: string, limit: number): string {
     fitted = `${kept.join("")}…`;
   }
   return fitted;
+}
+
+/**
+ * One mirrored prompt or reply, rendered as the ordered messages it takes to carry it whole.
+ *
+ * A reply is never truncated: it is among the highest-value things this system posts, and a reply
+ * cut at one message is a reply the operator has to walk to a keyboard to finish reading, which is
+ * the thing mirroring exists to avoid. So there is no ceiling on the count. A prompt is the one
+ * capped surface, above.
+ *
+ * The whole budget is `MAX_MESSAGE_LENGTH` and every part of a message is spent against it: the
+ * attribution, the fence lines a split code block needs, and the text. That is why splitting and
+ * attribution are one function rather than two: a splitter that cut to the ceiling and a caller
+ * that then prefixed anything at all would post messages over it, which Discord rejects outright.
+ */
+export function renderMirror(kind: MirrorKind, text: string): string[] {
+  const seen = withoutInvisible(text).trim();
+  // The cap is measured on the text as it arrived, before escaping: escaping adds a character per
+  // angle bracket it neutralizes, and a cap applied after would shorten a paste by characters
+  // nobody typed.
+  const capped =
+    kind === "prompt" && [...seen].length > MAX_MIRRORED_PROMPT_LENGTH
+      ? shortened(sliceCodePoints(seen, MAX_MIRRORED_PROMPT_LENGTH))
+      : seen;
+  const body = withoutChips(capped);
+  // Nothing at all to say. Reported as no messages rather than as one empty message, which Discord
+  // refuses and which would read as the session having answered with silence.
+  if (body === "") return [];
+  return split(body, `${ATTRIBUTION[kind]}\n`);
+}
+
+/**
+ * A cut paste, with the marker that says it was cut.
+ *
+ * A fence the cut left open is closed first: appended inside one, the marker would render as a line
+ * of code, which is a cut saying nothing at all to whoever reads it.
+ */
+function shortened(cut: string): string {
+  const closing = fenceAfter(null, cut) === null ? "" : `\n${FENCE}`;
+  return `${cut}${closing}\n\n${SHORTENED}`;
+}
+
+/**
+ * Where the code fences are: the text split into runs that are inside one and runs that are not,
+ * and the fence still open at the end, as its info string.
+ *
+ * The one reading of fence structure in this file. The escape uses it to decide what to leave
+ * alone, and the splitter uses it to decide what to close and re-open across a message boundary,
+ * so the two cannot come to disagree about where a code block is.
+ *
+ * Scanned by delimiter rather than by line, so a fence opened and closed on one line toggles twice
+ * and leaves nothing open. A fence the text never closes stays open to the end, which is how
+ * Discord shows it: everything after an unclosed delimiter is code. The info string is the language
+ * word Discord colours by, and it is carried across a boundary because a message that re-opened a
+ * bare fence would render the code without its colours and one that re-opened nothing would render
+ * it as prose.
+ *
+ * Two things this reading does not model, and both are limits rather than oversights. A run of
+ * three or more backticks toggles, whatever its length, where Discord's own rule relates the length
+ * of a closing run to its opening one. And a delimiter is a delimiter wherever it sits on a line,
+ * including mid-line. Where either reading differs from Discord's, the cost is bounded to a chip
+ * left unescaped in a region this file called code and Discord called prose, which `allowed_mentions`
+ * still keeps from pinging anyone. It is bounded there because the one thing a difference must not
+ * cost, a mirrored line that draws the attribution, is escaped without consulting this scanner.
+ */
+function scanFences(
+  state: string | null,
+  chunk: string,
+): { open: string | null; runs: Array<{ text: string; fenced: boolean }> } {
+  const runs: Array<{ text: string; fenced: boolean }> = [];
+  let open = state;
+  let from = 0;
+  // A backslash and whatever follows it is consumed as one unit, so an escaped backtick is text
+  // rather than a delimiter, and a doubled backslash leaves the backtick after it delimiting again.
+  // The escape above never writes a backslash in front of a backtick, only in front of `<` and `>`,
+  // which is what lets the same scanner read the text before escaping and the text after it and
+  // find the fences in the same places.
+  for (const match of chunk.matchAll(/\\[\s\S]|`{3,}([^\n`]*)/g)) {
+    const info = match[1];
+    if (info === undefined) continue;
+    runs.push({ text: chunk.slice(from, match.index), fenced: open !== null });
+    from = match.index + match[0].length;
+    if (open !== null) {
+      // A closing delimiter ends the block at the delimiter. What follows it on that line is
+      // ordinary markdown to Discord, and therefore a surface a chip can be drawn on, so it goes
+      // back into the escaped stream rather than riding along as part of the fence.
+      runs.push({ text: match[0].slice(0, match[0].length - info.length), fenced: true });
+      runs.push({ text: info, fenced: false });
+      open = null;
+      continue;
+    }
+    // An opening delimiter owns its whole line: the info string is the fence's, not content.
+    runs.push({ text: match[0], fenced: true });
+    const language = info.trim().split(/\s+/)[0] ?? "";
+    open = language.length <= MAX_FENCE_INFO_LENGTH ? language : "";
+  }
+  runs.push({ text: chunk.slice(from), fenced: open !== null });
+  return { open, runs };
+}
+
+/** The fence open after `chunk`, given the one open before it. */
+function fenceAfter(state: string | null, chunk: string): string | null {
+  return scanFences(state, chunk).open;
+}
+
+/**
+ * Neutralizes the chip and quote syntax outside fenced code blocks, leaves the inside of one as it
+ * was written, and neutralizes a line-leading quote marker everywhere.
+ *
+ * The quote marker is the exception to the fence exemption, because the attribution is a quoted
+ * line and its unforgeability is the property that least deserves to rest on this file's reading of
+ * where a code block is agreeing with Discord's. Escaped in both regions, a disagreement costs a
+ * visible backslash in front of a line of code; escaped in one, it costs a mirrored reply that can
+ * draw the line saying who wrote it.
+ *
+ * Run before the text is split, and safe to run there, because it only ever inserts a backslash in
+ * front of `<`, `>`, so it can neither create nor destroy a delimiter: the fence structure the
+ * splitter reads afterwards is the structure this read.
+ */
+function withoutChips(value: string): string {
+  const escaped = scanFences(null, value)
+    .runs.map((run) => (run.fenced ? run.text : run.text.replace(CHIPS, (character) => `\\${character}`)))
+    .join("");
+  // The line-leading pass runs second and over everything, where it finds only the markers the
+  // first pass left inside fences: one already escaped is preceded by its backslash rather than by
+  // the start of its line.
+  return escaped.replace(/^([ \t]*)>/gm, "$1\\>");
+}
+
+/**
+ * The longest head of `value` fitting in `limit` UTF-16 units, never cutting a character in half.
+ *
+ * Counted in UTF-16 units because that is the larger of the two counts a length could mean, so
+ * holding it holds the code point count too, and cut on code points because half of an astral
+ * character is a lone surrogate, which is not valid UTF-8 for the request body.
+ */
+function headFitting(value: string, limit: number): string {
+  let units = 0;
+  let points = 0;
+  for (const character of value) {
+    if (units + character.length > limit) break;
+    units += character.length;
+    points += 1;
+  }
+  return sliceCodePoints(value, points);
+}
+
+/**
+ * Backs a hard cut off the two places it must not land.
+ *
+ * Inside a run of backticks: half a delimiter in one message and half in the next is a fence the
+ * text still has and neither message can see, and the escape has already decided what to neutralize
+ * on the reading where the delimiter is whole. Straight after a backslash: that is the same hazard
+ * one character wide, stranding an escape from the character it makes inert, so the next message
+ * would open with a live chip or a live quote marker.
+ *
+ * The cut only ever shrinks, and never to nothing: a line of pure delimiters still has to advance,
+ * and a cut that took nothing would repeat forever.
+ */
+function cutSafely(rest: string, head: string): string {
+  const straddles = rest.length > head.length && rest[head.length] === "`";
+  const backed = (straddles ? head.replace(/`+$/, "") : head).replace(/\\+$/, "");
+  return backed === "" ? head : backed;
+}
+
+/**
+ * Packs a body into messages, each one prefixed and each one within `MAX_MESSAGE_LENGTH`.
+ *
+ * Paragraphs first, then lines, then a hard cut, because where a message ends is where the reader's
+ * eye stops: a break between paragraphs reads as a pause, a break mid-sentence reads as damage.
+ * A code fence open across a break is closed and re-opened, so both halves render as code rather
+ * than the second half rendering as prose with its indentation collapsed.
+ */
+function split(body: string, prefix: string): string[] {
+  const messages: string[] = [];
+  // The fence open where the current message started, and the one open where its text currently
+  // ends. The first decides whether this message must re-open a fence, the second whether it must
+  // close one, and both are budget rather than decoration: every fit test below measures the
+  // message as it would be sent, with those lines already on it.
+  let openedAt: string | null = null;
+  let open: string | null = null;
+  let buffer = "";
+
+  const overhead = (start: string | null, end: string | null): number =>
+    prefix.length +
+    (start === null ? 0 : FENCE.length + start.length + 1) +
+    (end === null ? 0 : 1 + FENCE.length);
+
+  const flush = (): void => {
+    if (buffer === "") return;
+    const opening = openedAt === null ? "" : `${FENCE}${openedAt}\n`;
+    // An unterminated fence is closed here too, on the last message: the alternative leaves the
+    // thread's final mirrored message holding a fence open over whatever is posted after it.
+    const closing = open === null ? "" : `\n${FENCE}`;
+    // Trailing whitespace goes because the writer trims before it posts, and a message that came
+    // back from the transport different from the one that was measured is a message whose length
+    // was measured against the wrong string.
+    messages.push(`${prefix}${opening}${buffer}${closing}`.trimEnd());
+    openedAt = open;
+    buffer = "";
+  };
+
+  // Adds a chunk to the message being built, or reports that it does not fit. The separator is
+  // dropped when the chunk starts a message: a paragraph break falling on a message boundary is
+  // already said by the boundary.
+  const place = (chunk: string, separator: string): boolean => {
+    const candidate = buffer === "" ? chunk : `${buffer}${separator}${chunk}`;
+    const end = fenceAfter(open, chunk);
+    if (overhead(openedAt, end) + candidate.length > MAX_MESSAGE_LENGTH) return false;
+    buffer = candidate;
+    open = end;
+    return true;
+  };
+
+  // Split on the exact two-newline sequence rather than on runs of them, so joining the pieces back
+  // with the same sequence reproduces the text: a run of blank lines survives as itself.
+  for (const [index, paragraph] of body.split("\n\n").entries()) {
+    if (place(paragraph, index === 0 ? "" : "\n\n")) continue;
+    flush();
+    if (place(paragraph, "")) continue;
+
+    for (const [position, line] of paragraph.split("\n").entries()) {
+      if (place(line, position === 0 ? "" : "\n")) continue;
+      flush();
+      if (place(line, "")) continue;
+
+      // One line longer than a whole message. Cut on code points, with room reserved for the
+      // closing fence whenever one could be open at the cut: a delimiter anywhere in the line can
+      // open one, and discovering that after choosing the cut would push the message over.
+      let rest = line;
+      while (rest !== "") {
+        const end = open === null && !rest.includes(FENCE) ? null : "";
+        const room = Math.max(MAX_MESSAGE_LENGTH - overhead(openedAt, end), MIN_HARD_CUT);
+        // At least one code point, always: a room too small for the next character would otherwise
+        // drop the rest of the line silently rather than posting it in pieces.
+        const head = cutSafely(rest, headFitting(rest, room) || sliceCodePoints(rest, 1));
+        buffer = head;
+        open = fenceAfter(open, head);
+        rest = rest.slice(head.length);
+        // The tail of a line is left in the buffer rather than flushed, so whatever follows it
+        // shares the message instead of starting a new one.
+        if (rest !== "") flush();
+      }
+    }
+  }
+  flush();
+  return messages;
 }
 
 /**
