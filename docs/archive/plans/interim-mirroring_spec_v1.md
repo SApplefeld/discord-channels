@@ -5,6 +5,11 @@ Commit Model: Commit-and-Push
 Fable Spend: research, briefs, and reviews in the main session; implementation dispatched
 Created: 2026-08-07
 
+Extended by
+[`../../plans/channels_narration-coalescing_spec_v1.md`](../../plans/channels_narration-coalescing_spec_v1.md),
+which changes how the chunks this plan delivers are posted: consecutive narration chunks
+edit-append into one thread message while it remains the thread's newest.
+
 ## Problem
 
 On a long turn, the operator watching the Discord thread sees nothing between their prompt and the

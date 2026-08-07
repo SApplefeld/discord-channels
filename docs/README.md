@@ -19,7 +19,11 @@ is built and installable.
 
 ## Plans
 
-No plan is open.
+One plan is open.
+
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_narration-coalescing_spec_v1.md`](plans/channels_narration-coalescing_spec_v1.md) | In Progress | Mid-turn narration chunks edit-append into one growing thread message while it is still the newest thing in its thread, instead of posting one headed message per chunk. |
 
 Archived plans, most recent first.
 
