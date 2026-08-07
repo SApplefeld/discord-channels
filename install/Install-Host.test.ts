@@ -235,14 +235,10 @@ test("Install-Host provisions config, merges hooks, hardens the fixture tree, an
     `expected the fixture's own hook path in ${command}`,
   );
 
-  // The allow rules land in the file that actually runs, one per route the relay reaches a session
-  // by: the wrapper's per-launch registration, and the plugin's plugin-scoped key. The relay's own
-  // registration does not come from here: a settings file's mcpServers key is read by nothing, so
-  // the wrapper writes a --mcp-config per launch instead.
-  assert.deepEqual(settings.permissions?.allow, [
-    "mcp__channel-relay__reply",
-    "mcp__plugin_relay_channel-relay__reply",
-  ]);
+  // The allow rule lands in the file that actually runs: the plugin route's plugin-scoped key, the
+  // one route in service. The relay's own registration does not come from here: a settings file's
+  // mcpServers key is read by nothing, so the wrapper writes a --mcp-config per launch instead.
+  assert.deepEqual(settings.permissions?.allow, ["mcp__plugin_relay_channel-relay__reply"]);
 });
 
 test("Install-Host rejects both -BotToken and -BotTokenFile together", (t) => {

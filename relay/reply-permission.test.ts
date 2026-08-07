@@ -12,9 +12,10 @@
 // it generates per launch and then passes to the channel flag. Claude Code builds an MCP tool's
 // permission rule as `mcp__<key>__<tool>`, replacing every character of the key outside
 // [a-zA-Z0-9_-] with an underscore. The same server also reaches a session from plugins/relay, where
-// the key is scoped by the plugin, so the fragment carries a rule for each route and this file pins
-// both. The relay's own `Server` name is not that identifier and is checked here only for the
-// confusion a mismatch would cause in a debug log.
+// the key is scoped by the plugin; the plugin route is the only route in service, so the fragment
+// carries its rule alone and this file pins the fragment to exactly that. The relay's own `Server`
+// name is not that identifier and is checked here only for the confusion a mismatch would cause in
+// a debug log.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -69,9 +70,9 @@ function fragmentRules(): string[] {
  * here, because a rename that this file did not follow surfaces only as a permission prompt on a
  * live session.
  *
- * This is the name a live plugin-route session's tool calls carry on the wire. It ships beside the
- * --mcp-config route's rule for as long as both routes are in service across the fleet, one rule
- * per route.
+ * This is the name a live plugin-route session's tool calls carry on the wire, and the only rule
+ * the fragment ships: the development route is out of service fleet-wide, and its rule
+ * (mcp__channel-relay__reply) would be a standing pre-approval no route needs.
  */
 function pluginRule(): string {
   const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST_PATH, "utf8")) as {
@@ -81,12 +82,13 @@ function pluginRule(): string {
   return `mcp__${ruleSegment(`plugin_${manifest.name}_${manifest.channels[0].server}`)}__reply`;
 }
 
-test("the fragment ships an allow rule for each route the relay arrives by", () => {
+test("the fragment ships the plugin route's allow rule and nothing else", () => {
   const rules = fragmentRules();
   assert.deepEqual(
     rules,
-    [`mcp__${ruleSegment(registrationKey())}__reply`, pluginRule()],
-    "the allow rules must name the server as the wrapper registers it and as the plugin carries it",
+    [pluginRule()],
+    "the allow rule must name the server as the plugin carries it, and the retired " +
+      "development-route rule must stay retired",
   );
 });
 

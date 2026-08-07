@@ -160,12 +160,12 @@ merged, and Claude Code substitutes the session's own value into it at request t
 #>
 # Exact names, never a pattern: the list is what stands between an attacker-writable fragment and a
 # tool pre-approved for every session on the machine, and a pattern admits names nobody wrote down.
-# Two entries, because the relay reaches a session by two routes and Claude Code names the reply tool
-# after the key the server arrived under: the per-launch --mcp-config registration on one, and the
-# plugin-scoped key on the other. hooks/settings-fragment.json's _permissions_comment carries which
-# one dies once a live launch on the plugin route settles the name.
+# One entry: Claude Code names the reply tool after the key the server arrived under, and every
+# fleet host takes the plugin route, whose plugin-scoped key gives this rule. The development
+# route's rule (mcp__channel-relay__reply) is deliberately off this list;
+# hooks/settings-fragment.json's _permissions_comment says why and what a host on the development
+# flag should expect.
 $script:AllowedChannelPermissionRules = @(
-    'mcp__channel-relay__reply',
     'mcp__plugin_relay_channel-relay__reply'
 )
 

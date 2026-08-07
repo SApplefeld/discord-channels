@@ -33,3 +33,8 @@ the live backlog carries active items only.
 - **Register the broker's scheduled task and restart it on this host.** The task
   `SapplefeldChannelsBroker` is registered on SCOTT and the broker was restarted onto current code
   by the elevated installer half; readiness confirmed on `/sessions`.
+- **Retire the development-route allow rule (`mcp__channel-relay__reply`).** Removed from the six
+  repository places that carried it, with the fragment, installer allowlist, and test pins now
+  shipping the plugin-scoped rule alone, and swapped out of SCOTT's `~/.claude/settings.json` by
+  hand (which had carried only the development rule; the plugin-scoped rule replaced it). The
+  remaining per-host hand edits on NEO and ASR stay on the live backlog.

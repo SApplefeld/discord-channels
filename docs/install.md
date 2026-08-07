@@ -235,18 +235,19 @@ non-zero with one line on stderr naming the path it looked for, rather than regi
 that is silently dead.
 
 Claude Code builds the reply tool's permission rule from the key the server arrives under, and the
-plugin route scopes that key by the plugin carrying it. `hooks/settings-fragment.json` therefore
-ships two allow rules, one per route: `mcp__channel-relay__reply` for the `--mcp-config` route and
-`mcp__plugin_relay_channel-relay__reply` for the plugin route, the name a plugin-route session's
-tool calls carry on the wire. Both stay installed while both routes are in service anywhere in the
-fleet, and while a host might fall back from one route to the other: a missing rule parks the first
-reply on a permission prompt at a keyboard nobody is sitting at. When the last host leaves the
-development route, retire its rule from the six places that carry it:
-`hooks/settings-fragment.json`, `install/Install-Functions.ps1`'s
-`$script:AllowedChannelPermissionRules`, `relay/reply-permission.test.ts`,
-`install/Install-Functions.test.ts`, `install/Install-Host.test.ts`, and
-`plugins/manifest.test.ts`, plus by hand from `~/.claude/settings.json` on each installed host,
-because `Install-Host.ps1` adds rules and never removes one already there.
+plugin route scopes that key by the plugin carrying it. `hooks/settings-fragment.json` ships one
+allow rule, `mcp__plugin_relay_channel-relay__reply`, the name a plugin-route session's tool calls
+carry on the wire. Six repository places hold that name in agreement: the fragment,
+`install/Install-Functions.ps1`'s `$script:AllowedChannelPermissionRules`,
+`relay/reply-permission.test.ts`, `install/Install-Functions.test.ts`,
+`install/Install-Host.test.ts`, and `plugins/manifest.test.ts`. The development route's rule,
+`mcp__channel-relay__reply`, is deliberately absent from all of them: every fleet host runs the
+plugin route, and a rule with no route that needs it is a standing squattable pre-approval. A host
+dropped back onto the development flag therefore parks its first reply on a permission prompt; for
+a longer stay, add that rule by hand to that host's `~/.claude/settings.json` and remove it when
+the host returns. `Install-Host.ps1` adds rules and never removes one already there, so a host
+provisioned while the fragment still shipped the development rule keeps it until the same hand
+edit removes it.
 
 **This is the one place a host can be installed into a half-working state.** A host launched with
 plain `--channels` before its plugin is installed and allowlisted has its channel refused, and then
@@ -267,7 +268,8 @@ into the thread reach nothing. That is the same shape as the `channelsEnabled` f
    prompt, so the direct check is the wire: after the reply lands, `curl.exe -s
    http://127.0.0.1:8787/sessions` shows that session's `lastTool` as
    `mcp__plugin_relay_channel-relay__reply`. A session that instead parks its reply on a permission
-   prompt is showing you the rule name Claude Code built; if it is not one of the two shipped
-   rules, that observed name replaces the plugin-scoped one in the six places above.
+   prompt is showing you the rule name Claude Code built; if it is not the shipped rule, that
+   observed name replaces the plugin-scoped one in the six places above.
 5. If any check fails, put the entry back on `--dangerously-load-development-channels` before
-   working on the host again.
+   working on the host again, and expect the first reply there to raise a permission prompt: the
+   development route's rule is not installed.

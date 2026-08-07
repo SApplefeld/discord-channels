@@ -238,19 +238,19 @@ establishes who wrote it. Text arriving over the channel carries less authority 
 operator typed at the keyboard, and the model is told that in the same breath as it is told the
 events exist.
 
-**The reply tool's allow rules are machine-wide pre-approvals.** Two are merged into the user-level
-settings file, one per route the relay reaches a session by: `mcp__channel-relay__reply` for the
-per-launch `--mcp-config` registration, and `mcp__plugin_relay_channel-relay__reply` for the relay
-arriving as this repository's plugin. Each applies to every Claude Code session on the machine, not
-only wrapped ones, and any MCP server whose registered key sanitizes to the name inside a rule has
-its `reply` tool pre-approved with no prompt. The relay is registered per launch by the wrapper
-rather than at user scope, so an unwrapped session normally has no such server, but a project
-`.mcp.json` in a repository a session is working in can squat either name. The installer refuses to
-merge any permission rule outside its own exact-match, case-sensitive allowlist, which stops the
-fragment being used to widen this; it does not stop the squat, and the second rule is a second
-squattable name. The plugin-scoped form is derived rather than observed, and whichever rule a live
-plugin-route launch shows to be wrong is removed everywhere it is written, because a dormant rule is
-a standing pre-approval with no route that needs it.
+**The reply tool's allow rule is a machine-wide pre-approval.** One rule is merged into the
+user-level settings file: `mcp__plugin_relay_channel-relay__reply`, for the relay arriving as this
+repository's plugin, the route every fleet host runs. It applies to every Claude Code session on
+the machine, not only wrapped ones, and any MCP server whose registered key sanitizes to the name
+inside the rule has its `reply` tool pre-approved with no prompt. The relay is registered per
+launch by the wrapper rather than at user scope, so an unwrapped session normally has no such
+server, but a project `.mcp.json` in a repository a session is working in can squat the name. The
+installer refuses to merge any permission rule outside its own exact-match, case-sensitive
+allowlist, which stops the fragment being used to widen this; it does not stop the squat. The
+development route's rule, `mcp__channel-relay__reply`, is not shipped: a dormant rule is a standing
+pre-approval with no route that needs it, and a second squattable name. A host temporarily on the
+development flag parks its first reply on a permission prompt instead, and the rule name that
+prompt shows is the one to add by hand for the duration.
 
 ## Untrusted strings
 

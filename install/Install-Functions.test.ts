@@ -327,8 +327,8 @@ test("Merge-ChannelSettingsFile installs the relay's reply rule beside the opera
   const merged = runFunctions<Settings>(script, dir);
   assert.deepEqual(
     merged.permissions.allow,
-    ["Bash(git status)", "mcp__channel-relay__reply", "mcp__plugin_relay_channel-relay__reply"],
-    "the operator's own rules must survive and the relay's must be added, one per route it arrives by",
+    ["Bash(git status)", "mcp__plugin_relay_channel-relay__reply"],
+    "the operator's own rules must survive and the relay's plugin-route rule must be added",
   );
   assert.deepEqual(merged.permissions.deny, ["Read(./secrets/**)"], "an unrelated key must survive");
 
@@ -337,7 +337,6 @@ test("Merge-ChannelSettingsFile installs the relay's reply rule beside the opera
   const again = runFunctions<Settings>(script, dir);
   assert.deepEqual(again.permissions.allow, [
     "Bash(git status)",
-    "mcp__channel-relay__reply",
     "mcp__plugin_relay_channel-relay__reply",
   ]);
 });

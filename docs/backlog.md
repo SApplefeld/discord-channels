@@ -9,9 +9,9 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 
 ## Active
 
-- Retire the development-route allow rule (`mcp__channel-relay__reply`): its condition is now met,
-  since SCOTT, NEO, and ASR all run the plugin route. The six repository places and the per-host
-  hand edit are listed in [`install.md`](install.md)'s "The relay as a plugin".
+- Remove the retired `mcp__channel-relay__reply` rule from `~/.claude/settings.json` on NEO and on
+  ASR: both were provisioned while the fragment still shipped it, and `Install-Host.ps1` never
+  removes a rule already there. SCOTT's copy is already done.
 - Measure duplication across the three streams that land in one thread in real use: the mirrored
   reply, the reply tool's answer, and mid-turn narration from the transcript tailer. Decide whether
   to suppress duplicates or coach the reply tool into a quick-summary role on top of the mirrored
