@@ -98,12 +98,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     now: Date.now,
     log: note,
   });
-  // A second writer, and therefore a second budget bucket, for mirror posts alone. Mirror volume
-  // arrives on every prompt and every turn end of every wrapped session, and a writer's budget
-  // blocks on what Discord reports, so one shared writer would let a mirror-earned block drop the
-  // permission alerts and notices a parked session is waiting on. The split creates no Discord
-  // capacity; it only keeps the mirror's rate-limit state from starving the paths that reach a
-  // phone.
+  // A second writer, and therefore a second budget bucket, for conversation volume: mirrored
+  // prompts and replies, and the reply tool's answers. That volume arrives on every prompt and
+  // every turn end of every wrapped session and can run many messages per post, and a writer's
+  // budget blocks on what Discord reports, so one shared writer would let a block earned by
+  // conversation drop the permission alerts and notices a parked session is waiting on. The split
+  // creates no Discord capacity; it only keeps conversation rate-limit state from starving the
+  // paths that reach a phone.
   const mirrorWriter = createThreadWriter({
     messenger: { postToThread: (input) => messenger.postToThread(input) },
     now: Date.now,
@@ -112,7 +113,6 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   const outbound = createOutboundRouter({
     registry,
     threadFor: (sessionId) => threadFor(sessionId),
-    writer,
     mirrorWriter,
     log: note,
   });

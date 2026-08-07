@@ -5,8 +5,9 @@
 // the thread this session owns now, and Claude may reply having received no event at all. Routing
 // by session is what makes an unprompted reply land correctly, and it is also what stops a reply
 // from being addressable: the relay never forwards a chat_id, so there is nothing here to honor.
-import { inertReply, renderMirror } from "../discord/render.ts";
+import { renderAnswer, renderMirror } from "../discord/render.ts";
 import type { MirrorKind } from "../discord/render.ts";
+import { withoutInvisible } from "../sanitize.ts";
 import type { Registry } from "../registry.ts";
 import type { ThreadWriter } from "./writer.ts";
 
@@ -14,13 +15,13 @@ export type OutboundRouterOptions = {
   registry: Registry;
   /** The thread bound to a session, as the Discord surface currently holds it. */
   threadFor: (sessionId: string) => string | null;
-  writer: ThreadWriter;
   /**
-   * The writer mirror posts spend. A separate writer from the reply one because each writer holds
-   * its own budget bucket: mirror volume arrives on every prompt and every turn end of every
-   * wrapped session, and a rate-limit block it earns must not be the block that drops a permission
-   * alert a parked session is waiting on. The split creates no Discord capacity; it only stops one
-   * path's rate-limit state from starving the other.
+   * The writer conversation volume spends: mirrored prompts and replies, and the reply tool's
+   * answers. A separate writer from the alert one because each writer holds its own budget bucket:
+   * conversation volume arrives on every prompt and every turn end of every wrapped session, and
+   * can run many messages per post, so a rate-limit block it earns must not be the block that
+   * drops a permission alert a parked session is waiting on. The split creates no Discord
+   * capacity; it only stops one path's rate-limit state from starving the other.
    */
   mirrorWriter: ThreadWriter;
   log?: (message: string) => void;
@@ -78,6 +79,16 @@ function createDropLog(
     }
   };
 }
+
+/**
+ * How the Claude Code harness opens the envelope it wraps a channel message in before injecting it
+ * into the session as a user prompt.
+ *
+ * The harness's contract, not this project's: an external shape that can change without notice, and
+ * a change to it costs the operator a duplicate of their own message in the thread rather than
+ * anything unsafe, which is why the match is a plain prefix rather than a parse.
+ */
+const CHANNEL_ENVELOPE = "<channel source=";
 
 /** Why a reply could not be posted, in the terms the relay reports back to Claude. */
 export type ReplyResult =
@@ -155,9 +166,9 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   }
 
   // Per-thread ordering, held here because this router is the one place both conversation-carrying
-  // paths pass through: a mirrored prompt, a mirrored reply, and a reply-tool post. They reach
-  // Discord through two different writers, deliberately, so no single writer can order them, and
-  // delivery from the mirror intake is fire-and-forget, so nothing upstream orders one against the
+  // paths pass through: a mirrored prompt, a mirrored reply, and a reply-tool post. The writer
+  // orders nothing (it takes one message at a time and knows nothing about the next), and delivery
+  // from the mirror intake is fire-and-forget, so nothing upstream orders one post against the
   // next either. Without this a turn's reply and the prompt that followed it race, and a reply
   // split across twenty messages interleaves with whatever else the session posts mid-run.
   //
@@ -198,6 +209,32 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     return running;
   }
 
+  /**
+   * Posts one rendered run of messages, in order, as one task on the thread's chain, so nothing
+   * else this router posts lands between the messages of one answer or one mirrored reply. A post
+   * refused part way through stops the run: the rest posted around a hole reads as text the author
+   * never wrote, and the transport that refused one message refuses the next for the same reason.
+   *
+   * One function for both posting paths on purpose: the landed count and the error wording are
+   * part of what the callers log and report, and two copies of this loop would let those drift.
+   */
+  async function deliver(
+    threadId: string,
+    messages: string[],
+  ): Promise<{ landed: number; error: string | null }> {
+    return inOrder(threadId, async () => {
+      let landed = 0;
+      for (const message of messages) {
+        const outcome = await options.mirrorWriter.reply(threadId, message);
+        if (outcome.status !== "ok") {
+          return { landed, error: outcome.status === "rate-limited" ? "rate limited" : outcome.error };
+        }
+        landed += 1;
+      }
+      return { landed, error: null };
+    });
+  }
+
   return {
     async reply(processToken, text) {
       const located = locate(processToken);
@@ -206,19 +243,41 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // relay is told why a reply did not land, never what the broker knows about the session.
       if ("status" in located) return { status: located.status };
 
-      // Neutralized here, where the mirror's own text is neutralized by renderMirror below, and by
-      // the same escape: both writers post into the same thread, so a reply tool call is the other
-      // way a line that renders as the mirror's attribution, or a mention pill, or a timestamp
-      // chip, could reach it. The text of a reply is written by a model that has read whatever the
-      // session read, which is what makes this an untrusted string rather than the broker's own.
-      const posted = await inOrder(located.threadId, () =>
-        options.writer.reply(located.threadId, inertReply(text)),
-      );
-      if (posted.status === "ok") return { status: "sent" };
+      // Rendered by the same machinery the mirror below is rendered by, and for the same reasons:
+      // both paths post into the one thread, so a reply tool call is the other way a line that
+      // renders as the mirror's attribution, or a mention pill, or a timestamp chip, could reach it,
+      // and a reply longer than one message is split rather than cut. The text of a reply is written
+      // by a model that has read whatever the session read, which is what makes this an untrusted
+      // string rather than the broker's own.
+      const messages = renderAnswer(text);
+      // Nothing visible once the invisible class is stripped. Reported to the relay, which is read
+      // by the model that called the tool, rather than posted: Discord refuses an empty message.
+      if (messages.length === 0) return { status: "failed", error: "the message was empty" };
 
-      const error = posted.status === "rate-limited" ? "rate limited" : posted.error;
-      log(`routing: the reply from session ${located.sessionId} was not posted: ${error}`);
-      return { status: "failed", error };
+      // Spent against the conversation writer, never an alert-tier one, because an answer is
+      // conversation volume: it can run many messages, and a rate-limit block earned by one long
+      // answer must not be the block that drops the permission prompt a parked session is waiting
+      // on. Alert paths hold their own writer and never come through this router.
+      const run = await deliver(located.threadId, messages);
+      if (run.error === null) return { status: "sent" };
+
+      // The counts and the transport's error class only. The text is Claude's own words to the
+      // operator, and conversation content never appears in the broker log at any level.
+      log(
+        `routing: the reply from session ${located.sessionId} stopped after ` +
+          `${run.landed} of ${messages.length} messages: ${run.error}`,
+      );
+      // The count rides back to the relay too, because the model reads this result and decides
+      // whether to try again: a bare error invites resending the whole answer, and the first
+      // `landed` messages would post a second time. A run that landed nothing is safe to resend
+      // and reports the plain error.
+      return {
+        status: "failed",
+        error:
+          run.landed === 0
+            ? run.error
+            : `stopped after ${run.landed} of ${messages.length} messages: ${run.error}`,
+      };
     },
 
     async mirror(processToken, kind, text, sessionId) {
@@ -256,6 +315,26 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       }
       if (sessionId !== located.sessionId) return { status: "no-session" };
 
+      // A message the operator posted in this very thread, handed to the session as a prompt and on
+      // its way back to where it was typed. Mirrored, it shows the operator their own message a
+      // second time, attributed to a console they were not sitting at.
+      //
+      // Matched before the renderer's escapes touch the text, so what is tested is the string the
+      // harness composed rather than a rewritten copy of it: escaping can neither hide the envelope
+      // from this nor build one that was not there. The invisible class is stripped first, though,
+      // by the same rule the renderer strips it, because a zero-width character in front of the
+      // envelope would otherwise hide it from a prefix match while changing nothing the reader
+      // sees. Only the opening counts, so a prompt that quotes the marker mid-text still mirrors,
+      // and only a prompt is examined, because a reply is Claude's own words about the envelope
+      // rather than one.
+      if (kind === "prompt" && withoutInvisible(text).trimStart().startsWith(CHANNEL_ENVELOPE)) {
+        dropped(
+          `the mirrored prompt from session ${located.sessionId} was dropped, it is the operator's ` +
+            `own channel message echoed back to the thread it was posted in`,
+        );
+        return { status: "failed", error: "the message came from the channel" };
+      }
+
       const messages = renderMirror(kind, text);
       // Nothing visible in the payload once the invisible class is stripped. Reported rather than
       // posted: Discord refuses an empty message, and one would read in the thread as the session
@@ -267,20 +346,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "failed", error: "the message was empty" };
       }
 
-      // The whole run is one task on the thread's chain, so nothing else this router posts lands
-      // between the messages of one reply.
-      const run = await inOrder(located.threadId, async () => {
-        let landed = 0;
-        for (const message of messages) {
-          const outcome = await options.mirrorWriter.reply(located.threadId, message);
-          if (outcome.status !== "ok") {
-            const failure = outcome.status === "rate-limited" ? "rate limited" : outcome.error;
-            return { landed, error: failure };
-          }
-          landed += 1;
-        }
-        return { landed, error: null as string | null };
-      });
+      const run = await deliver(located.threadId, messages);
       if (run.error === null) return { status: "sent" };
 
       // The kind, the counts, and the transport's error class only. The text is the operator's

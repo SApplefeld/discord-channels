@@ -50,7 +50,6 @@ async function broker(t: TestContext) {
     outbound: createOutboundRouter({
       registry,
       threadFor: () => THREAD,
-      writer: createThreadWriter({ messenger, now: Date.now }),
       mirrorWriter: createThreadWriter({ messenger, now: Date.now }),
     }),
     permissions: {
@@ -165,7 +164,11 @@ test("a reply travels the wire and comes back as the broker's own verdict", asyn
   await readyToWrite(context, () => messages);
 
   assert.deepEqual(await client.reply("the migration is done"), { status: "sent", error: undefined });
-  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "the migration is done" }]);
+  // The header is a literal on purpose: this test drives the real client end to end, and
+  // expressing the expectation through the renderer would let a broken header pass both sides.
+  assert.deepEqual(context.posts, [
+    { threadId: THREAD, text: "📣 Claude · answer\nthe migration is done" },
+  ]);
 });
 
 test("a permission prompt travels the wire and its verdict comes back down the stream", async (t) => {

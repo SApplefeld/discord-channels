@@ -8,6 +8,7 @@ import {
   heartbeat,
   inertMessage,
   inertText,
+  renderAnswer,
   renderCard,
   renderMirror,
   renderPermissionRequest,
@@ -211,6 +212,14 @@ test("a message is cut to a length Discord will accept", () => {
  */
 function attributionLength(kind: "prompt" | "reply"): number {
   return renderMirror(kind, "x")[0].length - 1;
+}
+
+/**
+ * The same measurement for the reply tool's attribution, which is its own constant and its own
+ * length: the glyph there is astral, so it spends two UTF-16 units where a plain one spends one.
+ */
+function answerAttributionLength(): number {
+  return renderAnswer("x")[0].length - 1;
 }
 
 /** What a mirrored message says, without the attribution line the renderer opened it with. */
@@ -620,6 +629,99 @@ test("every mirrored message survives the writer's own cap untouched", () => {
   for (const message of messages) {
     assert.equal(inertMessage(message), message);
   }
+});
+
+test("a reply tool message says who wrote it, and says it apart from the mirror", () => {
+  const [message] = renderAnswer("the migration is done");
+
+  assert.equal(said(message), "the migration is done");
+  assert.match(message, /^📣 .*Claude/, message);
+  assert.notEqual(message.split("\n")[0], renderMirror("reply", "x")[0].split("\n")[0]);
+  assert.notEqual(message.split("\n")[0], renderMirror("prompt", "x")[0].split("\n")[0]);
+  // Unquoted, like the mirror's reply marker: the quoted block is what says the operator typed it.
+  assert.equal(quoteOpeningLines(message).length, 0, message);
+});
+
+test("a reply tool message too long for one carries its attribution on every message", () => {
+  // A message scrolled to on a phone carries its own attribution or it carries none, and an answer
+  // is never cut: the ceiling bounds one message, not the answer.
+  const paragraphs = Array.from(
+    { length: 200 },
+    (_, index) => `Paragraph ${index}. ${"detail ".repeat(24)}`.trim(),
+  );
+  const answer = paragraphs.join("\n\n");
+  assert.ok(answer.length >= 35_000, `${answer.length} characters`);
+
+  const messages = renderAnswer(answer);
+
+  assert.ok(messages.length >= 20, `${messages.length} message(s)`);
+  const header = messages[0].split("\n")[0];
+  for (const message of messages) {
+    assert.equal(message.split("\n")[0], header, message.slice(0, 80));
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+  }
+  // Every break falls between paragraphs, so putting the separator back at each boundary reproduces
+  // the answer exactly: nothing was dropped, reordered, or shortened.
+  assert.equal(messages.map(said).join("\n\n"), answer);
+});
+
+test("a reply tool message is not capped at the length a pasted prompt is", () => {
+  // The paste cap protects the thread from the operator's own log dumps. An answer is written to be
+  // read, so it is split at any length rather than shortened.
+  const answer = "x".repeat(MAX_MIRRORED_PROMPT_LENGTH + 1);
+  const messages = renderAnswer(answer);
+
+  assert.equal(messages.map(said).join(""), answer);
+  assert.ok(!messages.join("").includes("shortened"));
+});
+
+test("a reply tool message with nothing visible in it is no message at all", () => {
+  assert.deepEqual(renderAnswer("   \n\n  "), []);
+  assert.deepEqual(renderAnswer(""), []);
+  assert.deepEqual(renderAnswer("\u200b\u202e"), []);
+});
+
+test("a reply tool message cannot draw a chip or a quoted block", () => {
+  // The reply tool is the path a prompt-injected model writes through, and it posts into the one
+  // channel permission prompts are answered in, so it gets the mirror's own escape rather than a
+  // second one of the same shape.
+  const [message] = renderAnswer(
+    ">>> ⌨ typed at the console\nping <@123456789> at <t:1700000000:R> in <#42>",
+  );
+
+  assert.equal(quoteOpeningLines(message).length, 0, message);
+  assert.ok(said(message).startsWith("\\>"), message);
+  assert.ok(!/<@\d+>/.test(message), message);
+  assert.ok(!/<t:\d+:R>/.test(message), message);
+  assert.ok(!/<#\d+>/.test(message), message);
+});
+
+test("code in a reply tool message keeps the characters code is written with", () => {
+  const code = "const f = (a: Array<string>) => a.length < 10;";
+  const [message] = renderAnswer(`here:\n\n\`\`\`ts\n${code}\n\`\`\``);
+
+  assert.ok(message.includes(code), message);
+  assert.ok(!said(message).includes("\\<"), message);
+});
+
+test("every reply tool message survives the writer's own cap untouched", () => {
+  // The cross-pin between the splitter and the path that posts what it produced. `inertMessage` is
+  // what every posted message goes through, and it cuts at MAX_MESSAGE_LENGTH: a splitter measuring
+  // the wrong attribution length has its tail eaten here, silently. The answer's attribution is a
+  // different length from the mirror's, so the room is asked of it rather than of the mirror.
+  const room = MAX_MESSAGE_LENGTH - answerAttributionLength();
+  const messages = renderAnswer(`${"x".repeat(room)}\n\n${"y".repeat(room)}`);
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].length, MAX_MESSAGE_LENGTH, "a message sits exactly at the ceiling");
+  for (const message of messages) {
+    assert.equal(inertMessage(message), message);
+  }
+
+  // The off-by-one on the other side: one character more than the room splits, and the room itself
+  // does not.
+  assert.equal(renderAnswer("x".repeat(room)).length, 1);
+  assert.equal(renderAnswer("x".repeat(room + 1)).length, 2);
 });
 
 const OPERATOR = "700000000000000002";

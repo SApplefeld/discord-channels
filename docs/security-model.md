@@ -201,8 +201,8 @@ and both apply it:
 mirrored reply, and a `reply` tool call are prose with code in them, so escaping the whole of
 markdown would trade the readability of the surface away. All three go through one fence-aware
 escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote marker and
-leaves the rest alone. `renderMirror` applies it to mirrored text and `inertReply` applies it to the
-reply tool's, both before the text reaches the message path. That is what stops either from drawing
+leaves the rest alone. `renderMirror` applies it to mirrored text and `renderAnswer` applies it to
+the reply tool's, both before the text reaches the message path. That is what stops either from drawing
 a mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one
 channel the operator answers permission prompts in.
 

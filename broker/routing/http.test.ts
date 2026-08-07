@@ -67,7 +67,6 @@ async function harness(t: TestContext): Promise<Harness> {
     outbound: createOutboundRouter({
       registry,
       threadFor: () => THREAD,
-      writer: createThreadWriter({ messenger, now: Date.now }),
       mirrorWriter: createThreadWriter({ messenger, now: Date.now }),
     }),
     permissions: {
@@ -246,7 +245,9 @@ test("a reply is posted to the session's thread and reports its outcome", async 
   });
   assert.equal(answer.status, 200);
   assert.deepEqual(JSON.parse(answer.body), { status: "sent" });
-  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "done" }]);
+  // The header is a literal on purpose: this test pins what crosses the wire, and expressing the
+  // expectation through the renderer would let a broken header pass both sides.
+  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "📣 Claude · answer\ndone" }]);
 
   stream.destroy();
 });
@@ -266,7 +267,9 @@ test("a reply carrying a chat_id is routed by session all the same", async (t) =
     { "x-channel-reply-key": replyKeyOf(lines) },
   );
   assert.deepEqual(JSON.parse(answer.body), { status: "sent" });
-  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "done" }]);
+  // The header is a literal on purpose: this test pins what crosses the wire, and expressing the
+  // expectation through the renderer would let a broken header pass both sides.
+  assert.deepEqual(context.posts, [{ threadId: THREAD, text: "📣 Claude · answer\ndone" }]);
 
   stream.destroy();
 });

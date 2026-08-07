@@ -83,7 +83,7 @@ export const MAX_MESSAGE_LENGTH = 1_900;
  * escaping its `<@id>` would render the mention as characters and drop the ping a parked session is
  * waiting to be answered through. That is safe only because every string arriving here is either
  * composed by this renderer, with each untrusted field already through `inertText`, or neutralized
- * by its caller. Text a model or a session authored reaches Discord through `inertReply` or
+ * by its caller. Text a model or a session authored reaches Discord through `renderAnswer` or
  * `renderMirror` instead, and both of those neutralize the chip and quote syntax before it gets
  * here. What is still stripped is the invisible class, which can reorder or hide text with no
  * visual trace at all, and which no message has a use for.
@@ -94,30 +94,6 @@ export const MAX_MESSAGE_LENGTH = 1_900;
  */
 export function inertMessage(value: string): string {
   return fit(withoutInvisible(value).trim(), MAX_MESSAGE_LENGTH);
-}
-
-/**
- * Untrusted text for a reply the model composed, on its way to the same thread the mirror posts
- * into.
- *
- * A reply tool call's text is written by a model reading content it does not control, and it lands
- * in the thread beside mirrored messages, so it gets the escape mirrored text gets: without it a
- * reply can open with a line that renders exactly as the mirror's own attribution, or draw a
- * `<@id>` pill or a `<t:...:R>` chip that mirrored text is not allowed to draw, in the one channel
- * the operator answers permission prompts in. It is `withoutChips` itself rather than a second
- * escape of the same shape, because two escapes are two readings of where a code fence is, and the
- * one thing a disagreement between them costs is the chip or the forged attribution one of them
- * believed it had removed. Fence-aware for the reason mirrored text is: a reply from a coding
- * assistant is mostly code, and Discord processes no escapes inside a fence, so an escape there
- * reaches the reader as a visible backslash on every generic and comparison.
- *
- * The message ceiling is not applied here; the writer holds it, so the reply is measured against it
- * once. A cut landing between an inserted backslash and the character it neutralizes costs a
- * visible backslash at the end of a truncated reply and nothing more, because what followed it is
- * dropped rather than carried into a message that would open with a live chip.
- */
-export function inertReply(value: string): string {
-  return withoutChips(withoutInvisible(value).trim());
 }
 
 /**
@@ -154,6 +130,21 @@ const ATTRIBUTION: Record<MirrorKind, string> = {
   prompt: ">>> ⌨ typed at the console\n",
   reply: "✨ Claude\n",
 };
+
+/**
+ * What a reply tool message opens with, on every message of a split one.
+ *
+ * Kept apart from the mirror's two kinds, and worded and glyphed apart from them, because the two
+ * are different acts: a mirrored reply is the turn's final text repeated for someone away from the
+ * keyboard, and this is Claude addressing the operator in the thread on purpose. A bare message with
+ * no line of its own reads as a continuation of whatever sits above it.
+ *
+ * Unquoted, like the mirror's reply marker and for the same reason: the quoted block is what a
+ * reader takes for the operator's own typing, and it is that block alone that has to be unforgeable.
+ * This line is Claude-authored text opening a Claude-authored message, so content reproducing it
+ * claims nothing the message does not already say.
+ */
+const ANSWER_ATTRIBUTION = "📣 Claude · answer\n";
 
 // Discord's chip syntax lives inside the angle brackets: `<@id>` draws a mention pill, `<t:...:R>`
 // a live relative timestamp, `<#id>` a channel link. Escaped, each renders as the characters that
@@ -323,11 +314,6 @@ function fit(value: string, limit: number): string {
  * cut at one message is a reply the operator has to walk to a keyboard to finish reading, which is
  * the thing mirroring exists to avoid. So there is no ceiling on the count. A prompt is the one
  * capped surface, above.
- *
- * The whole budget is `MAX_MESSAGE_LENGTH` and every part of a message is spent against it: the
- * attribution, the fence lines a split code block needs, and the text. That is why splitting and
- * attribution are one function rather than two: a splitter that cut to the ceiling and a caller
- * that then prefixed anything at all would post messages over it, which Discord rejects outright.
  */
 export function renderMirror(kind: MirrorKind, text: string): string[] {
   const seen = withoutInvisible(text).trim();
@@ -338,11 +324,40 @@ export function renderMirror(kind: MirrorKind, text: string): string[] {
     kind === "prompt" && [...seen].length > MAX_MIRRORED_PROMPT_LENGTH
       ? shortened(sliceCodePoints(seen, MAX_MIRRORED_PROMPT_LENGTH))
       : seen;
-  const body = withoutChips(capped);
+  return attributed(capped, ATTRIBUTION[kind]);
+}
+
+/**
+ * One reply tool message, rendered as the ordered messages it takes to carry it whole.
+ *
+ * The same treatment a mirrored reply gets, from the same machinery, because it is the same kind of
+ * text arriving in the same thread: written by a model that has read whatever the session read, and
+ * landing beside mirrored messages in the one channel the operator answers permission prompts in. A
+ * second escape or a second splitter of the same shape would be two readings of where a code fence
+ * is, and what a disagreement between them costs is the chip or the forged attribution one of them
+ * believed it had removed.
+ *
+ * Uncapped at any length, like the mirror's reply: the paste cap protects the thread from the
+ * operator's own log dumps and has no business touching text written to be read.
+ */
+export function renderAnswer(text: string): string[] {
+  return attributed(withoutInvisible(text).trim(), ANSWER_ATTRIBUTION);
+}
+
+/**
+ * Neutralized text, packed into the messages it takes to carry it, each one carrying `prefix`.
+ *
+ * The whole budget is `MAX_MESSAGE_LENGTH` and every part of a message is spent against it: the
+ * attribution, the fence lines a split code block needs, and the text. That is why splitting and
+ * attribution are one function rather than two: a splitter that cut to the ceiling and a caller
+ * that then prefixed anything at all would post messages over it, which Discord rejects outright.
+ */
+function attributed(seen: string, prefix: string): string[] {
+  const body = withoutChips(seen);
   // Nothing at all to say. Reported as no messages rather than as one empty message, which Discord
   // refuses and which would read as the session having answered with silence.
   if (body === "") return [];
-  return split(body, ATTRIBUTION[kind]);
+  return split(body, prefix);
 }
 
 /**
