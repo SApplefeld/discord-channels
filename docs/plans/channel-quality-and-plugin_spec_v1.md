@@ -1,6 +1,8 @@
 # Channel Quality Fixes and Plugin Packaging
 
-Status: In Progress
+Status: In Progress (all five sections' code and docs are delivered; what remains is the operator's
+plugin-route verification on SCOTT per docs/install.md, then the flag flip, the rule prune, and this
+plan's close-out)
 Commit Model: Commit-and-Push
 Fable Spend: research, briefs, and reviews in the main session; implementation dispatched
 Created: 2026-08-07
