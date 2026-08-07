@@ -231,3 +231,23 @@ Review Findings: envelope invisible-strip Minor fixed; security review CLEAR ove
 Stamps: covered in Chapter 1 (same boundary)
 Next: S4 (plugin packaging; research report in hand), then S5 spec review, then finishing-work
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-07
+Completed: S4: The repo installs as a plugin marketplace
+Implemented By: implementer-opus (a first dispatch died on an API error before writing; the retry delivered), orchestrator folded in the review round's fixes
+Metrics: 1 review round (adversarial + blind at fable, security at default); 0 NEEDS_CONTEXT; 1 infrastructure re-dispatch (not an escalation); advisor off
+Decisions / Surprises: The plugin is a launcher shim, not a copy of the relay: marketplace installs run from a cache copy under the user profile (observed on this machine with claude-kit), where the relay's sibling imports and node_modules do not exist, so `plugins/relay/launch.mjs` reads the `relay-mcp.json` registration the wrapper already rewrites every launch and spawns the checkout's relay with inherited stdio. One approved out-of-brief edit: the installer's `$script:AllowedChannelPermissionRules` gained the plugin-scoped rule, because its own fragment validator would otherwise refuse to install the two-rule fragment. Review fixes folded in: a writer-to-reader cross-pin equating the shim's literals with the wrapper's (the adversarial Major, and this project's recurring writer-verifier defect shape); the shim's shutdown comment rewritten to name stdio EOF as the real Windows mechanism, with an exit-event belt added; the unreachable homedir fallback replaced by a loud refusal on unset LOCALAPPDATA; case-variant LOCALAPPDATA scrubbing in both new test harnesses so no test can reach the operator's real state root; `-cnotcontains` on the installer's rule gate; the prune checklist extended to all six rule sites plus the read-the-rule-off-the-prompt fallback for a third live name; and the security model taught the plugin route (execution chain and two-rule squat surface). Deliberately not built: per-launch registration files for the two-concurrent-checkouts race (both reviewers priced it Minor on a single-operator machine; the single-file assumption is now priced in a comment at New-ChannelMcpConfig, and per-launch files are the named fix if the assumption breaks). The permission-rule name `mcp__plugin_relay_channel-relay__reply` remains inferred: both rules ship until a live launch settles it. Docs (install.md rewrite, security-model update) were authored in the main thread per the docs guard.
+Review Findings: adversarial Major (cross-pin) fixed; all Minors fixed except the launch race (justified above); security CONCERNS resolved by the model update, `-cnotcontains`, and the squat-surface paragraph; blind's third-candidate rule name handled via the checklist fallback rather than a third standing pre-approval, per the security review's argument against widening.
+Stamps: adjudicated 0 surfaced (memq unstamped, 4h window); the four Chapter 1 stamps still cover this span's applied records
+Next: operator verification of the plugin route on SCOTT (managed settings, install, live launch per docs/install.md), then the flag flip and rule prune ride a follow-up change; S5 below
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-07
+Completed: S5: Interim-visibility spec
+Implemented By: main session (fable), per the docs routing override
+Metrics: 0 review rounds (a Draft spec parked for a future effort; the shape review was in-session); 0 NEEDS_CONTEXT; advisor off
+Decisions / Surprises: The spec (docs/plans/interim-mirroring_spec_v1.md, Status: Draft) covers transcript tailing for mid-turn assistant text with Stop-hook dedup, a bounded neutralized tool-input preview on the card, the security posture (existing escapes only, no transcript content in logs, assistant-text-only extraction), and named non-goals. Open questions are recorded in the spec for the implementing session, including verifying the transcript JSONL schema as an external contract before parsing.
+Review Findings: none (not implemented)
+Stamps: none surfaced
+Next: finishing-work, minus the S4 live-launch acceptance, which is the operator's
+Commit Model: Commit-and-Push

@@ -163,14 +163,19 @@ establishes who wrote it. Text arriving over the channel carries less authority 
 operator typed at the keyboard, and the model is told that in the same breath as it is told the
 events exist.
 
-**The reply tool's allow rule is a machine-wide pre-approval.** `mcp__channel-relay__reply` is merged
-into the user-level settings file, so it applies to every Claude Code session on the machine, not
-only wrapped ones, and any MCP server registered under the name `channel-relay` has its `reply` tool
-pre-approved with no prompt. The relay is registered per launch by the wrapper rather than at user
-scope, so an unwrapped session normally has no such server, but a project `.mcp.json` in a repository
-a session is working in can squat the name. The installer refuses to merge any permission rule
-outside its own one-entry allowlist, which stops the fragment being used to widen this; it does not
-stop the squat.
+**The reply tool's allow rules are machine-wide pre-approvals.** Two are merged into the user-level
+settings file, one per route the relay reaches a session by: `mcp__channel-relay__reply` for the
+per-launch `--mcp-config` registration, and `mcp__plugin_relay_channel-relay__reply` for the relay
+arriving as this repository's plugin. Each applies to every Claude Code session on the machine, not
+only wrapped ones, and any MCP server whose registered key sanitizes to the name inside a rule has
+its `reply` tool pre-approved with no prompt. The relay is registered per launch by the wrapper
+rather than at user scope, so an unwrapped session normally has no such server, but a project
+`.mcp.json` in a repository a session is working in can squat either name. The installer refuses to
+merge any permission rule outside its own exact-match, case-sensitive allowlist, which stops the
+fragment being used to widen this; it does not stop the squat, and the second rule is a second
+squattable name. The plugin-scoped form is derived rather than observed, and whichever rule a live
+plugin-route launch shows to be wrong is removed everywhere it is written, because a dormant rule is
+a standing pre-approval with no route that needs it.
 
 ## Untrusted strings
 
@@ -222,13 +227,18 @@ execution in the operator's context.** The bot token is a bearer credential: rea
 of the bot, write access lets an attacker substitute a token and redirect the host's entire session
 inventory to a server they own.
 
-Two more things widen this. At every logon the scheduled task runs `install/Start-Broker.ps1` under
-the same Bypass, which loads `install/Install-Functions.ps1` and executes `broker/`. And the merged
-user settings name `relay/index.ts` as an MCP server command, so Claude Code executes the relay at
-the start of every wrapped session. So the surface is every path on the execution chain, not a pair
-of files, and **directories count as much as the files in them**: a hardened file in a directory that
-permits delete-child can simply be deleted and re-created attacker-owned with a clean access control
-list, which defeats the file's own permissions entirely.
+Three more things widen this. At every logon the scheduled task runs `install/Start-Broker.ps1`
+under the same Bypass, which loads `install/Install-Functions.ps1` and executes `broker/`. The
+merged user settings name `relay/index.ts` as an MCP server command, so Claude Code executes the
+relay at the start of every wrapped session. And on the plugin route, Claude Code executes
+`plugins/relay/launch.mjs` from its plugin cache under the user profile, and that shim in turn
+executes whatever command the state root's `relay-mcp.json` names: the registration file was
+already on the execution chain as the wrapper's `--mcp-config`, and the plugin route keeps it there
+with the shim as one more link, while the cache copy of the shim itself is user-profile state in
+the same writability class as the settings file. So the surface is every path on the execution
+chain, not a pair of files, and **directories count as much as the files in them**: a hardened file
+in a directory that permits delete-child can simply be deleted and re-created attacker-owned with a
+clean access control list, which defeats the file's own permissions entirely.
 
 The installer strips inheritance and grants only the owner, Administrators, and SYSTEM on:
 

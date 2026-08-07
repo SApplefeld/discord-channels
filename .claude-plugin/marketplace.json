@@ -1,0 +1,14 @@
+{
+  "name": "sapplefeld-channels",
+  "owner": {
+    "name": "Scott Applefeld",
+    "email": "sapplefeld@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "relay",
+      "source": "./plugins/relay",
+      "description": "Provides the Discord relay as a channel, so a session started by this project's wrapper can be watched and answered from a phone."
+    }
+  ]
+}

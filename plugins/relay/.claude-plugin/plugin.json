@@ -1,0 +1,10 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "description": "The sapplefeld-channels Discord relay, offered as a channel so a session loads it without the development-channel warning.",
+  "channels": [
+    {
+      "server": "channel-relay"
+    }
+  ]
+}

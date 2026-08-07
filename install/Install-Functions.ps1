@@ -158,7 +158,16 @@ Assert-InstalledMirrorSwitch sees a header that is present: a privacy switch tha
 silent, which is the one failure mode worse than not having it. Only the interpolation form is
 merged, and Claude Code substitutes the session's own value into it at request time.
 #>
-$script:AllowedChannelPermissionRules = @('mcp__channel-relay__reply')
+# Exact names, never a pattern: the list is what stands between an attacker-writable fragment and a
+# tool pre-approved for every session on the machine, and a pattern admits names nobody wrote down.
+# Two entries, because the relay reaches a session by two routes and Claude Code names the reply tool
+# after the key the server arrived under: the per-launch --mcp-config registration on one, and the
+# plugin-scoped key on the other. hooks/settings-fragment.json's _permissions_comment carries which
+# one dies once a live launch on the plugin route settles the name.
+$script:AllowedChannelPermissionRules = @(
+    'mcp__channel-relay__reply',
+    'mcp__plugin_relay_channel-relay__reply'
+)
 
 function Assert-ValidChannelFragment {
     param([Parameter(Mandatory)][hashtable]$Fragment)
@@ -189,7 +198,9 @@ function Assert-ValidChannelFragment {
     }
     foreach ($rule in $declaredRules) {
         if ($null -eq $rule) { continue }
-        if ($script:AllowedChannelPermissionRules -notcontains [string]$rule) {
+        # Case-sensitive membership: -notcontains compares case-insensitively, and a case-variant
+        # rule would merge verbatim while matching nothing this list meant to allow.
+        if ($script:AllowedChannelPermissionRules -cnotcontains [string]$rule) {
             throw "Assert-ValidChannelFragment: the fragment declares a permission rule this " +
                 "installer does not merge: '$rule'. Only $($script:AllowedChannelPermissionRules -join ', ') " +
                 "is allowed, and it is the relay's own reply tool."

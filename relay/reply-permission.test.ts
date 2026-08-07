@@ -11,8 +11,10 @@
 // The name is the key the relay is registered under, which the wrapper writes into the --mcp-config
 // it generates per launch and then passes to the channel flag. Claude Code builds an MCP tool's
 // permission rule as `mcp__<key>__<tool>`, replacing every character of the key outside
-// [a-zA-Z0-9_-] with an underscore. The relay's own `Server` name is not that identifier and is
-// checked here only for the confusion a mismatch would cause in a debug log.
+// [a-zA-Z0-9_-] with an underscore. The same server also reaches a session from plugins/relay, where
+// the key is scoped by the plugin, so the fragment carries a rule for each route and this file pins
+// both. The relay's own `Server` name is not that identifier and is checked here only for the
+// confusion a mismatch would cause in a debug log.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -24,6 +26,13 @@ const FRAGMENT_PATH = path.join(REPO_ROOT, "hooks", "settings-fragment.json");
 const INSTALL_FUNCTIONS_PATH = path.join(REPO_ROOT, "install", "Install-Functions.ps1");
 const WRAPPER_PATH = path.join(REPO_ROOT, "wrapper", "Enter-ClaudeSession.ps1");
 const RELAY_PATH = path.join(REPO_ROOT, "relay", "index.ts");
+const PLUGIN_MANIFEST_PATH = path.join(
+  REPO_ROOT,
+  "plugins",
+  "relay",
+  ".claude-plugin",
+  "plugin.json",
+);
 
 function wrapper(): string {
   return readFileSync(WRAPPER_PATH, "utf8");
@@ -53,13 +62,31 @@ function fragmentRules(): string[] {
   return fragment.permissions?.allow ?? [];
 }
 
-test("the fragment ships exactly one allow rule, built from the registration key", () => {
+/**
+ * The rule name the reply tool takes when the same server arrives from the plugin instead of from a
+ * --mcp-config. Claude Code scopes a plugin-provided server's key by the plugin that carries it, so
+ * the segment holds both names; both are read from the plugin's own manifest rather than written out
+ * here, because a rename that this file did not follow surfaces only as a permission prompt on a
+ * live session.
+ *
+ * The scoping form is derived from Claude Code's plugin scoping, not read off a running session, so
+ * this rule and the --mcp-config one both ship until a launch on the plugin route settles which the
+ * reply tool registers under.
+ */
+function pluginRule(): string {
+  const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST_PATH, "utf8")) as {
+    name: string;
+    channels: { server: string }[];
+  };
+  return `mcp__${ruleSegment(`plugin_${manifest.name}_${manifest.channels[0].server}`)}__reply`;
+}
+
+test("the fragment ships an allow rule for each route the relay arrives by", () => {
   const rules = fragmentRules();
-  assert.equal(rules.length, 1, "the fragment merges its permission rules into the operator's own");
-  assert.equal(
-    rules[0],
-    `mcp__${ruleSegment(registrationKey())}__reply`,
-    "the allow rule does not name the server the wrapper registers the relay as",
+  assert.deepEqual(
+    rules,
+    [`mcp__${ruleSegment(registrationKey())}__reply`, pluginRule()],
+    "the allow rules must name the server as the wrapper registers it and as the plugin carries it",
   );
 });
 
@@ -84,7 +111,7 @@ test("the wrapper registers the relay and passes its name with the channel flag"
   );
 });
 
-test("the installer will merge exactly the rule the fragment ships", () => {
+test("the installer will merge exactly the rules the fragment ships", () => {
   // Install-Functions.ps1 refuses any permission rule outside its own allowlist, because this
   // fragment is attacker-writable on at least one host and a rule merged verbatim into the
   // operator's user-level settings pre-approves a tool for every session on the machine.

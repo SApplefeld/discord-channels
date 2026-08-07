@@ -161,27 +161,84 @@ account without `channelsEnabled` from silently killing message delivery.
 **Note that the replacement is total.** Once `allowedChannelPlugins` is set, any shipped channel
 plugin you also want must be listed alongside this project's.
 
+The file this project needs:
+
+```json
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [
+    { "marketplace": "sapplefeld-channels", "plugin": "relay" }
+  ]
+}
+```
+
 The wrapper picks the flag from a table keyed by host name
-(`wrapper/Enter-ClaudeSession.ps1`, `$script:ChannelFlagByHost`). Until the relay ships as a plugin,
-every host carries `--dangerously-load-development-channels` and its one keypress. Add a new host to
-that table rather than branching elsewhere.
+(`wrapper/Enter-ClaudeSession.ps1`, `$script:ChannelFlagByHost`), and that flag decides the rest of
+the launch line. On `--dangerously-load-development-channels` the wrapper passes the generated
+`--mcp-config` and the entry `server:channel-relay`. On plain `--channels` it passes
+`plugin:relay@sapplefeld-channels` and no `--mcp-config`, because the plugin carries the same
+server and registering it twice would run two relays against one session. Every host in the table
+carries the development flag; a host moves to plain `--channels` only after the verification below
+passes on it. Add a new host to that table rather than branching elsewhere.
 
-## Packaging the relay as a plugin
+## The relay as a plugin
 
-This is the one step that is not yet built. Nothing here is blocked by it: a host installed as above
-runs the full system, threads and cards and messages and permission prompts all included. What
-packaging buys is the removal of the development flag and its launch dialog, and with it the option
-of an unattended supervisor that restarts a crashed session, which the dialog forecloses because a
+This repository is a plugin marketplace hosting one plugin, and that plugin provides the relay as a
+channel. `.claude-plugin/marketplace.json` names the marketplace `sapplefeld-channels` and lists
+the plugin `relay` at `./plugins/relay`; `plugins/relay/.claude-plugin/plugin.json` declares the
+channel, and `plugins/relay/.mcp.json` registers the server behind it. What the plugin route buys
+is the removal of the development flag and its launch dialog, and with it the option of an
+unattended supervisor that restarts a crashed session, which the dialog forecloses because a
 keypress at the terminal cannot be automated away.
 
-Until the relay ships as a plugin in a marketplace, any host that would name it in
-`allowedChannelPlugins` has nothing to name, and SCOTT keeps its flag.
+Install it on a host, from a session in any directory:
 
-**This is the one place a host can be installed into a half-working state.** Plain `--channels` is
-correct only once the relay is allowlisted on that host, and the relay is not on any allowlist yet.
-A host launched with plain `--channels` may have its channel refused, in which case the session
-starts, the hooks announce it, the thread opens and the card ticks, and messages typed into the
-thread reach nothing. That is the same shape as the `channelsEnabled` failure
-[`operations.md`](operations.md) describes. Until the relay is a plugin, every entry in the
-wrapper's table stays on `--dangerously-load-development-channels`, and check the startup banner's
-channel line on the first launch after any change to that table before trusting the message path.
+```
+/plugin marketplace add D:\sapplefeld-channels
+/plugin install relay@sapplefeld-channels
+```
+
+An installed plugin is a copy of its own directory in Claude Code's plugin cache, not this
+checkout, so the plugin cannot run the relay itself: `relay/index.ts` imports sibling repository
+modules and this repository's `node_modules`, and neither exists beside a cached copy. The plugin
+ships a shim instead, `plugins/relay/launch.mjs`. It reads
+`%LOCALAPPDATA%\sapplefeld-channels\relay-mcp.json`, the registration the wrapper rewrites on every
+launch, and runs the relay named there with the MCP conversation passed straight through. The relay
+serving the channel is therefore always the one in the checkout that launched the session, and a
+checkout that moves needs no reinstall. A missing or unreadable registration makes the shim exit
+non-zero with one line on stderr naming the path it looked for, rather than registering a channel
+that is silently dead.
+
+Claude Code builds the reply tool's permission rule from the key the server arrives under, and the
+plugin route scopes that key by the plugin carrying it. `hooks/settings-fragment.json` therefore
+ships two allow rules: `mcp__channel-relay__reply` for the `--mcp-config` route and
+`mcp__plugin_relay_channel-relay__reply` for the plugin route. The plugin-scoped name is derived
+from Claude Code's plugin scoping rather than read off a running session, which is why both are
+installed: a rule that does not match parks the first reply on a permission prompt at a keyboard
+nobody is sitting at.
+
+**This is the one place a host can be installed into a half-working state.** A host launched with
+plain `--channels` before its plugin is installed and allowlisted has its channel refused, and then
+the session starts, the hooks announce it, the thread opens and the card ticks, and messages typed
+into the thread reach nothing. That is the same shape as the `channelsEnabled` failure
+[`operations.md`](operations.md) describes. So verify a host before its table entry moves:
+
+1. Install the marketplace and the plugin on that host, and write the managed-settings file above.
+2. Point that host's entry in `$script:ChannelFlagByHost` at `--channels` and launch through the
+   wrapper. The wrapper is the only route worth testing: a session started without it carries no
+   process token, so it gets no thread and there is nothing to answer.
+3. Check all four: no warning dialog, the startup banner's channel line naming the relay, a reply
+   from the session landing in the thread, and a permission prompt round-tripping from the thread.
+4. If any of them fails, put the entry back on `--dangerously-load-development-channels` before
+   working on the host again.
+5. Once they all pass, keep the entry and prune the allow rule that lost. It is written in six
+   places in this repository: `hooks/settings-fragment.json`,
+   `install/Install-Functions.ps1`'s `$script:AllowedChannelPermissionRules`,
+   `relay/reply-permission.test.ts`, `install/Install-Functions.test.ts`,
+   `install/Install-Host.test.ts`, and `plugins/manifest.test.ts`, which holds the plugin-scoped
+   form as a hard literal. If the reply parks on a permission prompt instead, both shipped names
+   were wrong: the prompt itself shows the rule Claude Code actually built, and that observed name
+   replaces the plugin-scoped guess in all six places.
+6. Delete the losing rule from `~/.claude/settings.json` by hand on each installed host.
+   `Install-Host.ps1` adds the rules the fragment carries and never removes one already there, so
+   re-running it will not do this for you.

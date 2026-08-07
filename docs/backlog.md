@@ -15,10 +15,12 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 - Install the NEO host, same shape as ASR. Confirm first whether NEO is one VM or several; the
   system is one broker, bot identity, and channel per host name, and the wrapper's host table only
   knows `NEO`.
-- Package the relay as a channel plugin in a marketplace. Removes
-  `--dangerously-load-development-channels` and its launch-dialog keypress on every host, which is
-  what an unattended session supervisor is blocked on. See the launch-dialog section of
-  [`install.md`](install.md).
+- Verify the plugin route on SCOTT and flip its flag. The repo now ships as a marketplace hosting
+  the relay plugin; what remains is the operator half: write the managed-settings file, install the
+  marketplace and plugin, run the four-point verification in [`install.md`](install.md)'s "The
+  relay as a plugin", then move SCOTT's `$script:ChannelFlagByHost` entry to `--channels` and prune
+  the losing allow rule from the six places that checklist names. Until then every host keeps the
+  development flag and its keypress, which is what still blocks an unattended session supervisor.
 - Register the broker's scheduled task and restart it on this host, so the windowless task and the
   mirror's quoting change take effect. The installer prints the exact elevated command, now carrying
   the pinned `-EnvFile`. The broker currently running was started before either landed.

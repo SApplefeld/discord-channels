@@ -32,15 +32,18 @@
 # shape of failure, because the session starts, the hooks announce it, and the thread and card look
 # healthy while nothing can reach it.
 #
-# The relay is on no allowlist on any host today: it is registered per launch through --mcp-config,
-# and packaging it as a plugin so it can be named in allowedChannelPlugins is the one step of the
-# install deliberately left for later. So every host takes the development flag and its one
-# confirmation keypress, which is a nuisance at a keyboard the operator is already sitting at.
+# This repository is itself a marketplace hosting the relay as a plugin
+# (.claude-plugin/marketplace.json and plugins/relay), so plain --channels is open to a host that has
+# installed that plugin and named it in allowedChannelPlugins. Every host below still takes the
+# development flag and its one confirmation keypress, which is a nuisance at a keyboard the operator
+# is already sitting at: an entry moves only after a real launch on that host shows the channel
+# registered in the startup banner and the reply tool round-tripping, because a refused or silently
+# absent channel is indistinguishable from a healthy one from inside the session. docs/install.md
+# carries the per-host checklist.
 #
 # Operator check D settled that a local managed-settings file is honored on a personal account, so
-# this is not a Team-and-Enterprise privilege: once the relay is a plugin, every host here can move
-# to plain --channels, SCOTT included. Change an entry only alongside that packaging, and confirm
-# the startup banner's channel line on the first launch after.
+# this is not a Team-and-Enterprise privilege: every host here can move to plain --channels, SCOTT
+# included.
 $script:ChannelFlagByHost = @{
     'NEO'   = '--dangerously-load-development-channels'
     'ASR'   = '--dangerously-load-development-channels'
@@ -48,15 +51,23 @@ $script:ChannelFlagByHost = @{
 }
 
 # Both channel flags are variadic and take tagged entries, not a bare switch: `server:<name>` for a
-# manually configured MCP server, `plugin:<name>@<marketplace>` for a plugin-provided channel. The
-# relay is an MCP server, so the launch line passes it as server:<this name>. The untagged name is
-# the key the relay is registered under in the generated --mcp-config, and it is also what Claude
-# Code builds the reply tool's permission rule from. The entry is passed explicitly rather than left
-# to the caller: a flag given no value silently swallows whatever argument follows it, and a session
-# that loaded no channel starts and runs normally with no signal that it cannot be steered.
-# hooks/settings-fragment.json's allow rule and relay/reply-permission.test.ts hold the copies
+# manually configured MCP server, `plugin:<name>@<marketplace>` for a plugin-provided channel. Which
+# of the two the launch passes follows from this host's flag, in Enter-ClaudeSession below. Either
+# way the entry is passed explicitly rather than left to the caller: a flag given no value silently
+# swallows whatever argument follows it, and a session that loaded no channel starts and runs
+# normally with no signal that it cannot be steered.
+#
+# The name below is the key the relay is registered under in the generated --mcp-config, and on that
+# route it is also what Claude Code builds the reply tool's permission rule from.
+# hooks/settings-fragment.json's allow rules and relay/reply-permission.test.ts hold the copies
 # together.
 $script:ChannelServerName = 'channel-relay'
+
+# The tagged entry for the plugin route, `<plugin>@<marketplace>`: the plugin named in
+# plugins/relay/.claude-plugin/plugin.json, hosted by the marketplace named in
+# .claude-plugin/marketplace.json. A name here that disagrees with either manifest refuses the
+# launch, so plugins/manifest.test.ts holds this literal against both.
+$script:ChannelPluginEntry = 'plugin:relay@sapplefeld-channels'
 
 # The relay itself, resolved from this file's own location so it is correct wherever the repository
 # is checked out.
@@ -183,6 +194,11 @@ function Enter-ClaudeSession {
             "session starts with no channel: it can be watched but not answered, and nothing in " +
             "the session says so."
     }
+    # Written on every launch, whichever flag this host takes. On the development flag it is passed
+    # below as --mcp-config. On plain --channels it is not passed at all and still has to exist: the
+    # plugin's shim (plugins/relay/launch.mjs) reads this file to find the relay belonging to the
+    # checkout that launched the session, because an installed plugin runs from a cache copy with
+    # none of this repository beside it.
     $mcpConfig = New-ChannelMcpConfig
 
     $previous = @{
@@ -205,7 +221,17 @@ function Enter-ClaudeSession {
             $env:CHANNEL_SESSION_MIRROR = $null
         }
 
-        & claude --mcp-config $mcpConfig $channelFlag "server:$($script:ChannelServerName)" @ClaudeArgs
+        # Which entry the channel flag carries, and whether the relay is registered on the command
+        # line at all, both follow from this host's flag. The development flag loads a manually
+        # configured server, so the generated registration rides along as --mcp-config and the entry
+        # names that registration. Plain --channels loads the channel from the installed plugin,
+        # which brings its own copy of the server: passing --mcp-config there as well would register
+        # the relay twice and run two of them against one session.
+        if ($channelFlag -eq '--channels') {
+            & claude $channelFlag $script:ChannelPluginEntry @ClaudeArgs
+        } else {
+            & claude --mcp-config $mcpConfig $channelFlag "server:$($script:ChannelServerName)" @ClaudeArgs
+        }
     } finally {
         # Restored whether claude exited, threw, or was interrupted. A token left behind in a
         # dot-sourced shell is inherited by the next `claude` started from it, and the broker reads
@@ -265,6 +291,11 @@ function New-ChannelMcpConfig {
             }
         }
     }
+    # One machine-wide file, rewritten in place on every launch. Two wrapped sessions launched from
+    # different checkouts within seconds can therefore race it, and on the plugin route the shim
+    # reads it at channel-server spawn rather than at launch, which widens that window. The price of
+    # losing the race is a session served by the other checkout's relay, which is the same code on a
+    # single-operator machine; per-launch files are the fix if that ever stops being true.
     $path = Join-Path $Directory 'relay-mcp.json'
     # UTF-8 with no byte-order mark: Claude Code parses this as JSON, and a BOM is a parse error.
     [System.IO.File]::WriteAllText(
