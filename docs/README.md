@@ -19,7 +19,11 @@ is built and installable.
 
 ## Plans
 
-No plan is open.
+One plan is open.
+
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_reply-dedup-and-repair_spec_v1.md`](plans/channels_reply-dedup-and-repair_spec_v1.md) | In Progress | A mirrored reply that repeats a reply-tool answer, exactly or nearly, is suppressed so the thread carries one copy, and `install/Repair-Broker.ps1` kills provably-ours broker processes, verifies the host, restarts the task, and waits on real readiness. |
 
 Archived plans, most recent first.
 
