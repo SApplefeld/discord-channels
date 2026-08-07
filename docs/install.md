@@ -211,11 +211,17 @@ that is silently dead.
 
 Claude Code builds the reply tool's permission rule from the key the server arrives under, and the
 plugin route scopes that key by the plugin carrying it. `hooks/settings-fragment.json` therefore
-ships two allow rules: `mcp__channel-relay__reply` for the `--mcp-config` route and
-`mcp__plugin_relay_channel-relay__reply` for the plugin route. The plugin-scoped name is derived
-from Claude Code's plugin scoping rather than read off a running session, which is why both are
-installed: a rule that does not match parks the first reply on a permission prompt at a keyboard
-nobody is sitting at.
+ships two allow rules, one per route: `mcp__channel-relay__reply` for the `--mcp-config` route and
+`mcp__plugin_relay_channel-relay__reply` for the plugin route, the name a plugin-route session's
+tool calls carry on the wire. Both stay installed while both routes are in service anywhere in the
+fleet, and while a host might fall back from one route to the other: a missing rule parks the first
+reply on a permission prompt at a keyboard nobody is sitting at. When the last host leaves the
+development route, retire its rule from the six places that carry it:
+`hooks/settings-fragment.json`, `install/Install-Functions.ps1`'s
+`$script:AllowedChannelPermissionRules`, `relay/reply-permission.test.ts`,
+`install/Install-Functions.test.ts`, `install/Install-Host.test.ts`, and
+`plugins/manifest.test.ts`, plus by hand from `~/.claude/settings.json` on each installed host,
+because `Install-Host.ps1` adds rules and never removes one already there.
 
 **This is the one place a host can be installed into a half-working state.** A host launched with
 plain `--channels` before its plugin is installed and allowlisted has its channel refused, and then
@@ -225,20 +231,18 @@ into the thread reach nothing. That is the same shape as the `channelsEnabled` f
 
 1. Install the marketplace and the plugin on that host, and write the managed-settings file above.
 2. Point that host's entry in `$script:ChannelFlagByHost` at `--channels` and launch through the
-   wrapper. The wrapper is the only route worth testing: a session started without it carries no
-   process token, so it gets no thread and there is nothing to answer.
-3. Check all four: no warning dialog, the startup banner's channel line naming the relay, a reply
-   from the session landing in the thread, and a permission prompt round-tripping from the thread.
-4. If any of them fails, put the entry back on `--dangerously-load-development-channels` before
+   wrapper, from a freshly dot-sourced shell. The wrapper is the only route worth testing: a
+   session started without it carries no process token, so it gets no thread and there is nothing
+   to answer.
+3. Check three things: no full-screen warning dialog at launch; a message typed in the session's
+   thread reaching the session; and a reply from the session landing back in the thread. The
+   in-terminal launch output looks no different on a healthy plugin-route launch, so the thread
+   round-trip is the check, not the banner.
+4. Confirm the permission rule matched. A session running with permissions bypassed raises no
+   prompt, so the direct check is the wire: after the reply lands, `curl.exe -s
+   http://127.0.0.1:8787/sessions` shows that session's `lastTool` as
+   `mcp__plugin_relay_channel-relay__reply`. A session that instead parks its reply on a permission
+   prompt is showing you the rule name Claude Code built; if it is not one of the two shipped
+   rules, that observed name replaces the plugin-scoped one in the six places above.
+5. If any check fails, put the entry back on `--dangerously-load-development-channels` before
    working on the host again.
-5. Once they all pass, keep the entry and prune the allow rule that lost. It is written in six
-   places in this repository: `hooks/settings-fragment.json`,
-   `install/Install-Functions.ps1`'s `$script:AllowedChannelPermissionRules`,
-   `relay/reply-permission.test.ts`, `install/Install-Functions.test.ts`,
-   `install/Install-Host.test.ts`, and `plugins/manifest.test.ts`, which holds the plugin-scoped
-   form as a hard literal. If the reply parks on a permission prompt instead, both shipped names
-   were wrong: the prompt itself shows the rule Claude Code actually built, and that observed name
-   replaces the plugin-scoped guess in all six places.
-6. Delete the losing rule from `~/.claude/settings.json` by hand on each installed host.
-   `Install-Host.ps1` adds the rules the fragment carries and never removes one already there, so
-   re-running it will not do this for you.

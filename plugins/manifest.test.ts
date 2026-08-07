@@ -95,16 +95,14 @@ test("the wrapper's plugin entry names this marketplace and this plugin", () => 
 
 test("the fragment pre-approves the reply tool under the plugin-scoped server key", () => {
   // Claude Code scopes a plugin-provided server's key by the plugin carrying it, so the rule holds
-  // both names. The scoping form is derived from Claude Code's plugin scoping rather than read off a
-  // running session; the fragment ships this rule beside the --mcp-config route's until a live
-  // launch settles which one the reply tool registers under.
+  // both names: one per route the relay arrives by. The fragment ships this rule beside the
+  // --mcp-config route's for as long as both routes are in service across the fleet.
   const fragment = readJson<{ permissions: { allow: string[] } }>(FRAGMENT_PATH);
   const manifest = pluginManifest();
   const expected = `mcp__plugin_${manifest.name}_${manifest.channels[0].server}__reply`;
-  // Also held as a hard literal, not only as the composition above. The composition is a reading of
-  // Claude Code's plugin scoping written down in two places, and a rule built the same wrong way on
-  // both sides of a check passes it while matching nothing at a live session's first reply. This is
-  // the line the operator edits once a launch settles the real name.
+  // Also held as a hard literal, not only as the composition above: the literal is the name a live
+  // plugin-route session's tool calls carry on the wire, and a composition rebuilt the same wrong
+  // way on both sides of a check would pass it while matching nothing at a session's first reply.
   assert.equal(expected, "mcp__plugin_relay_channel-relay__reply");
   assert.ok(
     fragment.permissions.allow.includes(expected),

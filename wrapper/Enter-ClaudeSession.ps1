@@ -34,12 +34,11 @@
 #
 # This repository is itself a marketplace hosting the relay as a plugin
 # (.claude-plugin/marketplace.json and plugins/relay), so plain --channels is open to a host that has
-# installed that plugin and named it in allowedChannelPlugins. Every host below still takes the
-# development flag and its one confirmation keypress, which is a nuisance at a keyboard the operator
-# is already sitting at: an entry moves only after a real launch on that host shows the channel
-# registered in the startup banner and the reply tool round-tripping, because a refused or silently
-# absent channel is indistinguishable from a healthy one from inside the session. docs/install.md
-# carries the per-host checklist.
+# installed that plugin and named it in allowedChannelPlugins. SCOTT runs that route. NEO and ASR
+# take the development flag and its one confirmation keypress until each is installed and passes the
+# per-host checklist in docs/install.md: an entry moves only after a real launch on that host shows
+# the channel working end to end, because a refused or silently absent channel is indistinguishable
+# from a healthy one from inside the session.
 #
 # Operator check D settled that a local managed-settings file is honored on a personal account, so
 # this is not a Team-and-Enterprise privilege: every host here can move to plain --channels, SCOTT
@@ -47,7 +46,7 @@
 $script:ChannelFlagByHost = @{
     'NEO'   = '--dangerously-load-development-channels'
     'ASR'   = '--dangerously-load-development-channels'
-    'SCOTT' = '--dangerously-load-development-channels'
+    'SCOTT' = '--channels'
 }
 
 # Both channel flags are variadic and take tagged entries, not a bare switch: `server:<name>` for a

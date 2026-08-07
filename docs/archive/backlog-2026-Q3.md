@@ -16,3 +16,10 @@ the live backlog carries active items only.
   fenced code block render as literal text, an escaped line-leading quote opens no blockquote, and
   `-NoMirror` stopped one session's mirroring while another running beside it kept mirroring. Both
   claims the chip escape rests on are now observed rather than inferred.
+
+- **Package the relay as a plugin and move SCOTT off the development flag.** Done in
+  [`plans/channel-quality-and-plugin_spec_v1.md`](plans/channel-quality-and-plugin_spec_v1.md): the
+  repository is a marketplace hosting the relay plugin (a launcher shim over the checkout's relay),
+  SCOTT's managed settings allowlist it, and a live launch verified no warning dialog, the thread
+  round-trip, and the plugin-scoped permission rule name observed on the wire
+  (`mcp__plugin_relay_channel-relay__reply`).

@@ -10,17 +10,17 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 ## Active
 
 - Install the ASR host: its own Discord application, bot, and private channel, then
-  [`install.md`](install.md) steps 2 through 4 on that machine from a fresh clone. Step 2 runs
-  unelevated; only step 3 is elevated.
+  [`install.md`](install.md) steps 2 through 4 on that machine from a fresh clone, plus the plugin
+  route ("The relay as a plugin": managed settings in the elevated step, marketplace and plugin
+  install, first-launch verification, then flip ASR's table entry). Step 2 runs unelevated;
+  elevation covers step 3 and the managed-settings file.
 - Install the NEO host, same shape as ASR. Confirm first whether NEO is one VM or several; the
   system is one broker, bot identity, and channel per host name, and the wrapper's host table only
   knows `NEO`.
-- Verify the plugin route on SCOTT and flip its flag. The repo now ships as a marketplace hosting
-  the relay plugin; what remains is the operator half: write the managed-settings file, install the
-  marketplace and plugin, run the four-point verification in [`install.md`](install.md)'s "The
-  relay as a plugin", then move SCOTT's `$script:ChannelFlagByHost` entry to `--channels` and prune
-  the losing allow rule from the six places that checklist names. Until then every host keeps the
-  development flag and its keypress, which is what still blocks an unattended session supervisor.
+- Retire the development-route allow rule (`mcp__channel-relay__reply`) once ASR and NEO run the
+  plugin route: the six repository places and the per-host hand edit are listed in
+  [`install.md`](install.md)'s "The relay as a plugin". Until the last host leaves the development
+  route, both rules stay by design.
 - Register the broker's scheduled task and restart it on this host, so the windowless task and the
   mirror's quoting change take effect. The installer prints the exact elevated command, now carrying
   the pinned `-EnvFile`. The broker currently running was started before either landed.

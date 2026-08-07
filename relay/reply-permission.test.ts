@@ -69,9 +69,9 @@ function fragmentRules(): string[] {
  * here, because a rename that this file did not follow surfaces only as a permission prompt on a
  * live session.
  *
- * The scoping form is derived from Claude Code's plugin scoping, not read off a running session, so
- * this rule and the --mcp-config one both ship until a launch on the plugin route settles which the
- * reply tool registers under.
+ * This is the name a live plugin-route session's tool calls carry on the wire. It ships beside the
+ * --mcp-config route's rule for as long as both routes are in service across the fleet, one rule
+ * per route.
  */
 function pluginRule(): string {
   const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST_PATH, "utf8")) as {
