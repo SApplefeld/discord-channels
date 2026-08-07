@@ -110,6 +110,11 @@ attribution distinct from a mirrored reply's plain `✨ Claude`. It reads only w
 identified as belonging to that session's transcript, and posts through the same routing and
 rendering path a mirrored reply uses.
 
+In the thread, a working stretch reads as one growing message: consecutive chunks append into the
+newest narration message by editing it in place (the `(edited)` tag on it is normal), and a new
+message starts when the block is full or when anything else lands in the thread, your own message
+included. Anything you type breaks the block, and the next chunk starts fresh below it.
+
 Two knobs govern it, both in `broker.env`:
 
 | Setting | Default | What it decides |
@@ -144,7 +149,11 @@ transcript text:
 A related line from the routing layer, `routing: the mirrored reply from session <id> was dropped,
 the tailer already posted the same text as interim narration`, is not a lost reply: it is the
 deduplication between the tailer and the Stop mirror working as designed, and the text is already on
-the thread. A rejection out of the whole poll pass, which normal operation should never produce, logs
+the thread. Another, `routing: the narration append from session <id> was refused, the chunk posts
+fresh (...)`, is not lost narration either: the edit was refused and the same chunk landed as its
+own message, so the thread shows more headers than usual rather than missing text, but the line
+repeating steadily means every edit is failing (the error class it carries says how) and coalescing
+is effectively off. A rejection out of the whole poll pass, which normal operation should never produce, logs
 as `broker: a transcript poll pass failed; the error detail is withheld, it can carry content`.
 
 **One operational surprise worth knowing.** Narration for a session is armed by a `/mirror` post

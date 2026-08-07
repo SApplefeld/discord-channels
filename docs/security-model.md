@@ -171,11 +171,22 @@ outbound SMB connection carrying the operator's credentials. The path is held on
 never written to the registry snapshot, never published by `GET /sessions`, and never logged.
 
 **Transcript content is untrusted text of the same class as a mirrored reply**, and it reaches
-Discord through exactly the escape a mirrored reply uses, `renderMirror`, with no second escape and
-no second splitter. Its `✨ Claude · working` attribution is forgeable by content in the same way the
-mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it is a Claude-authored
-line opening a Claude-authored message, claiming nothing the message does not already claim. The
-operator-attributed quoted block remains the one attribution that content cannot draw.
+Discord through exactly the escape a mirrored reply uses, whether it enters a message by post
+(`renderMirror`) or by edit (`appendNarration`, which grows the narration message in place). The
+two entry points are built from the same escape and the same fence scanner, so there is no second
+reading of where a code block is: text appended by edit is stripped, escaped, and fence-closed
+exactly as text posted fresh, the base it appends to is the renderer's own prior output and is
+never escaped a second time, and a base string the renderer did not emit is refused rather than
+merged. The edit write itself carries the same mention and embed suppression every post carries,
+and its target can only be an ID Discord returned for one of the broker's own posts: no ID that
+arrives over the gateway ever becomes an edit target, gateway IDs are only compared against the
+remembered one to decide freshness. Its `✨ Claude · working` attribution is forgeable by content
+in the same way the mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it
+is a Claude-authored line opening a Claude-authored message, claiming nothing the message does not
+already claim. The operator-attributed quoted block remains the one attribution that content
+cannot draw. What an unauthorized channel member's messages can do to coalescing is end a block
+early (their gateway events clear the freshness state), which costs one attribution header and
+nothing else.
 
 **Transcript content never reaches the broker log at any level.** Every line the tailer writes
 carries a static reason, a session ID, a byte count, or an offset. A `JSON.parse` failure and a

@@ -260,3 +260,13 @@ Stamps: adjudicated 1, stamped 0 (claude-code-channel-and-hook-facts again, open
 Next: 4. The docs carry the coalesced surface
 Commit Model: Commit-and-Push
 
+### Chapter 4 - 2026-08-07
+Completed: 4. The docs carry the coalesced surface
+Implemented By: main session (docs/ writes are the main thread's; Locus: inline as planned)
+Metrics: 0 review rounds (prose-only section; finishing-work's whole-changeset reviews cover it); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: architecture.md describes the coalescing behavior and all three freshness mechanisms in its mid-turn narration section; operations.md tells the operator how a thread reads (one growing message, the (edited) tag is normal, typing breaks the block) and adds the refused-append routing line to the runbook's discriminators; security-model.md replaces the retired "no second escape" claim with the two-entry-points-one-machinery argument, names the edit verb's suppressions and provenance rule (no gateway ID ever becomes an edit target), and states what an unauthorized member can do to coalescing (end a block early, one header, nothing else). Tree-wide claim sweep for the old one-message-per-chunk and no-second-escape claims: remaining hits are this plan, the append-only archive, and tailer comments that stay true.
+Review Findings: none (see Metrics)
+Stamps: adjudicated 0, none surfaced in the window
+Next: finishing-work
+Commit Model: Commit-and-Push
+

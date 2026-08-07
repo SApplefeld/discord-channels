@@ -121,10 +121,20 @@ interim chunk. On learning a path for the first time, the tailer takes the file'
 reading anything, so what a transcript already held before this broker process learned about the
 session is never republished into the thread.
 
-Each surviving chunk posts through the same routing and rendering path a mirrored reply uses,
-`renderMirror`, under a `✨ Claude · working` attribution that marks it as mid-turn rather than final.
-A chunk that cannot be posted (the thread is not open yet, Discord refuses it) is dropped rather than
-queued, the rule the whole routing layer follows.
+Each surviving chunk reaches the thread through the same routing and rendering path a mirrored
+reply uses, under a `✨ Claude · working` attribution that marks it as mid-turn rather than final,
+and consecutive chunks coalesce: while the newest message in the thread is the narration message
+the router last wrote, a chunk that fits appends into it by editing that message in place, so a
+working stretch reads as one growing block under a single attribution rather than a header per
+sentence. A full block, or anything else landing in the thread (the operator's message, a
+permission prompt, a notice, the turn's final reply), starts the next chunk on a fresh message.
+The router knows its message is still newest because every message in its threads comes back over
+the gateway: an arriving ID strictly newer than the remembered message ends the block, notices and
+permission prompts end it directly on posting, and a message landing during a fresh post's round
+trip keeps that post from being remembered as a block at all. A chunk that cannot be posted (the
+thread is not open yet, Discord refuses it) is dropped rather than queued, the rule the whole
+routing layer follows, and a refused edit falls back to a fresh post of the same chunk in the same
+call: the fail direction of coalescing is more messages, never lost narration.
 
 **How this relates to the mirror the tailer deduplicates against.** The turn's own final reply is
 read twice by design: once by the Stop mirror within milliseconds of turn end, and again by the
