@@ -265,14 +265,12 @@ Commit Model: Commit-and-Push
 
 ## Operator-pending
 
-One acceptance criterion names this host and can only be exercised by the operator:
+**Closed 2026-08-07.** The one acceptance criterion that named this host has been exercised.
 
-- A re-install on this machine completes without the seven `Set-Acl` errors it printed before. The
-  behavior is verified unelevated on a temp tree shaped like a real install, in three passes
-  (harden, re-install as a no-op, repair injected drift), but the real host's install has not been
-  re-run. It is also how the windowless scheduled task from the mirroring effort takes effect.
-
-A failure there reopens the work as a new round.
+- A re-install on this machine completes without the seven `Set-Acl` errors it printed before.
+  **Result: passed**, on the second attempt. The first refused on a state-root artifact and is what
+  Chapter 4 is about; after that correction the run reported `Verified 77 hardened path(s)` and
+  `Provisioned`, with no `Set-Acl` error and no refusal.
 
 ### Chapter 4 - 2026-08-07
 Completed: operator-pending item, the real re-install on this host

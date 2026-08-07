@@ -19,12 +19,9 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   `--dangerously-load-development-channels` and its launch-dialog keypress on every host, which is
   what an unattended session supervisor is blocked on. See the launch-dialog section of
   [`install.md`](install.md).
-- Re-run the installer on this host, unelevated, and confirm it completes without the seven
-  `Set-Acl` errors it printed before. That is the one acceptance criterion of
-  [`archive/plans/subprocess-and-hardening-fixes_spec_v1.md`](archive/plans/subprocess-and-hardening-fixes_spec_v1.md)
-  that names this machine; the behavior is verified on a disposable tree but not on the real
-  install. It is also what puts the windowless scheduled task and the mirror's quoting change into
-  effect, so it is one run rather than three.
+- Register the broker's scheduled task and restart it on this host, so the windowless task and the
+  mirror's quoting change take effect. The installer prints the exact elevated command, now carrying
+  the pinned `-EnvFile`. The broker currently running was started before either landed.
 - Now that mirroring has shipped, measure mirror-versus-reply-tool duplication in real threads, and
   decide whether to suppress duplicates or coach the reply tool into a quick-summary role on top of
   the mirrored reply. Deliberately excluded from
@@ -34,3 +31,5 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
+
+- [`archive/backlog-2026-Q3.md`](archive/backlog-2026-Q3.md)
