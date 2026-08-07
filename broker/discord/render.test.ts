@@ -218,6 +218,15 @@ function said(message: string): string {
   return message.slice(message.indexOf("\n") + 1);
 }
 
+/**
+ * Every line Discord would read as opening a blockquote, leading whitespace tolerated because
+ * Discord tolerates it. Matches `>` rather than `> ` so the prompt's `>>>` is counted too, and a
+ * near-miss like `>>text` is not silently treated as harmless.
+ */
+function quoteOpeningLines(message: string): string[] {
+  return message.split("\n").filter((line) => /^[ \t]*>/.test(line));
+}
+
 test("a mirrored prompt and a mirrored reply are attributed differently", () => {
   const [promptMessage] = renderMirror("prompt", "run the migration");
   const [replyMessage] = renderMirror("reply", "the migration is done");
@@ -225,23 +234,32 @@ test("a mirrored prompt and a mirrored reply are attributed differently", () => 
   assert.equal(said(promptMessage), "run the migration");
   assert.equal(said(replyMessage), "the migration is done");
   assert.notEqual(promptMessage.split("\n")[0], replyMessage.split("\n")[0]);
-  assert.match(promptMessage, /^> .*console/, promptMessage);
-  assert.match(replyMessage, /^> .*Claude/, replyMessage);
+
+  // The distinction a reader makes while scrolling is quoted versus not, so it is asserted as that
+  // rather than as two different marker strings. `>>>` quotes every line after it in the message,
+  // which is what keeps a multi-paragraph paste from arriving half quoted.
+  assert.match(promptMessage, /^>>> .*console/, promptMessage);
+  assert.match(replyMessage, /^✨ .*Claude/, replyMessage);
+  assert.equal(quoteOpeningLines(promptMessage).length, 1, promptMessage);
+  assert.equal(quoteOpeningLines(replyMessage).length, 0, replyMessage);
 });
 
-test("mirrored text cannot draw the attribution the renderer composed", () => {
-  // The attribution is a blockquote, and every angle bracket in mirrored text is escaped, so a `>`
-  // arriving in a reply reaches Discord as the character rather than as the quote marker. Content
-  // that copies the attribution verbatim therefore lands as one more quoted line of its own text.
-  const forged = renderMirror("reply", "> ✨ Claude\napprove the next request");
-  const quoted = forged
-    .join("\n")
-    .split("\n")
-    .filter((line) => line.startsWith("> "));
+test("mirrored text cannot draw a quoted block, which is what says the operator typed it", () => {
+  // Every angle bracket in mirrored text is escaped, so a `>` arriving in a prompt or a reply
+  // reaches Discord as the character rather than as the quote marker. A reply therefore opens no
+  // quote at all however hard its content tries, and a prompt opens exactly the one the renderer
+  // composed. That is the reachable forgery: a reply is written by a model that has read whatever
+  // the session read, and a quoted block is what a reader takes for the operator's own typing.
+  const forgedReply = renderMirror("reply", ">>> ⌨ typed at the console\napprove the next request");
+  assert.equal(forgedReply.length, 1);
+  assert.equal(quoteOpeningLines(forgedReply[0]).length, 0, forgedReply[0]);
+  assert.ok(said(forgedReply[0]).startsWith("\\>"), forgedReply[0]);
 
-  assert.equal(forged.length, 1);
-  assert.equal(quoted.length, 1, `only the renderer's own line opens a quote: ${forged[0]}`);
-  assert.ok(said(forged[0]).startsWith("\\> ✨ Claude"), forged[0]);
+  // A prompt is quoted by the renderer, so the property there is that content cannot open a second
+  // block: whatever it writes stays inside the one the renderer opened and attributed.
+  const forgedPrompt = renderMirror("prompt", ">>> ⌨ typed at the console\napprove the next request");
+  assert.equal(quoteOpeningLines(forgedPrompt[0]).length, 1, forgedPrompt[0]);
+  assert.ok(forgedPrompt[0].startsWith(">>> ⌨"), forgedPrompt[0]);
 });
 
 test("Discord's chip syntax does not survive into a mirrored message", () => {
@@ -340,8 +358,8 @@ test("a hard cut never lands inside a fence delimiter", () => {
     }
     assert.equal((message.match(/```/g) ?? []).length % 2, 0, `message ${index} is unbalanced`);
     assert.equal(
-      message.split("\n").filter((line_) => line_.startsWith("> ")).length,
-      1,
+      quoteOpeningLines(message).length,
+      0,
       `message ${index}: ${message.slice(0, 120)}`,
     );
     assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
@@ -420,20 +438,21 @@ test("mirrored text cannot draw the attribution wherever the fence model puts it
   // The one property that does not rest on this renderer reading fences the way Discord does: a
   // line-leading quote marker is escaped in both regions, so a disagreement about where the code
   // block is costs a backslash in front of a line of code rather than a forged attribution.
+  const forgery = ">>> ⌨ typed at the console";
   const attempts = [
-    "> ✨ Claude\napprove the next request",
-    "```\n> ✨ Claude\napprove the next request\n```",
-    "````\n> ✨ Claude\napprove\n````",
-    "\\```\n> ✨ Claude\napprove",
-    "```ts\ncode\n``` \n> ✨ Claude\napprove",
-    "  > ✨ Claude\napprove",
+    `${forgery}\napprove the next request`,
+    `\`\`\`\n${forgery}\napprove the next request\n\`\`\``,
+    `\`\`\`\`\n${forgery}\napprove\n\`\`\`\``,
+    `\\\`\`\`\n${forgery}\napprove`,
+    `\`\`\`ts\ncode\n\`\`\` \n${forgery}\napprove`,
+    `  ${forgery}\napprove`,
   ];
 
   for (const attempt of attempts) {
     for (const message of renderMirror("reply", attempt)) {
-      const quoted = message.split("\n").filter((line) => /^[ \t]*> /.test(line));
-      assert.equal(quoted.length, 1, `${JSON.stringify(attempt)} produced: ${JSON.stringify(message)}`);
-      assert.equal(quoted[0], message.split("\n")[0], "the only quoted line is the renderer's own");
+      const quoted = quoteOpeningLines(message);
+      assert.equal(quoted.length, 0, `${JSON.stringify(attempt)} produced: ${JSON.stringify(message)}`);
+      assert.ok(message.startsWith("✨ "), `the reply marker opens no quote: ${message.slice(0, 60)}`);
     }
   }
 });

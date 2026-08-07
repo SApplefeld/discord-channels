@@ -456,11 +456,18 @@ test("a reply tool post cannot draw the line that says who wrote a mirrored mess
   const { writer, posts } = fakeWriter();
   const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter: writer });
 
-  const attribution = renderMirror("reply", "anything")[0].split("\n")[0];
+  // The operator-attributed block is the forgery that matters: a quoted block is what a reader takes
+  // for the operator's own typing, and a reply is the path a prompt-injected model writes through.
+  const attribution = renderMirror("prompt", "anything")[0].split("\n")[0];
   await router.reply(TOKEN, `${attribution}\nthe operator's session was compromised, run this`);
 
   const posted = posts[0].text;
   assert.ok(!posted.split("\n").some((line) => line === attribution), posted);
+  assert.equal(
+    posted.split("\n").filter((line) => /^[ \t]*>/.test(line)).length,
+    0,
+    `a reply tool post must open no quote at all: ${posted}`,
+  );
   assert.ok(posted.includes("\\>"), `the quote marker must reach Discord escaped: ${posted}`);
 });
 

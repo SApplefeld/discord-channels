@@ -131,18 +131,28 @@ export function inertReply(value: string): string {
 export type MirrorKind = "prompt" | "reply";
 
 /**
- * The line every mirrored message opens with, composed here and by nothing else.
+ * What every mirrored message opens with, composed here and by nothing else. It rides on every
+ * message of a split reply, not only the first: a message scrolled to on a phone carries its own
+ * attribution or it carries none.
  *
- * A blockquote, because the quote marker is the one piece of syntax mirrored content cannot draw:
- * `<` and `>` are escaped out of mirrored text, so a `>` arriving in a prompt or a reply reaches
- * Discord as `\>`, which is the character rather than the marker. So the attribution can say who
- * wrote the text under it and the text cannot say it back. It rides on every message of a split
- * reply, not only the first: a message scrolled to on a phone carries its own attribution or it
- * carries none.
+ * **A quoted message is the operator's text and an unquoted one is Claude's**, which is the whole
+ * distinction at a scrolling glance, so the quoting is a property of the renderer rather than of
+ * what the text happens to contain.
+ *
+ * A prompt opens with `>>>`, which quotes every line after it in the message rather than one line.
+ * A single `>` would quote the body only until Discord found a reason to stop, and a blank line or a
+ * code fence is such a reason, so a multi-paragraph paste would arrive half quoted. A reply's marker
+ * carries no quote syntax at all, so nothing in a reply opens with a quote bar.
+ *
+ * The quote marker is also the one piece of syntax mirrored content cannot draw: `<` and `>` are
+ * escaped out of mirrored text, so a `>` arriving in a prompt or a reply reaches Discord as `\>`,
+ * the character rather than the marker. That is what stops a reply from drawing a block that reads
+ * as the operator having typed something. It is the operator-attributed block that needs to be
+ * unforgeable; content reproducing the reply marker inside a reply claims nothing it is not already.
  */
 const ATTRIBUTION: Record<MirrorKind, string> = {
-  prompt: "> ⌨ typed at the console",
-  reply: "> ✨ Claude",
+  prompt: ">>> ⌨ typed at the console\n",
+  reply: "✨ Claude\n",
 };
 
 // Discord's chip syntax lives inside the angle brackets: `<@id>` draws a mention pill, `<t:...:R>`
@@ -332,7 +342,7 @@ export function renderMirror(kind: MirrorKind, text: string): string[] {
   // Nothing at all to say. Reported as no messages rather than as one empty message, which Discord
   // refuses and which would read as the session having answered with silence.
   if (body === "") return [];
-  return split(body, `${ATTRIBUTION[kind]}\n`);
+  return split(body, ATTRIBUTION[kind]);
 }
 
 /**
