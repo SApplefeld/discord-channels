@@ -11,7 +11,7 @@
 // by splatting, so the token itself never appears as a bare command-line argument even in the test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -39,6 +39,7 @@ function fixtureRepoRoot(): string {
   mkdirSync(path.join(root, "install"), { recursive: true });
   mkdirSync(path.join(root, "broker"), { recursive: true });
   mkdirSync(path.join(root, "relay"), { recursive: true });
+  mkdirSync(path.join(root, "broker", "discord"), { recursive: true });
   copyFileSync(
     path.join(REAL_REPO_ROOT, "hooks", "settings-fragment.json"),
     path.join(root, "hooks", "settings-fragment.json"),
@@ -46,9 +47,21 @@ function fixtureRepoRoot(): string {
   writeFileSync(path.join(root, "hooks", "session-start.ps1"), "# fixture hook\n", "utf8");
   writeFileSync(path.join(root, "wrapper", "Enter-ClaudeSession.ps1"), "# fixture wrapper\n", "utf8");
   writeFileSync(path.join(root, "broker", "index.ts"), "// fixture broker entry\n", "utf8");
+  // The real credentials module, not a stand-in: the installer's post-hardening verification runs
+  // the broker's own protection check, and a fixture copy of that check would verify the fixture
+  // rather than the thing the broker will enforce at startup.
+  copyFileSync(
+    path.join(REAL_REPO_ROOT, "broker", "discord", "credentials.ts"),
+    path.join(root, "broker", "discord", "credentials.ts"),
+  );
   // The merged settings file names this as an MCP server command, so Claude Code runs it at the
   // start of every session and the installer hardens it alongside the hook script.
   writeFileSync(path.join(root, "relay", "index.ts"), "// fixture relay entry\n", "utf8");
+  // A second file in each tree that no required-path list names. The installer verifies every file
+  // under a tree rather than one that stands for it, and these are what a check of one file per
+  // tree would step over.
+  writeFileSync(path.join(root, "relay", "tools.ts"), "// fixture relay tool\n", "utf8");
+  writeFileSync(path.join(root, "wrapper", "Assert-Mirror.ps1"), "# fixture wrapper helper\n", "utf8");
   copyFileSync(INSTALL_HOST_SCRIPT, path.join(root, "install", "Install-Host.ps1"));
   copyFileSync(
     path.join(INSTALL_DIR, "Install-Functions.ps1"),
@@ -388,6 +401,86 @@ test("Install-Host refuses a fragment whose http hooks name more than one port",
   assert.match(result.stderr, /agree/i);
   assert.match(result.stderr, /9999/);
 });
+
+/**
+ * Every tree the installer hardens, each named by a file inside it that no required-path list
+ * mentions, and for `broker/` one that sits in a subdirectory.
+ *
+ * The point of driving all of them is that a verification pass reaching only some of these trees
+ * passes the happy-path test either way: proving the asserts succeed is not proving they ran. A
+ * tree dropped from the walk turns its row here red.
+ */
+const HARDENED_TREES: Array<{ tree: string; victim: string; names: RegExp }> = [
+  { tree: "hooks", victim: "hooks/settings-fragment.json", names: /settings-fragment/ },
+  { tree: "relay", victim: "relay/tools.ts", names: /tools/ },
+  { tree: "wrapper", victim: "wrapper/Assert-Mirror.ps1", names: /Assert-Mirror/ },
+  { tree: "install", victim: "install/Install-Functions.ps1", names: /Install-Functions/ },
+  { tree: "broker", victim: "broker/discord/credentials.ts", names: /credentials/ },
+  // A leftover log beside the broker's own files. The token file is not usable here: the installer
+  // hardens it by name, so an explicit grant on it is rewritten rather than carried into the walk.
+  { tree: "the state root", victim: "", names: /stale/ },
+];
+
+/** The file a state-root run leaves open, since that tree's contents are not named in advance. */
+const STATE_ROOT_VICTIM = "stale-broker.log";
+
+for (const { tree, victim, names } of HARDENED_TREES) {
+  test(`Install-Host fails the install when a file under ${tree} is left open`, (t) => {
+    // Hardening that quietly did nothing is the defect this verification exists for: hooks/ runs
+    // under -ExecutionPolicy Bypass at the start of every session on the machine, and install/ and
+    // broker/ are what the scheduled task executes at every logon, so an install that printed
+    // success over an open one leaves the operator acting on a guarantee they do not have.
+    //
+    // The victim is opened in the one way hardening its tree does not close: an explicit grant to
+    // Authenticated Users with inheritance detached. Protect-ChannelPath rewrites the directory's
+    // list and succeeds, the inheritable grant never reaches a child that stopped inheriting, and
+    // the file stays writable by every account on the machine. That is the planted-file shape the
+    // broker's own check refuses, and the installer reads the same answer from the same code.
+    const repoRoot = fixtureRepoRoot();
+    const settingsDir = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-settings-"));
+    const stateRoot = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-state-"));
+    t.after(() => {
+      rmSync(repoRoot, { recursive: true, force: true });
+      rmSync(settingsDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+    });
+
+    const tokenFile = path.join(stateRoot, "discord-token.txt");
+    const target = victim === "" ? path.join(stateRoot, STATE_ROOT_VICTIM) : path.join(repoRoot, ...victim.split("/"));
+    if (victim === "") writeFileSync(target, "stale log content", "utf8");
+    execFileSync("icacls.exe", [target, "/inheritance:d"], { stdio: "ignore" });
+    execFileSync("icacls.exe", [target, "/grant", "*S-1-5-11:(M)"], { stdio: "ignore" });
+
+    const result = runInstallHost(
+      {
+        scriptPath: path.join(repoRoot, "install", "Install-Host.ps1"),
+        hostName: "NEO",
+        channelId: "123456789012345678",
+        allowedUserId: "876543210987654321",
+        botToken: "fake-token-value",
+        repoRoot,
+        settingsPath: path.join(settingsDir, "settings.json"),
+        stateRoot,
+        skipNpmCi: true,
+      },
+      repoRoot,
+    );
+
+    assert.notEqual(result.status, 0, `expected a refusal; stdout: ${result.stdout}`);
+    assert.doesNotMatch(result.stdout, /Provisioned/, "an install that could not harden must not report success");
+    // PowerShell wraps a thrown message at the console width, so these match single tokens rather
+    // than a phrase a line break can land inside.
+    assert.match(result.stderr, /hardening/i);
+    assert.match(result.stderr, /hold/i);
+    assert.match(result.stderr, names, `the message must name the file that failed: ${result.stderr}`);
+    // The install stops at the verification rather than carrying on and provisioning against a
+    // surface it could not close.
+    assert.equal(existsSync(path.join(stateRoot, "broker.env")), false);
+    // The token file this run wrote holds the bot token in plain text, and the path it sits under
+    // was just reported as reachable by other accounts, so it is removed rather than left there.
+    assert.equal(existsSync(tokenFile), false, "the plaintext token written by this run must not be left behind");
+  });
+}
 
 test("Install-Host refuses a -BotTokenFile outside the state root", (t) => {
   const repoRoot = fixtureRepoRoot();

@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -908,6 +909,329 @@ test(
       rmSync(dir, { recursive: true, force: true });
       rmSync(realTarget, { recursive: true, force: true });
     }
+  },
+);
+
+/**
+ * A PowerShell fragment that shadows Get-Item for the rest of a script with one returning the real
+ * item's shape and a SetAccessControl that refuses.
+ *
+ * Protect-ChannelPath resolves Get-Item at call time, so a function declared after the dot-source
+ * takes precedence over the cmdlet. Only the write is stood in for: the path, its ACL, and every
+ * decision the function makes about them are real, so this shows whether the write is reached and
+ * what happens when it fails, neither of which is otherwise observable without a second account or
+ * an elevated session.
+ */
+const REFUSING_WRITE = [
+  `function Get-Item {`,
+  `    param([string]$LiteralPath, [switch]$Force)`,
+  `    $real = Microsoft.PowerShell.Management\\Get-Item -LiteralPath $LiteralPath -Force:$Force`,
+  `    $proxy = [pscustomobject]@{ PSIsContainer = $real.PSIsContainer; Attributes = $real.Attributes }`,
+  `    $proxy | Add-Member -MemberType ScriptMethod -Name SetAccessControl -Value {`,
+  `        param($AclObject)`,
+  `        throw "the write was reached"`,
+  `    }`,
+  `    return $proxy`,
+  `}`,
+].join("\n");
+
+test(
+  "Protect-ChannelPath never reaches the write when the path is already hardened",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+
+    const scriptPath = path.join(dir, "skip.ps1");
+    writeFileSync(
+      scriptPath,
+      [
+        `. "${FUNCTIONS_PATH}"`,
+        `Protect-ChannelPath -Path "${nested}"`,
+        REFUSING_WRITE,
+        // Reaching the write here would throw, so completing is the whole assertion: an ACL that
+        // already matches costs no write, which is what a re-install depends on.
+        `Protect-ChannelPath -Path "${nested}"`,
+        `Write-Output "RETURNED WITHOUT WRITING"`,
+      ].join("\n"),
+      "utf8",
+    );
+    const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `the second call reached the write: ${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /RETURNED WITHOUT WRITING/);
+    // Completing is not enough on its own: a write that failed without terminating would also
+    // reach the line above, having printed its error and hardened nothing.
+    assert.equal(result.stderr.trim(), "", `the second call must be silent: ${result.stderr}`);
+  },
+);
+
+test(
+  "Protect-ChannelPath raises a failed write as an error naming the path, not one the caller runs past",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+
+    // A path that is not yet hardened, so the write is genuinely reached, with the write itself
+    // instrumented to fail. A write that failed without terminating would let Install-Host.ps1 carry
+    // on to "Provisioned" over a path it never hardened, which is the outcome this pins against.
+    const scriptPath = path.join(dir, "fails.ps1");
+    writeFileSync(
+      scriptPath,
+      [
+        `. "${FUNCTIONS_PATH}"`,
+        REFUSING_WRITE,
+        `Protect-ChannelPath -Path "${nested}"`,
+        `Write-Output "CONTINUED"`,
+      ].join("\n"),
+      "utf8",
+    );
+    const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0, `expected a failure; stdout: ${result.stdout}`);
+    assert.doesNotMatch(result.stdout, /CONTINUED/, "a failure to harden must not be something a caller runs past");
+    assert.match(result.stderr, /failed to harden/i);
+    // PowerShell wraps a thrown message at the console width, so this matches the directory's own
+    // leaf name rather than a whole path a line break can land inside.
+    assert.match(result.stderr, /hooks/);
+  },
+);
+
+test(
+  "Protect-ChannelPath run twice against the same paths completes cleanly and changes nothing",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+    const file = path.join(nested, "session-start.ps1");
+    writeFileSync(file, "# fixture hook\n", "utf8");
+
+    // The re-install, end to end and unelevated: the same paths hardened twice in one run, which is
+    // what an operator running this a second time does. That the second run never reaches the write
+    // at all is pinned separately, by instrumenting the write.
+    //
+    // No $ErrorActionPreference is set, deliberately. Install-Host.ps1 calls this function with the
+    // session's default preference, under which a non-terminating error prints and execution
+    // carries on; the empty-stderr assertion is what catches that shape, and the exit code catches
+    // a throw.
+    const scriptPath = path.join(dir, "harden-twice.ps1");
+    writeFileSync(
+      scriptPath,
+      [
+        `. "${FUNCTIONS_PATH}"`,
+        `Protect-ChannelPath -Path "${file}"`,
+        `Protect-ChannelPath -Path "${nested}"`,
+        `$first = @((Get-Acl -LiteralPath "${file}").Sddl, (Get-Acl -LiteralPath "${nested}").Sddl)`,
+        `Protect-ChannelPath -Path "${file}"`,
+        `Protect-ChannelPath -Path "${nested}"`,
+        `$second = @((Get-Acl -LiteralPath "${file}").Sddl, (Get-Acl -LiteralPath "${nested}").Sddl)`,
+        `if ($first[0] -ne $second[0]) { throw "the second run changed the file's ACL" }`,
+        `if ($first[1] -ne $second[1]) { throw "the second run changed the directory's ACL" }`,
+        `Write-Output $first[1]`,
+      ].join("\n"),
+      "utf8",
+    );
+    const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `hardening twice failed: ${result.stdout}\n${result.stderr}`);
+    assert.equal(
+      result.stderr.trim(),
+      "",
+      `the second run must write nothing rather than print a failure and continue: ${result.stderr}`,
+    );
+    // The directory really is hardened, so a clean exit cannot come from having skipped a path this
+    // function never protected in the first place. `D:P` is the protected-DACL flag: inheritance
+    // from the parent is blocked, and the three trustees are all that is left.
+    assert.match(result.stdout, /D:PA?I?\(/, `expected a protected DACL: ${result.stdout}`);
+    assert.match(result.stdout, /;SY\)/);
+    assert.match(result.stdout, /;BA\)/);
+  },
+);
+
+test(
+  "the list Protect-ChannelPath writes is only accepted by the broker when the installing account owns the path",
+  { skip: process.platform !== "win32" },
+  async (t) => {
+    // Why Protect-ChannelPath insists on owning what it hardens, checked against the broker's own
+    // parser rather than restated. The list always names the installing account by raw security
+    // identifier, and that identifier is exempt from the foreign-grant scan only as the
+    // descriptor's owner: hardening a path owned by anyone else, Administrators included, produces
+    // a path the broker then refuses at every start. An unelevated session cannot hand a real file
+    // to Administrators, so the descriptor is the fixture here.
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+
+    const harden = path.join(dir, "harden.ps1");
+    writeFileSync(harden, [`. "${FUNCTIONS_PATH}"`, `Protect-ChannelPath -Path "${nested}"`].join("\n"), "utf8");
+    const hardened = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", harden], {
+      encoding: "utf8",
+    });
+    assert.equal(hardened.status, 0, `hardening failed: ${hardened.stderr}`);
+    const sddl = execFileSync(
+      "powershell",
+      ["-NoProfile", "-Command", `(Get-Acl -LiteralPath "${nested}").Sddl`],
+      { encoding: "utf8" },
+    ).trim();
+
+    const { foreignGrants } = (await import(pathToFileURL(CREDENTIALS_PATH).href)) as {
+      foreignGrants: (sddl: string) => string[];
+    };
+    assert.deepEqual(foreignGrants(sddl), [], "the list as written, owned by the installing account, is accepted");
+
+    // The same list, owned by Administrators. Nothing about the grants changed.
+    const ownedByAdministrators = sddl.replace(/^O:[^G]+/, "O:BA");
+    assert.notEqual(ownedByAdministrators, sddl, "the fixture must actually change the owner");
+    assert.ok(
+      foreignGrants(ownedByAdministrators).length > 0,
+      "the installing account's own grant reads as foreign once it is not the owner",
+    );
+  },
+);
+
+test(
+  "Protect-ChannelPath does not treat a path owned by another account as already hardened",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+
+    // An unelevated session cannot give a real directory away to Administrators, so the owner is
+    // substituted at the point the function reads it. Everything else, the real ACL included, is
+    // untouched: the directory genuinely carries the target grant, so the only thing that can stop
+    // the skip is the owner.
+    const foreignOwner = [
+      `function Get-Acl {`,
+      `    param([string]$LiteralPath)`,
+      `    $real = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $LiteralPath`,
+      `    $real.SetOwner([Security.Principal.SecurityIdentifier]::new("S-1-5-32-544"))`,
+      `    return $real`,
+      `}`,
+    ].join("\n");
+
+    const scriptPath = path.join(dir, "foreign-owner.ps1");
+    writeFileSync(
+      scriptPath,
+      [
+        `. "${FUNCTIONS_PATH}"`,
+        `Protect-ChannelPath -Path "${nested}"`,
+        foreignOwner,
+        REFUSING_WRITE,
+        // Skipping would complete silently. Reaching a write means the owner defeated the skip,
+        // which is the whole point: a path owned by anyone else has to be taken over, not accepted.
+        `Protect-ChannelPath -Path "${nested}"`,
+        `Write-Output "TREATED AS ALREADY HARDENED"`,
+      ].join("\n"),
+      "utf8",
+    );
+    const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0, `expected the owner to defeat the skip; stdout: ${result.stdout}`);
+    assert.doesNotMatch(result.stdout, /TREATED AS ALREADY HARDENED/);
+    assert.match(result.stderr, /owned by/i);
+    // The advice is to take ownership as the installing account. Elevation does not help: the check
+    // that refuses the path accepts one owner, and it is not Administrators.
+    assert.match(result.stderr, /take ownership/i);
+  },
+);
+
+test(
+  "Protect-ChannelPath does not treat a conditional grant to another trustee as already hardened",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    // A callback (conditional) entry is the one shape that could plausibly sit in a descriptor
+    // without the managed access-rule API surfacing it, which would let a foreign grant ride along
+    // inside a list that otherwise matches the target exactly. Windows PowerShell 5.1 does surface
+    // it, as an ordinary rule for the trustee, so the fingerprint moves and the skip is refused.
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+
+    const scriptPath = path.join(dir, "conditional.ps1");
+    writeFileSync(
+      scriptPath,
+      [
+        `. "${FUNCTIONS_PATH}"`,
+        `Protect-ChannelPath -Path "${nested}"`,
+        // Applied through the access section alone: writing the whole descriptor back would need
+        // SeSecurityPrivilege for its audit section, which an unelevated session does not hold.
+        `$acl = Get-Acl -LiteralPath "${nested}"`,
+        `$dacl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)`,
+        `$conditional = $dacl -replace '(D:P?A?I?)', '$1(XA;OICI;FA;;;AU;(@USER.Title=="x"))'`,
+        `$acl.SetSecurityDescriptorSddlForm($conditional, [System.Security.AccessControl.AccessControlSections]::Access)`,
+        `(Get-Item -LiteralPath "${nested}" -Force).SetAccessControl($acl)`,
+        `if ((Get-Acl -LiteralPath "${nested}").Sddl -notmatch 'XA;') { throw "the fixture carries no conditional entry" }`,
+        REFUSING_WRITE,
+        `Protect-ChannelPath -Path "${nested}"`,
+        `Write-Output "TREATED AS ALREADY HARDENED"`,
+      ].join("\n"),
+      "utf8",
+    );
+    const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0, `the conditional grant was skipped over; stdout: ${result.stdout}`);
+    assert.doesNotMatch(result.stdout, /TREATED AS ALREADY HARDENED/);
+    assert.match(result.stderr, /failed to harden/i);
+  },
+);
+
+test(
+  "Protect-ChannelPath repairs a protected path that has since been granted an extra trustee",
+  { skip: process.platform !== "win32" },
+  (t) => {
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, "hooks");
+    mkdirSync(nested);
+    const sddl = (target: string): string =>
+      execFileSync("powershell", ["-NoProfile", "-Command", `(Get-Acl -LiteralPath "${target}").Sddl`], {
+        encoding: "utf8",
+      }).trim();
+
+    const harden = path.join(dir, "harden.ps1");
+    writeFileSync(harden, [`. "${FUNCTIONS_PATH}"`, `Protect-ChannelPath -Path "${nested}"`].join("\n"), "utf8");
+    const first = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", harden], {
+      encoding: "utf8",
+    });
+    assert.equal(first.status, 0, `hardening failed: ${first.stdout}\n${first.stderr}`);
+    const hardened = sddl(nested);
+
+    // Authenticated Users, granted on top of an already-protected directory: every part of the
+    // hardened state is still in place except the one that matters. This is the drift a skip that
+    // only looked for the three expected trustees would wave through, and it is also the shape that
+    // needs an actual write to undo, on a path whose DACL is already protected.
+    execFileSync("icacls.exe", [nested, "/grant", "*S-1-5-11:(OI)(CI)(R)"], { stdio: "ignore" });
+    assert.match(sddl(nested), /;AU\)/, "the fixture must actually carry the extra trustee");
+
+    // Unelevated, which is what step 2 of the install is: a re-install is what repairs a path
+    // someone has since opened up, so the repair cannot depend on a privilege the install has no
+    // way to hold.
+    const second = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", harden], {
+      encoding: "utf8",
+    });
+    assert.equal(second.status, 0, `the repair failed: ${second.stdout}\n${second.stderr}`);
+    assert.equal(second.stderr.trim(), "", `the repair must not report an error: ${second.stderr}`);
+
+    const repaired = sddl(nested);
+    assert.doesNotMatch(repaired, /;AU\)/, `the extra trustee must be gone: ${repaired}`);
+    // Back to exactly the hardened state, not merely to something without that one trustee.
+    assert.equal(repaired, hardened);
   },
 );
 

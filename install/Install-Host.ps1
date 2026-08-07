@@ -9,7 +9,9 @@ fragment, validates its shape, and merges it into the user-level Claude Code set
 (~/.claude/settings.json), backing that file up first. Hardens the ACL on the whole execution
 surface a scheduled task and a Bypass-executed hook depend on: hooks/, wrapper/, install/, broker/,
 the bot token file, and the state root that holds it, so only this process's own account,
-Administrators, and SYSTEM can read or write any of them.
+Administrators, and SYSTEM can read or write any of them. Every file and subdirectory under those
+trees is then read back through the broker's own protection check, and one still open to another
+account fails the install rather than being reported as provisioned.
 
 Does not register the scheduled task; run Register-BrokerTask.ps1 separately, from an elevated
 session, once this has completed.
@@ -62,7 +64,8 @@ root -BotTokenFile must resolve inside. Defaults to Get-ChannelStateRoot
 (%LOCALAPPDATA%\sapplefeld-channels). Overridable for the same reason as -SettingsPath.
 
 .PARAMETER SkipAcl
-Skips every ACL hardening step. Refuses to run at all when a token is being provisioned (from either
+Skips every ACL hardening step, and the verification that reads those paths back. Refuses to run at
+all when a token is being provisioned (from either
 -BotToken or -BotTokenFile), because a credential file this installer chose not to protect is worse
 than one it never touched. For a test run against a fixture tree with no token involved, where
 hardening the fixture's own ACL is not the thing under test.
@@ -163,7 +166,11 @@ $relayDir = Join-Path $RepoRoot 'relay'
 $wrapperDir = Join-Path $RepoRoot 'wrapper'
 $installDir = Join-Path $RepoRoot 'install'
 $brokerDir = Join-Path $RepoRoot 'broker'
-foreach ($required in @($sessionStartScript, $relayScript, $wrapperScript, $hooksDir, $relayDir, $wrapperDir, $installDir, $brokerDir)) {
+# The module holding the protection check the verification pass below runs. Resolved under
+# -RepoRoot rather than from $PSScriptRoot so a run pointed at a fixture tree uses that tree's copy.
+$credentialsScript = Join-Path $brokerDir 'discord\credentials.ts'
+foreach ($required in @($sessionStartScript, $relayScript, $wrapperScript, $credentialsScript,
+        $hooksDir, $relayDir, $wrapperDir, $installDir, $brokerDir)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Install-Host: expected path not found at '$required'. Is -RepoRoot correct?"
     }
@@ -241,6 +248,53 @@ if (-not $SkipAcl) {
     # pointed elsewhere inside the root, or with no token at all, broker.env, the broker's state
     # file, and its log file still live here and are still worth the same three-trustee grant.
     Protect-ChannelPath -Path $resolvedStateRoot
+
+    # Hardening is read back rather than assumed, by the same check broker/discord/credentials.ts
+    # runs at every broker start. This script's last line prints success and an operator acts on it,
+    # so a path left open here is an execution surface the whole install reported as closed: hooks/
+    # is run under -ExecutionPolicy Bypass at the start of every session on the machine, and
+    # install/ and broker/ are what a scheduled task executes at every logon.
+    #
+    # Every file and subdirectory under each hardened tree, not one file standing in for its tree.
+    # Protect-ChannelPath grants a directory an inheritable list, which reaches a child only while
+    # that child still inherits: a file whose inheritance was detached keeps whatever explicit
+    # entries it carries, gains nothing from the parent's grant, and is exactly what a check of one
+    # representative per tree would miss. The files that matter are the ordinary ones, not the
+    # representatives, since Start-Broker.ps1 and Install-Functions.ps1 are what the scheduled task
+    # executes at every logon and settings-fragment.json is merged into machine-wide settings.
+    #
+    # Passed from inside each tree rather than as the tree root. The check reads a path and the
+    # directory holding it, so each entry covers its own parent, and every tree root is covered by
+    # its direct children; passing a tree root itself would instead check the checkout's root, a
+    # directory this installer does not harden and has no business hardening.
+    $verifyTargets = @()
+    foreach ($tree in @($hooksDir, $relayDir, $wrapperDir, $installDir, $brokerDir, $resolvedStateRoot)) {
+        $verifyTargets += @(Get-ChildItem -LiteralPath $tree -Recurse -Force | ForEach-Object { $_.FullName })
+    }
+    try {
+        Assert-ChannelPathProtected -Path $verifyTargets -NodePath $nodePath `
+            -CredentialsScriptPath $credentialsScript
+    } catch {
+        # The token file was written earlier in this run and holds the bot token in plain text. If
+        # this install wrote it, it is removed here rather than left behind at a path just reported
+        # as reachable by other accounts. A pre-existing file named by -BotTokenFile is the
+        # operator's and is named instead, since deleting it would destroy a credential this run did
+        # not create.
+        $residue = ''
+        if ($BotToken) {
+            Remove-Item -LiteralPath $tokenFile -Force -ErrorAction SilentlyContinue
+            $residue = " The token file this run wrote at '$tokenFile' has been deleted rather than " +
+                "left in plain text under a path this check just refused."
+        } else {
+            $residue = " The token file at '$tokenFile' holds the bot token in plain text and is " +
+                "still there; move or revoke it if the path it sits under is reachable by other " +
+                "accounts."
+        }
+        throw "Install-Host: hardening did not hold. $($_.Exception.Message).$residue Nothing here " +
+            "is provisioned against an execution surface another account on this machine can still " +
+            "write to; take ownership of the named path as the account running this install, and re-run."
+    }
+    Write-Host "Verified $($verifyTargets.Count) hardened path(s) under the execution surface."
 }
 
 $envFile = Join-Path $StateRoot 'broker.env'

@@ -171,3 +171,57 @@ conversation posted into this thread.
 Stamps: see the close-out.
 Next: 2. Harden loudly, and only when it is needed
 Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-07
+Completed: 2. Harden loudly, and only when it is needed
+Implemented By: implementer-opus, three review-fix rounds on the same agent
+Metrics: 1 review round (adversarial + blind at fable, security at default), 3 fix rounds; 0
+NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **Both root causes were measured before a line was written, and the second
+one changed the design.** `Set-Acl` writes the audit section, which nothing in this function sets, so
+it demands `SeSecurityPrivilege` on an already-protected path while install step 2 must stay
+unelevated. `$item.SetAccessControl(...)` writes only the section that was modified and succeeds
+where `Set-Acl` throws, measured both directions on the same directory. Both writes moved to it; the
+rollback keeps `Set-Acl` because its `$original` has no section flagged modified, so
+`SetAccessControl` would persist nothing and the restore would become a silent no-op.
+
+That mechanism change bought more than the fix: a re-install now REPAIRS drift rather than refusing
+it. Verified unelevated on a temp tree shaped like a real install, in three passes: harden seven
+paths, re-install as a clean no-op with ACLs byte-identical, then grant `Authenticated Users` on
+`hooks/` and watch an ordinary re-install put it back to exactly the three-trustee grant.
+
+**Review caught a regression the change introduced.** The writer accepted Administrators as a
+permitted owner and left ownership alone, while `credentials.ts` exempts a grant only to the
+descriptor's owner and the permitted trustees. Since the hardened list always names the installing
+account by raw SID, an Administrators-owned path was hardened into a state the new verification then
+rejects: an install that used to succeed would fail, with advice (re-run elevated) that cannot
+change which owner the check accepts. Ownership is now taken whenever the owner is not the
+installing account.
+
+**The verification promised more than it delivered**, and the stronger remedy was taken rather than
+the smaller sentence. It checked one representative file per directory while `Protect-ChannelPath`
+is not recursive, so a child whose inheritance was already detached was never read back, and the
+files the scheduled task actually executes at every logon were among the unchecked ones. It now
+walks every file and subdirectory under the five trees and the state root. Measured cost, reported
+rather than hidden: 73 files in 15.5 seconds on the real checkout, so roughly 20 seconds added to an
+install, and the suite went from 60 to 103 seconds because pinning the walk requires six real
+install runs.
+Review Findings: Four Majors, all fixed: the ownership disagreement above; the representative-file
+scope; nothing pinning that every tree is actually verified (dropping a tree from the list left every
+test green, now parameterized and proved by mutation); and a rollback whose throw asserted "restored
+its original ACL" even when the restore had failed and been swallowed, with a successful
+take-ownership never rolled back at all. Minors fixed: the state root is now walked, a token file
+this run wrote is deleted on a verification failure rather than left in plaintext at a path just
+declared unprotected (a pre-existing `-BotTokenFile` is named as residue instead, since it is the
+operator's), and change-narrative comments were reworded.
+
+One reported Major did not survive contact with the runtime. The claim was that .NET omits callback
+(conditional) ACEs from `GetAccessRules`, letting a conditional grant hide from the skip. Building a
+real conditional ACE and measuring showed the managed rule count and the raw ACE count agree on
+Windows PowerShell 5.1, and the conditional entry surfaces as an ordinary rule, so the fingerprint
+already moves and refuses the skip. The count check added for it is inert on this runtime and kept
+as defense in depth with a comment saying exactly that, plus a test pinning the behavior that does
+the protecting.
+Stamps: see the close-out.
+Next: finishing-work
+Commit Model: Commit-and-Push

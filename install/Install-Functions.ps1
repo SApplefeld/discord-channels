@@ -571,6 +571,72 @@ function Test-IsElevated {
 
 <#
 .SYNOPSIS
+A canonical, order-independent string of every access rule a security descriptor carries.
+
+.DESCRIPTION
+Two descriptors describe the same access exactly when this returns the same string for both. Each
+rule is reduced to its trustee's security identifier, its rights, its inheritance and propagation
+flags, and whether it allows or denies, and the lines are sorted, because Windows canonicalizes a
+DACL's order when it writes one and the order carries no meaning here.
+
+Trustees are compared as security identifiers rather than account names: an account name depends on
+the display language and on a domain controller being reachable to translate it, and a rule for an
+orphaned or cross-machine identity has no name at all.
+
+The whole SDDL string is deliberately not compared instead. Windows sets the auto-inherited flag
+(`AI`) on any descriptor that participates in inheritance, so a descriptor read back from disk
+differs textually from the identical one held in memory before it was written, in a bit that grants
+nobody anything.
+#>
+function Get-ChannelAccessRuleFingerprint {
+    param([Parameter(Mandatory)][System.Security.AccessControl.FileSystemSecurity]$Acl)
+
+    $rules = $Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+    $lines = foreach ($rule in $rules) {
+        '{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value,
+            [int]$rule.FileSystemRights,
+            [int]$rule.InheritanceFlags,
+            [int]$rule.PropagationFlags,
+            [int]$rule.AccessControlType
+    }
+    return (($lines | Sort-Object) -join "`n")
+}
+
+<#
+.SYNOPSIS
+How many access rules a security descriptor reports through the managed access-rule API.
+#>
+function Get-ChannelAccessRuleCount {
+    param([Parameter(Mandatory)][System.Security.AccessControl.FileSystemSecurity]$Acl)
+    return @($Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])).Count
+}
+
+<#
+.SYNOPSIS
+How many entries a security descriptor's discretionary access control list actually holds.
+
+.DESCRIPTION
+Counted from the raw descriptor, which reports entries structurally, rather than through the managed
+access-rule API, which translates them. Comparing the two counts is what keeps the comparison honest
+about its own coverage: an entry the managed API declines to surface would otherwise be an entry
+nothing in the skip can see, and a descriptor carrying one would compare equal to a target it does
+not match. Windows PowerShell 5.1 surfaces callback (conditional) entries through both, so the two
+counts agree on every descriptor this installer produces or has been measured against; the check is
+what makes a runtime that does not surface one a refusal to skip rather than a silent acceptance.
+
+A descriptor with no discretionary list at all counts as zero entries, which is the honest answer:
+a null list grants everyone everything and matches no target this installer writes.
+#>
+function Get-ChannelRawAceCount {
+    param([Parameter(Mandatory)][System.Security.AccessControl.FileSystemSecurity]$Acl)
+    $sddl = $Acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
+    $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+    if ($null -eq $raw.DiscretionaryAcl) { return 0 }
+    return $raw.DiscretionaryAcl.Count
+}
+
+<#
+.SYNOPSIS
 Hardens a file or directory's ACL to this process's own account, Administrators, and SYSTEM only.
 
 .DESCRIPTION
@@ -578,11 +644,19 @@ Refuses a drive root outright and a reparse point (a symlink, junction, or mount
 platform's shape of one, since a link can pass every check below against its current target and
 then be re-pointed at an attacker-controlled one the moment after.
 
-Verifies the object's current owner is this process's own account or an administrative identity
-before doing anything else, and takes ownership if it is not: a file planted by any account on a
-shared root is owned by that account, and granting "the owner" access unconditionally would grant
-that planted file's own author exclusive control of it, which is the same hole S6 closes on the
-broker's side of this same check.
+Verifies the object's current owner is this process's own account before doing anything else, and
+takes ownership if it is not. Two reasons, and the second is why no other owner is tolerated even
+though it looks defensible. A file planted by any account on a shared root is owned by that account,
+and granting "the owner" access unconditionally would grant that planted file's own author exclusive
+control of it, which is the same hole S6 closes on the broker's side of this same check. And the
+list this writes names the installing account by its raw security identifier, which
+broker/discord/credentials.ts treats as a foreign grant unless that account is the descriptor's
+owner: hardening a path owned by anyone else, Administrators included, produces a path that check
+then refuses, so a path this function accepted would be one the broker rejects.
+
+Ownership, once taken, stays taken. There is no path through this function that gives it back, so a
+later failure leaves the object owned by the installing account rather than by whoever owned it
+before.
 
 The discretionary access control list is then replaced wholesale with a freshly built one carrying
 exactly three entries: this process's own account, the local Administrators group (S-1-5-32-544),
@@ -590,8 +664,36 @@ and SYSTEM (S-1-5-18). Built from scratch rather than edited in place, because e
 translating an existing rule can throw on an orphaned or cross-machine SID, and the only thing this
 function needs to know about an old rule is that it is being discarded either way. This is also what
 makes the rewrite atomic: the original descriptor is captured first, the new one is prepared
-entirely in memory, and the single Set-Acl call that applies it either lands whole or throws, with
-the original restored in the catch.
+entirely in memory, and the single call that applies it either lands whole or throws.
+
+Both writes here, the ownership change and the descriptor itself, go through the .NET
+SetAccessControl on the item rather than Set-Acl, because Set-Acl cannot perform either of them
+unelevated. Set-Acl writes the descriptor's audit section as well, which needs SeSecurityPrivilege
+whenever the target's DACL is already protected, and step 2 of the install runs unelevated by design.
+That requirement is gratuitous here: nothing in this function sets an audit rule. SetAccessControl
+writes only the sections the descriptor actually carries, so an already-protected path that has since
+been granted an extra trustee is repaired by an ordinary re-install instead of refused, and a planted
+file that is both foreign-owned and already protected fails only on whether ownership can really be
+taken. SetAccessControl raises a .NET exception, which is terminating in PowerShell whatever the
+caller's error preference, so the rollback and the throws below are reached on any failure.
+
+Nothing is written at all when the path is already owned by the installing account and already
+carries exactly the target descriptor: rewriting an identical ACL changes nothing and is worth
+neither the call nor the risk. "Already carries that descriptor" is decided by comparing the current
+access rules against the very object this function would write, not against a separately stated idea
+of what hardened means, so the skip cannot be more permissive than the write: an extra trustee, a
+missing one, weaker rights, different inheritance, or a DACL still open to inheritance from its
+parent all read as a difference and the write goes ahead. A conditional grant to another trustee is
+one of those differences: it arrives as an ordinary rule for that trustee and moves the fingerprint.
+The rule count is checked against the raw entry count as well, so that the comparison refuses to
+skip rather than passing whenever the descriptor holds an entry the managed API did not surface.
+
+A failed descriptor write is followed by a rollback to the original, carrying -ErrorAction Stop so
+that its own catch is reachable, and the error this function raises says whether that rollback
+succeeded. Set-Acl reports a failure as a non-terminating error by default, which no catch sees and
+which would print a raw error over the descriptive one. The rollback is a backstop: each
+SetAccessControl above writes one section in one call, so a failed write does not leave a partial
+descriptor behind.
 
 This is the same allowlist broker/discord/credentials.ts's assertTokenFileIsProtected checks a token
 file and its directory against at startup, so a path this function has processed is a path that
@@ -632,33 +734,8 @@ function Protect-ChannelPath {
     $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $permitted = @($currentUserSid, $adminGroupSid, $systemSid)
 
-    $ownerIsPermitted = $false
-    try {
-        $ownerSidValue = ([Security.Principal.NTAccount]$original.Owner).Translate([Security.Principal.SecurityIdentifier])
-    } catch {
-        try {
-            $ownerSidValue = [Security.Principal.SecurityIdentifier]::new($original.Owner)
-        } catch {
-            $ownerSidValue = $null
-        }
-    }
-    if ($null -ne $ownerSidValue -and ($permitted | Where-Object { $_.Equals($ownerSidValue) })) {
-        $ownerIsPermitted = $true
-    }
-
-    if (-not $ownerIsPermitted) {
-        try {
-            $takeOwnership = Get-Acl -LiteralPath $resolved
-            $takeOwnership.SetOwner($currentUserSid)
-            Set-Acl -LiteralPath $resolved -AclObject $takeOwnership
-        } catch {
-            throw "Protect-ChannelPath: '$resolved' is owned by '$($original.Owner)', which is " +
-                "neither this process's account nor an administrative identity, and taking " +
-                "ownership of it failed: $($_.Exception.Message). Run this elevated, or take " +
-                "ownership of the path manually before installing."
-        }
-    }
-
+    # Built before the owner check rather than after it, because it is also what decides whether any
+    # write is needed at all.
     $fresh = if ($isContainer) {
         [System.Security.AccessControl.DirectorySecurity]::new()
     } else {
@@ -688,21 +765,69 @@ function Protect-ChannelPath {
         )
     }
 
+    $ownerIsSelf = $false
     try {
-        Set-Acl -LiteralPath $resolved -AclObject $fresh
+        $ownerSidValue = ([Security.Principal.NTAccount]$original.Owner).Translate([Security.Principal.SecurityIdentifier])
     } catch {
-        try { Set-Acl -LiteralPath $resolved -AclObject $original } catch {
-            # The restore itself failing is reported alongside the original failure below; there is
-            # nothing further this function can do about a path it can no longer write an ACL to.
+        try {
+            $ownerSidValue = [Security.Principal.SecurityIdentifier]::new($original.Owner)
+        } catch {
+            $ownerSidValue = $null
         }
-        throw "Protect-ChannelPath: failed to harden '$resolved' and restored its original ACL: $($_.Exception.Message)"
+    }
+    if ($null -ne $ownerSidValue -and $currentUserSid.Equals($ownerSidValue)) {
+        $ownerIsSelf = $true
+    }
+
+    # The installing account as owner and exactly the target rules, with inheritance already
+    # blocked, is the state this function exists to produce, so there is nothing for a write to do.
+    # This is the ordinary case on every install after the first.
+    if ($ownerIsSelf -and
+        $original.AreAccessRulesProtected -eq $fresh.AreAccessRulesProtected -and
+        (Get-ChannelAccessRuleFingerprint -Acl $original) -eq (Get-ChannelAccessRuleFingerprint -Acl $fresh) -and
+        (Get-ChannelRawAceCount -Acl $original) -eq (Get-ChannelAccessRuleCount -Acl $original)) {
+        return
+    }
+
+    if (-not $ownerIsSelf) {
+        try {
+            $takeOwnership = Get-Acl -LiteralPath $resolved
+            $takeOwnership.SetOwner($currentUserSid)
+            $item.SetAccessControl($takeOwnership)
+        } catch {
+            throw "Protect-ChannelPath: '$resolved' is owned by '$($original.Owner)' rather than " +
+                "by this process's own account, and taking ownership of it failed: " +
+                "$($_.Exception.Message). The list this writes names the installing account by " +
+                "security identifier, which the broker reads as a foreign grant on a path owned by " +
+                "anyone else, so this path cannot be brought to standard until it is owned by the " +
+                "account installing. Take ownership of it as that account and re-run."
+        }
+    }
+
+    try {
+        $item.SetAccessControl($fresh)
+    } catch {
+        $failure = $_.Exception.Message
+        $rolledBack = $true
+        try {
+            Set-Acl -LiteralPath $resolved -AclObject $original -ErrorAction Stop
+        } catch {
+            $rolledBack = $false
+        }
+        $rollback = if ($rolledBack) {
+            "its original access control list is back in place"
+        } else {
+            "its original access control list could not be put back either, so the path is left as " +
+                "the failed write found it"
+        }
+        throw "Protect-ChannelPath: failed to harden '$resolved' and $rollback`: $failure"
     }
 }
 
 <#
 .SYNOPSIS
-Throws unless a path is protected to the same standard broker/discord/credentials.ts enforces on
-the bot token file at every broker start.
+Throws unless every path given is protected to the same standard broker/discord/credentials.ts
+enforces on the bot token file at every broker start.
 
 .DESCRIPTION
 Shells out to Node and calls assertTokenFileIsProtected directly, rather than restating its SDDL
@@ -713,12 +838,19 @@ applicable to the SessionStart hook script wrapper/Enter-ClaudeSession.ps1's lau
 would need to assert its own protection, which is why this lives here rather than inline in
 Install-Host.ps1.
 
+Takes the whole set of paths in one call because the caller checks every file under the trees it
+hardened, and a Node process per file is most of the cost of doing that. The check reads a path and
+the directory holding it, so a directory is covered by any file in it; a directory passed in its own
+right is checked against its parent, which is why the caller passes trees from the inside rather
+than passing a tree root whose parent it does not own. The first path that fails ends the run, and
+the message names it: the failures this catches are configuration, not a list to triage.
+
 $NodePath and $CredentialsScriptPath are overridable so a test can point this at a fixture without
 depending on where this checkout's own broker/ lives.
 #>
 function Assert-ChannelPathProtected {
     param(
-        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string[]]$Path,
         [string]$NodePath = 'node',
         [string]$CredentialsScriptPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'broker\discord\credentials.ts')
     )
@@ -726,14 +858,18 @@ function Assert-ChannelPathProtected {
     if (-not (Test-Path -LiteralPath $CredentialsScriptPath)) {
         throw "Assert-ChannelPathProtected: credentials module not found at '$CredentialsScriptPath'."
     }
+    if ($Path.Count -eq 0) {
+        throw "Assert-ChannelPathProtected: no paths to check. A verification pass with nothing in " +
+            "it reports success without having looked at anything."
+    }
 
-    # A tiny inline module: import the real check and run it against the one path this call cares
-    # about, so the exit code alone tells the caller pass or refuse without parsing any output.
-    $script = 'import(process.argv[1]).then(m => m.assertTokenFileIsProtected(process.argv[2])).catch(e => { console.error(String(e && e.message || e)); process.exit(1); })'
+    # A tiny inline module: import the real check and run it against each path in turn, so the exit
+    # code alone tells the caller pass or refuse and the message names the path that failed.
+    $script = 'import(process.argv[1]).then(m => { for (const p of process.argv.slice(2)) m.assertTokenFileIsProtected(p); }).catch(e => { console.error(String(e && e.message || e)); process.exit(1); })'
     $moduleUrl = ([uri]([System.IO.Path]::GetFullPath($CredentialsScriptPath))).AbsoluteUri
 
-    $output = & $NodePath '--input-type=module' '-e' $script $moduleUrl $Path 2>&1
+    $output = & $NodePath '--input-type=module' '-e' $script $moduleUrl @Path 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Assert-ChannelPathProtected: '$Path' is not protected: $output"
+        throw "Assert-ChannelPathProtected: $output"
     }
 }
