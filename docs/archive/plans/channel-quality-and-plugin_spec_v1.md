@@ -1,8 +1,6 @@
 # Channel Quality Fixes and Plugin Packaging
 
-Status: In Progress (all five sections' code and docs are delivered; what remains is the operator's
-plugin-route verification on SCOTT per docs/install.md, then the flag flip, the rule prune, and this
-plan's close-out)
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: research, briefs, and reviews in the main session; implementation dispatched
 Created: 2026-08-07
@@ -253,3 +251,19 @@ Review Findings: none (not implemented)
 Stamps: none surfaced
 Next: finishing-work, minus the S4 live-launch acceptance, which is the operator's
 Commit Model: Commit-and-Push
+
+### Chapter 6 - 2026-08-07
+Completed: S4 operator verification and effort close-out
+Implemented By: main session (fable), operator at the keyboard for the launch
+Metrics: 0 review rounds (settled-state edits over already-reviewed work); 0 NEEDS_CONTEXT; advisor off
+Decisions / Surprises: The plugin route is verified live on SCOTT. The transition ran: marketplace and plugin installed from the plain CLI (`claude plugin marketplace add` / `claude plugin install`, both non-interactive on 2.1.224), managed settings written by the operator elevated, SCOTT's flag flipped to `--channels`, launch with no warning dialog, reply round-tripping. The permission-rule question settled by wire evidence rather than a prompt: the operator's sessions run with permissions bypassed, so no prompt exists to observe, but the hook payload's `tool_name` carries the full registered name, and the registry showed the verification session's `lastTool` as `mcp__plugin_relay_channel-relay__reply`, confirming the inferred scoping form exactly. One reversal of the planned close-out: the dev-route rule `mcp__channel-relay__reply` is NOT pruned, because it did not lose a guess; it is the correct rule for the route ASR and NEO still take and for SCOTT's documented fallback, so both rules stand while both routes are in service, and the fleet-wide retirement condition is now what install.md documents. The verification checklist was rewritten from the real run: the terminal launch output looks no different on a healthy plugin-route launch, so the thread round-trip and the `lastTool` wire check replaced the banner check and the prompt check. The plugin-cache layout observed exactly as designed: the cache holds only the shim and manifests, version-keyed, so relay updates ship by `git pull` with no plugin action, and shim changes need a version bump plus `claude plugin marketplace update`. Memory updated with the observed rule name and the plugin CLI facts. A sibling session was mid-flight on the interim-mirroring plan throughout; this close-out staged only its own disjoint files.
+Review Findings: none this round
+Stamps: none surfaced beyond Chapter 1's four
+Next: none; the effort is complete. ASR and NEO installs remain backlog items with the plugin route folded into install.md.
+Commit Model: Commit-and-Push
+
+## Related
+
+- [`../../plans/interim-mirroring_spec_v1.md`](../../plans/interim-mirroring_spec_v1.md): the S5
+  deliverable of this plan, a spec this plan authored and parked, picked up for execution by a
+  later session. Path is relative to this plan's archived location.
