@@ -1,7 +1,8 @@
 # Interim Mirroring: Mid-Turn Visibility on Long Turns
 
-Status: Draft
-Commit Model: undecided (set when the effort is picked up)
+Status: In Progress
+Commit Model: Commit-and-Push
+Fable Spend: research, briefs, and reviews in the main session; implementation dispatched
 Created: 2026-08-07
 
 ## Problem
@@ -16,56 +17,263 @@ turn's final reply, which can be many minutes later. Two gaps, reported together
 2. **The card names the last tool without its input.** "Last tool: Bash" says something is running
    but not what; on a multi-minute command the operator cannot tell a build from a hang.
 
-## Mechanism
+## Confirmed ground
 
-### Interim assistant text: tail the session transcript
+Measured this session, not assumed:
 
-Every hook payload carries `transcript_path`, the session's local JSONL transcript, and the broker
-runs on the same host as every session it watches, so the file is readable where the broker already
-is. This is the one place mid-turn text exists.
+- **Every hook payload carries `transcript_path`.** `tools/hook-capture.jsonl` holds real captured
+  payloads carrying it beside `session_id` and `cwd`, and the project memory file
+  `claude-code-channel-and-hook-facts` records it as measured across all four hook events.
+- **The transcript is line-per-content-block JSONL.** Across 35 transcripts in this project's
+  history (771 assistant lines), no line mixed content-block types: `thinking`, `text`, and
+  `tool_use` each get their own line. A text line looks like
+  `{"type":"assistant","isSidechain":false,"sessionId":"<id>","message":{"content":[{"type":"text","text":"..."}]},...}`.
+- **Other line types are numerous and must never be published.** One 1195-line transcript held 329
+  `attachment` lines, 158 `user:tool_result` lines, 144 `assistant:thinking` lines, and 58 each of
+  `custom-title`, `last-prompt`, `mode`, and `bridge-session`. This is why the filter below is an
+  allowlist.
+- **`isSidechain` is present but never true in this project's history** (0 occurrences across all 35
+  files), so subagent traffic is not observed to land in the main session's transcript on this
+  build. The filter keeps the check anyway; the load-bearing filter is the `sessionId` match, which
+  is verifiable.
+- **The card is repainted on a timer, not per tool call.** `broker/discord/surface.ts` repaints only
+  when the rendered text differs, on the `CHANNEL_DISCORD_REFRESH_MS` tick (default 5s). So a
+  preview that changes on every tool call costs at most one edit per refresh tick per session, not
+  one per tool call. The plan's card-edit-volume worry is therefore already bounded by the existing
+  design; no coarsening layer is needed.
 
-Design sketch, to be firmed when the effort is picked up:
+## Decisions taken at pick-up
 
-- The intake records `transcript_path` per session as hook events arrive (a payload field like any
-  other; path stored, never trusted as content).
-- A tailer owned by the broker polls the transcripts of live sessions on a modest interval (order
-  of tens of seconds, budget-aware), holding a byte offset per session. New complete JSONL lines
-  past the offset are parsed; assistant text blocks are extracted. Thinking blocks, tool calls,
-  tool results, and subagent traffic are excluded, mirroring the Stop hook's own exclusions.
-- Extracted text posts to the session's thread through the existing mirror writer and renderer
-  with its own attribution (distinct from the final reply's `✨ Claude`, e.g. `✨ Claude · working`),
-  so interim narration and the final answer read differently at a glance.
-- **Dedup with the Stop mirror:** the turn's final message arrives twice, once as the tail of the
-  transcript and once in the Stop payload. The tailer remembers what it posted for the current
-  turn; when Stop's mirror delivers, text already posted verbatim as the last interim chunk is
-  skipped (or the interim chunk is skipped when Stop is known to be imminent; pick one at
-  implementation time and pin it with a test). The failure mode to design against is the operator
-  reading the same paragraph twice at the exact moment the turn ends.
+These were the plan's open questions. Each is settled here, with the reason, rather than asked.
 
-### Current activity: a bounded input preview on the card
+- **Poll, not `fs.watch`.** The latency bar is tens of seconds and the live-session count on one
+  machine is single digits. Polling is a `stat` and a bounded read per live session per tick;
+  `fs.watch` on Windows adds a per-file OS handle and a change-event model that fires on metadata
+  writes too. Reversible if the cost ever shows up.
+- **The tailer suppresses the echo; the Stop mirror is untouched.** The `/mirror` Stop hook posts
+  the final reply within milliseconds of turn end, and the tailer reads that same text off the
+  transcript on its *next* poll, up to a poll interval later. So the duplicate arrives from the
+  tailer, and the tailer is where it is suppressed. The reverse guard is kept too (a rare race where
+  a poll lands inside the turn's last moment), so the memory is consulted from both sides.
+  Rejected: having Stop stop posting when interim mirroring is on. That degrades to *silence* when a
+  transcript is unreadable, where this degrades to the operator seeing a paragraph twice.
+- **Per-session opt-out is honored.** A session that set `CHANNEL_SESSION_MIRROR` off (the wrapper's
+  `-NoMirror`) must not have its mid-turn text published either. The header only arrives on
+  `/mirror` posts, so the intake tells the tailer to drop that session when it sees the header off.
+  `UserPromptSubmit` fires at the start of every turn, so the suppression is recorded before that
+  turn can produce any interim text.
+- **`CHANNEL_INTERIM_MIRROR` defaults on.** The operator reported the gap; a feature that ships off
+  answers nothing. It is also gated behind `CHANNEL_MIRROR`, so the existing host-wide off switch
+  turns it off with everything else.
+- **The transcript path is never persisted and never published.** It is held in the tailer's own
+  in-memory map keyed by session ID, learned from hook posts. After a broker restart the next hook
+  post from a live session re-teaches it, which costs at most one poll interval of narration. This
+  keeps `SessionRecord`, `redact()`, and `SessionView` free of a local filesystem path.
 
-Hook payloads on tool events carry the tool name and input. The card's `Last tool:` line gains a
-bounded, neutralized preview of the input (the Bash command line, the file path being edited),
-rendered through the existing `inertText` escape with the permission prompt's cut-marker discipline
-(`promptField` in `render.ts` is the sibling to mirror). Bound it hard: one line, order of 100
-characters, cut marked when cut.
+## Sections of Work
 
-Card-edit volume is the cost: the preview changes on every tool call, and every change is an edit
-against the card's budget. Acceptable because the edit budget already absorbs heartbeat ticks;
-confirm at implementation time that a busy session does not starve other sessions' card edits, and
-coarsen (edit at most every N seconds) if it does.
+### Section 1: A bounded tool-input preview on the card
 
-## Security posture
+Model: opus
 
-- Transcript content and tool inputs are untrusted text, same trust class as mirrored prompts and
-  replies. Everything reaches Discord through the existing render escapes (`renderMirror`-family
-  for messages, `inertText` for card fields); nothing bypasses them, and no new escape is written.
-- Transcript content never appears in the broker log at any level (the standing mirror rule).
-- The tailer reads only paths learned from hook payloads for sessions the registry holds live, and
-  it stops reading a session's transcript when the session ends.
-- A transcript is the session's whole conversation; the tailer must post only what the design
-  names (assistant text of the current turn), never tool results or embedded file contents, which
-  the operator did not ask to have published to Discord.
+The card's `Last tool:` line gains a bounded, neutralized preview of what the tool was called with.
+
+**Extraction (`broker/intake.ts`).** `parseIntake` currently drops `tool_input` with a comment
+saying it is "of no use to any surface the broker renders". That comment becomes false and is
+rewritten rather than left. In its place, a shape-aware probe: when `tool_input` is a JSON object,
+take the first string-valued field present among an ordered key list, and nothing otherwise.
+
+The key list, ordered, is `command`, `file_path`, `pattern`, `url`, `description`, `path`, `query`,
+`prompt`. Ordered rather than per-tool-named so an MCP tool or a tool Claude Code adds later still
+gets a useful preview instead of nothing, and so there is no per-tool table to keep in step with a
+harness this project does not control. A non-object `tool_input`, an absent one, and an object with
+none of those keys all yield no preview.
+
+The extracted value goes through `clean()` like every other payload string, which strips control
+characters and caps at `MAX_FIELD_LENGTH` (256). That is the storage bound; the display bound is
+below.
+
+**Carriage.** `HookIntake` gains `toolInput: string | null`; `SessionRecord` gains
+`lastToolInput: string | null`. The registry sets both `lastTool` and `lastToolInput` together on a
+`PostToolUse`, so a tool with no extractable preview clears the previous tool's preview rather than
+leaving a stale one attached to a new tool name. `SessionView` gains `lastToolInput` and `toView`
+copies it, field by field as that file requires.
+
+`redact()` in `broker/intake.ts` publishes it on `GET /sessions` (it is already-neutralized,
+already-capped tool metadata of the same class as `lastTool`, which that route publishes).
+
+**Persistence compatibility.** `SessionRecord` is persisted whole via `onMutate`, and
+`isSessionRecord` in `broker/persistence.ts` validates every field. A snapshot written by the
+current build has no `lastToolInput`, so a strict `optionalString` check would reject the whole
+snapshot and the broker would come up with an empty registry, losing every live session's thread
+binding on the first restart after this ships. The loader must accept `undefined` for this field and
+normalize it to `null`. A test drives a v1 snapshot with no `lastToolInput` field and asserts the
+records load.
+
+**Render (`broker/discord/render.ts`).** The card line becomes:
+
+```
+Last tool: Bash · git status --porcelain
+Last tool: Bash · npm test -- --reporter=dot --grep "the very long … (cut)
+```
+
+The preview is `inertText`-escaped like every other card field, cut to `MAX_TOOL_INPUT_PREVIEW = 100`
+code points through the existing `fit`, and marked ` (cut)` when `fit` shortened it. The cut marker
+follows `promptField`'s discipline and its reasoning: a tool input is attacker-influenced text, so
+it can front-load the harmless part, and a reader must be able to tell a whole preview from a
+partial one. `SEPARATOR` (`·`) joins the name to the preview, so the tool name stays first and
+readable when a thread list or a narrow phone view truncates. With no preview the line renders
+exactly as it does today.
+
+**Acceptance criteria.**
+
+1. A `PostToolUse` payload with `tool_input: {"command":"npm test"}` and `tool_name: "Bash"` renders
+   `Last tool: Bash · npm test` on the card.
+2. A `PostToolUse` with `tool_input: {"file_path":"D:\\x\\y.ts","content":"..."}` previews the path,
+   never the content: the ordered key list reaches `file_path` and stops.
+3. A preview containing Discord chip syntax (`<@123>`, `<t:0:R>`) renders as those characters and
+   draws no pill and no live timestamp.
+4. A preview longer than 100 code points renders cut and carries the ` (cut)` marker; one at or
+   under 100 carries no marker.
+5. A `PostToolUse` whose `tool_input` has none of the listed keys clears any preview the previous
+   tool left, leaving `Last tool: <name>` alone.
+6. A registry snapshot written without `lastToolInput` loads with every record intact and the field
+   `null`.
+7. `GET /sessions` publishes `lastToolInput` and still withholds `processToken`.
+8. Every existing test still passes.
+
+### Section 2: The transcript tailer
+
+Model: fable
+
+**New module `broker/tail.ts`.** It owns a map of session ID to `{ path, offset, suppressed }` and
+nothing else about the world; everything it needs from the broker arrives as injected callbacks, the
+same shape `threadFor` already uses.
+
+```
+createTranscriptTailer({ liveSessions, deliver, echo, log, now, readFile })
+  -> { learn(sessionId, path), suppress(sessionId), poll(): Promise<void>, forget(sessionId) }
+```
+
+**Learning a path.** `parseIntake` gains `transcriptPath: string | null` (read with `payloadString`,
+so it is control-character stripped and capped like every other field). The intake calls
+`tailer.learn(record.sessionId, intake.transcriptPath)` after a `/hook` post is credited to a record,
+and `handleMirror` calls `tailer.suppress(holder.sessionId)` on the `X-Channel-Mirror`-off branch.
+The path is stored, never trusted as content and never used as anything but an argument to a read.
+
+**A poll pass.** For each session the registry currently holds `live`, that is not suppressed, and
+that has a learned path:
+
+- Read the file from the held byte offset. Read is bounded: at most `MAX_TAIL_READ_BYTES` (256KB)
+  per session per pass; past that the offset jumps to the file's current end and the skip is logged
+  by count, never by content, because a session that outran the tailer is better served by current
+  narration than by a backlog.
+- **Consume only up to the last `\n`.** A trailing partial line is left unconsumed and the offset
+  stops before it. This is the classic tailer bug and it fails silently as a dropped chunk.
+- If the file's size is *below* the held offset, the file was replaced or truncated: reset the
+  offset to zero and re-scan is wrong (it would republish the whole conversation), so reset the
+  offset to the file's current end and log it. A session ID maps to one transcript file that only
+  grows; a shrink means something the tailer does not model.
+- Parse each complete line as JSON, discarding parse failures silently (a transcript is written by
+  another process and a half-flushed line is not an error).
+
+**The allowlist.** A line yields text only when *all* of these hold, checked as an allowlist and
+never as a denylist:
+
+- `type === "assistant"`
+- `isSidechain !== true`
+- `sessionId === ` the session ID this transcript was learned for
+- `message.content` is an array
+- the block's `type === "text"` and its `text` is a non-empty string
+
+Everything else is discarded: thinking blocks, tool calls, tool results, attachments, system lines,
+user lines, and every line type not enumerated here including ones this build has never seen. The
+`sessionId` match is what carries the weight, because it is the one field that is verifiable against
+live data; `isSidechain` is defense against a build that starts interleaving subagent traffic.
+
+**Posting.** Each surviving text block is one interim chunk, posted in order through the existing
+routing and rendering path. `MirrorKind` in `broker/discord/render.ts` gains a third member,
+`interim`, with attribution `✨ Claude · working\n` — unquoted, like `reply`, since the quoted block
+is the one that must stay unforgeable. `renderMirror` treats it exactly as `reply` (uncapped, split
+across messages, chips escaped). `OutboundRouter` gains
+`interim(sessionId: string, text: string): Promise<ReplyResult>`, which resolves the thread with
+`threadFor` directly (the tailer holds a session ID, not a process token) and delivers through the
+same `deliver` / `inOrder` chain, so an interim chunk cannot interleave with the messages of a split
+reply.
+
+**Echo suppression (`broker/tail.ts` or a small sibling).** A per-session memory of two SHA-256
+digests: the last interim chunk posted, and the last final reply mirrored. Digests rather than the
+strings themselves, so no conversation text is held in broker memory past the moment it is posted.
+Both sides consult it:
+
+- the tailer skips a chunk whose digest matches either remembered digest;
+- `outbound.mirror` with `kind === "reply"` skips a post whose digest matches the last interim
+  digest, and records its own digest either way.
+
+Comparison is on the normalized pre-render text (`withoutInvisible(text).trim()`), before any
+escaping, exactly as the `CHANNEL_ENVELOPE` check at `broker/routing/outbound.ts:330` compares:
+escaping must be able to neither hide a match nor manufacture one. The memory is dropped when a
+session leaves the live set.
+
+**Configuration.** Two knobs in `broker/config.ts`, read through the existing `strictFlag` and
+`integerAtLeast` so a typo refuses at startup rather than silently picking a default:
+
+- `CHANNEL_INTERIM_MIRROR`, default on, and additionally gated by `CHANNEL_MIRROR`: interim
+  mirroring is mirroring.
+- `CHANNEL_INTERIM_POLL_MS`, default 20000, minimum 1000.
+
+Everything else is a constant with a comment.
+
+**Wiring (`broker/index.ts`).** The tailer is constructed beside the registry, handed to the intake
+and the outbound router, and driven by a `setInterval` alongside the sweep and refresh timers. The
+interval is cleared in `stop()`, and the in-flight pass is awaited there the way `inFlight` already
+is for the Discord refresh, so shutdown does not race a read. A rejection out of the poll is caught
+and logged, never allowed to reach the process: under Node 24 an unhandled rejection on a timer
+would take the hook intake down with it.
+
+**Security posture (unchanged from the design, restated as requirements).**
+
+- Transcript content is untrusted text of the same class as a mirrored reply, and reaches Discord
+  only through `renderMirror`. No new escape is written.
+- Transcript content never appears in the broker log at any level. Every log line here carries a
+  static message, a session ID, a count, or a byte offset. A caught error object from a read or a
+  parse is discarded unread, because a thrown error can quote the text that produced it.
+- Only `live` registry sessions are read, only from paths learned from hook posts, and a session's
+  reading stops the moment it leaves the live set or is suppressed.
+- Nothing is queued and nothing is replayed. A chunk that cannot be posted now is dropped, the same
+  rule the whole routing layer follows.
+
+**Acceptance criteria.**
+
+1. A transcript growing by an `assistant`/`text` line for a live, non-suppressed session posts that
+   text to the session's thread under the `✨ Claude · working` attribution, on the next poll.
+2. `thinking`, `tool_use`, `tool_result`, `attachment`, `system`, `user`, and an invented unknown
+   line type each post nothing. Driven from a fixture built out of the real line shapes above.
+3. A line whose `sessionId` names a different session posts nothing, even in the file learned for
+   this one. A synthetic line with `isSidechain: true` posts nothing.
+4. A file whose last line is incomplete (no trailing newline) posts the complete lines only, and the
+   next pass, after the line completes, posts it exactly once.
+5. The turn's final reply, arriving first through the Stop mirror and then again as the tailer's
+   next read, posts exactly once. Proved in both orders.
+6. A session whose `X-Channel-Mirror` header is off posts no interim text after that header is seen.
+7. With `CHANNEL_INTERIM_MIRROR` off, or `CHANNEL_MIRROR` off, no interim text is posted and no
+   transcript is read at all.
+8. A transcript that is unreadable, absent, or not JSON produces no post, no throw, and no broker
+   log line carrying any of its bytes.
+9. A file that shrank below the held offset resumes from its new end rather than republishing.
+10. No log line produced by this section contains transcript text. Asserted, not eyeballed.
+11. Every existing test still passes.
+
+### Section 3: Documentation and operator checks
+
+Model: sonnet
+
+`docs/architecture.md`, `docs/operations.md`, `docs/security-model.md`, and `docs/operator-checks.md`
+carry the two new surfaces: the knobs and their defaults, what the tailer reads and what it refuses
+to publish, the trust class of transcript content, and an operator check that walks a long turn and
+confirms mid-turn narration lands once, with the working attribution, and that the final reply is
+not doubled. `broker/README.md` gains the tailer module in its map. Prune the backlog of anything
+this effort retires.
 
 ## Deliberately out of scope
 
@@ -73,19 +281,12 @@ coarsen (edit at most every N seconds) if it does.
   dropped, consistent with the whole routing layer. Late narration answers a question the operator
   stopped asking.
 - No subagent transcripts.
-- No configuration surface beyond an on/off knob (`CHANNEL_INTERIM_MIRROR`, default decided at
-  implementation) and possibly the poll interval; every other bound is a constant with a comment.
+- No configuration surface beyond the two knobs named above; every other bound is a constant with a
+  comment.
 - No change to the permission-prompt or reply-tool paths.
-
-## Open questions for the implementing session
-
-- Poll-based tailing versus `fs.watch`: polling is simpler and the latency bar is low; confirm
-  polling cost against the number of live sessions before choosing watch.
-- Whether interim mirroring is per-session opt-out like the mirror (`X-Channel-Mirror` header
-  parallel) or global-only.
-- The exact JSONL schema of the transcript (verify against a real transcript before parsing;
-  treat the schema as an external contract that changes silently, like the channel envelope).
+- No change to the plugin-packaging effort in `docs/plans/channel-quality-and-plugin_spec_v1.md`,
+  which is In Progress and blocked on the operator's own verification.
 
 ## Chapters
 
-(none; not yet started)
+(none yet; Section 1 is next)
