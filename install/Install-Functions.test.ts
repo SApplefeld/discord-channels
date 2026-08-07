@@ -764,18 +764,31 @@ test("Register-BrokerTask's function throws before touching the Task Scheduler w
   assert.match(result.stderr, /elevated/i);
 });
 
+/**
+ * `TASK_LOGON_TYPE.TASK_LOGON_S4U`, the value the ScheduledTasks module encodes "run whether the
+ * user is logged on or not, without a stored password" as. Named rather than inlined, because a
+ * bare 2 in an assertion says nothing about which logon type it is or why it matters.
+ */
+const LOGON_TYPE_S4U = 2;
+
 test("Register-BrokerTask's function builds a task definition without registering it", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const registerScript = path.join(path.dirname(FUNCTIONS_PATH), "Register-BrokerTask.ps1");
   const startBrokerPath = "C:\\repo\\install\\Start-Broker.ps1";
 
-  type Definition = { TaskName: string; Principal: { UserId: string }; Action: { Arguments: string } };
+  const envFilePath = "C:\\fixture\\state\\broker.env";
+
+  type Definition = {
+    TaskName: string;
+    Principal: { UserId: string; LogonType: number };
+    Action: { Arguments: string };
+  };
   const definition = runFunctions<Definition>(
     [
       `. "${registerScript}"`,
-      `$definition = Register-BrokerScheduledTask -TaskName "ProbeTask" -ScriptPath "${startBrokerPath}" -User "TESTDOMAIN\\TestUser" -IsElevated:$true -WhatIf`,
-      `(@{ TaskName = $definition.TaskName; Principal = @{ UserId = $definition.Principal.UserId }; Action = @{ Arguments = $definition.Action.Arguments } } | ConvertTo-Json) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
+      `$definition = Register-BrokerScheduledTask -TaskName "ProbeTask" -ScriptPath "${startBrokerPath}" -User "TESTDOMAIN\\TestUser" -EnvFile "${envFilePath}" -IsElevated:$true -WhatIf`,
+      `(@{ TaskName = $definition.TaskName; Principal = @{ UserId = $definition.Principal.UserId; LogonType = [int]$definition.Principal.LogonType }; Action = @{ Arguments = $definition.Action.Arguments } } | ConvertTo-Json) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
     ].join("\n"),
     dir,
   );
@@ -786,6 +799,20 @@ test("Register-BrokerTask's function builds a task definition without registerin
     definition.Action.Arguments,
     /-WindowStyle Hidden/,
     "the broker's console must stay off the desktop; the task action hides it",
+  );
+
+  // S4U is what puts the broker in session 0, where there is no desktop to draw a console on. The
+  // two pins go together and neither is sufficient alone: S4U carries no user profile, so a task
+  // that ran without the env file pinned into its action would look for broker.env under a profile
+  // that is not loaded, fail to find it, and start a broker with no Discord surfaces and no error.
+  assert.equal(
+    definition.Principal.LogonType,
+    LOGON_TYPE_S4U,
+    "the broker must run without an interactive desktop",
+  );
+  assert.ok(
+    definition.Action.Arguments.includes(`-EnvFile "${envFilePath}"`),
+    `the env file must be pinned into the action: ${definition.Action.Arguments}`,
   );
   // The strongest evidence available without registering a real task: the same script never
   // reached Get-ScheduledTask, Unregister-ScheduledTask, or Register-ScheduledTask, none of which

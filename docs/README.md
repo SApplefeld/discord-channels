@@ -15,7 +15,7 @@ is built and installable.
 | [`install.md`](install.md) | Standing a host up: creating the Discord application, provisioning the host, registering the broker's scheduled task, and launching a session. |
 | [`operations.md`](operations.md) | Running a host: where state and logs live, how to read a thread, how to answer a permission prompt, the tunables, and what to do when something is wrong. |
 | [`security-model.md`](security-model.md) | The trust boundary: what the process token authenticates, what the sender gate is the only authority for, what the permission prompt and the mirror send off the machine, and which files must not be writable. |
-| [`operator-checks.md`](operator-checks.md) | Five checks that need a human at a terminal, a phone, or an Administrator prompt. A through D have been run and passed, as has E's rendering half, which confirmed that Discord draws no mention pill or timestamp chip inside a code block; E's per-session off switch half is open. The file records each result and keeps the procedure for re-running it on a new host. |
+| [`operator-checks.md`](operator-checks.md) | Five checks that need a human at a terminal, a phone, or an Administrator prompt. All five have been run and passed, including E, which confirmed that Discord draws no mention pill or timestamp chip inside a code block and that the per-session mirror off switch holds on a real host. The file records each result and keeps the procedure for re-running it on a new host. |
 
 ## Plans
 

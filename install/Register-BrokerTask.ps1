@@ -20,10 +20,23 @@
 # between the account that installed and the account the task runs as is something later code, or
 # an operator reading the file, can actually detect.
 
+# -EnvFile pins the absolute path to broker.env into the task's own action, for the same reason
+# Install-Host.ps1 pins CHANNEL_NODE_EXE rather than resolving `node` from PATH: the task runs
+# outside any interactive logon, where %LOCALAPPDATA% does not resolve to the profile that
+# Install-Host.ps1 wrote the file into. Pinning it is what removes the broker's last dependency on
+# a loaded user profile, and everything it reads afterward (the node binary, the state file, the
+# log, the bot token) is already an absolute path inside broker.env. Install-Host.ps1 prints this
+# script's full invocation with the path already filled in, because it runs unelevated as the
+# account that owns the profile and this script does not.
+#
+# Defaulted to this session's own state root so a hand-run without the parameter still works. That
+# default is wrong when the elevated session belongs to a different account than the one that ran
+# Install-Host.ps1, which is exactly the case the printed command exists to avoid.
 param(
     [string]$TaskName = 'SapplefeldChannelsBroker',
     [string]$ScriptPath = (Join-Path $PSScriptRoot 'Start-Broker.ps1'),
-    [string]$User = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    [string]$User = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    [string]$EnvFile
 )
 
 . (Join-Path $PSScriptRoot 'Install-Functions.ps1')
@@ -47,6 +60,7 @@ function Register-BrokerScheduledTask {
         [Parameter(Mandatory)][string]$TaskName,
         [Parameter(Mandatory)][string]$ScriptPath,
         [Parameter(Mandatory)][string]$User,
+        [string]$EnvFile,
         [bool]$IsElevated = (Test-IsElevated),
         [switch]$WhatIf
     )
@@ -58,19 +72,29 @@ function Register-BrokerScheduledTask {
             "say why."
     }
 
-    # -WindowStyle Hidden keeps the broker's console off the desktop. The window still exists (a
-    # brief flash at logon is normal); an Interactive-logon task cannot be fully windowless, and
-    # the logon type below explains why Interactive is required.
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`""
+    # The broker runs in session 0, where there is no desktop, so no console window reaches it.
+    # -WindowStyle Hidden stays anyway: it is what keeps a hand-run of this same command off the
+    # desktop, and it costs nothing under the task.
+    $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`""
+    if ($EnvFile) { $arguments += " -EnvFile `"$EnvFile`"" }
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
     # Scoped to $User rather than every logon: an unscoped AtLogOn trigger fires for any account
     # that logs onto the machine, and a second broker started under a second account's logon cannot
     # bind the port the first one already holds.
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
-    # Interactive (not S4U or a stored password), because the broker needs the invoking user's own
-    # profile to resolve %LOCALAPPDATA% the same way Install-Host.ps1 did when it wrote broker.env
-    # there.
-    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+    # S4U runs the broker as $User without a stored password and without an interactive desktop, so
+    # it starts in session 0 and no console window is ever drawn on the operator's screen. It runs
+    # as the same account either way, which is what the ACL model requires: Install-Host.ps1 grants
+    # the file owner and this process's own account, so a task running as anyone else would start a
+    # broker that cannot read its own token file. RunLevel stays Limited for the same reason the
+    # operator is told to run Install-Host.ps1 unelevated: a broker running elevated writes files
+    # owned by Administrators, and the credential guard reads that owner shift as a planted file.
+    #
+    # S4U carries no user profile, which is why -EnvFile is pinned into the action above. Without
+    # that path the broker would look for broker.env under an unloaded profile, fail to find it, and
+    # start with every knob at its default, which is a broker with no Discord surfaces at all and no
+    # error to say so.
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Limited
     # A twelve-hour session's broker restarting is the whole point of this section; a task that
     # gives up after a handful of failures defeats it. RestartCount's ceiling is 999, the highest
     # the ScheduledTasks module accepts.
@@ -101,6 +125,7 @@ function Register-BrokerScheduledTask {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Register-BrokerScheduledTask -TaskName $TaskName -ScriptPath $ScriptPath -User $User
-    Write-Host "Registered scheduled task '$TaskName' running '$ScriptPath' at logon for '$User'."
+    if (-not $EnvFile) { $EnvFile = Join-Path (Get-ChannelStateRoot) 'broker.env' }
+    Register-BrokerScheduledTask -TaskName $TaskName -ScriptPath $ScriptPath -User $User -EnvFile $EnvFile
+    Write-Host "Registered scheduled task '$TaskName' running '$ScriptPath' at logon for '$User', reading '$EnvFile'."
 }

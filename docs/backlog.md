@@ -19,13 +19,19 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   `--dangerously-load-development-channels` and its launch-dialog keypress on every host, which is
   what an unattended session supervisor is blocked on. See the launch-dialog section of
   [`install.md`](install.md).
-- Run operator check E in [`operator-checks.md`](operator-checks.md), the only verification the
-  mirroring effort could not close from code. Two things: whether Discord renders a mention pill or a
-  timestamp chip inside a fenced code block and whether a backslash-escaped `>` opens a blockquote
-  (the chip escape is fence-aware on the premise that it does neither, and the confined fix if it is
-  wrong is dropping the fence exemption in `withoutChips`), and whether `-NoMirror` stops mirror
-  posts on a real host while another session mirrors on. Either failing reopens the work as a new
-  round.
+- A session that spawns `claude` as a subprocess supersedes its own registry record. The child
+  inherits `CHANNEL_PROCESS_TOKEN` and announces a new session ID under it, so the parent is marked
+  ended, a thread is opened for the child, and the parent's mirror posts are dropped by the
+  straggler gate from then on: mirroring stops for that session with nothing saying so. Any new
+  wrapped session mints its own token and never collides, so the fix is to supersede only on
+  `source: "clear"`, which check B measured as what `/clear` sends, and to treat a `startup` under a
+  token a live session already holds as the subprocess it is.
+- Fix the installer's silent ACL-hardening failure. `Set-Acl` in `Protect-ChannelPath` carries no
+  `-ErrorAction Stop`, so its failure is non-terminating: the surrounding catch never runs, the
+  descriptive throw never fires, and the installer reports success having hardened nothing. Root
+  cause the `SeSecurityPrivilege` refusal first, since adding the flag alone converts a silent
+  failure into a blocked install. `Install-Host.ps1` also never calls `Assert-ChannelPathProtected`,
+  the verifier that already exists beside it.
 - Now that mirroring has shipped, measure mirror-versus-reply-tool duplication in real threads, and
   decide whether to suppress duplicates or coach the reply tool into a quick-summary role on top of
   the mirrored reply. Deliberately excluded from

@@ -3,8 +3,8 @@
 Five checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
 proves, its result, the exact steps, and what the answer settled.
 
-**Checks A through D were run on 2026-08-06 and all four passed. Check E passed its rendering half
-on 2026-08-07; its per-session off switch half is open.** The procedures are kept because they are
+**All five checks have been run and all five passed**, A through D on 2026-08-06 and E on
+2026-08-07. The procedures are kept because they are
 also how to re-check a new host: none of these results is inferable from the code, and two of them
 would change the design if a future host answered differently.
 
@@ -215,8 +215,9 @@ admin console instead, and a personal-account host keeps
 
 ## E. Does the mirror render as the escape assumes, and does `-NoMirror` stop it?
 
-**Result: steps 1, 2, and 3 passed, 2026-08-07. Step 4 is open.** Both rendering claims the escape
-rests on are now observed rather than inferred. In a mirrored reply on the Discord mobile client, a
+**Result: passed, 2026-08-07.** Both rendering claims the escape rests on are now observed rather
+than inferred, and the per-session off switch was confirmed on a real host: two sessions running at
+once, one launched with `-NoMirror`, and only the mirrored one's thread carried the conversation. In a mirrored reply on the Discord mobile client, a
 `<@id>` mention and a `<t:...:R>` timestamp inside a fenced code block, which the escape deliberately
 leaves untouched, rendered as literal text with no pill and no chip; the same three outside the
 fence, which the escape does neutralize, rendered as literal characters with the backslashes
@@ -228,7 +229,7 @@ One cosmetic finding, recorded rather than fixed here: the attribution line is a
 Discord continues a blockquote onto the lines that follow it, so a mirrored prompt renders entirely
 inside quote bars while a reply does not, because a reply's leading code fence ends the quote.
 
-**Still open.** This is the one behavior no test in this repository can reach. The mirror's
+**Why it needs a human.** This is the one behavior no test in this repository can reach. The mirror's
 sanitization is built on two claims about how Discord renders a message, and the per-session switch
 depends on Claude Code interpolating an environment variable into a hook header, which only a real
 session can exercise. Everything either side of that seam is pinned by tests; the seam itself is not.

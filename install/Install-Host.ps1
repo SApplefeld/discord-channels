@@ -281,4 +281,8 @@ if (-not $SkipNpmCi) {
 }
 
 Write-Host "Provisioned '$HostName': config at '$envFile', hooks merged into '$SettingsPath'."
-Write-Host "Run install\Register-BrokerTask.ps1 -User '$([Security.Principal.WindowsIdentity]::GetCurrent().Name)' from an elevated session to install the scheduled task."
+# The env file path is printed into the command rather than left to the elevated session to resolve:
+# that session may belong to a different account, whose %LOCALAPPDATA% is a different profile, and
+# the task's broker has no user profile of its own to fall back on.
+Write-Host ("Run install\Register-BrokerTask.ps1 -User '$([Security.Principal.WindowsIdentity]::GetCurrent().Name)' " +
+    "-EnvFile '$envFile' from an elevated session to install the scheduled task.")
