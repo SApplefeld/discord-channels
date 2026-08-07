@@ -19,16 +19,13 @@ is built and installable.
 
 ## Plans
 
-One plan is open.
-
-| Plan | Status | What it is |
-|---|---|---|
-| [`plans/interim-mirroring_spec_v1.md`](plans/interim-mirroring_spec_v1.md) | In Progress | Mid-turn visibility on long turns: mirroring the assistant text written between tool calls by tailing the session transcript, and a bounded tool-input preview on the status card. |
+No plan is open.
 
 Archived plans, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`archive/plans/interim-mirroring_spec_v1.md`](archive/plans/interim-mirroring_spec_v1.md) | Complete | Mid-turn visibility on long turns: the assistant text written between tool calls, recovered by tailing the session's own transcript file and deduplicated against the mirror's post of the turn's final reply, plus a bounded tool-input preview on the status card. Four Chapters, including the review round that inverted the mirror switch's fail direction for a stream the broker reads rather than receives. |
 | [`archive/plans/channel-quality-and-plugin_spec_v1.md`](archive/plans/channel-quality-and-plugin_spec_v1.md) | Complete | Four operator-reported channel-quality items and the plugin packaging: deleted surfaces of dead sessions stay deleted, reply-tool answers carry their own attribution and split instead of truncating, the operator's own channel messages stop echoing back, and the repository ships as a plugin marketplace whose relay plugin removes the launch dialog, verified live on SCOTT. |
 | [`archive/plans/subprocess-and-hardening-fixes_spec_v1.md`](archive/plans/subprocess-and-hardening-fixes_spec_v1.md) | Complete | Two silent-failure defects operator check E surfaced: a `claude` subprocess superseding its parent's session and quietly ending its mirroring, and the installer reporting a successful install having hardened nothing. |
 | [`archive/plans/channel-mirroring_spec_v1.md`](archive/plans/channel-mirroring_spec_v1.md) | Complete | Console-to-channel mirroring: every console prompt and every turn's final reply posted into the session's thread, making the return path structural rather than dependent on the model choosing the reply tool. Five Chapters, including the measurement that removed a whole planned script and the finishing pass that closed four cross-section gaps. |

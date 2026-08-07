@@ -541,15 +541,6 @@ export function createHandler(
       return;
     }
 
-    // The affirmative half of the same verdict, reported on every mirror post a live session
-    // makes: the tailer fails closed and reads a transcript only after seeing this, so a normal
-    // session is re-allowed at the first UserPromptSubmit of every turn, and a -NoMirror session,
-    // which only ever reaches the branch above, is never read under any restart or revive
-    // ordering. Reported here, after the token has identified a live session, for the reason the
-    // off branch sits here too: an anonymous request must not switch a session's narration in
-    // either direction.
-    options.tail?.allow(holder.sessionId);
-
     const read = await readCappedBody(request, options.mirror.maxBytes);
     if ("droppedBytes" in read) {
       if (read.destroyed) {
@@ -593,6 +584,23 @@ export function createHandler(
     }
     const fields = payload as Record<string, unknown>;
 
+    // The session the payload says it belongs to, forwarded so the router can drop a straggler
+    // from a session that a /clear has since replaced under the same process token. An identity
+    // field, so payloadString's cap is correct here.
+    const sessionId = payloadString(fields, "session_id");
+
+    // The affirmative half of the mirror verdict, and the tailer's whole permission to read. The
+    // tailer fails closed, so a normal session is re-allowed at the first UserPromptSubmit of every
+    // turn while a -NoMirror session, which only ever reaches the off branch above, is never read.
+    //
+    // The two halves are deliberately asymmetric about what evidence they need. Suppression is
+    // recorded on the token alone, before the body is read, because failing closed on weak evidence
+    // costs at most some narration. Permission requires the payload to name the very session the
+    // token holds, which is the same straggler gate routing/outbound.ts applies before it posts:
+    // every process a wrapped session spawns inherits the token, so a post that names another
+    // session, or names none, is not this session speaking and is not its verdict to give.
+    if (sessionId !== null && sessionId === holder.sessionId) options.tail?.allow(holder.sessionId);
+
     // Extracted raw rather than through payloadString: clean() caps at MAX_FIELD_LENGTH, and a
     // mirrored reply is exactly the string that must survive whole. Rendering safety belongs to
     // the posting side, which neutralizes the text at the Discord boundary. An absent or empty
@@ -603,11 +611,6 @@ export function createHandler(
       send(response, 202, { ignored: true });
       return;
     }
-
-    // The session the payload says it belongs to, forwarded so the router can drop a straggler
-    // from a session that a /clear has since replaced under the same process token. An identity
-    // field, so payloadString's cap is correct here.
-    const sessionId = payloadString(fields, "session_id");
 
     // Answered before delivery, so the session's hook never waits on Discord: the mirror hook's
     // timeout is small, and a slow post charged against it would surface inside the session on

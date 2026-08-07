@@ -270,10 +270,10 @@ can change the design; the rest confirm the wiring.
 **Why it needs a human.** The tailer is pinned against real transcript files by tests, and the
 dedup against the Stop mirror is pinned in both orderings. What no test in this repository can reach
 is the claim the dedup rests on: that the Stop payload's `last_assistant_message` is byte-identical
-to the final text block the transcript holds. It held across every assistant line sampled from this
-project's history, none of which carried more than one text block, but a turn that ends in several
-of them would miss the digest. Only a real long turn on a real host settles it, and the answer is
-visible only from the phone, which is the surface this whole effort exists to serve.
+to the final text block the transcript holds. No assistant line in this project's transcripts
+carries more than one text block, so the two coincide; a turn ending in several of them would miss
+the digest. Only a real long turn on a real host settles it, and the answer is visible only from the
+phone, which is the surface this whole effort exists to serve.
 
 **What it proves.** That a turn running for many minutes stops being silence on the operator's
 phone, that mid-turn narration is distinguishable at a glance from the turn's actual answer, that

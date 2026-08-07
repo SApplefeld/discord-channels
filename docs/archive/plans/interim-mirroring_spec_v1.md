@@ -1,6 +1,6 @@
 # Interim Mirroring: Mid-Turn Visibility on Long Turns
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: research, briefs, and reviews in the main session; implementation dispatched
 Created: 2026-08-07
@@ -485,3 +485,64 @@ dashes arrived with the drafts and were removed.
 
 **Next.** The whole-effort finishing pass: QA verification against every acceptance criterion, then
 the finishing reviews, then this plan to Complete and into the archive.
+
+### Chapter 4: The finishing pass, and what it caught in the prose
+
+Delivered in this changeset. The effort is Complete.
+
+**QA verification passed on every criterion.** All nineteen acceptance criteria across Sections 1
+and 2 were confirmed by direct test execution or targeted code reading, none by a test that would
+pass whether or not the behavior existed. The verifier additionally compared the tailer's test
+fixture against a live transcript on this machine, field for field, which is the check that matters
+most: the parser is written against another program's file format, and a fixture that drifted from
+the real shape would let the whole suite stay green over a feature that had stopped working.
+
+**The finishing review found nothing wrong with the code and four false claims in the prose**, which
+is the right shape for a changeset whose code went through two review rounds and whose docs had gone
+through none.
+
+- `docs/security-model.md` said the mirror switch is "enforced at the broker rather than at the
+  poster" for the tailer. False, and contradicted two paragraphs later in the same file: the arming
+  verdict is poster-supplied, so a token holder forges one. The file now says the switch is advisory
+  in exactly the same way it is for the mirror, and that what the tailer changes is the default
+  rather than the enforcement.
+- `docs/security-model.md` named three disclosure axes for the transcript path (never persisted,
+  never on `GET /sessions`, never logged) and named none for the tool-input preview, which travels
+  on two of those three: it is a session-record field, so it lands in the registry snapshot on disk
+  and is published by `GET /sessions`. A `-NoMirror` session discloses a shell command line or a
+  file path on all three surfaces, and the file now says so.
+- `docs/architecture.md` said the liveness hooks carry "never the conversation itself". The Stop
+  liveness entry is an `http` hook posting its whole payload, `last_assistant_message` included; the
+  broker drops it unread, but dropping after receipt is not the same as not transmitting, which the
+  security model already said elsewhere. The sentence confused what the broker keeps with what the
+  hook carries.
+- `hooks/settings-fragment.json` still called the liveness hooks "content-free" and used "the
+  liveness hooks carry no content" as the justification for their not carrying the mirror switch
+  header. This was the fourth site of a claim Chapter 1 corrected in three others, and the one that
+  mattered most, because it was load-bearing for a design decision rather than merely descriptive.
+  The standing rule is to sweep the whole tree for a banned pattern rather than the diff, and this
+  is what that rule is for.
+
+**One code change came out of the review.** The arming verdict fired on any `/mirror` post from a
+live session, without checking that the payload named that session. Every process a wrapped session
+spawns inherits its token, so a subprocess mirroring a conversation of its own could arm the parent,
+which is exactly the traffic the router's straggler gate refuses to post. Permission now requires
+the payload to name the session the token holds. Suppression deliberately does not, and the
+asymmetry is the point: failing closed on weak evidence costs some narration, where failing open on
+weak evidence costs privacy.
+
+**Declined, with the reason.** The review reported that acceptance criterion 7's test pinned only
+the withholding of the process token and not the publication of the preview. It cited the wrong
+line; `broker/intake.test.ts:1258` asserts the published value directly, and the QA verifier
+independently confirmed it. The review also flagged five source lines over roughly 100 columns:
+there is no formatter config, no `.editorconfig`, and no lint gate in this tree, and the reviewer
+correctly declined to call them violations of anything.
+
+**Gate.** 541 tests, 540 pass, 0 fail, 1 skipped, lint clean, unchanged across the finishing pass:
+the one code change replaced a weaker assertion with a stronger one rather than adding a test. The
+single skip is a POSIX-only permission test and predates this effort.
+
+**What only a human at a real host can settle**, and what operator check F exists to ask: that a
+long turn narrates itself once from the phone, that the final reply is not doubled, and that a
+`-NoMirror` session stays silent. The suite verifies the rendered strings and every ordering it can
+construct; it cannot see a Discord client.

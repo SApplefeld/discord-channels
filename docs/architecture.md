@@ -141,11 +141,12 @@ covers and why it fails in the direction it does.
 Three, and each one fails in its own way.
 
 - **Claude Code's hook protocol.** The user-level settings file registers four events and five hooks:
-  `SessionStart`, `PostToolUse`, and a `Stop` liveness tick carry a session's identity and activity
-  plus the two bounded fields above (a tool-input preview and a transcript path), never the
-  conversation itself, while `UserPromptSubmit` and a second `Stop` entry carry the console prompt
-  and the turn's final assistant reply to the mirror. All of them fail open: a broker that is down
-  cannot slow or block a session.
+  `SessionStart`, `PostToolUse`, and a `Stop` liveness tick post payloads the broker reads only as
+  far as a session's identity and activity plus the two bounded fields above (a tool-input preview
+  and a transcript path); the Stop tick's payload also carries the turn's final reply, which that
+  route drops unread. `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the
+  turn's final assistant reply to the mirror, which keeps them. All of them fail open: a broker that
+  is down cannot slow or block a session.
 - **Claude Code's channel protocol.** The relay registers only from the interactive REPL, and only
   when `channelsEnabled` is on and the plugin is allowlisted. Claude Code refuses a channel whose
   negotiated protocol revision is at or past `2026-07-28`.

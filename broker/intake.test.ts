@@ -1415,17 +1415,37 @@ test("every mirror post reaching a live session reports its verdict: allow on, s
   });
   announce(registry);
 
-  // A normal mirror post is the allow: absent header and unrecognized value both mirror, so both
-  // report on.
+  // A normal mirror post naming its own session is the allow.
   await call(
     handle,
     fakeRequest("127.0.0.1", {
       url: "/mirror",
       headers: hookHeaders("UserPromptSubmit"),
-      body: JSON.stringify({ prompt: "mirrored normally" }),
+      body: JSON.stringify({ session_id: "session-a", prompt: "mirrored normally" }),
     }),
   );
   assert.deepEqual(allowed, ["session-a"]);
+  assert.deepEqual(suppressed, []);
+
+  // A post under the right token that names another session, or names none, is a subprocess of
+  // this session mirroring a conversation of its own: the same traffic the router's straggler gate
+  // refuses to post. It is not this session's verdict to give, so it arms nothing. Permission
+  // needs the stronger evidence; suppression below does not, because failing closed on weak
+  // evidence costs narration rather than privacy.
+  for (const body of [
+    JSON.stringify({ session_id: "another-session", prompt: "a subprocess conversation" }),
+    JSON.stringify({ prompt: "naming no session at all" }),
+  ]) {
+    await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers: hookHeaders("UserPromptSubmit"),
+        body,
+      }),
+    );
+    assert.deepEqual(allowed, ["session-a"], `an unattributable post must not arm: ${body}`);
+  }
   assert.deepEqual(suppressed, []);
 
   // The off header under a token no live session holds reaches the unknown-token drop first and
@@ -1449,13 +1469,25 @@ test("every mirror post reaching a live session reports its verdict: allow on, s
     fakeRequest("127.0.0.1", {
       url: "/mirror",
       headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
-      body: JSON.stringify({ prompt: "suppressed" }),
+      body: JSON.stringify({ session_id: "session-a", prompt: "suppressed" }),
     }),
   );
   await settled();
   assert.deepEqual(suppressed, ["session-a"]);
   assert.deepEqual(allowed, ["session-a"], "the off post must not also report an allow");
-  assert.deepEqual(deliveries.map((delivery) => delivery.text), ["mirrored normally"]);
+  // Every post that named a session is still handed to the routing layer, including the two that
+  // armed nothing: this intake decides the tailer's verdict, and the straggler gate that refuses to
+  // post another session's conversation is the router's, which is where this fake stops.
+  assert.deepEqual(deliveries.map((delivery) => delivery.text), [
+    "mirrored normally",
+    "a subprocess conversation",
+    "naming no session at all",
+  ]);
+  assert.deepEqual(
+    deliveries.map((delivery) => delivery.sessionId),
+    ["session-a", "another-session", null],
+    "the router is handed the session each post named, which is what it drops a straggler on",
+  );
 });
 
 test("a transcript path is refused rather than truncated, and never a UNC path", () => {

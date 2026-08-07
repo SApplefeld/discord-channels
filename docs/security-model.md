@@ -61,11 +61,20 @@ under the paragraph above. The switch exists for the operator's privacy from the
 as a defense against a process that holds the token. `CHANNEL_MIRROR=off` is decided at the broker
 and holds against any poster.
 
-The switch governs the transcript tailer too, and there it is enforced at the broker rather than at
-the poster, because the broker reads that content itself. See "Mid-turn narration is read, not
-posted" below. What neither switch reaches is the bounded tool-input preview on the status card: it
-rides the identity-and-activity path rather than the mirror, so a `-NoMirror` session still shows
-what its last tool was called with on its own card.
+The switch governs the transcript tailer too, and there it is advisory in exactly the same way and
+for the same reason: the verdict is poster-supplied, so a process holding the token can post one
+that arms narration. What differs is the default. The tailer reads nothing until a verdict says to,
+where the mirror posts unless a verdict says not to, because the broker reads transcript content
+itself and an absent signal there cannot be allowed to mean publish. See "Mid-turn narration is
+read, not posted" below.
+
+What neither switch reaches is the bounded tool-input preview on the status card. It rides the
+identity-and-activity path rather than the mirror, so a `-NoMirror` session still shows what its
+last tool was called with, and that preview travels further than the card: it is a field of the
+session record, so it is written to the registry snapshot on disk and published by `GET /sessions`
+alongside every other record field. Its content is a shell command line, a file path, a URL, a
+search pattern, or a tool's free-text description, capped at 256 characters. A session the operator
+marked no-mirror discloses that much of itself on all three surfaces.
 
 That also makes an environment variable a privacy control surface, alongside the files below:
 anything that can set `CHANNEL_SESSION_MIRROR` for a session influences whether that session is
@@ -132,9 +141,17 @@ Everywhere else, suppression means the hooks post nothing, so an absent signal m
 Here an absent signal would mean the broker reads and publishes anyway. **So the tailer reads
 nothing until it is armed.** A session's transcript is not opened at all until an explicit
 mirror-on verdict has arrived for that session under the current broker process, which every
-`/mirror` post from a live session carries. A session launched `-NoMirror` is never armed under any
-ordering, a broker restarted mid-turn narrates nothing for the remainder of that turn, and a
-transcript path learned without an accompanying verdict is a path that is never read.
+`/mirror` post from a live session carries, and that names that very session: a post naming another
+session or naming none is a subprocess mirroring a conversation of its own, which the router already
+refuses to post, and it is not this session's verdict to give. A session launched `-NoMirror` is
+never armed by its own traffic under any ordering, a broker restarted mid-turn narrates nothing for
+the remainder of that turn, and a transcript path learned without an accompanying verdict is a path
+that is never read.
+
+The two halves of the verdict take deliberately different evidence. Suppression is recorded on the
+process token alone, before the request body is read, because failing closed on weak evidence costs
+some narration. Permission requires the payload to name the session the token holds. A process that
+holds the token can still supply that, which is what keeps this advisory rather than enforced.
 
 **What a token holder gains is a second door to a capability it already had, not a new one.** The
 broker's scheduled task runs as the operator at limited integrity, the same account a token-holding

@@ -65,8 +65,8 @@ Renames are the scarcest resource here. Discord documents no limit on channel or
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
 adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
 because a rename landing ten minutes late paints a state that stopped being true. The card underneath
-is edited in a far looser bucket and carries the detail: session ID, host, state, last tool, turn
-count, and heartbeat.
+is edited in a far looser bucket and carries the detail: session ID, host, state, last tool and what
+that tool was called with, turn count, and heartbeat.
 
 ## Answering a permission prompt
 
@@ -131,8 +131,11 @@ transcript text:
 - `tail: session <id>'s transcript outgrew one pass (...)`: more grew between two polls than one
   pass reads; the excess is skipped and narration resumes from the file's current end rather than
   reading out a backlog minutes late.
-- `tail: session <id>'s interim delivery failed (...)`: one chunk could not be posted and was
-  dropped; it does not hold up any other chunk in the same pass.
+- `tail: session <id>'s interim delivery failed (...)`: one chunk's delivery threw, and that chunk
+  was dropped without holding up any other chunk in the same pass. This is the uncommon failure. A
+  chunk Discord refused, or one for a thread that is not open yet, returns a status rather than
+  throwing and logs under `routing:` instead, so narration that is missing without a `tail:` line
+  to explain it should be looked for there.
 - `tail: session <id>'s transcript pass failed (...)`: the file could not be opened or read this
   pass; the next pass tries again.
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
@@ -262,10 +265,12 @@ whole host, which is the first thing to check because it survives restarts and n
 says so. The second is per session: a session launched with `Enter-ClaudeSession -NoMirror` sends a
 header that turns the mirror off for that session alone, and every other session on the host keeps
 mirroring. A suppressed post is logged as such, naming the session and no content, which is what
-tells a deliberately quiet mirror apart from a broken one. The status card and the permission prompts
-keep working either way, because the identity-and-activity path they are fed from is not affected by
-either switch; only the tool-input preview on the card is unaffected by `-NoMirror` specifically, and
-is documented as such in [`security-model.md`](security-model.md).
+tells a deliberately quiet mirror apart from a broken one. The status card, the tool counts, and the
+permission prompts all keep working either way, because the identity-and-activity path they are fed
+from is not affected by either switch. The card's tool-input preview is worth naming separately: it
+is session content, it rides that same unaffected path, and neither switch reaches it, so a
+no-mirror session still shows what its last tool was called with. See
+[`security-model.md`](security-model.md) for where else that preview travels.
 
 `-NoMirror` depends on a header the mirror hooks carry, so it needs the hooks installed from a
 version of this repository that has it. The wrapper refuses to launch rather than running the
