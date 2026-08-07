@@ -277,6 +277,137 @@ test("a post with no process token is dropped as unwatched, never refused", asyn
   assert.deepEqual(registry.list(), []);
 });
 
+test("a subprocess SessionStart is dropped under its own reason, not the unroutable one", async () => {
+  // A claude run as a subprocess inherits CHANNEL_PROCESS_TOKEN and announces a session of its own
+  // under it. The registry declines it so the parent keeps the token, and both drops answer null,
+  // so without its own line this expected traffic would be logged as a post that reached no
+  // session and read as the parent's own registration silently failing.
+  const lines: string[] = [];
+  const logger = { info: () => {}, warn: (message: string) => lines.push(message), error: () => {} };
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    log: logger,
+    mirror: fakeMirror().mirror,
+  });
+  announce(registry);
+  // The pipe the wrapper starts with every session it launches, which is what marks the incumbent
+  // as a real session rather than a record any process holding the token could have posted.
+  registry.relaySeen(TOKEN);
+
+  const result = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("SessionStart"),
+      body: JSON.stringify({ session_id: "session-subprocess", source: "startup" }),
+    }),
+  );
+
+  assert.equal(result.status, 202);
+  assert.equal(registry.list().length, 1, "nothing is registered for the subprocess");
+  assert.equal(registry.current(TOKEN)?.sessionId, "session-a", "the parent keeps the token");
+  const captured = lines.join("\n");
+  assert.ok(captured.includes("SessionStart from a subprocess"), captured);
+  assert.ok(captured.includes("session-subprocess"), captured);
+  assert.ok(
+    !captured.includes("no session holds this process token"),
+    `the subprocess drop must not borrow the unroutable post's reason: ${captured}`,
+  );
+  assert.ok(!captured.includes(TOKEN), "the process token is never logged");
+});
+
+test("a refused takeover is logged under its own reason, not counted into a benign one", async () => {
+  // The refusal docs/security-model.md names: a SessionStart carrying a session ID another process
+  // token holds. It shares apply's null with the commonest benign drop, so on a shared reason
+  // string an attacker could post a few unroutable events to open that reason's window and have its
+  // takeover attempt counted into the suppressed tally instead of written down.
+  const lines: string[] = [];
+  const logger = { info: () => {}, warn: (message: string) => lines.push(message), error: () => {} };
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    log: logger,
+    // A fixed clock, so nothing here can leave the rate limiter's window by elapsed time: what is
+    // written is written because the reason is its own, not because a window closed.
+    now: () => 1_000,
+    mirror: fakeMirror().mirror,
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+  });
+
+  // The cover traffic first: unroutable posts under a token no session holds, which open the
+  // ordinary drop reason's window and are counted from then on.
+  for (let repeat = 0; repeat < 4; repeat += 1) {
+    await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        headers: { ...hookHeaders("PostToolUse"), "x-channel-process-token": "unknown-token" },
+        body: JSON.stringify({ tool_name: "Bash" }),
+      }),
+    );
+  }
+  const beforeTakeover = lines.length;
+
+  const result = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: {
+        ...hookHeaders("SessionStart"),
+        "x-channel-process-token": "22222222-2222-2222-2222-222222222222",
+      },
+      body: JSON.stringify({ session_id: "session-a", source: "startup" }),
+    }),
+  );
+
+  assert.equal(result.status, 202);
+  assert.equal(registry.list().length, 1, "the takeover creates nothing");
+  assert.equal(registry.current(TOKEN)?.sessionId, "session-a", "the real session keeps its record");
+  const captured = lines.slice(beforeTakeover).join("\n");
+  assert.ok(
+    captured.includes("naming a session another process token holds"),
+    `the takeover must be written down even behind a run of ordinary drops: ${lines.join("\n")}`,
+  );
+  assert.ok(captured.includes("session-a"), captured);
+  assert.ok(!captured.includes("subprocess"), captured);
+  assert.ok(!lines.join("\n").includes(TOKEN), "the process token is never logged");
+});
+
+test("a post that reaches no session still names the unroutable reason", async () => {
+  // The other side of the check above: the subprocess line must not swallow the drop that reports
+  // a tool post from a token no session holds, which is where forged and replayed hook traffic
+  // lands.
+  const lines: string[] = [];
+  const logger = { info: () => {}, warn: (message: string) => lines.push(message), error: () => {} };
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    log: logger,
+    mirror: fakeMirror().mirror,
+  });
+
+  const result = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: JSON.stringify({ tool_name: "Bash" }),
+    }),
+  );
+
+  assert.equal(result.status, 202);
+  const captured = lines.join("\n");
+  assert.ok(captured.includes("no session holds this process token"), captured);
+  assert.ok(!captured.includes("subprocess"), captured);
+});
+
 test("malformed JSON is a 400 and mutates nothing", async () => {
   const { registry, handle } = harness();
 

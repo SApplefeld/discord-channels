@@ -13,13 +13,21 @@ import { createThreadWriter } from "./writer.ts";
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
 
-function announce(registry: Registry, sessionId: string, processToken = TOKEN): void {
+// The source matters to the registry: a startup arriving under a token a live session already
+// holds is a subprocess of that session and registers nothing, so a test that means to replace the
+// session under a token announces the replacement the way a /clear does.
+function announce(
+  registry: Registry,
+  sessionId: string,
+  processToken = TOKEN,
+  source = "startup",
+): void {
   registry.apply({
     event: "SessionStart",
     processToken,
     sessionName: "neo-warden",
     sessionId,
-    source: "startup",
+    source,
     toolName: null,
   });
 }
@@ -56,7 +64,7 @@ test("a reply after a clear goes to the new session's thread, not the old one", 
   // this land in the right place.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
-  announce(registry, "session-b");
+  announce(registry, "session-b", TOKEN, "clear");
   const { writer, posts } = fakeWriter();
   const router = createOutboundRouter({
     registry,
@@ -114,8 +122,12 @@ test("a mirrored prompt and reply post to the thread bound to the token's sessio
     mirrorWriter: writer,
   });
 
-  assert.deepEqual(await router.mirror(TOKEN, "prompt", "run the migration", null), { status: "sent" });
-  assert.deepEqual(await router.mirror(TOKEN, "reply", "the migration is done", null), { status: "sent" });
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "run the migration", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "the migration is done", "session-a"), {
+    status: "sent",
+  });
   // What the renderer composed, posted as it composed it: the attribution rides on the message
   // rather than being added anywhere downstream, where it would spend budget nothing measured.
   assert.deepEqual(posts, [
@@ -148,7 +160,7 @@ test("a straggler mirror post naming a replaced session is dropped, not re-credi
   // the new session's thread.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
-  announce(registry, "session-b");
+  announce(registry, "session-b", TOKEN, "clear");
   const { writer, posts } = fakeWriter();
   const router = createOutboundRouter({
     registry,
@@ -162,12 +174,67 @@ test("a straggler mirror post naming a replaced session is dropped, not re-credi
   });
   assert.deepEqual(posts, [], "the replaced session's text must not reach the new thread");
 
-  // The same payload naming the current session, and one naming none, both deliver.
+  // The same payload naming the current session delivers.
   await router.mirror(TOKEN, "reply", "current, named", "session-b");
-  await router.mirror(TOKEN, "reply", "current, unnamed", null);
   assert.deepEqual(posts, [
     { threadId: "new-thread", text: renderMirror("reply", "current, named")[0] },
-    { threadId: "new-thread", text: renderMirror("reply", "current, unnamed")[0] },
+  ]);
+});
+
+test("a mirror post that names no session of its own is dropped, not delivered", async () => {
+  // The gate is closed rather than open, because the post it cannot attribute is the reachable
+  // case: every process a session spawns inherits its token, so a claude running as a subprocess
+  // mirrors a conversation of its own, often in another repository, under the parent's token. A
+  // delivery would put that text in the operator's thread as the parent's own words and nothing
+  // could take it back, while a drop is a line in the log.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    writer,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+
+  const secret = "SECRET-from-a-conversation-nobody-asked-for";
+  assert.deepEqual(await router.mirror(TOKEN, "reply", secret, null), { status: "no-session" });
+  assert.deepEqual(posts, [], "an unattributable post reaches no thread");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("named no session"), lines[0]);
+  assert.ok(lines[0].includes("session-a"), "the thread it would have landed in is named");
+  assert.ok(!lines[0].includes(secret), `mirror content leaked into the routing log: ${lines[0]}`);
+});
+
+test("a mirror post from the parent still reaches its thread after a subprocess announced", async () => {
+  // A claude run as a subprocess inherits CHANNEL_PROCESS_TOKEN and announces its own session ID
+  // under the parent's token. Were that a supersession, the token would move to the subprocess, the
+  // parent's thread would stop being what the token resolves to, and every one of the parent's
+  // remaining prompts and replies would meet the straggler gate above as a session the token no
+  // longer holds: mirroring stops for the rest of that session, silently.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-parent");
+  // The parent's own relay pipe, which is what marks it as a real launch: the registry declines a
+  // subprocess only for a session a relay has attached to.
+  registry.relaySeen(TOKEN);
+  announce(registry, "session-subprocess");
+  const { writer, posts } = fakeWriter();
+  const router = createOutboundRouter({
+    registry,
+    threadFor: (sessionId) => (sessionId === "session-parent" ? THREAD : "child-thread"),
+    writer,
+    mirrorWriter: writer,
+  });
+
+  assert.equal(registry.list().length, 1, "no thread is opened for a session with no record");
+  assert.deepEqual(
+    await router.mirror(TOKEN, "reply", "the parent is still working", "session-parent"),
+    { status: "sent" },
+  );
+  assert.deepEqual(posts, [
+    { threadId: THREAD, text: renderMirror("reply", "the parent is still working")[0] },
   ]);
 });
 
@@ -197,9 +264,9 @@ test("a rate-limit block earned by mirror volume does not drop an alert", async 
   const mirrorWriter = createThreadWriter({ messenger, now });
   const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter });
 
-  assert.deepEqual(await router.mirror(TOKEN, "reply", "turn one", null), { status: "sent" });
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "turn one", "session-a"), { status: "sent" });
   assert.equal(
-    (await router.mirror(TOKEN, "reply", "turn two", null)).status,
+    (await router.mirror(TOKEN, "reply", "turn two", "session-a")).status,
     "failed",
     "the mirror bucket is now blocked",
   );
@@ -229,7 +296,7 @@ test("a failed mirror post reports and logs its kind, never its text", async () 
   });
 
   const secret = "SECRET-the-reply-that-failed";
-  assert.deepEqual(await router.mirror(TOKEN, "reply", secret, null), {
+  assert.deepEqual(await router.mirror(TOKEN, "reply", secret, "session-a"), {
     status: "failed",
     error: "HTTP 403",
   });
@@ -252,7 +319,7 @@ test("a mirrored reply too long for one message is posted whole, in order", asyn
   const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter: writer });
 
   const reply = longReply(30);
-  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, null), { status: "sent" });
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
 
   const expected = renderMirror("reply", reply);
   assert.ok(expected.length >= 5, `${expected.length} message(s)`);
@@ -276,7 +343,7 @@ test("every posted mirror message is the message the renderer measured", async (
 
   const room = MAX_MESSAGE_LENGTH - (renderMirror("reply", "x")[0].length - 1);
   const reply = `${"x".repeat(room)}\n\n${"y".repeat(room)}`;
-  await router.mirror(TOKEN, "reply", reply, null);
+  await router.mirror(TOKEN, "reply", reply, "session-a");
 
   assert.deepEqual(
     posts.map((post) => post.text),
@@ -311,7 +378,7 @@ test("a mirrored reply that fails part way through stops and says how far it got
   });
 
   const reply = `SECRET-marker\n\n${longReply(30)}`;
-  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, null), {
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), {
     status: "failed",
     error: "HTTP 500",
   });
@@ -359,9 +426,9 @@ test("mirror posts and a reply-tool post land in the order they were accepted", 
   });
 
   const accepted = [
-    router.mirror(TOKEN, "reply", "the turn's reply", null),
+    router.mirror(TOKEN, "reply", "the turn's reply", "session-a"),
     router.reply(TOKEN, "the reply tool"),
-    router.mirror(TOKEN, "prompt", "the next prompt", null),
+    router.mirror(TOKEN, "prompt", "the next prompt", "session-a"),
   ];
   await Promise.all(accepted);
 
@@ -387,7 +454,7 @@ test("nothing else lands between the messages of one mirrored reply", async () =
   const reply = longReply(30);
   const messages = renderMirror("reply", reply);
   assert.ok(messages.length >= 5, `${messages.length} message(s)`);
-  await Promise.all([router.mirror(TOKEN, "reply", reply, null), router.reply(TOKEN, "the reply tool")]);
+  await Promise.all([router.mirror(TOKEN, "reply", reply, "session-a"), router.reply(TOKEN, "the reply tool")]);
 
   assert.deepEqual(landed, [...messages, "the reply tool"]);
 });
@@ -417,8 +484,8 @@ test("a busy thread does not hold up another session's thread", async () => {
   });
 
   await Promise.all([
-    router.mirror(TOKEN, "reply", "the slow thread", null),
-    router.mirror(other, "reply", "the other thread", null),
+    router.mirror(TOKEN, "reply", "the slow thread", "session-a"),
+    router.mirror(other, "reply", "the other thread", "session-b"),
   ]);
 
   assert.deepEqual(landed, ["other-thread", THREAD]);
@@ -430,7 +497,7 @@ test("a mirror post with nothing visible in it is reported rather than posted", 
   const { writer, posts } = fakeWriter();
   const router = createOutboundRouter({ registry, threadFor: () => THREAD, writer, mirrorWriter: writer });
 
-  assert.deepEqual(await router.mirror(TOKEN, "reply", "​  \n ", null), {
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "​  \n ", "session-a"), {
     status: "failed",
     error: "the message was empty",
   });
@@ -574,7 +641,7 @@ test("a mirror post with nothing visible in it leaves a line naming its session"
     log: (message) => lines.push(message),
   });
 
-  await router.mirror(TOKEN, "prompt", "\u200b  \n ", null);
+  await router.mirror(TOKEN, "prompt", "\u200b  \n ", "session-a");
   assert.equal(lines.length, 1, lines.join("\n"));
   assert.ok(lines[0].includes("session-a"), lines[0]);
 });

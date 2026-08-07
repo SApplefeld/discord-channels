@@ -9,8 +9,8 @@
 # sessions never share an identity), then starts `claude` with the channel flag this host needs.
 # Both are restored to their previous values when `claude` exits, because this file is dot-sourced
 # and would otherwise write them into the operator's own shell: a later bare `claude` in that shell
-# would inherit a live token, and the broker would read the second session as a supersession of the
-# first, mark the still-running session ended, and credit its tool calls to the wrong record.
+# would inherit a live token, and the broker would read that second session as a subprocess of the
+# first and never register it, leaving it with no thread, no card, and no mirroring.
 #
 # -ClaudeArgs passes extra arguments straight through to `claude` after the channel flag and the
 # relay's server name: a -p prompt, or anything else.
@@ -209,8 +209,9 @@ function Enter-ClaudeSession {
     } finally {
         # Restored whether claude exited, threw, or was interrupted. A token left behind in a
         # dot-sourced shell is inherited by the next `claude` started from it, and the broker reads
-        # a second session on a live token as a supersession: the running session is marked ended
-        # and its events are credited to the newcomer. CHANNEL_SESSION_MIRROR is restored for the
+        # a second session announcing itself on a relayed session's token as a subprocess of it: the
+        # newcomer never registers, so it gets no thread, no card, and no mirroring, and it goes on
+        # posting hook events that nothing can route. CHANNEL_SESSION_MIRROR is restored for the
         # same reason: a bare `claude` run later from this shell must not silently inherit
         # -NoMirror's off value from a session that has since exited.
         $env:CHANNEL_SESSION = $previous.CHANNEL_SESSION

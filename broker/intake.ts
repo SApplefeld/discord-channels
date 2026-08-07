@@ -591,12 +591,48 @@ export function createHandler(
       }
 
       const record = options.registry.apply(parsed.intake);
+      if (record === null && options.registry.impostorStart(parsed.intake)) {
+        // A SessionStart carrying a session ID another process token still holds: the takeover
+        // docs/security-model.md names, refused by the registry rather than merged. Its own reason
+        // string, which is its own bucket in the rate limiter below, so a run of the ordinary drops
+        // cannot be what turns this line into a suppressed count. The session named is the one the
+        // post tried to claim, which is a record the broker already holds and publishes; the
+        // process token is not logged, here or anywhere, because it is the key a hook post is
+        // authenticated by, and a refused takeover is exactly the traffic a stolen one produces.
+        refusals.warn(
+          "SessionStart naming a session another process token holds",
+          `session=${parsed.intake.sessionId ?? "none"} name=${parsed.intake.sessionName ?? "none"} ` +
+            "(the takeover is refused; the session stays with the token that announced it)",
+        );
+        send(response, 202, { ignored: true });
+        return;
+      }
+      if (record === null && options.registry.subprocessStart(parsed.intake)) {
+        // A `claude` running as a subprocess of a wrapped session: it inherits CHANNEL_PROCESS_TOKEN
+        // and announces a session of its own under it, and the registry declines to register it so
+        // the parent keeps the token. Expected traffic rather than a fault, and it gets its own
+        // line because the drop below names two causes that are both untrue of it, which would
+        // read as a session mysteriously failing to register. The session named is unregistered and
+        // appears on no other surface, which is why it is logged: it is the only handle anything
+        // has on this drop. The process token is not logged, here or anywhere, because it is the
+        // key a hook post is authenticated by.
+        refusals.warn(
+          "SessionStart from a subprocess",
+          `session=${parsed.intake.sessionId ?? "none"} not registered; the session already ` +
+            "holding this process token keeps it and goes on being mirrored",
+        );
+        send(response, 202, { ignored: true });
+        return;
+      }
       if (record === null) {
         // A tool or stop event from a process token with no announced session, or one whose session
-        // ID and process token disagree (registry.route's opportunistic keying). Accepted off the
-        // wire and dropped, so a replayed or misrouted post cannot conjure or corrupt a session.
-        // The process token itself is never logged; it is the forgery key a hook post is
-        // authenticated by, and this is exactly the traffic a forged one would produce.
+        // ID and process token disagree (registry.route's session keying). Accepted off the wire and
+        // dropped, so a replayed or misrouted post cannot conjure or corrupt a session. The process
+        // token itself is never logged; it is the forgery key a hook post is authenticated by. Two
+        // very different things land here: a forged or replayed post, and the ordinary tool and turn
+        // traffic of a subprocess whose SessionStart was declined above, which names a session no
+        // record holds for as long as that subprocess runs. So the line reports the cause and calls
+        // what it caught neither.
         refusals.warn(
           "hook dropped",
           `event=${parsed.intake.event} session=${parsed.intake.sessionId ?? "none"} ` +

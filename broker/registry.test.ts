@@ -17,7 +17,7 @@ function clock(start = 1_000_000) {
   };
 }
 
-function sessionStart(sessionId: string, source: string, name = "neo-intake"): HookIntake {
+function sessionStart(sessionId: string, source: string | null, name = "neo-intake"): HookIntake {
   return {
     event: "SessionStart",
     processToken: TOKEN,
@@ -103,7 +103,7 @@ test("a source clear SessionStart creates a second record and ends the first", (
   assert.equal(sessions.current(TOKEN)?.sessionId, "session-b");
 });
 
-test("a changed session ID supersedes whatever the source says", () => {
+test("a changed session ID supersedes under every source but startup", () => {
   // The fallback for a SessionStart that does not report source clear: the session ID changing is
   // itself the signal, so no other code path is needed for it.
   const time = clock();
@@ -114,6 +114,180 @@ test("a changed session ID supersedes whatever the source says", () => {
 
   assert.equal(byId(sessions.list(), "session-a").state, "ended");
   assert.equal(sessions.current(TOKEN)?.sessionId, "session-b");
+});
+
+test("a source startup SessionStart under a relayed session is a subprocess and registers nothing", () => {
+  // CHANNEL_PROCESS_TOKEN is inherited by every process a wrapped session spawns, so a claude run
+  // as a subprocess announces its own new session ID under its parent's token. The relay is what
+  // marks the parent as a real launch: the wrapper starts one with every session it launches.
+  const time = clock();
+  const sessions = registry(time.now);
+
+  sessions.apply(sessionStart("parent", "startup"));
+  sessions.relaySeen(TOKEN);
+  sessions.apply(postToolUse("Bash"));
+  const announcedAt = time.now();
+  time.advance(5_000);
+
+  const child = sessions.apply(sessionStart("child", "startup", "subprocess"));
+
+  assert.equal(child, null, "the arrival is dropped the way any unroutable post is");
+  assert.equal(sessions.list().length, 1, "no record is created for the subprocess");
+  const parent = byId(sessions.list(), "parent");
+  assert.equal(parent.state, "live", "the parent keeps running");
+  assert.equal(parent.endedAt, null);
+  assert.equal(parent.name, "neo-intake", "the subprocess does not rename the parent");
+  assert.equal(parent.toolCount, 1);
+  assert.equal(
+    parent.lastHookAt,
+    announcedAt,
+    "a subprocess announcement is not the parent's own liveness",
+  );
+  assert.equal(sessions.current(TOKEN)?.sessionId, "parent", "the parent keeps the token");
+});
+
+test("an unrecognized source and an absent one both still supersede", () => {
+  // The protection the source check has to preserve: only the one value known to mean "a new
+  // process started" is read as a subprocess. Anything else is a replacement, including a trigger
+  // this broker has never seen and a payload carrying no source at all, because a /clear whose new
+  // session never registered would be a session with no thread and no mirror.
+  const time = clock();
+
+  const unknown = registry(time.now);
+  unknown.apply(sessionStart("session-a", "startup"));
+  unknown.relaySeen(TOKEN);
+  unknown.apply(sessionStart("session-b", "teleport"));
+  assert.equal(byId(unknown.list(), "session-a").state, "ended");
+  assert.equal(unknown.current(TOKEN)?.sessionId, "session-b");
+
+  const absent = registry(time.now);
+  absent.apply(sessionStart("session-a", "startup"));
+  absent.relaySeen(TOKEN);
+  absent.apply(sessionStart("session-b", null));
+  assert.equal(byId(absent.list(), "session-a").state, "ended");
+  assert.equal(absent.current(TOKEN)?.sessionId, "session-b");
+});
+
+test("a startup SessionStart supersedes a live record that no relay ever attached to", () => {
+  // The recovery path that keeps the decline from being a denial of service. A live record is
+  // creatable with one hook post by any process that read the token out of its environment, and a
+  // live record is never pruned and never evicted, so a squat that could decline a real session's
+  // announcement would hold the token for the life of the broker. The relay is what a real launch
+  // has and a hook-only announcement does not, so the real session takes the token back.
+  const time = clock();
+  const sessions = registry(time.now);
+
+  sessions.apply(sessionStart("squat", "startup", "not-the-operator"));
+  assert.equal(sessions.list()[0].lastRelayAt, null, "a hook-only announcement gets no relay");
+  time.advance(1_000);
+
+  const real = sessions.apply(sessionStart("real", "startup", "neo-warden"));
+
+  assert.equal(real?.sessionId, "real", "the real session registers");
+  assert.equal(byId(sessions.list(), "squat").state, "ended");
+  assert.equal(sessions.current(TOKEN)?.sessionId, "real", "and takes the token");
+
+  // With its pipe attached, the real session's own subprocesses are declined as they should be.
+  sessions.relaySeen(TOKEN);
+  assert.equal(sessions.apply(sessionStart("child", "startup")), null);
+  assert.equal(sessions.current(TOKEN)?.sessionId, "real");
+});
+
+test("subprocessStart names only the arrival start declines as a subprocess", () => {
+  // The signal a caller reports the drop from. apply answers null for everything it ignores, so
+  // this has to be true of the subprocess and false of every other arrival that shares that null,
+  // or an expected drop and a session that failed to register read the same in the log.
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("parent", "startup"));
+
+  assert.equal(
+    sessions.subprocessStart(sessionStart("child", "startup")),
+    false,
+    "no relay has attached to the incumbent, so nothing is protected yet",
+  );
+  sessions.relaySeen(TOKEN);
+
+  assert.equal(sessions.subprocessStart(sessionStart("child", "startup")), true);
+  assert.equal(sessions.subprocessStart(sessionStart("replacement", "clear")), false, "a /clear");
+  assert.equal(sessions.subprocessStart(sessionStart("parent", "startup")), false, "a refresh");
+  assert.equal(sessions.subprocessStart(postToolUse("Bash")), false, "not a SessionStart at all");
+  assert.equal(
+    sessions.subprocessStart({ ...sessionStart("child", "startup"), processToken: "other-token" }),
+    false,
+    "a first announcement under a token no session holds",
+  );
+  assert.equal(
+    sessions.subprocessStart({ ...sessionStart("parent", "startup"), processToken: "other-token" }),
+    false,
+    "an arrival the impostor guard refuses is refused for that reason",
+  );
+});
+
+test("subprocessStart answers the same before and after the apply it explains", () => {
+  // The classification is read after apply has run, so it is only honest if the declined arrival
+  // changed nothing that the answer depends on. Asserted rather than reasoned about, because a
+  // future mutation on that path would make every subprocess drop log the wrong cause.
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("parent", "startup"));
+  sessions.relaySeen(TOKEN);
+
+  const arrival = sessionStart("child", "startup");
+  assert.equal(sessions.subprocessStart(arrival), true);
+  assert.equal(sessions.apply(arrival), null);
+  assert.equal(sessions.subprocessStart(arrival), true, "the declined arrival mutated nothing");
+});
+
+test("impostorStart names the takeover the registry refuses, and nothing else", () => {
+  // The other refusal that shares apply's null, and the one that is a security event rather than
+  // routine traffic. It is reported under its own cause, so it needs its own signal.
+  const time = clock();
+  const sessions = registry(time.now);
+  const attacker = "22222222-2222-2222-2222-222222222222";
+  sessions.apply(sessionStart("session-a", "startup"));
+  sessions.relaySeen(TOKEN);
+
+  const takeover = { ...sessionStart("session-a", "startup"), processToken: attacker };
+  assert.equal(sessions.impostorStart(takeover), true);
+  assert.equal(sessions.apply(takeover), null, "and it is refused");
+  assert.equal(sessions.impostorStart(sessionStart("child", "startup")), false, "a subprocess");
+  assert.equal(sessions.impostorStart(sessionStart("session-a", "startup")), false, "a refresh");
+  assert.equal(
+    sessions.impostorStart({ ...postToolUse("Bash"), processToken: attacker }),
+    false,
+    "not a SessionStart at all",
+  );
+
+  sessions.relayClosed(TOKEN, "session-a");
+  assert.equal(
+    sessions.impostorStart(takeover),
+    false,
+    "an ended record is a tombstone, not a claim on the identifier",
+  );
+});
+
+test("a startup SessionStart supersedes a stale record and follows an ended one", () => {
+  // The subprocess reading rests on the parent being demonstrably alive. A record the sweep has
+  // given up on is not, and an ended one is a tombstone, so a startup arriving on either replaces
+  // it rather than being turned away.
+  const time = clock();
+  const stale = registry(time.now, 60_000);
+  stale.apply(sessionStart("session-a", "startup"));
+  stale.relaySeen(TOKEN);
+  time.advance(60_000);
+  stale.sweep();
+  assert.equal(byId(stale.list(), "session-a").state, "stale");
+
+  stale.apply(sessionStart("session-b", "startup"));
+  assert.equal(byId(stale.list(), "session-a").state, "ended");
+  assert.equal(stale.current(TOKEN)?.sessionId, "session-b");
+
+  const ended = registry(time.now, 60_000);
+  ended.apply(sessionStart("session-a", "startup"));
+  ended.relayClosed(TOKEN, "session-a");
+  ended.apply(sessionStart("session-b", "startup"));
+  assert.equal(ended.current(TOKEN)?.sessionId, "session-b");
 });
 
 test("a repeated SessionStart for the same session refreshes rather than replaces it", () => {

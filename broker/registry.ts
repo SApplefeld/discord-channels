@@ -28,8 +28,11 @@ export type SessionRecord = {
   /** Timestamp of the most recent hook event for this session. */
   lastHookAt: number;
   /**
-   * Timestamp of the most recent relay liveness signal. The relay does not exist yet, so this
-   * stays null and staleness rests on hook traffic alone; feeding it is a single assignment.
+   * Timestamp of the most recent relay liveness signal, set by `relaySeen` when a pipe attaches
+   * and on every heartbeat it answers. Null for a session no relay has ever attached to, which is
+   * a session announced by hook posts alone: the wrapper starts a relay with every session it
+   * launches, so the field is also the registry's only evidence that a record belongs to a real
+   * launch rather than to any local process that knows the token.
    */
   lastRelayAt: number | null;
   endedAt: number | null;
@@ -64,6 +67,23 @@ export type RegistryOptions = {
 export type Registry = {
   /** Applies a hook event. Returns the touched record, or null when the event was ignored. */
   apply: (intake: HookIntake) => SessionRecord | null;
+  /**
+   * True when this SessionStart is a subprocess announcing itself under a token a relayed session
+   * already holds, which `apply` declines to register.
+   *
+   * `apply` answers null for every event it ignores, so the null alone cannot tell an expected
+   * subprocess announcement apart from a post that reached no session at all. This is what tells
+   * them apart, for a caller that reports one differently from the other. Nothing is mutated, so
+   * the answer is the same before and after the `apply` it explains.
+   */
+  subprocessStart: (intake: HookIntake) => boolean;
+  /**
+   * True when this SessionStart names a session ID another process token still holds, which `apply`
+   * refuses. The attempted takeover this refuses is a security event rather than routine traffic,
+   * and it shares `apply`'s null with the routine drops, so a caller that reports it as its own
+   * cause reads it here.
+   */
+  impostorStart: (intake: HookIntake) => boolean;
   /**
    * Marks overdue sessions stale, then prunes terminal records past the retention horizon and
    * evicts down to the record cap. Returns only the records that went stale; a pruned record is
@@ -118,17 +138,52 @@ export function createRegistry(options: RegistryOptions): Registry {
     return null;
   }
 
-  function start(intake: HookIntake, sessionId: string): SessionRecord | null {
-    // A session ID is not a secret: GET /sessions publishes every one of them. Without this, a
-    // local process could mint a token, announce a SessionStart carrying a running session's ID,
-    // and overwrite that record in place with one holding its own token. Thread bindings key on
-    // session ID and persist, so the operator's messages would then route to the impostor and its
-    // replies would land in the real thread as that session, while the real one went dark.
-    //
-    // Only a record still holding the ID is protected. An ended one is a tombstone, and a session
-    // ID that is genuinely reused is a case the supersession path below already handles.
+  // A session ID is not a secret: GET /sessions publishes every one of them. Without this, a local
+  // process could mint a token, announce a SessionStart carrying a running session's ID, and
+  // overwrite that record in place with one holding its own token. Thread bindings key on session
+  // ID and persist, so the operator's messages would then route to the impostor and its replies
+  // would land in the real thread as that session, while the real one went dark.
+  //
+  // Only a record still holding the ID is protected. An ended one is a tombstone, and a session ID
+  // that is genuinely reused is a case the supersession path handles.
+  function impostor(intake: HookIntake, sessionId: string): boolean {
     const held = sessions.get(sessionId);
-    if (held && held.state !== "ended" && held.processToken !== intake.processToken) return null;
+    return held !== undefined && held.state !== "ended" && held.processToken !== intake.processToken;
+  }
+
+  function impostorStart(intake: HookIntake): boolean {
+    if (intake.event !== "SessionStart" || intake.sessionId === null) return false;
+    return impostor(intake, intake.sessionId);
+  }
+
+  // The one reading of "this is a subprocess, not a replacement", shared by the branch that
+  // declines the arrival and the caller that reports the drop, so what the registry does and what
+  // the log says it did cannot drift apart. Ordered as start() is: an arrival the impostor guard
+  // refuses is refused for that reason, and a token's own session announcing itself again is a
+  // refresh rather than a subprocess.
+  //
+  // The incumbent must hold a relay pipe, which `lastRelayAt` records. A live record is not enough:
+  // any process that reads CHANNEL_PROCESS_TOKEN out of the environment it inherited can create one
+  // with a single hook post, and a live record is never pruned and never evicted, so a squatter that
+  // announced a session of its own before the real one did would otherwise hold the token forever,
+  // declining the real session's announcement for the life of the broker and refreshing its claim
+  // with one hook post per staleness window. Requiring the pipe means such a record is superseded
+  // by the real session exactly as it was before this branch existed.
+  //
+  // The signal is "a relay has attached to this session", not "a pipe is open right now": the
+  // registry holds the timestamp, not the connection. For a live record the two coincide closely,
+  // because a pipe that closes and stays closed ends its session at the relay hub's grace window.
+  function subprocessStart(intake: HookIntake): boolean {
+    if (intake.event !== "SessionStart" || intake.sessionId === null) return false;
+    if (intake.source !== "startup") return false;
+    if (impostor(intake, intake.sessionId)) return false;
+    const previous = current(intake.processToken);
+    if (previous === null || previous.state !== "live" || previous.lastRelayAt === null) return false;
+    return previous.sessionId !== intake.sessionId;
+  }
+
+  function start(intake: HookIntake, sessionId: string): SessionRecord | null {
+    if (impostor(intake, sessionId)) return null;
 
     const previous = current(intake.processToken);
 
@@ -142,10 +197,41 @@ export function createRegistry(options: RegistryOptions): Registry {
       return previous;
     }
 
+    if (subprocessStart(intake)) {
+      // A subprocess of the live session, not a replacement for it. CHANNEL_PROCESS_TOKEN is
+      // inherited by every process a wrapped session spawns, so a `claude` invoked as a subprocess
+      // announces a session ID of its own under its parent's token. Registering it would end the
+      // parent, hand the token to a process that often exits within the minute, and open a Discord
+      // thread for it; from then on the parent's own mirror posts name a session the token no
+      // longer holds and are dropped by the straggler gate in routing/outbound.ts, so the session
+      // the operator is watching stops being mirrored and nothing says so.
+      //
+      // Nothing is registered and nothing on the parent is touched, not even its staleness clock:
+      // a child process announcing itself is evidence about the child, not about whether the
+      // parent is still working. The arrival is declined with the null every ignored event
+      // answers; `subprocessStart` above is how a caller names this one as what it is.
+      //
+      // What holds the token here is a session with a relay pipe, which is what a launch through
+      // the wrapper always has and what a process posting hooks alone never gets. A stale or ended
+      // record is not protected either: this reading rests on the incumbent being demonstrably
+      // alive, and a record the sweep has given up on is not. A wrapped session of the operator's
+      // own is never the arrival declined here, because the wrapper mints it a token of its own.
+      //
+      // What this does not close: a process that attaches a pipe of its own before the real relay
+      // does holds the token under the relay hub's first-pipe-wins rule, and a record it announces
+      // is then protected exactly as a real session's is. That is the relay race docs/security-
+      // model.md records as an accepted residual, and this branch neither widens nor narrows it.
+      return null;
+    }
+
     if (previous) {
-      // Supersession keys on a changed session ID, not on source === "clear". A /clear mints a new
-      // session ID, and so does every other replacement, so this covers the case even if the
-      // source field were ever to arrive wrong.
+      // Supersession keys on a changed session ID for every source but "startup", not on
+      // source === "clear". A /clear mints a new session ID, and so does every other replacement,
+      // so an unrecognized source, a trigger Claude Code adds later, and a payload carrying no
+      // source at all all replace the session rather than being read as a subprocess. The
+      // asymmetry is deliberate: `startup` is the one value known to mean a new process started,
+      // and the cost of erring the other way is a /clear whose new session never registers, which
+      // is a live session with no thread and no mirror at all.
       previous.state = "ended";
       previous.endedAt = now();
     }
@@ -178,9 +264,10 @@ export function createRegistry(options: RegistryOptions): Registry {
    * it out of staleness on traffic from a session that is gone.
    *
    * The session ID is therefore honored when it is present, and the process token must still match
-   * so an event cannot be aimed at a session it does not belong to. Whether `session_id` rides on
-   * a `PostToolUse` or `Stop` payload is unconfirmed (the observed field list does not include
-   * it), so this is strictly opportunistic: with no session ID, the process token routes as before.
+   * so an event cannot be aimed at a session it does not belong to. Every hook payload carries
+   * `session_id`, `PostToolUse` and `Stop` included, so that keying is what routes an event in
+   * practice. The token-only path is kept for a payload that arrives without one, which is a
+   * defensive case rather than an expected one.
    */
   function route(intake: HookIntake): SessionRecord | null {
     if (intake.sessionId === null) return current(intake.processToken);
@@ -295,5 +382,5 @@ export function createRegistry(options: RegistryOptions): Registry {
     return record;
   }
 
-  return { apply, sweep, list, current, relaySeen, relayClosed };
+  return { apply, subprocessStart, impostorStart, sweep, list, current, relaySeen, relayClosed };
 }

@@ -86,6 +86,19 @@ the wrapper set would be inherited by exactly the subprocesses this describes.
   and is described above: it posts on the token alone, so the reply key bounds the reply tool, not
   the thread.
 
+Holding a token has one further consequence, and it cuts the other way. **A `SessionStart` whose
+source is `startup`, arriving under a token whose live session has a relay attached, is declined
+rather than registered**: it is a subprocess of that session, since every process a wrapped session
+spawns inherits the token, and registering it would end the parent, open a thread for the child, and
+stop the parent being mirrored with nothing saying so. Every other source still supersedes, so a
+`/clear` behaves as it always has.
+
+The relay pipe is the precondition that keeps this from becoming a denial of service. A record
+created by hook posts alone, which any process holding the token can do, has no pipe, so it does not
+decline anything and the real session's announcement supersedes it. What remains is the race the
+paragraph below already accepts: a process that attaches a pipe before the genuine relay does holds
+the token under first-pipe-wins, and its record is protected like any other.
+
 The residual is a race: a local process that attaches a stream *before* the relay does holds the
 token and its key until that pipe closes. Nothing detects it, and the operator's only signal is a
 session whose status card keeps ticking while its answers read wrong. Closing it would need the

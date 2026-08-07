@@ -10,13 +10,21 @@ import type { AttachResult, RelayConnection, RelayEvent } from "./relays.ts";
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const GRACE_MS = 10_000;
 
-function announce(registry: Registry, sessionId: string, processToken = TOKEN): void {
+// The source matters to the registry: a startup arriving under a token a live session already
+// holds is a subprocess of that session and registers nothing, so a test that means to replace the
+// session under a token announces the replacement the way a /clear does.
+function announce(
+  registry: Registry,
+  sessionId: string,
+  processToken = TOKEN,
+  source = "startup",
+): void {
   registry.apply({
     event: "SessionStart",
     processToken,
     sessionName: "neo-warden",
     sessionId,
-    source: "startup",
+    source,
     toolName: null,
   });
 }
@@ -264,7 +272,7 @@ test("a clear moves the session under the same pipe", () => {
   const connection = fakeConnection();
   const detach = accepted(relays.attach(TOKEN, connection));
 
-  announce(registry, "session-b");
+  announce(registry, "session-b", TOKEN, "clear");
   assert.equal(registry.current(TOKEN)?.sessionId, "session-b");
   assert.equal(relays.deliver(TOKEN, { type: "message", chatId: "9", text: "hi" }), true);
 
@@ -284,7 +292,7 @@ test("a pending end names the session it was watching, not whatever the token ho
   const detach = accepted(relays.attach(TOKEN, fakeConnection()));
 
   detach();
-  announce(registry, "session-b");
+  announce(registry, "session-b", TOKEN, "clear");
   now += GRACE_MS + 1;
   relays.heartbeat();
 

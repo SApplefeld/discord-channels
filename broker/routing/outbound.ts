@@ -100,11 +100,13 @@ export type OutboundRouter = {
   /**
    * Posts one mirrored prompt or reply from the session currently held by this process token.
    *
-   * `sessionId` is the session the mirror payload names, when it names one. It is honored the way
-   * the /hook path's registry keying honors it: a /clear replaces the session under the same
-   * process token, so a straggler post carrying the replaced session's id is dropped rather than
-   * credited to the new session and posted into its thread. With no session id the token routes
-   * alone, as reply does.
+   * `sessionId` is the session the mirror payload names, and a post is delivered only when it
+   * matches the session the token holds. A /clear replaces the session under the same process
+   * token, so a straggler carrying the replaced session's id is dropped rather than credited to
+   * the new session and posted into its thread, and a post naming no session at all is dropped for
+   * the same reason: it is content that cannot be attributed to the session whose thread it would
+   * land in. The reply tool routes on the token alone, which is different because a reply is
+   * written by the session holding the pipe rather than by whatever inherited the token.
    *
    * This is the seam where mirror text becomes Discord messages. The renderer decides how many it
    * takes, and they are posted in order through the mirror writer. A post refused part way through
@@ -236,10 +238,23 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: located.status };
       }
 
-      // The straggler gate. A payload naming a session the token no longer holds belongs to a
-      // conversation that ended at a /clear; delivering it would post that conversation's text
-      // into the new session's thread.
-      if (sessionId !== null && sessionId !== located.sessionId) return { status: "no-session" };
+      // The straggler gate, which every mirror post must pass by naming the session it came from.
+      // A payload naming a session the token no longer holds belongs to a conversation that ended
+      // at a /clear, and one naming nothing cannot be attributed at all: both would otherwise post
+      // as the current session's own words. The unattributable case is the reachable one, because
+      // every process a session spawns inherits its token, and a `claude` running as a subprocess
+      // mirrors prompts and replies from a conversation of its own, often in another repository.
+      //
+      // Closed rather than open, so what a missing field costs is a log line rather than another
+      // conversation's text in the operator's thread, which nothing can take back. Every hook
+      // payload carries `session_id`, so nothing that arrives today is turned away here.
+      if (sessionId === null) {
+        dropped(
+          `a mirrored ${kind} for session ${located.sessionId} was dropped, it named no session of its own`,
+        );
+        return { status: "no-session" };
+      }
+      if (sessionId !== located.sessionId) return { status: "no-session" };
 
       const messages = renderMirror(kind, text);
       // Nothing visible in the payload once the invisible class is stripped. Reported rather than

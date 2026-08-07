@@ -30,11 +30,20 @@ session stops being mirrored and nothing says so.
 Measured on this host: eight `mirroring` records, seven of them one-turn probe subprocesses, the
 parent marked `ended` at turn 9, and the token held by a throwaway headless run.
 
-Supersession exists for `/clear`, which operator check B measured as firing `SessionStart` with
-`source: "clear"` and a new session ID. A subprocess fires `source: "startup"`. A genuinely new
-wrapped session gets its own token minted by the wrapper and never collides with a live one. So the
-trigger for supersession is `source: "clear"`, and a `startup` arriving under a token a live session
-already holds is a subprocess: the parent keeps the token, and the child is not registered.
+Supersession currently keys on a changed session ID rather than on the source, and `registry.ts`
+states why: a `/clear` mints a new session ID and so does every other replacement, so the ID covers
+the case even if the source field ever arrived wrong. That defensiveness is what has to be preserved
+while the defect is fixed, because the cost of getting it wrong in the other direction is a `/clear`
+whose new session never registers at all.
+
+So the rule is inverted rather than replaced: **supersede unless the source is exactly `startup`.**
+`/clear` sends `source: "clear"` (operator check B), and a fresh session sends `source: "startup"`,
+confirmed against the live registry where every record, wrapped session and subprocess alike, reads
+`startup`. An unknown, absent, or future source value therefore still supersedes, which keeps the
+original protection intact; only the one value known to mean "a new process started" is treated as
+the subprocess it is when it arrives under a token a live session already holds. A genuinely new
+wrapped session gets its own token minted by the wrapper and never collides with a live one, so it
+is unaffected.
 
 **Defect 2: the installer's ACL hardening fails open and says nothing.** Two independent causes,
 both confirmed by probe rather than reasoning:
@@ -62,16 +71,18 @@ rather than a second opinion of what hardened means.
 
 ## Sections of Work
 
-### 1. Supersede only on a real clear
+### 1. A subprocess is not a supersession
 Model: opus
-`broker/registry.ts` supersedes a live record only when the intake's `source` is `clear`. A
-`SessionStart` carrying any other source under a token a live session already holds is a subprocess
-of that session: the existing record keeps the token and stays live, and the arriving session is not
-registered. The parent's own posts keep routing, and no thread is opened for the child.
+`broker/registry.ts` treats a `SessionStart` whose `source` is exactly `startup`, arriving under a
+token a live record already holds, as a subprocess of that session: the existing record keeps the
+token and stays live, and the arriving session is not registered. Every other source, including an
+absent or unrecognized one, supersedes exactly as it does today. The parent's own posts keep
+routing, and no thread is opened for the child.
 Acceptance: a `SessionStart` with `source: "startup"` under a live token leaves the live record
-current and creates nothing; the same with `source: "clear"` supersedes exactly as it does now; a
-`SessionStart` under a token no live session holds registers normally, which is the ordinary first
-announcement; a mirror post from the parent still routes after a subprocess has announced.
+current and creates nothing; the same with `source: "clear"` supersedes as it does now; so does one
+with a source the broker has never seen, and one with no source at all; a `SessionStart` under a
+token no live session holds registers normally, which is the ordinary first announcement; a mirror
+post from the parent still routes after a subprocess has announced.
 Files in scope: `broker/registry.ts`, `broker/registry.test.ts`, and `broker/intake.test.ts` if the
 intake's own tests assume the current behavior.
 Tests: at minimum, both directions of the source check, the ordinary first announcement, and an
@@ -114,3 +125,49 @@ temp directory and never the repository or the operator's real state root.
   the first one consequential and a re-install made the second one visible.
 
 ## Chapters
+
+### Chapter 1 - 2026-08-07
+Completed: 1. A subprocess is not a supersession
+Implemented By: implementer-opus, two review-fix rounds on the same agent
+Metrics: 1 review round (adversarial + blind at fable, security at default), 2 fix rounds; 0
+NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: **Two reviewers wanted the guard moved in opposite directions, and one
+condition satisfied both.** Blind wanted it widened to protect a stale parent, on the grounds that a
+parent is hook-silent exactly while a long tool runs. Security wanted it narrowed, because the first
+implementation rested on a false load-bearing claim: it treated "a live record holds this token" as
+proof a real parent exists, when any process that knows the token can create one with a single hook
+post. That turned a self-healing supersession into a permanent, silent registration denial, since a
+live record is skipped by both the prune and the eviction filter and the squatter can refresh it
+forever, leaving the real session unwatched with the squatter's name on its card.
+
+Gating the decline on the incumbent having an attached relay pipe closes both. A real wrapped session
+has one; a record announced by hook posts alone does not, so the real session supersedes it and the
+old self-healing is restored. Blind's stale case stops arising, because relay heartbeats hold an
+attached session live independent of hook traffic.
+
+Named accepted limits rather than closed: a subprocess launched as `claude --resume` sends
+`source: "resume"` and still supersedes, because an in-session `/resume` sends the same source under
+the same token and must supersede, so the source cannot separate them. A real session is unprotected
+for up to one relay heartbeat (15s default) if its pipe attaches before its `SessionStart` lands. A
+session whose relay never attaches at all keeps the pre-section behavior. And a squatter that
+attaches a pipe first is protected like any other holder, which is the first-pipe-wins race
+`docs/security-model.md` already accepts.
+
+Two things were corrected that this section did not set out to touch, both stale claims in shipped
+comments that a reviewer caught: `registry.ts` said whether `session_id` rides on a `PostToolUse` or
+`Stop` payload was unconfirmed, which this session's measurements falsify, and the wrapper explained
+its token restore by a supersession consequence that no longer holds.
+Review Findings: Both Majors fixed and pinned red first. Security's second Major, that an impostor
+`SessionStart` (the session-takeover attack the security model names) was logged under the same
+generic reason and rate-limit bucket as the commonest benign drop, so an attacker could suppress the
+only evidence of a takeover attempt by first posting a few ordinary drops, is fixed with its own
+reason and its own bucket, pinned by a test that opens the benign window first. Minors fixed: the
+new log line's comment claimed the session ID was published by `GET /sessions` when a declined
+session is never published; the `lastRelayAt` doc still said the relay did not exist; the generic
+drop comment claimed to be a forgery-only signal while a declined subprocess's ordinary traffic now
+lands there too; and the straggler gate now fails closed on a mirror post with no `session_id`,
+which changes nothing today and makes the failure mode a logged drop rather than another session's
+conversation posted into this thread.
+Stamps: see the close-out.
+Next: 2. Harden loudly, and only when it is needed
+Commit Model: Commit-and-Push
