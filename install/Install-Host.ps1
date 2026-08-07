@@ -267,8 +267,17 @@ if (-not $SkipAcl) {
     # directory holding it, so each entry covers its own parent, and every tree root is covered by
     # its direct children; passing a tree root itself would instead check the checkout's root, a
     # directory this installer does not harden and has no business hardening.
-    $verifyTargets = @()
-    foreach ($tree in @($hooksDir, $relayDir, $wrapperDir, $installDir, $brokerDir, $resolvedStateRoot)) {
+    # The state root is verified through the token file alone, not by walking what is under it. The
+    # check's rule is owner-relative: it permits a grant to the path's own owner, to Administrators,
+    # and to SYSTEM, which is the right standard for a credential. The state root holds runtime
+    # artifacts instead, written by the broker and the launch wrapper, so each one is owned by
+    # whichever process created it. A state file owned by Administrators that correctly inherits the
+    # three-trustee list therefore reads as granting a foreign account, and refusing the install over
+    # it would be refusing a path that is exactly as protected as it should be. What the state root
+    # needs proven is its own list, and the token file's check covers that as its parent, which is
+    # also precisely the check the broker itself runs at every start.
+    $verifyTargets = @($tokenFile)
+    foreach ($tree in @($hooksDir, $relayDir, $wrapperDir, $installDir, $brokerDir)) {
         $verifyTargets += @(Get-ChildItem -LiteralPath $tree -Recurse -Force | ForEach-Object { $_.FullName })
     }
     try {

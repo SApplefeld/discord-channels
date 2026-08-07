@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -416,13 +417,14 @@ const HARDENED_TREES: Array<{ tree: string; victim: string; names: RegExp }> = [
   { tree: "wrapper", victim: "wrapper/Assert-Mirror.ps1", names: /Assert-Mirror/ },
   { tree: "install", victim: "install/Install-Functions.ps1", names: /Install-Functions/ },
   { tree: "broker", victim: "broker/discord/credentials.ts", names: /credentials/ },
-  // A leftover log beside the broker's own files. The token file is not usable here: the installer
-  // hardens it by name, so an explicit grant on it is rewritten rather than carried into the walk.
-  { tree: "the state root", victim: "", names: /stale/ },
 ];
 
-/** The file a state-root run leaves open, since that tree's contents are not named in advance. */
-const STATE_ROOT_VICTIM = "stale-broker.log";
+// The state root is deliberately absent from that list. It holds runtime artifacts written by the
+// broker and the launch wrapper, so each is owned by whichever process created it, while the check
+// permits a grant to the path's own owner: a state file owned by Administrators that correctly
+// inherits the three-trustee list would read as granting a foreign account and refuse an install
+// over a path that is exactly as protected as it should be. What the state root needs proven is its
+// own list, which the token file's check covers as its parent, and that is pinned separately below.
 
 for (const { tree, victim, names } of HARDENED_TREES) {
   test(`Install-Host fails the install when a file under ${tree} is left open`, (t) => {
@@ -446,8 +448,7 @@ for (const { tree, victim, names } of HARDENED_TREES) {
     });
 
     const tokenFile = path.join(stateRoot, "discord-token.txt");
-    const target = victim === "" ? path.join(stateRoot, STATE_ROOT_VICTIM) : path.join(repoRoot, ...victim.split("/"));
-    if (victim === "") writeFileSync(target, "stale log content", "utf8");
+    const target = path.join(repoRoot, ...victim.split("/"));
     execFileSync("icacls.exe", [target, "/inheritance:d"], { stdio: "ignore" });
     execFileSync("icacls.exe", [target, "/grant", "*S-1-5-11:(M)"], { stdio: "ignore" });
 
@@ -480,6 +481,56 @@ for (const { tree, victim, names } of HARDENED_TREES) {
     // was just reported as reachable by other accounts, so it is removed rather than left there.
     assert.equal(existsSync(tokenFile), false, "the plaintext token written by this run must not be left behind");
   });
+}
+
+test("Install-Host verifies the token file, which is what covers the state root", (t) => {
+  // The state root is not walked, for the reason stated beside HARDENED_TREES, so the token file is
+  // the only entry that proves anything about it: the check reads the directory holding a path to
+  // the same standard, which is also exactly the check the broker runs at every start. Dropping the
+  // token file from the verification list would leave the state root proven by nothing, and the
+  // count is what notices, since every other entry is a file under one of the five trees.
+  const repoRoot = fixtureRepoRoot();
+  const settingsDir = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-settings-"));
+  const stateRoot = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-state-"));
+  t.after(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(settingsDir, { recursive: true, force: true });
+    rmSync(stateRoot, { recursive: true, force: true });
+  });
+
+  const result = runInstallHost(
+    {
+      scriptPath: path.join(repoRoot, "install", "Install-Host.ps1"),
+      hostName: "NEO",
+      channelId: "123456789012345678",
+      allowedUserId: "876543210987654321",
+      botToken: "fake-token-value",
+      repoRoot,
+      settingsPath: path.join(settingsDir, "settings.json"),
+      stateRoot,
+      skipNpmCi: true,
+    },
+    repoRoot,
+  );
+
+  assert.equal(result.status, 0, `install failed; stderr: ${result.stderr}`);
+  const verified = result.stdout.match(/Verified (\d+) hardened path\(s\)/);
+  assert.notEqual(verified, null, `the install must report what it verified: ${result.stdout}`);
+
+  const underTrees = ["hooks", "relay", "wrapper", "install", "broker"].reduce(
+    (total, tree) => total + countEntries(path.join(repoRoot, tree)),
+    0,
+  );
+  assert.equal(
+    Number((verified as RegExpMatchArray)[1]),
+    underTrees + 1,
+    "every entry under the five trees, plus the token file standing for the state root",
+  );
+});
+
+/** Files and subdirectories under a path, counted the way the installer's walk enumerates them. */
+function countEntries(directory: string): number {
+  return readdirSync(directory, { withFileTypes: true, recursive: true }).length;
 }
 
 test("Install-Host refuses a -BotTokenFile outside the state root", (t) => {

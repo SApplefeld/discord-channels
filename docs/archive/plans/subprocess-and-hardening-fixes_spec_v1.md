@@ -273,3 +273,38 @@ One acceptance criterion names this host and can only be exercised by the operat
   re-run. It is also how the windowless scheduled task from the mirroring effort takes effect.
 
 A failure there reopens the work as a new round.
+
+### Chapter 4 - 2026-08-07
+Completed: operator-pending item, the real re-install on this host
+Implemented By: main session
+Metrics: 0 review rounds (a scoped correction to a defect the operator's own run surfaced); advisor
+opus
+Decisions / Surprises: **The first real re-install failed, and the walk was the thing that was
+wrong.** It refused on `broker-state.json` in the state root, reporting a grant to an account
+"broader than its owner". Reading the actual state showed that file carrying three inherited access
+entries and no explicit ones, so it was inheriting the hardened list exactly as intended. What
+tripped the check was ownership: `broker-state.json`, `broker.env`, `discord-threads.json`, and
+`relay-mcp.json` are owned by `BUILTIN\Administrators` on this host, having been written by an
+elevated process at some point, while the list they inherit names the operator's account.
+
+The verifier's rule is owner-relative by design, permitting a grant to the path's own owner plus
+Administrators and SYSTEM, which is the correct standard for a credential file. Applying it to every
+runtime artifact in the state root was the error: those files are written by the broker and the
+launch wrapper, so each is owned by whichever process created it, and a correctly-inheriting state
+file reads as granting a foreign account. The install was refusing a path that is exactly as
+protected as it should be.
+
+The state root is therefore verified through the token file alone, whose check covers the directory
+holding it, which is also precisely the check the broker runs at every start. The five code trees
+are still walked in full, which is where the walk's value was: their contents are source files that
+should all be owned by the installing account. The count pin makes the token file's presence
+observable, proved by dropping it and watching the test fail.
+
+This is the operator-only criterion closing in the way that justifies keeping such criteria: no
+amount of fixture work would have produced a state root with four Administrators-owned artifacts in
+it, and the temp trees the section verified against were all created by the test process itself.
+Review Findings: None dispatched. The change narrows a check rather than widening one, the narrowing
+is argued above, and the full gate plus a red-first probe on the replacement pin cover it.
+Stamps: none surfaced.
+Next: none. The effort is complete.
+Commit Model: Commit-and-Push
