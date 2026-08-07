@@ -638,6 +638,170 @@ test("a message Discord says is gone takes its binding with it and is rebuilt", 
   assert.equal(calls.posts.length, 2, "and the rebuild happens once, not once per pass");
 });
 
+const GONE: CallOutcome<never> = {
+  status: "failed",
+  error: "HTTP 404",
+  rate: { remaining: 5, resetAfterMs: 1_000, retryAfterMs: null },
+  permanent: true,
+  missing: true,
+};
+
+test("a deleted card for an exited session is not posted again", async () => {
+  // The operator deleting a dead session's card is the operator saying they are done with it.
+  // Rebuilding it would put a fresh card and a fresh empty thread back in the channel, once per
+  // dead session, for as long as the registry retains the record.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  const ended = view({ lifecycle: "ended", endedAt: time.now() });
+  calls.nextEdit = GONE;
+  await surface.tick([ended]);
+  await surface.tick([ended]);
+  await surface.tick([ended]);
+
+  assert.equal(calls.posts.length, 1, "no card is posted for a session that already exited");
+  assert.equal(calls.opens.length, 1, "and no thread is opened on one");
+  assert.deepEqual(names(calls), [], "the surface is given up on rather than repainted");
+  assert.equal(calls.cards.length, 1, "and the dead message is not edited again");
+});
+
+test("a deleted card for a session waiting on a person is rebuilt", async () => {
+  // The live cases are the reason the rebuild exists: a permission prompt lands in the thread, so
+  // a session still running needs one.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  calls.nextEdit = GONE;
+  await surface.tick([view({ needsAttention: true })]);
+
+  assert.equal(calls.posts.length, 2, "a fresh card is posted");
+  assert.equal(calls.opens.length, 2, "with a thread opened on it");
+  assert.equal(calls.opens[1].messageId, "message-2");
+});
+
+test("a deleted card for an idle session is rebuilt", async () => {
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(IDLE_AFTER_MS + 1);
+  calls.nextEdit = GONE;
+  await surface.tick([view()]);
+
+  assert.equal(calls.posts.length, 2, "a fresh card is posted");
+  assert.equal(calls.opens.length, 2, "with a thread opened on it");
+});
+
+test("a restored binding whose message is gone and whose session exited is not reposted", async () => {
+  // The restart shape: bindings come back believing their sessions are working, and the first pass
+  // learns from a 404 that the message the operator deleted while the broker was down is gone.
+  const time = clock();
+  const calls = recorder();
+  const seen: string[] = [];
+  const surface = surfaceWith(time, calls, {
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+    onBind: (bindings) => seen.push(JSON.stringify(bindings)),
+  });
+
+  const ended = view({ lifecycle: "ended", endedAt: START });
+  calls.nextEdit = GONE;
+  await surface.tick([ended]);
+  await surface.tick([ended]);
+
+  assert.deepEqual(calls.posts, [], "the surface the operator deleted stays deleted");
+  assert.deepEqual(calls.opens, []);
+  assert.deepEqual(names(calls), []);
+  assert.equal(seen.at(-1), "[]", "and the binding for it is dropped from what is persisted");
+});
+
+test("a deleted thread for an exited session is not opened again", async () => {
+  // The card half of the same rule is above; this is the thread half. A rename that 404s drops
+  // only the thread ID, and the rebuild path would otherwise put a fresh empty thread on the
+  // surviving card of a session that is over.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  const ended = view({ lifecycle: "ended", endedAt: time.now() });
+  calls.nextRename = GONE;
+  await surface.tick([ended]);
+  await surface.tick([ended]);
+  await surface.tick([ended]);
+
+  assert.equal(calls.opens.length, 1, "no thread is opened for a session that already exited");
+  assert.equal(calls.posts.length, 1, "and the surviving card is not reposted");
+});
+
+test("a presumed-dead session's deleted card waits, and its revival rebuilds it", async () => {
+  // The backstop's exited is a presumption: a stale record silent past the window can still wake
+  // on a hook or a relay. Abandoning on it would leave the revived session with no card, no
+  // thread, and no message routing for the life of the broker, so the deleted surface is declined
+  // without being given up on. Declining spends nothing: no call is made on any pass it holds.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(EXITED_AFTER_MS + 1_000);
+  const presumed = view({ lifecycle: "stale" });
+  calls.nextEdit = GONE;
+  await surface.tick([presumed]);
+  await surface.tick([presumed]);
+  assert.equal(calls.posts.length, 1, "nothing is rebuilt while the session is presumed dead");
+  assert.equal(calls.opens.length, 1);
+
+  await surface.tick([view({ lastHookAt: time.now() })]);
+  assert.equal(calls.posts.length, 2, "the session waking rebuilds its card");
+  assert.equal(calls.opens.length, 2, "and its thread");
+});
+
+test("a dead session's surviving card is painted before its surface is let go", async () => {
+  // The abandonment wait mirrors archive()'s: give up only once the card carries the final state,
+  // or a busy tick's rate limit would freeze a dead session's card saying working forever.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  const ended = view({ lifecycle: "ended", endedAt: time.now() });
+  // The exit tick: the final card edit is rate-limited and the thread turns out deleted.
+  calls.nextEdit = refused(5_000);
+  calls.nextRename = GONE;
+  await surface.tick([ended]);
+  // The edit budget is still blocked, so the paint cannot land; the entry must not be abandoned.
+  await surface.tick([ended]);
+  assert.equal(calls.opens.length, 1, "no thread is rebuilt for the dead session meanwhile");
+
+  time.advance(6_000);
+  await surface.tick([ended]);
+  const finalCard = calls.cards.at(-1);
+  assert.ok(finalCard !== undefined && finalCard.includes("exited"), "the final paint lands");
+
+  time.advance(60_000);
+  await surface.tick([ended]);
+  assert.equal(calls.opens.length, 1, "and only then is the surface given up on");
+  assert.equal(calls.posts.length, 1);
+  assert.equal(calls.cards.length, 2, "an abandoned card stops earning heartbeat edits");
+});
+
 test("a surface Discord keeps refusing is given up on", async () => {
   const time = clock();
   const calls = recorder();

@@ -249,6 +249,34 @@ export function createSurface(options: SurfaceOptions): Surface {
    * at the refresh interval.
    */
   async function open(view: SessionView, state: SurfaceState, entry: ThreadState): Promise<void> {
+    // An exited session never gains a new surface, and this function only builds: whichever half
+    // is missing here is gone because it was never created or because the operator deleted it, and
+    // creating it now announces a session that is over. Deletion is honored as cleanup rather than
+    // repaired, which is the same rule as the first-sight guard in entryFor, applied to a session
+    // that reaches the state later. A surface that still exists is unaffected: reconcile drives an
+    // existing card and thread to their final state without coming through here.
+    if (state === "exited") {
+      // Abandonment is forever, so it is reserved for `ended`, which the registry never revives.
+      // The backstop's exited is a presumption about a silent record that a hook or a relay can
+      // still wake, and a surface abandoned on a presumption belongs to a session that may come
+      // back to find its card, its thread, and its message routing all dead. Declining to build,
+      // without abandoning, spends nothing either way: a record that stays silent builds nothing on
+      // any pass, and one that wakes renders a live state and rebuilds normally.
+      if (view.lifecycle !== "ended") return;
+      // A surviving card is painted with its final state before the entry is let go, the same wait
+      // archive() holds for the final title, so the guard cannot freeze a dead session's card at
+      // "working" when the paint it is owed was rate-limited this pass. reconcile edits the card
+      // before it comes through here, so on any pass where that edit landed, this comparison holds.
+      if (entry.messageId !== null && entry.renderedCard !== renderCard(view, state, options.now())) {
+        return;
+      }
+      entry.abandoned = true;
+      // Logged, unlike the first-sight guard, because a surface that existed and stops being
+      // maintained is the kind of absence an operator goes to the log to explain.
+      log(`discord: session ${label(view)} is exited, not rebuilding its surface`);
+      return;
+    }
+
     if (entry.messageId === null) {
       if (!posts.affordable(options.now())) return;
       if (!spend()) return;
@@ -355,8 +383,11 @@ export function createSurface(options: SurfaceOptions): Surface {
         desired: state,
         desiredSince: now,
         archived: false,
-        // A session first seen already exited never had a thread and is not getting one.
-        abandoned: state === "exited",
+        // A session first seen already exited never had a thread and is not getting one. Ended
+        // only, for the reason open() holds abandonment to ended: the backstop's exited is a
+        // presumption, and a presumed-dead record that wakes must find its surface buildable. Until
+        // it wakes, open() declines to build for it, so the looser condition here costs no calls.
+        abandoned: state === "exited" && view.lifecycle === "ended",
         refusals: 0,
         retirePasses: 0,
         lastView: view,
