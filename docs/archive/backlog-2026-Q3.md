@@ -23,3 +23,13 @@ the live backlog carries active items only.
   SCOTT's managed settings allowlist it, and a live launch verified no warning dialog, the thread
   round-trip, and the plugin-scoped permission rule name observed on the wire
   (`mcp__plugin_relay_channel-relay__reply`).
+- **Install the ASR host.** Done by the operator with
+  [`plans/channels_install-simplification_v1.md`](plans/channels_install-simplification_v1.md)'s
+  `Install-All.ps1`, the installer's first real end-to-end run, which was itself that plan's final
+  acceptance gate.
+- **Install the NEO host.** NEO was provisioned during the install-simplification effort (its
+  wrapper entry flipped to `--channels` in that plan's Chapter 1), and the operator's live
+  plugin-route verification on NEO closed the remaining gate.
+- **Register the broker's scheduled task and restart it on this host.** The task
+  `SapplefeldChannelsBroker` is registered on SCOTT and the broker was restarted onto current code
+  by the elevated installer half; readiness confirmed on `/sessions`.

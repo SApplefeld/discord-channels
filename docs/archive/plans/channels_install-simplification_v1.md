@@ -1,6 +1,6 @@
 # Channels install simplification
 
-Status: In Progress
+Status: Complete
 Commit model: commit on request (no standing push authorization)
 
 ## Why
@@ -131,3 +131,41 @@ plugin is therefore a guaranteed dual-relay collision, the failure that opened t
 per-host checklist still runs on ASR's first wrapped launch; the wrapper and install.md prose now
 describe the plugin route as the fleet default with the development flag kept for a host that must
 launch before its plugin is installed. Delivered with all of Chapter 1 in this changeset's commit.
+
+### Chapter 3: the elevated half runs for real on SCOTT (2026-08-07)
+
+A verify pass on SCOTT after the operator's repo pull. `Install-All.ps1` refused to run because
+sessions on SCOTT hold an elevated token, so its unelevated guard fired; that guard working as
+designed is itself a real-run observation, and the workaround is recorded in project memory
+(claude-sessions-on-scott-run-elevated). `Install-Elevated.ps1` then ran directly from the
+session's already-elevated shell, exit 0: task re-registered in place, managed-settings merge was
+a structural no-op over the operator's correct file, the machine-profile block and `cchat` alias
+were written for the first time on SCOTT (its hand-install predated them), and the broker
+restarted onto the pulled code (its process predated the pull, which changed `broker/intake.ts`).
+Readiness confirmed by the parent-side wait: `/sessions` answered on the first probe and
+broker.log shows the gateway reconnected. A stranded close-out chapter for the archived
+channel-quality plan was found dirty in the worktree and committed as `b257fa1` under that plan's
+Commit-and-Push authorization.
+
+Still open, unchanged: the NEO plugin-route live verification, and the real `Install-All.ps1`
+run, which on ASR must come from a plain operator-opened PowerShell window if ASR's sessions are
+also elevated.
+
+### Chapter 4: both operator gates pass and the effort closes (2026-08-07)
+
+The operator confirms both remaining checks passed: the NEO plugin-route live verification and the
+real `Install-All.ps1` run on ASR. That empties the gate list from Chapter 1, so the effort is
+complete: every host in the wrapper table runs the plugin route, and the one-command installer has
+been exercised end to end on a real host. Close-out delivered in this changeset: this plan flips
+to Complete and moves to the archive, the backlog's ASR and NEO install items and the
+broker-task-registration item move to the Q3 snapshot, the development-route rule-retirement item
+is reworded to reflect that its fleet-wide condition is now met, and the docs index gains this
+plan's archive row. The operator's confirmation is the evidence for the two gate results; this
+session did not observe ASR or NEO directly.
+
+## Related
+
+- [`channel-quality-and-plugin_spec_v1.md`](channel-quality-and-plugin_spec_v1.md): packaged the
+  relay as a plugin and verified SCOTT on the plugin route; the dual-relay collision its rollout
+  exposed on NEO is the failure that opened this effort, and this plan's installer is what carries
+  that plugin route to the rest of the fleet.
