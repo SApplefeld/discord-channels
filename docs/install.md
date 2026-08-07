@@ -49,6 +49,29 @@ session anyway, and the fix is re-running the installer.
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a
 starter message successfully and then cannot open a thread on it.
 
+## The one-command install
+
+Steps 2 and 3, plus the plugin install, the managed-settings file, and the `cchat` launcher, in one
+unelevated invocation from the repository root:
+
+```powershell
+install\Install-All.ps1 -HostName SCOTT -ChannelId <channel id> -AllowedUserId <your user id>
+```
+
+It prompts for the bot token (or takes `-BotTokenFile`, same rules as below), runs
+`Install-Host.ps1` in-process, registers this checkout as a plugin marketplace and installs the
+relay plugin through the `claude` CLI, then raises exactly one UAC prompt for
+`Install-Elevated.ps1`, which registers the broker's scheduled task, writes the managed-settings
+file described under "The launch dialog", and installs a block into the machine-wide PowerShell
+profile that dot-sources the launch wrapper and aliases it, so a new shell anywhere on the machine
+launches a watched session with `cchat <session-name>`. Every piece is idempotent; re-run it after
+moving the checkout or rotating a token.
+
+Step 1 stays manual either way (it is Discord's web console), and a host still runs the per-host
+verification checklist under "The relay as a plugin" before its wrapper table entry moves to plain
+`--channels`. The sections below describe what the one command does, and remain the way to run any
+piece alone.
+
 ## 2. Provision the host
 
 From the repository root, in a plain non-elevated session:
@@ -178,8 +201,10 @@ the launch line. On `--dangerously-load-development-channels` the wrapper passes
 `--mcp-config` and the entry `server:channel-relay`. On plain `--channels` it passes
 `plugin:relay@sapplefeld-channels` and no `--mcp-config`, because the plugin carries the same
 server and registering it twice would run two relays against one session. Every host in the table
-carries the development flag; a host moves to plain `--channels` only after the verification below
-passes on it. Add a new host to that table rather than branching elsewhere.
+carries plain `--channels`, because `Install-All.ps1` installs and allowlists the plugin and an
+installed plugin's relay loads in every session regardless of route, which makes the development
+flag beside it exactly that double registration. A new host runs the verification below on its
+first wrapped launch. Add a new host to that table rather than branching elsewhere.
 
 ## The relay as a plugin
 

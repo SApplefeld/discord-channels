@@ -30,8 +30,8 @@ const PROBE_TIMEOUT_MS = 30_000;
 /**
  * Runs Enter-ClaudeSession on a host carrying the given channel flag and returns the argument list
  * the shadowed `claude` was called with. The flag is written into the host table after the
- * dot-source, because every host in the checkout still carries the development flag: the plugin
- * route moves a host only after a real launch on it is verified.
+ * dot-source, so the probe pins each route's launch line regardless of which flag any host's
+ * table entry carries in the checkout.
  */
 function launchArgs(directory: string, flag: string): { args: string[]; stateRoot: string } {
   const outPath = path.join(directory, `args-${flag.replace(/[^a-z]/g, "")}.txt`);
@@ -92,6 +92,8 @@ test("a host on the development flag registers the relay and passes its server e
   const { args, stateRoot } = launchArgs(dir, "--dangerously-load-development-channels");
   const registration = path.join(stateRoot, "sapplefeld-channels", "relay-mcp.json");
   assert.deepEqual(args, [
+    "--name",
+    "probe-session",
     "--mcp-config",
     registration,
     "--dangerously-load-development-channels",
@@ -106,7 +108,12 @@ test("a host on the plain channel flag passes the plugin entry and no --mcp-conf
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
   const { args } = launchArgs(dir, "--channels");
-  assert.deepEqual(args, ["--channels", "plugin:relay@sapplefeld-channels"]);
+  assert.deepEqual(args, [
+    "--name",
+    "probe-session",
+    "--channels",
+    "plugin:relay@sapplefeld-channels",
+  ]);
 });
 
 test("the relay registration is written on the plugin route too, since the shim reads it", (t) => {

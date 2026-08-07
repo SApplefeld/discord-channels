@@ -13,7 +13,9 @@
 # first and never register it, leaving it with no thread, no card, and no mirroring.
 #
 # -ClaudeArgs passes extra arguments straight through to `claude` after the channel flag and the
-# relay's server name: a -p prompt, or anything else.
+# relay's server name: a -p prompt, or anything else. Bare trailing arguments land there too;
+# single-dash flags need `--` first (`Enter-ClaudeSession name -- -p 'prompt'`), or PowerShell
+# binds them to its own common parameters instead of passing them on.
 #
 # -NoMirror sets CHANNEL_SESSION_MIRROR to an off value for this one launch, restored along with the
 # other two on exit. It is the per-session escape from the host-wide CHANNEL_MIRROR default in
@@ -34,18 +36,20 @@
 #
 # This repository is itself a marketplace hosting the relay as a plugin
 # (.claude-plugin/marketplace.json and plugins/relay), so plain --channels is open to a host that has
-# installed that plugin and named it in allowedChannelPlugins. SCOTT runs that route. NEO and ASR
-# take the development flag and its one confirmation keypress until each is installed and passes the
-# per-host checklist in docs/install.md: an entry moves only after a real launch on that host shows
-# the channel working end to end, because a refused or silently absent channel is indistinguishable
-# from a healthy one from inside the session.
+# installed that plugin and named it in allowedChannelPlugins. Every host runs that route:
+# Install-All.ps1 installs and allowlists the plugin, and an installed plugin's relay loads in
+# every session regardless of route, so a dev-flag launch beside it would register two relays
+# against one session. A brand-new host still runs the per-host checklist in docs/install.md on
+# its first wrapped launch, because a refused or silently absent channel is indistinguishable from
+# a healthy one from inside the session. The development flag remains available here for a host
+# that must launch before its plugin is installed.
 #
 # Operator check D settled that a local managed-settings file is honored on a personal account, so
 # this is not a Team-and-Enterprise privilege: every host here can move to plain --channels, SCOTT
 # included.
 $script:ChannelFlagByHost = @{
-    'NEO'   = '--dangerously-load-development-channels'
-    'ASR'   = '--dangerously-load-development-channels'
+    'NEO'   = '--channels'
+    'ASR'   = '--channels'
     'SCOTT' = '--channels'
 }
 
@@ -119,9 +123,11 @@ function Enter-ClaudeSession {
     Launches a Claude Code session with a fresh process token and this host's channel flag.
 
     .PARAMETER Name
-    Human session name. Set as CHANNEL_SESSION for the SessionStart hook to report and the Discord
-    surfaces to render; may repeat across sessions without collision, since thread identity is the
-    session ID, not this name.
+    Human session name, positional so `Enter-ClaudeSession somename` (or the `cchat` alias) works
+    bare. Set as CHANNEL_SESSION for the SessionStart hook to report and the Discord surfaces to
+    render, and passed to `claude --name` so the session picker and terminal title carry the same
+    name /rename would set; may repeat across sessions without collision, since thread identity is
+    the session ID, not this name.
 
     Restricted to printable ASCII. The name travels as an HTTP header, and Invoke-RestMethod
     rejects a non-ASCII header value client-side before opening the socket, which would take the
@@ -129,7 +135,11 @@ function Enter-ClaudeSession {
     with no signal anywhere. Failing loudly here, at the keyboard, is the alternative.
 
     .PARAMETER ClaudeArgs
-    Extra arguments passed through to `claude` after the channel flag.
+    Extra arguments passed through to `claude` after the channel flag. Takes the remaining
+    positional arguments too, so `cchat somename --resume` passes --resume through without the
+    parameter being named. Single-dash flags need PowerShell's end-of-parameters token first
+    (`cchat somename -- -p 'prompt'`): without it, PowerShell binds -p to its own common
+    -PipelineVariable parameter and claude never sees it. Double-dash flags pass through bare.
 
     .PARAMETER NoMirror
     Turns off the mirror for this one session only. Sets CHANNEL_SESSION_MIRROR to an off value in
@@ -150,15 +160,24 @@ function Enter-ClaudeSession {
     the switch exists for.
     #>
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory, Position = 0)]
         [ValidatePattern('^[\x20-\x7E]+$')]
         [ValidateLength(1, 64)]
         [string]$Name,
 
+        [Parameter(ValueFromRemainingArguments)]
         [string[]]$ClaudeArgs = @(),
 
         [switch]$NoMirror
     )
+
+    # A forgotten name makes the first claude flag bind positionally as the session name
+    # ("cchat --resume" would launch a session literally named --resume, not resume one).
+    # ValidatePattern cannot express this, since names may contain dashes elsewhere.
+    if ($Name.StartsWith('-')) {
+        throw "Enter-ClaudeSession: '$Name' looks like a flag, not a session name. The name is " +
+            "the first argument (cchat <name> ...); flags for claude come after it."
+    }
 
     $resolved = Resolve-ChannelHost
     $channelFlag = $script:ChannelFlagByHost[$resolved.Host]
@@ -226,10 +245,12 @@ function Enter-ClaudeSession {
         # names that registration. Plain --channels loads the channel from the installed plugin,
         # which brings its own copy of the server: passing --mcp-config there as well would register
         # the relay twice and run two of them against one session.
+        # --name sets the session's display name (session picker and terminal title), the same
+        # surface /rename writes, so the launch name and the in-product name never disagree.
         if ($channelFlag -eq '--channels') {
-            & claude $channelFlag $script:ChannelPluginEntry @ClaudeArgs
+            & claude --name $Name $channelFlag $script:ChannelPluginEntry @ClaudeArgs
         } else {
-            & claude --mcp-config $mcpConfig $channelFlag "server:$($script:ChannelServerName)" @ClaudeArgs
+            & claude --name $Name --mcp-config $mcpConfig $channelFlag "server:$($script:ChannelServerName)" @ClaudeArgs
         }
     } finally {
         # Restored whether claude exited, threw, or was interrupted. A token left behind in a
