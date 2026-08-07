@@ -21,6 +21,8 @@ import type { ThreadMessenger } from "./discord/transport.ts";
 import { createPermissionDesk } from "./security/permission.ts";
 import type { PermissionDesk } from "./security/permission.ts";
 import { loadSenderGate } from "./security/senders.ts";
+import { createEchoMemory, createTranscriptTailer } from "./tail.ts";
+import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
@@ -110,12 +112,45 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     now: Date.now,
     log: note,
   });
+  // The transcript tailer exists only while both mirror switches are on. Off means not
+  // constructed: no transcript is ever opened, no poll timer runs, and the intake gets no seam
+  // to learn a path through, so "off" is the absence of the machinery rather than a check
+  // inside it. The echo memory is created with it, because the memory's whole job is the dedup
+  // between the tailer and the Stop mirror.
+  const interim = config.mirror && config.interimMirror ? { echo: createEchoMemory() } : null;
   const outbound = createOutboundRouter({
     registry,
     threadFor: (sessionId) => threadFor(sessionId),
     mirrorWriter,
     log: note,
+    ...(interim === null ? {} : { echo: interim.echo }),
   });
+  let tail: TranscriptTailer | null = null;
+  let tailTimer: NodeJS.Timeout | null = null;
+  let tailInFlight: Promise<void> = Promise.resolve();
+  if (interim !== null) {
+    const tailer = createTranscriptTailer({
+      liveSessions: () =>
+        registry
+          .list()
+          .filter((record) => record.state === "live")
+          .map((record) => record.sessionId),
+      deliver: (sessionId, text) => outbound.interim(sessionId, text),
+      echo: interim.echo,
+      log: note,
+    });
+    tail = tailer;
+    tailTimer = setInterval(() => {
+      // A rejection out of the pass would be fatal under Node 24, taking the hook intake down
+      // with the tailer, and the intake is the half that has to keep running. The pass is kept so
+      // shutdown can wait for it, the way the Discord refresh's inFlight is below.
+      tailInFlight = tailer.poll().catch(() => {
+        // The error is discarded unread: a throw out of a read or a parse can quote transcript
+        // content, and conversation content never appears in the broker log at any level.
+        note("broker: a transcript poll pass failed; the error detail is withheld, it can carry content");
+      });
+    }, config.interimPollMs);
+  }
   // Replaced below when Discord is configured. Without a channel there is no thread to ask in and
   // no operator to ask, so a prompt is reported and dropped rather than held: the session is at a
   // terminal, which is where its permission dialog already is.
@@ -142,6 +177,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     registry,
     maxBodyBytes: config.maxBodyBytes,
     log: logger,
+    ...(tail === null ? {} : { tail: { learn: tail.learn, allow: tail.allow, suppress: tail.suppress } }),
     mirror: {
       enabled: config.mirror,
       maxBytes: config.mirrorMaxBytes,
@@ -307,10 +343,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
 
   await new Promise<void>((resolve, reject) => {
     const failedToBind = (error: Error): void => {
-      // A broker that never bound has no business still writing to Discord on a timer, or sweeping
-      // a registry nothing can reach.
+      // A broker that never bound has no business still writing to Discord on a timer, sweeping
+      // a registry nothing can reach, or polling transcripts for it.
       clearInterval(sweep);
       clearInterval(heartbeat);
+      if (tailTimer !== null) clearInterval(tailTimer);
+      tailTimer = null;
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
       // The gateway logs in before the listener binds, so a port conflict would otherwise leave a
@@ -347,11 +385,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   async function stop(): Promise<void> {
     clearInterval(sweep);
     clearInterval(heartbeat);
+    if (tailTimer !== null) clearInterval(tailTimer);
     if (refresh !== null) clearInterval(refresh);
     if (gateway !== null) await gateway.stop();
     // Clearing the timer does not cancel the pass already running, which may still be waiting on a
-    // Discord call and will write the bindings file when it returns.
+    // Discord call and will write the bindings file when it returns. The tailer's pass is awaited
+    // for the same reason: shutdown must not race a read still holding a file handle.
     await inFlight;
+    await tailInFlight;
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();

@@ -51,6 +51,14 @@ export type BrokerConfig = {
    * error inside the session at the end of exactly the longest turns.
    */
   mirrorMaxBytes: number;
+  /**
+   * Whether the transcript tailer mirrors mid-turn assistant text to a session's thread. Gated
+   * by `mirror` as well, at the wiring rather than here: interim mirroring is mirroring, so the
+   * host-wide off switch takes both down together.
+   */
+  interimMirror: boolean;
+  /** How often the tailer polls live sessions' transcripts for new mid-turn text. */
+  interimPollMs: number;
 };
 
 /**
@@ -72,6 +80,16 @@ const DEFAULT_MIRROR_MAX_BYTES = 256 * 1024;
 // broker buffer.
 const MIN_MIRROR_MAX_BYTES = 64 * 1024;
 const MAX_MIRROR_MAX_BYTES = 4 * 1024 * 1024;
+// The latency bar for mid-turn narration is tens of seconds: it exists so a long turn is not
+// silence, not so the thread streams. Each pass costs a stat and a bounded read per live session.
+const DEFAULT_INTERIM_POLL_MS = 20 * 1000;
+// The floor keeps a typo like "100" from turning the poll into a near-busy loop over every live
+// session's transcript. The ceiling exists because Node clamps a setInterval delay past 2^31-1
+// down to 1ms, which would turn an over-large value into exactly that busy loop; five minutes is
+// where narration stops answering anything an operator is still asking, and past it
+// CHANNEL_INTERIM_MIRROR=off is the honest spelling.
+const MIN_INTERIM_POLL_MS = 1_000;
+const MAX_INTERIM_POLL_MS = 5 * 60 * 1000;
 
 /**
  * How long the relay waits on a silent stream before it presumes the pipe is dead and reconnects.
@@ -187,6 +205,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       MIN_MIRROR_MAX_BYTES,
       MAX_MIRROR_MAX_BYTES,
       DEFAULT_MIRROR_MAX_BYTES,
+    ),
+    // On by default: the operator reported the mid-turn silence, and a feature that ships off
+    // answers nothing. The host-wide CHANNEL_MIRROR gate is applied where the tailer is wired.
+    interimMirror: strictFlag(env.CHANNEL_INTERIM_MIRROR, true),
+    interimPollMs: bounded(
+      env.CHANNEL_INTERIM_POLL_MS,
+      MIN_INTERIM_POLL_MS,
+      MAX_INTERIM_POLL_MS,
+      DEFAULT_INTERIM_POLL_MS,
     ),
   };
 }

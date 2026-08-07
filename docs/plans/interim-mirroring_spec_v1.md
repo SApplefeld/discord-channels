@@ -351,3 +351,102 @@ that knows a session is suppressed is Section 2's; wiring it here would build it
 status. Re-run in the main session rather than taken from the implementer's report.
 
 **Next.** Section 2, the transcript tailer.
+
+### Chapter 2: Mid-turn narration, read from the session's own transcript
+
+Delivered in this changeset. `broker/tail.ts` polls each live session's transcript file, extracts the
+assistant text blocks written between tool calls, and posts them to that session's thread under
+`✨ Claude · working`.
+
+**What shipped.** The intake learns a session's `transcript_path` from any credited `/hook` post and
+learns its mirror verdict from any `/mirror` post. The tailer holds a per-session tail position and
+reads only whole lines, only from live sessions, only past a held byte offset, bounded at 256KB per
+session per pass. The line filter is an allowlist: `type === "assistant"`, not a sidechain,
+`sessionId` matching the session the path was learned for, `message.content` an array, the block a
+`text` block with a non-empty string. `MirrorKind` gained `interim`, rendered by the same
+`renderMirror` a mirrored reply uses, so no second escape and no second splitter exists. Two knobs,
+`CHANNEL_INTERIM_MIRROR` (default on, gated by `CHANNEL_MIRROR`) and `CHANNEL_INTERIM_POLL_MS`
+(default 20s, bounded 1s to 5m).
+
+**The decision that changed under review: the mirror opt-out now fails closed.** As first built, the
+tailer read a session's transcript unless it had been told not to. Three reviewers independently
+found that this inverts the direction the `-NoMirror` switch fails in. Under the hook-only design,
+suppression meant the hooks posted nothing, so an absent signal meant absent content. The tailer
+reads the content itself, so an absent signal meant publish. A broker restart mid-turn, or a session
+going stale and reviving, dropped the in-memory suppression and would have published the mid-turn
+prose of a session that asked not to be mirrored.
+
+Persisting the suppressed set was the obvious fix and the wrong one: it hardens one ordering and
+leaves the direction of failure inverted. The default is inverted instead. A session's transcript is
+not read at all until an explicit mirror-on verdict arrives for it under the current process, which
+every `/mirror` post from a live session carries. A normal session is re-armed at the top of every
+turn by `UserPromptSubmit`, which is when narration is wanted anyway; a `-NoMirror` session can
+never narrate under any restart or revive ordering. The consequence worth knowing: a broker
+restarted mid-turn stays silent for the remainder of that turn rather than for one poll interval,
+and the next turn re-arms it.
+
+**Review findings addressed.** Nine, from three fresh-context reviewers (adversarial, blind,
+security), all in this changeset and each driven red first.
+
+- The reply digest was recorded before the reply was delivered, so a rate-limited or partly-landed
+  Stop mirror poisoned the echo memory and the tailer then skipped the same text off the transcript,
+  and the reply appeared nowhere. Both sides now record only on a landed post, which makes them
+  symmetric: the tailer already did this.
+- An echo digest was never consumed, so it acted as an indefinite blocklist. A turn ending with
+  "Done." suppressed a later turn's mid-turn "Done." forever. A match now nulls the digest it
+  matched, bounding the cost to one skipped chunk.
+- A delivery that threw discarded every later chunk in the batch, whose bytes were already behind
+  the offset and could not be re-read. Each delivery now holds its own failure.
+- `stop()` did not await a genuinely in-flight pass: `poll()` answered a fresh resolved promise
+  whenever a tick was skipped for overlap, so shutdown returned while a pass still held an open file
+  handle. `poll()` now answers the running pass itself.
+- The pass was sequential across sessions, so one session mid-way through a long split reply held
+  every other session's narration. `broker/routing/outbound.ts` states the opposing principle where
+  it keys its ordering chains by thread; the sessions now run concurrently, with the per-chunk order
+  inside one session untouched.
+- `CHANNEL_INTERIM_POLL_MS` had a floor but no ceiling, and Node clamps a `setInterval` delay above
+  2147483647 to 1ms, turning the knob into the near-busy loop the floor exists to prevent. Now
+  `bounded`.
+- `transcript_path` went through the 256-character identity cap, and the longest real path on this
+  machine measures 206. A truncated path never opens and leaves only a rate-limited pass-failed line
+  forever, indistinguishable from an unreadable file. It now has its own reader that refuses rather
+  than truncates, and that also refuses a UNC path, which on Windows would have made the broker
+  open an outbound SMB connection carrying the operator's credentials.
+- One log-hygiene assertion was missing on the interim path's partial-failure line.
+
+**Rejected, with the reason.** One reviewer proposed reserve-then-roll-back on both sides of the
+echo memory, to close the window where a poll in flight on the final text at the instant the Stop
+hook posts yields a duplicate. Rejected: reserving lets the tailer skip a chunk on a reservation the
+mirror then rolls back, and the tailer's offset has already advanced, so the rollback cannot bring
+the text back. That trades a duplicate for silence, which is the trade backwards. The remaining
+window degrades to the operator seeing a paragraph twice, which this plan authorizes by name.
+
+Also rejected: awaiting the in-flight tail pass on the `failedToBind` path in `broker/index.ts`. It
+matches how the existing Discord refresh is handled there, and changing one of the two is worse than
+leaving both consistent.
+
+**Accepted residuals.**
+
+- In the race ordering, the turn's final reply can post under `✨ Claude · working` rather than
+  `✨ Claude`. The count is right and the text is right; only the label reads as mid-turn.
+- The `sessionId` gate in `assistantTexts` carries more weight than its comment suggests and has no
+  early warning if a future build writes a transcript whose internal session ID differs from the
+  hook's. It fails closed, to silence, so the cost is a feature that goes inert rather than one that
+  publishes wrongly.
+- A token-holding local process can aim the tailer at an unwrapped session's transcript by
+  registering that session's unclaimed ID. This is the same same-user file read plus Discord post
+  that `/mirror` already grants, so the capability class is unchanged; the fail-closed gate now
+  makes it cost an additional forged `/mirror` post, and the path refusals remove the UNC variant.
+
+**Unconfirmed, and only a real long turn can settle it.** That the Stop payload's
+`last_assistant_message` is byte-identical to the transcript's final text block. It held across 758
+sampled assistant lines, none of which carried more than one text block, but a turn ending in
+several text lines would miss the digest and show the last paragraph twice. That is the authorized
+direction.
+
+**Gate.** Baseline before the section: 501 tests, 500 pass, 0 fail, 1 skipped, lint clean, at commit
+`d90eb95`. After implementation: 532 / 531. After the review round: 541 tests, 540 pass, 0 fail, 1
+skipped, lint clean. No existing test changed status at either step. Both gates re-run in the main
+session rather than taken from a report.
+
+**Next.** Section 3, documentation and operator checks.

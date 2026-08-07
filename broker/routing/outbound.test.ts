@@ -7,6 +7,7 @@ import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
 import type { Registry } from "../registry.ts";
+import { createEchoMemory } from "../tail.ts";
 import { createOutboundRouter } from "./outbound.ts";
 import { createThreadWriter } from "./writer.ts";
 
@@ -30,6 +31,7 @@ function announce(
     source,
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 }
 
@@ -852,4 +854,189 @@ test("one session's steady drops do not swallow the first drop of another's", as
 
   assert.equal(lines.length, 2, lines.join("\n"));
   assert.ok(lines[1].includes("session-b"), lines[1]);
+});
+
+test("an interim chunk posts to the session's own thread under the working attribution", async () => {
+  // The tailer holds a session ID and no process token, so the interim path resolves the thread
+  // directly; the registry's live set has already gated which sessions are read at all.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const asked: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: (sessionId) => {
+      asked.push(sessionId);
+      return THREAD;
+    },
+    mirrorWriter: writer,
+  });
+
+  assert.deepEqual(await router.interim("session-a", "running the suite now"), { status: "sent" });
+  assert.deepEqual(asked, ["session-a"]);
+  assert.deepEqual(posts, [{ threadId: THREAD, text: renderMirror("interim", "running the suite now")[0] }]);
+  assert.ok(posts[0].text.startsWith("✨ Claude · working\n"), posts[0].text);
+});
+
+test("an interim chunk with no thread is dropped with a line that names no content", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => null,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+
+  const secret = "SECRET-narration-nobody-saw";
+  assert.deepEqual(await router.interim("session-a", secret), { status: "no-thread" });
+  assert.deepEqual(posts, [], "nothing is queued for a thread that does not exist yet");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(!lines[0].includes(secret), `transcript content leaked into the routing log: ${lines[0]}`);
+});
+
+test("an interim chunk cannot land between the messages of a split reply", async () => {
+  // The interim path shares the per-thread chain the mirror and reply paths post on; without it a
+  // chunk read mid-poll would interleave with a forty-message reply already going out.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { messenger, landed } = outOfOrderMessenger();
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+  });
+
+  const reply = longReply(30);
+  const messages = renderMirror("reply", reply);
+  assert.ok(messages.length >= 5, `${messages.length} message(s)`);
+  await Promise.all([
+    router.mirror(TOKEN, "reply", reply, "session-a"),
+    router.interim("session-a", "narration racing the reply"),
+  ]);
+
+  assert.deepEqual(landed, [...messages, renderMirror("interim", "narration racing the reply")[0]]);
+});
+
+test("a mirrored reply matching the last interim chunk is skipped, and only that one", async () => {
+  // The Stop mirror's half of the dedup: the tailer posted the turn's final text first, so the
+  // reply arriving milliseconds later says nothing the thread does not already show.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  echo.noteInterim("session-a", "the final text, already narrated");
+  assert.deepEqual(
+    await router.mirror(TOKEN, "reply", "the final text, already narrated", "session-a"),
+    { status: "sent" },
+  );
+  assert.equal(posts.length, 0, "the text is already on the thread and must not double");
+  assert.ok(lines.some((line) => line.includes("interim")), lines.join("\n"));
+  assert.ok(
+    !lines.join("\n").includes("already narrated"),
+    `mirror content leaked into the routing log: ${lines.join("\n")}`,
+  );
+
+  // A different reply still mirrors, and a prompt is never consulted against the memory.
+  await router.mirror(TOKEN, "reply", "a different reply", "session-a");
+  await router.mirror(TOKEN, "prompt", "the final text, already narrated", "session-a");
+  assert.equal(posts.length, 2, posts.map((post) => post.text).join("\n---\n"));
+});
+
+test("a mirrored reply records its digest whether it posts or is skipped", async () => {
+  // "Either way" is what lets the tailer skip the same text off the transcript on its next pass,
+  // whichever path put it on the thread.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.mirror(TOKEN, "reply", "posted normally", "session-a");
+  assert.equal(echo.isEcho("session-a", "posted normally"), true);
+
+  echo.noteInterim("session-a", "narrated first");
+  await router.mirror(TOKEN, "reply", "narrated first", "session-a");
+  assert.equal(echo.isEcho("session-a", "narrated first"), true, "a skipped reply is still recorded");
+});
+
+test("an invisible character cannot hide a reply from the interim dedup", async () => {
+  // The memory compares on withoutInvisible(text).trim(), exactly as the envelope check does: the
+  // transcript's copy and the hook payload's copy of one reply can differ by characters nobody
+  // sees, and a zero-width difference must not be the reason the operator reads it twice.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  echo.noteInterim("session-a", "the same text  ");
+  await router.mirror(TOKEN, "reply", `​the same text`, "session-a");
+  assert.deepEqual(posts, [], "a zero-width character must not manufacture a second post");
+});
+
+test("a mirrored reply that failed to land is not remembered as mirrored", async () => {
+  // The digest is recorded only after the run posted whole. Recorded before delivery, a reply the
+  // transport refused would still poison the memory, the tailer's next pass would skip the same
+  // text off the transcript, and the reply would appear nowhere: the silence this whole design
+  // trades away from. The tailer's own half already records only on sent; this is the symmetric
+  // guarantee on the mirror's half.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  const reply = "the reply the transport refused";
+  assert.equal((await router.mirror(TOKEN, "reply", reply, "session-a")).status, "failed");
+  assert.equal(
+    echo.isEcho("session-a", reply),
+    false,
+    "a reply that never landed must not suppress the tailer's copy of the same text",
+  );
+});
+
+test("an interim run that stops part way logs its counts, never its text", async () => {
+  // The one interim log line that rides beside conversation content. The tailer's own seam is
+  // pinned the same way; without this pin a regression widening the router's line would go
+  // uncaught.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  let calls = 0;
+  const messenger: ThreadMessenger = {
+    postToThread: async () => {
+      calls += 1;
+      if (calls === 2) return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+  };
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    log: (message) => lines.push(message),
+  });
+
+  const narration = `SECRET-interim-marker\n\n${longReply(30)}`;
+  const total = renderMirror("interim", narration).length;
+  assert.ok(total >= 3, `${total} message(s)`);
+  const result = await router.interim("session-a", narration);
+  assert.equal(result.status, "failed");
+
+  const captured = lines.join("\n");
+  assert.ok(captured.includes(`1 of ${total} messages`), captured);
+  assert.ok(!captured.includes("SECRET-interim-marker"), `transcript content leaked into the routing log: ${captured}`);
 });

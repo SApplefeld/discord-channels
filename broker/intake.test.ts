@@ -132,6 +132,8 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     logMaxFiles: 5,
     mirror: true,
     mirrorMaxBytes: 256 * 1024,
+    interimMirror: true,
+    interimPollMs: 20_000,
     ...overrides,
   };
 }
@@ -181,6 +183,7 @@ function announce(registry: Registry): void {
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 }
 
@@ -343,6 +346,7 @@ test("a refused takeover is logged under its own reason, not counted into a beni
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 
   // The cover traffic first: unroutable posts under a token no session holds, which open the
@@ -725,6 +729,7 @@ test("a per-session suppression is logged with the session id, never content", a
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 
   const secret = "SECRET-suppressed-prompt";
@@ -1318,4 +1323,165 @@ test("a registry write that fails leaves the broker serving", async () => {
     await broker.stop();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("transcript_path rides the intake as a cleaned string, and anything else as null", () => {
+  const parsed = parseIntake(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("SessionStart") }),
+    JSON.stringify({ session_id: "session-a", transcript_path: "C:\\t\\session-a.jsonl\u0000" }),
+  );
+  assert.ok("intake" in parsed);
+  assert.equal(parsed.intake.transcriptPath, "C:\\t\\session-a.jsonl");
+
+  const nonString = parseIntake(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("SessionStart") }),
+    JSON.stringify({ session_id: "session-a", transcript_path: { evil: true } }),
+  );
+  assert.ok("intake" in nonString);
+  assert.equal(nonString.intake.transcriptPath, null);
+});
+
+test("the tailer learns a path only from a hook post the registry credited", async () => {
+  // An unwatched, forged, or unroutable post must not aim the tailer at a file of its choosing
+  // under a session it does not hold: the read happens with the broker's own permissions, and the
+  // path names which file's contents end up in the operator's thread.
+  const learned: Array<{ sessionId: string; path: string }> = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror: fakeMirror().mirror,
+    tail: { learn: (sessionId, path) => learned.push({ sessionId, path }), allow: () => {}, suppress: () => {} },
+  });
+
+  // Tokenless (unwatched) and unroutable posts both carry a path and teach nothing.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: { "x-channel-hook-event": "SessionStart" },
+      body: JSON.stringify({ session_id: "session-x", source: "startup", transcript_path: "C:\\forged.jsonl" }),
+    }),
+  );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: JSON.stringify({ session_id: "session-a", tool_name: "Bash", transcript_path: "C:\\forged.jsonl" }),
+    }),
+  );
+  assert.deepEqual(learned, [], "an uncredited post must teach the tailer nothing");
+
+  // A credited announce teaches it, and every later credited post re-teaches it, which is what
+  // re-arms the tailer after a broker restart mid-session.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("SessionStart"),
+      body: JSON.stringify({ session_id: "session-a", source: "startup", transcript_path: "C:\\t\\a.jsonl" }),
+    }),
+  );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: JSON.stringify({ session_id: "session-a", tool_name: "Bash", transcript_path: "C:\\t\\a.jsonl" }),
+    }),
+  );
+  assert.deepEqual(learned, [
+    { sessionId: "session-a", path: "C:\\t\\a.jsonl" },
+    { sessionId: "session-a", path: "C:\\t\\a.jsonl" },
+  ]);
+});
+
+test("every mirror post reaching a live session reports its verdict: allow on, suppress off", async () => {
+  // The tailer fails closed, so the affirmative half of the signal matters as much as the off
+  // half: a session narrates only after an explicit allow, and the allow rides every ordinary
+  // mirror post from a live session. UserPromptSubmit fires at the start of every turn, so both
+  // verdicts land before that turn can produce any interim text. An anonymous or forged request
+  // reports neither: it cannot switch a session's narration in either direction.
+  const allowed: string[] = [];
+  const suppressed: string[] = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror, deliveries } = fakeMirror();
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    tail: {
+      learn: () => {},
+      allow: (sessionId) => allowed.push(sessionId),
+      suppress: (sessionId) => suppressed.push(sessionId),
+    },
+  });
+  announce(registry);
+
+  // A normal mirror post is the allow: absent header and unrecognized value both mirror, so both
+  // report on.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body: JSON.stringify({ prompt: "mirrored normally" }),
+    }),
+  );
+  assert.deepEqual(allowed, ["session-a"]);
+  assert.deepEqual(suppressed, []);
+
+  // The off header under a token no live session holds reaches the unknown-token drop first and
+  // reports nothing in either direction.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: {
+        ...hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+        "x-channel-process-token": "not-the-announced-token",
+      },
+      body: JSON.stringify({ prompt: "forged" }),
+    }),
+  );
+  assert.deepEqual(allowed, ["session-a"]);
+  assert.deepEqual(suppressed, []);
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+      body: JSON.stringify({ prompt: "suppressed" }),
+    }),
+  );
+  await settled();
+  assert.deepEqual(suppressed, ["session-a"]);
+  assert.deepEqual(allowed, ["session-a"], "the off post must not also report an allow");
+  assert.deepEqual(deliveries.map((delivery) => delivery.text), ["mirrored normally"]);
+});
+
+test("a transcript path is refused rather than truncated, and never a UNC path", () => {
+  // A truncated path would never open, and the only witness would be a rate-limited pass-failed
+  // line forever; a UNC path opened on Windows initiates an outbound SMB connection carrying the
+  // operator's credentials. Both are refused whole, which the tailer experiences as no path
+  // learned for that session: a legible failure instead of a quiet wrong one.
+  const parse = (transcript_path: unknown): string | null => {
+    const parsed = parseIntake(
+      fakeRequest("127.0.0.1", { headers: hookHeaders("SessionStart") }),
+      JSON.stringify({ session_id: "session-a", transcript_path }),
+    );
+    assert.ok("intake" in parsed);
+    return parsed.intake.transcriptPath;
+  };
+
+  const deep = `C:\\${"a-deep-checkout\\".repeat(120)}transcript.jsonl`;
+  assert.ok(deep.length > 1024);
+  assert.equal(parse(deep), null, "an over-long path is refused whole, never cut to a wrong one");
+
+  assert.equal(parse("\\\\host\\share\\x.jsonl"), null, "a UNC path is never opened");
+  assert.equal(parse("//host/share/x.jsonl"), null, "the forward-slash UNC spelling is refused too");
+  assert.equal(parse("..\\x.jsonl"), null, "a relative path is refused");
+  assert.equal(parse("transcripts\\x.jsonl"), null);
+  assert.equal(parse("C:x.jsonl"), null, "a drive-relative path is refused");
+
+  assert.equal(parse("C:\\t\\a.jsonl"), "C:\\t\\a.jsonl");
+  assert.equal(parse("C:/t/a.jsonl"), "C:/t/a.jsonl");
 });

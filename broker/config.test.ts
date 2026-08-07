@@ -43,6 +43,30 @@ test("the mirror flag defaults on, honors both spellings, and refuses anything e
   }
 });
 
+test("the interim mirror knobs default on and sane, and refuse a typo", () => {
+  // The operator reported the mid-turn silence, so the feature ships on; the host-wide
+  // CHANNEL_MIRROR gate is applied at the wiring, not here.
+  const defaults = loadConfig({});
+  assert.equal(defaults.interimMirror, true, "interim mirroring is on unless the operator turns it off");
+  assert.equal(defaults.interimPollMs, 20_000);
+  assert.equal(loadConfig({ CHANNEL_INTERIM_MIRROR: "" }).interimMirror, true);
+  assert.equal(loadConfig({ CHANNEL_INTERIM_MIRROR: "off" }).interimMirror, false);
+  assert.equal(loadConfig({ CHANNEL_INTERIM_MIRROR: "0" }).interimMirror, false);
+
+  // A boolean knob read permissively turns a typo into a silent default; refused like the rest.
+  for (const raw of ["fasle", "2", "enabled"]) {
+    assert.throws(() => loadConfig({ CHANNEL_INTERIM_MIRROR: raw }), /expected one of/, raw);
+  }
+
+  assert.equal(loadConfig({ CHANNEL_INTERIM_POLL_MS: "1000" }).interimPollMs, 1_000);
+  assert.equal(loadConfig({ CHANNEL_INTERIM_POLL_MS: "300000" }).interimPollMs, 300_000);
+  // Bounded above as well as below: Node clamps a setInterval delay past 2^31-1 to 1ms, which
+  // would turn an over-large value into exactly the busy loop the floor exists to prevent.
+  for (const raw of ["999", "0", "-5", "2.5", "soon", "300001", "2147483648"]) {
+    assert.throws(() => loadConfig({ CHANNEL_INTERIM_POLL_MS: raw }), /expected an integer/, raw);
+  }
+});
+
 test("the mirror body ceiling is its own knob, wider than the hook cap by default", () => {
   const defaults = loadConfig({});
   assert.equal(defaults.mirrorMaxBytes, 256 * 1024);

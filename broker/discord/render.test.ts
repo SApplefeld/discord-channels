@@ -351,6 +351,43 @@ test("a mirrored prompt and a mirrored reply are attributed differently", () => 
   assert.equal(quoteOpeningLines(replyMessage).length, 0, replyMessage);
 });
 
+test("an interim chunk carries the working attribution, unquoted like a reply", () => {
+  // Mid-turn narration is Claude's own text, so it is unquoted like a reply (the quoted block is
+  // the one that must stay unforgeable) and marked `working` so a reader scrolling later can tell
+  // narration from the turn's final word.
+  const [interimMessage] = renderMirror("interim", "reading the failing test first");
+
+  assert.equal(said(interimMessage), "reading the failing test first");
+  assert.match(interimMessage, /^✨ Claude · working\n/, interimMessage);
+  assert.equal(quoteOpeningLines(interimMessage).length, 0, interimMessage);
+  assert.notEqual(
+    interimMessage.split("\n")[0],
+    renderMirror("reply", "reading the failing test first")[0].split("\n")[0],
+    "narration and a final reply must be tellable apart at a glance",
+  );
+});
+
+test("an interim chunk gets the reply's treatment: uncapped, split whole, chips escaped", () => {
+  // One splitter and one escape, exercised through the same machinery a reply uses; a second copy
+  // of either would be two readings of where a code fence is. The paste cap belongs to prompts
+  // alone: narration is written to be read, like a reply, and is never shortened.
+  const long = Array.from({ length: 60 }, (_, index) => `Paragraph ${index}. ${"detail ".repeat(40)}`.trim()).join(
+    "\n\n",
+  );
+  assert.ok([...long].length > MAX_MIRRORED_PROMPT_LENGTH, "long enough that a prompt would be cut");
+  const messages = renderMirror("interim", long);
+  assert.ok(messages.length >= 2, `${messages.length} message(s)`);
+  for (const message of messages) {
+    assert.ok(message.startsWith("✨ Claude · working\n"), "the attribution rides on every message");
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+  }
+  assert.ok(!messages.join("\n").includes("shortened"), "narration is never cut, only split");
+
+  const [chipped] = renderMirror("interim", "ping <@123456789> at <t:1700000000:R>");
+  assert.ok(!/<@\d+>/.test(chipped), chipped);
+  assert.ok(!/<t:\d+:R>/.test(chipped), chipped);
+});
+
 test("mirrored text cannot draw a quoted block, which is what says the operator typed it", () => {
   // Every angle bracket in mirrored text is escaped, so a `>` arriving in a prompt or a reply
   // reaches Discord as the character rather than as the quote marker. A reply therefore opens no

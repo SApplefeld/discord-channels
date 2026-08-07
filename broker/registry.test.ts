@@ -26,6 +26,7 @@ function sessionStart(sessionId: string, source: string | null, name = "neo-inta
     source,
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   };
 }
 
@@ -43,6 +44,7 @@ function postToolUse(
     source: null,
     toolName,
     toolInput,
+    transcriptPath: null,
   };
 }
 
@@ -55,6 +57,7 @@ function stop(processToken = TOKEN): HookIntake {
     source: null,
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   };
 }
 
@@ -118,6 +121,7 @@ test("a tool event carrying an input but no name moves neither", () => {
     source: null,
     toolName: null,
     toolInput: "rm -rf /",
+    transcriptPath: null,
   });
 
   assert.equal(sessions.list()[0].lastTool, "Read");
@@ -543,6 +547,7 @@ test("a live session is never evicted to hold the cap", () => {
       source: "startup",
       toolName: null,
       toolInput: null,
+      transcriptPath: null,
     });
   }
 
@@ -628,6 +633,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 
   const stolen = registry.apply({
@@ -638,6 +644,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 
   assert.equal(stolen, null, "the takeover is refused, not merged");
@@ -662,6 +669,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
   registry.relayClosed(first, "session-a");
 
@@ -673,6 +681,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
   assert.notEqual(reused, null);
   assert.equal(registry.current(second)?.processToken, second);
@@ -689,6 +698,7 @@ test("relayClosed ends only the session it names, held by the token that names i
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 
   assert.equal(registry.relayClosed("another-token", "session-a"), null, "not this token's to end");

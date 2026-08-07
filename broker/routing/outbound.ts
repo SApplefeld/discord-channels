@@ -9,6 +9,7 @@ import { renderAnswer, renderMirror } from "../discord/render.ts";
 import type { MirrorKind } from "../discord/render.ts";
 import { withoutInvisible } from "../sanitize.ts";
 import type { Registry } from "../registry.ts";
+import type { EchoMemory } from "../tail.ts";
 import type { ThreadWriter } from "./writer.ts";
 
 export type OutboundRouterOptions = {
@@ -24,6 +25,17 @@ export type OutboundRouterOptions = {
    * capacity; it only stops one path's rate-limit state from starving the other.
    */
   mirrorWriter: ThreadWriter;
+  /**
+   * The dedup memory shared with the transcript tailer, present only when interim mirroring is
+   * on. The tailer reads the turn's final reply off the transcript up to a poll interval after
+   * the Stop mirror posts it, so the two paths consult one memory: `mirror` with the reply kind
+   * skips a post matching the tailer's last interim chunk, records its own digest once the text
+   * is on the thread (by this post or by the tailer's), and the tailer skips a chunk matching
+   * either digest. A match consumes the digest it matched, so nothing here becomes a standing
+   * blocklist. Without the memory, replies mirror exactly as they did before interim mirroring
+   * existed.
+   */
+  echo?: EchoMemory;
   log?: (message: string) => void;
   /** Drives the drop-log rate limiter. Injected so a test moves its window without sleeping. */
   now?: () => number;
@@ -132,6 +144,15 @@ export type OutboundRouter = {
     text: string,
     sessionId: string | null,
   ) => Promise<ReplyResult>;
+  /**
+   * Posts one mid-turn chunk from the transcript tailer to the session's own thread.
+   *
+   * Addressed by session ID directly, through `threadFor`, rather than through `locate`: the
+   * tailer holds a session ID and no process token, and which sessions it reads at all is
+   * already gated by the registry's live set. Delivery goes through the same per-thread chain
+   * the other paths use, so an interim chunk cannot land between the messages of a split reply.
+   */
+  interim: (sessionId: string, text: string) => Promise<ReplyResult>;
 };
 
 export function createOutboundRouter(options: OutboundRouterOptions): OutboundRouter {
@@ -315,6 +336,24 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       }
       if (sessionId !== located.sessionId) return { status: "no-session" };
 
+      // The dedup against the transcript tailer, which reads this same text off the transcript up
+      // to a poll interval from now. Matched on the normalized pre-render text, like the envelope
+      // check below and for the same reason. A reply the tailer already posted as its last
+      // interim chunk is reported as sent rather than failed, because the text is on the thread;
+      // it just got there first by the other path. Its digest is still recorded on this branch,
+      // for the same reason it is recorded after a successful post below: the text is genuinely
+      // in front of the operator.
+      if (kind === "reply" && options.echo !== undefined) {
+        if (options.echo.isInterimEcho(located.sessionId, text)) {
+          options.echo.noteReply(located.sessionId, text);
+          dropped(
+            `the mirrored reply from session ${located.sessionId} was dropped, the tailer already ` +
+              `posted the same text as interim narration`,
+          );
+          return { status: "sent" };
+        }
+      }
+
       // A message the operator posted in this very thread, handed to the session as a prompt and on
       // its way back to where it was typed. Mirrored, it shows the operator their own message a
       // second time, attributed to a console they were not sitting at.
@@ -347,7 +386,14 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       }
 
       const run = await deliver(located.threadId, messages);
-      if (run.error === null) return { status: "sent" };
+      if (run.error === null) {
+        // Recorded only now that the run posted whole, matching the tailer's own record-on-sent
+        // rule. Recorded before delivery, a reply the transport refused would still poison the
+        // memory, the tailer's next pass would skip the same text off the transcript, and the
+        // reply would appear nowhere at all.
+        if (kind === "reply") options.echo?.noteReply(located.sessionId, text);
+        return { status: "sent" };
+      }
 
       // The kind, the counts, and the transport's error class only. The text is the operator's
       // prompt or Claude's reply, and mirror content never appears in the broker log at any level.
@@ -355,6 +401,34 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // Claude never finished.
       log(
         `routing: the mirrored ${kind} from session ${located.sessionId} stopped after ` +
+          `${run.landed} of ${messages.length} messages: ${run.error}`,
+      );
+      return { status: "failed", error: run.error };
+    },
+
+    async interim(sessionId, text) {
+      const threadId = options.threadFor(sessionId);
+      // Dropped, never queued, like every other post here: narration held for a thread that opens
+      // later would land as an answer to a question the operator stopped asking.
+      if (threadId === null) {
+        dropped(
+          `the interim narration from session ${sessionId} was dropped, its thread is not open yet`,
+        );
+        return { status: "no-thread" };
+      }
+
+      const messages = renderMirror("interim", text);
+      // Nothing visible once the invisible class is stripped. The tailer's next chunk narrates
+      // whatever this one did not, so the drop is reported to the caller and not logged.
+      if (messages.length === 0) return { status: "failed", error: "the message was empty" };
+
+      const run = await deliver(threadId, messages);
+      if (run.error === null) return { status: "sent" };
+
+      // The counts and the transport's error class only: transcript content is conversation
+      // content, and it never appears in the broker log at any level.
+      log(
+        `routing: the interim narration from session ${sessionId} stopped after ` +
           `${run.landed} of ${messages.length} messages: ${run.error}`,
       );
       return { status: "failed", error: run.error };

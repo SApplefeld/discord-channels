@@ -97,14 +97,15 @@ export function inertMessage(value: string): string {
 }
 
 /**
- * What a mirrored message carries: the operator's console prompt, or the turn's final assistant
- * reply.
+ * What a mirrored message carries: the operator's console prompt, the turn's final assistant
+ * reply, or a mid-turn chunk of assistant text the transcript tailer read while the turn is
+ * still running.
  *
  * Named here rather than in the routing layer that delivers it, because the attribution and the
  * splitting below are what the distinction is for, and one definition is what keeps the router
  * asking for a kind this renderer knows how to draw.
  */
-export type MirrorKind = "prompt" | "reply";
+export type MirrorKind = "prompt" | "reply" | "interim";
 
 /**
  * What every mirrored message opens with, composed here and by nothing else. It rides on every
@@ -129,6 +130,9 @@ export type MirrorKind = "prompt" | "reply";
 const ATTRIBUTION: Record<MirrorKind, string> = {
   prompt: ">>> ⌨ typed at the console\n",
   reply: "✨ Claude\n",
+  // Mid-turn narration: Claude's own text like a reply, so unquoted like a reply, and marked
+  // `working` so a reader scrolling later can tell narration from the turn's final word.
+  interim: "✨ Claude · working\n",
 };
 
 /**

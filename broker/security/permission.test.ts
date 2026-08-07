@@ -32,6 +32,7 @@ function announce(registry: Registry, processToken: string, sessionId: string): 
     source: "startup",
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 }
 

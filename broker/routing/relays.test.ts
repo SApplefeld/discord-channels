@@ -27,6 +27,7 @@ function announce(
     source,
     toolName: null,
     toolInput: null,
+    transcriptPath: null,
   });
 }
 

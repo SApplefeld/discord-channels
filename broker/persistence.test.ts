@@ -196,6 +196,7 @@ test("the registry survives a restart", () => {
       source: "startup",
       toolName: null,
       toolInput: null,
+      transcriptPath: null,
     });
     first.apply({
       event: "PostToolUse",
@@ -205,6 +206,7 @@ test("the registry survives a restart", () => {
       source: null,
       toolName: "Bash",
       toolInput: "npm test",
+      transcriptPath: null,
     });
 
     // A fresh process reading the file the previous one left behind.

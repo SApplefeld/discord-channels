@@ -12,9 +12,8 @@
 //     body: the hook payload verbatim, exactly as Claude Code emits it, kept only as far as the
 //     fields the registry stores, one of which is a bounded preview of the tool's input, so this
 //     route carries a little session content and not none; a body past maxBodyBytes is drained and
-//     dropped with a 202,
-//     because the Stop payload carries the turn's final assistant message and a refusal there is a
-//     visible error inside the session at the end of its longest turns.
+//     dropped with a 202, because the Stop payload carries the turn's final assistant message and a
+//     refusal there is a visible error inside the session at the end of its longest turns.
 //
 // The event name rides in a header rather than the body because two of the three hooks are `http`
 // hooks, whose body is authored by Claude Code and cannot be wrapped. A header is static per hook
@@ -45,9 +44,9 @@ const HOOK_EVENTS: readonly HookEvent[] = ["SessionStart", "PostToolUse", "Stop"
 
 /**
  * The mirror route's own event vocabulary, mapped to what each payload's text means. Deliberately
- * not HOOK_EVENTS and not the HookEvent type: those belong to the liveness path, no
- * liveness hook sends UserPromptSubmit, and widening either would let a mirror post masquerade as
- * a liveness event or the reverse.
+ * not HOOK_EVENTS and not the HookEvent type: those belong to the liveness path, no liveness hook
+ * sends UserPromptSubmit, and widening either would let a mirror post masquerade as a liveness
+ * event or the reverse.
  */
 const MIRROR_EVENTS: Readonly<Record<string, { kind: MirrorKind; field: string }>> = {
   UserPromptSubmit: { kind: "prompt", field: "prompt" },
@@ -217,6 +216,39 @@ function toolInputPreview(payload: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Longest transcript path accepted. Well past the longest real one observed on this machine (206
+ * characters) and past the classic Windows MAX_PATH, so a deep checkout still fits; what it
+ * bounds is storage, not legitimate traffic.
+ */
+const MAX_TRANSCRIPT_PATH_LENGTH = 1024;
+
+// C0 and DEL, the same class clean() strips; local because clean() also caps at MAX_FIELD_LENGTH,
+// which is exactly what a path must not have done to it (see transcriptPathField).
+const PATH_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g;
+
+/**
+ * The transcript path, read under its own rules because it is an instruction to open a file, not
+ * a display string. Control characters are stripped and the result trimmed, as clean() does, but
+ * every other deviation is refused whole rather than normalized: a path cut at a cap would never
+ * open and would leave only a rate-limited pass-failed line forever, indistinguishable from a
+ * genuinely unreadable file, and a UNC path opened on Windows initiates an outbound SMB
+ * connection carrying the operator's credentials. Refused means the tailer never learns a path
+ * for that session, which is a legible failure. Accepted shapes are exactly what the hooks send:
+ * an absolute local path, drive-letter or POSIX.
+ */
+function transcriptPathField(payload: Record<string, unknown>): string | null {
+  const value = payload["transcript_path"];
+  if (typeof value !== "string") return null;
+  const path = value.replace(PATH_CONTROL_CHARACTERS, "").trim();
+  if (path === "" || path.length > MAX_TRANSCRIPT_PATH_LENGTH) return null;
+  // Both slash spellings: Windows opens //host/share and \\host\share alike, and \\?\ and \\.\
+  // prefixed paths begin the same way.
+  if (path.startsWith("\\\\") || path.startsWith("//")) return null;
+  if (!/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith("/")) return null;
+  return path;
+}
+
 export type IntakeFailure = { status: number; message: string };
 
 export function parseIntake(
@@ -267,6 +299,11 @@ export function parseIntake(
       // and the whole of tool_response, are dropped as unbounded and of no use to any surface the
       // broker renders.
       toolInput: toolInputPreview(fields),
+      // Through its own reader rather than payloadString: a path is opened, not displayed, so a
+      // malformed one is refused whole instead of normalized into a different path (see
+      // transcriptPathField). It is used only as an argument to a read: the tailer holds it in
+      // memory and nothing persists or publishes it.
+      transcriptPath: transcriptPathField(fields),
     },
   };
 }
@@ -339,6 +376,22 @@ export type HandlerOptions = {
   log?: Logger;
   /** Drives the refusal-log rate limiter. Injected so a test can move the window without sleeping. */
   now?: () => number;
+  /**
+   * The transcript tailer's two seams. Optional because the tailer exists only while interim
+   * mirroring is on: with no seam wired, no path is ever learned and no transcript is ever
+   * opened, so "off" is the absence of the machinery rather than a check inside it.
+   */
+  tail?: {
+    /** Teaches the tailer where a credited session's transcript lives. */
+    learn: (sessionId: string, path: string) => void;
+    /**
+     * Reports a live session's mirror-on verdict. The tailer fails closed, so the affirmative
+     * signal is load-bearing: without one, a learned path is never read.
+     */
+    allow: (sessionId: string) => void;
+    /** Stops a session's transcript being read, on the session's own mirror-off switch. */
+    suppress: (sessionId: string) => void;
+  };
   /**
    * The mirror route's knobs and its seam into the routing layer. Required rather than optional,
    * so a caller cannot wire the handler and silently leave the mirror unrouted: a mirror hook
@@ -475,6 +528,11 @@ export function createHandler(
     const sessionMirror = header(request, "x-channel-mirror");
     if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
       request.resume();
+      // The same switch covers the transcript tailer: a session that opted out of having its
+      // content mirrored must not have its mid-turn transcript text published either, and the
+      // header only ever arrives on this route. UserPromptSubmit fires at the start of every
+      // turn, so the suppression is recorded before that turn can produce any interim text.
+      options.tail?.suppress(holder.sessionId);
       // Static and session-identifying only, never content and never the token: without this line,
       // a session the operator suppressed and a mirror that is silently broken both read as total
       // silence in the log, with no way to tell which is happening.
@@ -482,6 +540,15 @@ export function createHandler(
       send(response, 202, { ignored: true });
       return;
     }
+
+    // The affirmative half of the same verdict, reported on every mirror post a live session
+    // makes: the tailer fails closed and reads a transcript only after seeing this, so a normal
+    // session is re-allowed at the first UserPromptSubmit of every turn, and a -NoMirror session,
+    // which only ever reaches the branch above, is never read under any restart or revive
+    // ordering. Reported here, after the token has identified a live session, for the reason the
+    // off branch sits here too: an anonymous request must not switch a session's narration in
+    // either direction.
+    options.tail?.allow(holder.sessionId);
 
     const read = await readCappedBody(request, options.mirror.maxBytes);
     if ("droppedBytes" in read) {
@@ -689,6 +756,13 @@ export function createHandler(
         );
         send(response, 202, { ignored: true });
         return;
+      }
+      // Learned only from a post the registry credited to a record: an unwatched, forged, or
+      // unroutable post must not aim the tailer at a file of its choosing under a session it does
+      // not hold. Every credited event carries the path, so a broker restarted mid-session
+      // re-learns it from the very next hook post.
+      if (options.tail !== undefined && parsed.intake.transcriptPath !== null) {
+        options.tail.learn(record.sessionId, parsed.intake.transcriptPath);
       }
       send(response, 200, { sessionId: record.sessionId, state: record.state });
     })().catch((error: unknown) => {

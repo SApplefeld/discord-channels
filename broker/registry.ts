@@ -58,6 +58,12 @@ export type HookIntake = {
   toolName: string | null;
   /** The previewable field of the tool's input, already cleaned, or null when it had none. */
   toolInput: string | null;
+  /**
+   * Where Claude Code writes this session's transcript, for the tailer to learn once the post is
+   * credited. The registry itself never touches it: the path is held only in the tailer's own
+   * in-memory map, never stored on a SessionRecord, never persisted, and never published.
+   */
+  transcriptPath: string | null;
 };
 
 export type RegistryOptions = {
