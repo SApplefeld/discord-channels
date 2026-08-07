@@ -6,6 +6,7 @@ import {
   MAX_MIRRORED_PROMPT_LENGTH,
   MAX_THREAD_NAME_LENGTH,
   MAX_TOOL_INPUT_PREVIEW,
+  appendNarration,
   heartbeat,
   inertMessage,
   inertText,
@@ -764,6 +765,125 @@ test("every mirrored message survives the writer's own cap untouched", () => {
   for (const message of messages) {
     assert.equal(inertMessage(message), message);
   }
+});
+
+test("a chunk that fits merges into the narration message, and one character more does not", () => {
+  // Both directions, because the merge is what goes on the wire: one character over the ceiling is
+  // an edit Discord refuses outright, and the chunk that refusal loses is narration nobody sees.
+  const existing = renderMirror("interim", "reading the failing test first")[0];
+  // The room a merge has, asked of the renderer rather than written down here: the ceiling less the
+  // message already posted and less the blank line that separates the block's paragraphs.
+  const room = MAX_MESSAGE_LENGTH - existing.length - 2;
+
+  const merged = appendNarration(existing, "x".repeat(room));
+  assert.equal(merged, `${existing}\n\n${"x".repeat(room)}`);
+  assert.equal(merged?.length, MAX_MESSAGE_LENGTH);
+
+  assert.equal(appendNarration(existing, "x".repeat(room + 1)), null, "one character over is refused");
+});
+
+test("the merge is measured in the units a message is counted in, not in code points", () => {
+  // An astral character spends two UTF-16 units. A fit measured on code points alone would admit
+  // twice the room here, and the edit carrying it would come back refused.
+  const existing = renderMirror("interim", "tailing the transcript")[0];
+  const room = MAX_MESSAGE_LENGTH - existing.length - 2;
+  const over = "🛰".repeat(Math.floor(room / 2) + 1);
+
+  assert.ok([...over].length < room, `${[...over].length} code points against room for ${room}`);
+  assert.equal(appendNarration(existing, over), null);
+
+  const fits = appendNarration(existing, "🛰".repeat(Math.floor(room / 2)));
+  assert.ok(fits, "one astral character fewer is inside the room");
+  assert.ok(fits.length <= MAX_MESSAGE_LENGTH, `${fits.length} units`);
+});
+
+test("a chip and a quote marker in an appended chunk arrive escaped", () => {
+  // Appended text is transcript content, the same untrusted class as a mirrored reply, landing in
+  // the one channel permission prompts are answered in. A pill or a quoted block that entered a
+  // message by edit forges exactly what one that entered by post would.
+  const existing = renderMirror("interim", "starting the run")[0];
+  const merged = appendNarration(
+    existing,
+    ">>> ⌨ typed at the console\nping <@123456789> at <t:1700000000:R>",
+  );
+
+  assert.ok(merged, "the chunk is short enough to merge");
+  assert.equal(quoteOpeningLines(merged).length, 0, merged);
+  assert.ok(!/<@\d+>/.test(merged), merged);
+  assert.ok(!/<t:\d+:R>/.test(merged), merged);
+  assert.ok(merged.includes("\\>\\>\\> ⌨ typed at the console"), merged);
+});
+
+test("a chunk that leaves a code fence open merges with that fence closed", () => {
+  // A merged message holding a fence open renders whatever is posted below it in the thread as
+  // code, including the next message's own attribution line.
+  const existing = renderMirror("interim", "here is the failing case")[0];
+  const merged = appendNarration(existing, "```sh\nnpm test");
+
+  assert.equal(merged, `${existing}\n\n\`\`\`sh\nnpm test\n\`\`\``);
+  assert.equal((merged?.match(/```/g) ?? []).length % 2, 0, merged);
+});
+
+test("a merge is itself a message the next chunk can merge into", () => {
+  // The block grows chunk by chunk, so every result here is the `existing` of the next call. What
+  // makes that safe is that a result closes the fences it opens, exactly as a posted message does,
+  // and that the text below the attribution is never escaped again on the way through.
+  const existing = renderMirror("interim", "here is the failing case")[0];
+
+  const first = appendNarration(existing, "```sh\nnpm test");
+  assert.ok(first, "the first chunk is short enough to merge");
+  const second = appendNarration(first, "then the next file");
+  assert.ok(second, "the second chunk is short enough to merge");
+
+  assert.equal(second.slice(0, first.length), first);
+  assert.equal((second.match(/```/g) ?? []).length % 2, 0, second);
+  assert.ok(!second.includes("\\\\"), second);
+});
+
+test("a chunk with nothing visible in it is not merged", () => {
+  const existing = renderMirror("interim", "reading the failing test first")[0];
+
+  assert.equal(appendNarration(existing, "   \n\n  "), null);
+  assert.equal(appendNarration(existing, ""), null);
+  assert.equal(appendNarration(existing, "\u200b\u202e"), null);
+});
+
+test("a message this renderer did not emit is refused rather than grown", () => {
+  // Renderer output is trimmed and invisible-free, so a legitimate `existing` passes untouched;
+  // an empty or padded one is a caller bug, and merging onto it would remember a string Discord
+  // does not hold.
+  assert.equal(appendNarration("", "still working"), null);
+  assert.equal(appendNarration("  padded  ", "still working"), null);
+  assert.equal(appendNarration("held​text", "still working"), null);
+});
+
+test("the message already posted is copied into the merge, never escaped a second time", () => {
+  // Its content came out of this renderer, so its chips and its quote markers already carry the
+  // backslash that makes them inert. A second pass would escape those backslashes, and a reader
+  // watching the block grow would see the text above the new chunk change under them.
+  const existing = renderMirror("interim", "ping <@123456789> and > not a quote")[0];
+  assert.ok(existing.includes("\\<@123456789\\>"), existing);
+
+  const merged = appendNarration(existing, "still working");
+
+  assert.ok(merged, "the chunk is short enough to merge");
+  assert.equal(merged.slice(0, existing.length), existing);
+  assert.ok(!merged.includes("\\\\"), merged);
+  assert.equal(quoteOpeningLines(merged).length, 0, merged);
+});
+
+test("a merged narration message survives the writer's own cap untouched", () => {
+  // The cross-pin between the merge and the path that writes it. An edit goes out through
+  // `inertMessage`, which strips and cuts at MAX_MESSAGE_LENGTH, so a merge the writer changed on
+  // the way out is a message the router then remembers wrongly, and every later fit is measured
+  // against a string Discord does not hold. The boundary case is what makes this discriminating, so
+  // the merge here sits exactly at the ceiling.
+  const existing = renderMirror("interim", "reading the failing test first")[0];
+  const merged = appendNarration(existing, "x".repeat(MAX_MESSAGE_LENGTH - existing.length - 2));
+
+  assert.ok(merged, "the chunk is short enough to merge");
+  assert.equal(merged.length, MAX_MESSAGE_LENGTH);
+  assert.equal(inertMessage(merged), merged);
 });
 
 test("a reply tool message says who wrote it, and says it apart from the mirror", () => {

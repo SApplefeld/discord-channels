@@ -71,12 +71,19 @@ export type DiscordTransport = {
 };
 
 /**
- * The one write that posts a new message rather than editing the card. Separate from
+ * The two writes that post and edit a message in a thread rather than the card. Separate from
  * `DiscordTransport` because the two have different callers and different cadences: the surfaces
- * reconcile passive state on a timer and must never post, while the message routing posts only what
- * a person is meant to be pinged about.
+ * reconcile passive state on a timer and must never post, while the message routing posts and
+ * edits only what a person is meant to see or be pinged about. The verbs sit on different Discord
+ * rate buckets (a create-message POST and a message PATCH), which is why a caller holding both
+ * must budget them separately rather than folding one route's headers into the other's.
  */
 export type ThreadMessenger = {
+  /**
+   * Posts a new message into the thread. The id it returns, when Discord's response carries one,
+   * is the target of a later `editInThread`; a 2xx whose body carries no readable id still reports
+   * `ok`, because the message landed regardless of what the caller can read back from it.
+   */
   postToThread: (input: {
     threadId: string;
     text: string;
@@ -86,5 +93,11 @@ export type ThreadMessenger = {
      * phone before the operator next looks at it.
      */
     mentionUserId?: string;
+  }) => Promise<CallOutcome<{ messageId: string | null }>>;
+  /** Rewrites a message this bot posted into the thread. Never re-posts it. */
+  editInThread: (input: {
+    threadId: string;
+    messageId: string;
+    text: string;
   }) => Promise<CallOutcome<null>>;
 };

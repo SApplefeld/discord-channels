@@ -95,6 +95,38 @@ test("a thread message resolves no mention unless one user is named, and then on
   for (const call of sent) assert.equal(call.body.flags, 4);
 });
 
+test("a thread post surfaces the id Discord assigned, the append target for a later edit", async () => {
+  const { transport } = transportWith(() => respond({ id: "msg-501" }));
+
+  const posted = await transport.postToThread({ threadId: "thread-77", text: "first line" });
+
+  assert.deepEqual(posted.status === "ok" ? posted.value : null, { messageId: "msg-501" });
+});
+
+test("a thread post with no readable id in the body still reports the message as landed", async () => {
+  // Unlike postCard, where the id is the target of the very next call, here the id only feeds the
+  // append optimization: the message already landed, and reporting a landed write as failed is
+  // the resend-and-duplicate path, not a safer one.
+  const { transport } = transportWith(() => respond({ nothing: true }));
+
+  const posted = await transport.postToThread({ threadId: "thread-77", text: "first line" });
+
+  assert.equal(posted.status, "ok");
+  assert.deepEqual(posted.status === "ok" ? posted.value : null, { messageId: null });
+});
+
+test("an edit in a thread patches the named message and suppresses mentions and embeds", async () => {
+  const { sent, transport } = transportWith(() => respond(null));
+
+  await transport.editInThread({ threadId: "thread-77", messageId: "msg-501", text: "updated" });
+
+  assert.equal(sent[0].route, "/channels/thread-77/messages/msg-501");
+  assert.equal(sent[0].method, "PATCH");
+  assert.equal(sent[0].body.content, "updated");
+  assert.deepEqual(sent[0].body.allowed_mentions, { parse: [] });
+  assert.equal(sent[0].body.flags, 4);
+});
+
 test("the card is edited in place on the message the broker posted", async () => {
   const { sent, transport } = transportWith(() => respond(null));
 

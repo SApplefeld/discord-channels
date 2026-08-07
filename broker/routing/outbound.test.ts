@@ -35,13 +35,14 @@ function announce(
   });
 }
 
-function fakeWriter(outcome?: CallOutcome<null>) {
+function fakeWriter(outcome?: CallOutcome<{ messageId: string }>) {
   const posts: Array<{ threadId: string; text: string }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
-      return outcome ?? { status: "ok", value: null, rate: NO_RATE_INFO };
+      return outcome ?? { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   return { writer: createThreadWriter({ messenger, now: () => 1_000 }), posts };
 }
@@ -277,10 +278,11 @@ test("a rate-limit block earned by mirror volume does not drop an alert", async 
       posts.push(input);
       return {
         status: "ok",
-        value: null,
+        value: { messageId: "msg-1" },
         rate: { remaining: 0, resetAfterMs: 60_000, retryAfterMs: null },
       };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const now = (): number => 1_000;
   // The alert writer never passes through the router at all now; it stands beside it here to show
@@ -388,8 +390,9 @@ test("a mirrored reply that fails part way through stops and says how far it got
       calls += 1;
       if (calls === 3) return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
       posts.push(input.text);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: `msg-${calls}` }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const writer = createThreadWriter({ messenger, now: () => 1_000 });
   const lines: string[] = [];
@@ -427,8 +430,9 @@ function outOfOrderMessenger(): { messenger: ThreadMessenger; landed: string[] }
       call += 1;
       await new Promise((resolve) => setTimeout(resolve, delay));
       landed.push(input.text);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: `msg-${call}` }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   return { messenger, landed };
 }
@@ -550,8 +554,9 @@ test("a reply tool post that fails part way through stops and says how far it go
       calls += 1;
       if (calls === 3) return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
       posts.push(input.text);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: `msg-${calls}` }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const writer = createThreadWriter({ messenger, now: () => 1_000 });
   const lines: string[] = [];
@@ -590,8 +595,9 @@ test("a busy thread does not hold up another session's thread", async () => {
       // The slow thread is the one asked first.
       await new Promise((resolve) => setTimeout(resolve, input.threadId === THREAD ? 40 : 0));
       landed.push(input.threadId);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: `msg-${landed.length}` }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const now = (): number => 1_000;
   const router = createOutboundRouter({
@@ -1019,8 +1025,9 @@ test("an interim run that stops part way logs its counts, never its text", async
     postToThread: async () => {
       calls += 1;
       if (calls === 2) return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: `msg-${calls}` }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const lines: string[] = [];
   const router = createOutboundRouter({

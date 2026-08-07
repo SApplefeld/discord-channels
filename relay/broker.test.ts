@@ -42,8 +42,9 @@ async function broker(t: TestContext) {
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   let replyRequests = 0;
   const prompts: PermissionRequest[] = [];

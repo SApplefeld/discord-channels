@@ -37,7 +37,11 @@ function announce(registry: Registry, processToken: string, sessionId: string): 
 }
 
 function harness(
-  options: { attach?: string[]; outcomes?: Array<CallOutcome<null>>; now?: () => number } = {},
+  options: {
+    attach?: string[];
+    outcomes?: Array<CallOutcome<{ messageId: string }>>;
+    now?: () => number;
+  } = {},
 ) {
   const now = options.now ?? ((): number => 1_000);
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
@@ -61,8 +65,9 @@ function harness(
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
-      return outcomes.shift() ?? { status: "ok", value: null, rate: NO_RATE_INFO };
+      return outcomes.shift() ?? { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const logged: string[] = [];
   const desk = createPermissionDesk({

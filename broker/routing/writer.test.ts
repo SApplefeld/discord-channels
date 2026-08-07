@@ -10,15 +10,28 @@ import { createThreadWriter } from "./writer.ts";
 
 const THREAD = "900000000000000001";
 
-function fakeMessenger(outcomes: Array<CallOutcome<null>> = []) {
+function fakeMessenger(outcomes: Array<CallOutcome<{ messageId: string }>> = []) {
   const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
+      return outcomes.shift() ?? { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  return { messenger, posts };
+}
+
+function fakeEditMessenger(outcomes: Array<CallOutcome<null>> = []) {
+  const edits: Array<{ threadId: string; messageId: string; text: string }> = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async () => ({ status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO }),
+    editInThread: async (input) => {
+      edits.push(input);
       return outcomes.shift() ?? { status: "ok", value: null, rate: NO_RATE_INFO };
     },
   };
-  return { messenger, posts };
+  return { messenger, edits };
 }
 
 test("a reply is neutralized before it is posted", () => {
@@ -119,7 +132,11 @@ test("an alert carries the one user it may mention and shares the bucket", async
   // budget rather than exempt from it. It carries no per-thread floor: unlike a notice, it is the
   // only way a waiting session can be answered, and one silently dropped is a parked session.
   const { messenger, posts } = fakeMessenger([
-    { status: "ok", value: null, rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: null } },
+    {
+      status: "ok",
+      value: { messageId: "msg-1" },
+      rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: null },
+    },
   ]);
   let now = 1_000;
   const writer = createThreadWriter({ messenger, now: () => now });
@@ -143,6 +160,122 @@ test("an alert carries the one user it may mention and shares the bucket", async
   now += 5_000;
   assert.equal(await writer.alert(THREAD, "third", "700000000000000002"), true);
   assert.equal(posts.length, 2, "back to back alerts are allowed once the bucket refills");
+});
+
+test("a reply surfaces the id Discord assigned, the target of a later edit", async () => {
+  const { messenger } = fakeMessenger([
+    { status: "ok", value: { messageId: "msg-42" }, rate: NO_RATE_INFO },
+  ]);
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  const posted = await writer.reply(THREAD, "first line");
+
+  assert.deepEqual(posted.status === "ok" ? posted.value : null, { messageId: "msg-42" });
+});
+
+test("an edit goes out when there is room in the edit bucket", async () => {
+  const { messenger, edits } = fakeEditMessenger();
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  const edited = await writer.edit(THREAD, "msg-42", "updated line");
+
+  assert.equal(edited.status, "ok");
+  assert.deepEqual(edits, [{ threadId: THREAD, messageId: "msg-42", text: "updated line" }]);
+});
+
+test("an edit bucket emptied by an edit 429 refuses the next edit without touching the messenger", async () => {
+  // The hazard this guards is the same one the post budget guards: a budget bypass on the new verb
+  // is a write that never stops, this time landing on an edit instead of a post.
+  const outcomes: Array<CallOutcome<null>> = [
+    { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: 4_000 } },
+  ];
+  const { messenger, edits } = fakeEditMessenger(outcomes);
+  let now = 1_000;
+  const writer = createThreadWriter({ messenger, now: () => now });
+
+  const first = await writer.edit(THREAD, "msg-42", "first");
+  assert.equal(first.status, "rate-limited");
+  assert.equal(edits.length, 1, "the first attempt found room and reached the messenger");
+
+  const blocked = await writer.edit(THREAD, "msg-42", "should not go out");
+  assert.equal(blocked.status, "rate-limited");
+  assert.equal(edits.length, 1, "the bucket the first 429 emptied refuses the second without a call");
+
+  now += 5_000;
+  const recovered = await writer.edit(THREAD, "msg-42", "goes out once the bucket refills");
+  assert.equal(recovered.status, "ok");
+  assert.equal(edits.length, 2);
+});
+
+test("a rate-limited post does not block the next edit", async () => {
+  // The two verbs are two Discord rate buckets. Folding a post's headers into the edit bucket
+  // would silence an edit that was never refused.
+  const { messenger: postMessenger, posts } = fakeMessenger([
+    { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: 4_000 } },
+  ]);
+  const edits: Array<{ threadId: string; messageId: string; text: string }> = [];
+  const messenger: ThreadMessenger = {
+    postToThread: postMessenger.postToThread,
+    editInThread: async (input) => {
+      edits.push(input);
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+  };
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  assert.equal((await writer.reply(THREAD, "first")).status, "rate-limited");
+  assert.equal(posts.length, 1);
+
+  const edited = await writer.edit(THREAD, "msg-42", "unrelated edit");
+  assert.equal(edited.status, "ok", "the post bucket's block must not reach the edit bucket");
+  assert.equal(edits.length, 1);
+});
+
+test("a rate-limited edit does not block the next post", async () => {
+  const { messenger: editMessenger, edits } = fakeEditMessenger([
+    { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: 4_000 } },
+  ]);
+  const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input);
+      return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
+    },
+    editInThread: editMessenger.editInThread,
+  };
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  assert.equal((await writer.edit(THREAD, "msg-42", "first")).status, "rate-limited");
+  assert.equal(edits.length, 1);
+
+  const replied = await writer.reply(THREAD, "unrelated reply");
+  assert.equal(replied.status, "ok", "the edit bucket's block must not reach the post bucket");
+  assert.equal(posts.length, 1);
+});
+
+test("a failed edit is not evidence about the bucket either", async () => {
+  const { messenger } = fakeEditMessenger([
+    { status: "failed", error: "HTTP 500", rate: { remaining: 0, resetAfterMs: 600_000, retryAfterMs: null } },
+  ]);
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  assert.equal((await writer.edit(THREAD, "msg-42", "first")).status, "failed");
+  assert.equal(
+    (await writer.edit(THREAD, "msg-42", "second")).status,
+    "ok",
+    "a failed edit must not have set a block",
+  );
+});
+
+test("an empty edit is refused before it reaches the wire", async () => {
+  const zeroWidth = String.fromCharCode(0x200b);
+  const { messenger, edits } = fakeEditMessenger();
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  const refused = await writer.edit(THREAD, "msg-42", zeroWidth);
+
+  assert.equal(refused.status, "failed");
+  assert.equal(edits.length, 0);
 });
 
 test("a reply and a notice name no user to mention at all", async () => {

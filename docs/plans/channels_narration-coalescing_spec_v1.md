@@ -76,28 +76,36 @@ freshness over per-edit GETs.
 
 Model: sonnet
 
-`ThreadMessenger.postToThread` returns `CallOutcome<{ messageId: string }>` instead of
-`CallOutcome<null>`, read off the response body exactly as `postCard` reads it (`readId`, and the
-same no-id-in-body failure). A new `ThreadMessenger.editInThread({ threadId, messageId, text })`
-PATCHes `/channels/{threadId}/messages/{messageId}` as a sibling of `editCard`, carrying the same
-`allowed_mentions` empty-parse list and `SUPPRESS_EMBEDS`, returning `CallOutcome<null>`.
-`createThreadWriter` gains `edit(threadId, messageId, text)`: same budget bucket as its posts,
+`ThreadMessenger.postToThread` returns `CallOutcome<{ messageId: string | null }>` instead of
+`CallOutcome<null>`, the ID read off the response body with `readId` as `postCard` reads it. A
+2xx whose body carries no readable ID stays `ok` with a null `messageId`, unlike `postCard`'s
+failure: there the ID is what the next call is made against, here the message landed and the ID
+only feeds the append optimization, so reporting the post failed would invite the caller to
+resend text the operator can already see. A new `ThreadMessenger.editInThread({ threadId,
+messageId, text })` PATCHes `/channels/{threadId}/messages/{messageId}` as a sibling of
+`editCard`, carrying the same `allowed_mentions` empty-parse list and `SUPPRESS_EMBEDS`,
+returning `CallOutcome<null>`. `createThreadWriter` gains `edit(threadId, messageId, text)`:
 same `inertMessage` neutralization, same refusal of an empty message, same rule of not observing
-a failed call's headers. `reply` surfaces the posted message ID to its caller; `notice` and
-`alert` keep their boolean contracts. The unconfigured-messenger stub in `broker/index.ts` gains
-the matching `editInThread` failure.
+a failed call's headers, but its own budget instance, because a message PATCH is a different
+Discord rate bucket from a create POST and one route's headers must never clear or install the
+other's block. `reply` surfaces the posted message ID to its caller; `notice` and `alert` keep
+their boolean contracts. The unconfigured-messenger stub in `broker/index.ts` gains the matching
+`editInThread` failure.
 
 Files: `broker/discord/transport.ts`, `broker/discord/adapter.ts`, `broker/routing/writer.ts`,
 `broker/index.ts`, `broker/discord/adapter.test.ts`, `broker/routing/writer.test.ts`.
 
 Acceptance: `npm test` green; the adapter test proves the edit hits the message route with both
-suppressions and that a posted message's ID is surfaced; the writer test proves an edit spends
-the shared budget.
+suppressions and that a posted message's ID is surfaced; the writer test proves the two verbs
+hold separate budgets.
 
-Tests: lock the budget in both directions (room in the bucket → the edit goes out; empty bucket →
-the edit is refused without touching the messenger), because a budget bypass on the new verb is
-the failure that writes forever. Lock that `postToThread` reports the no-id body as a failure,
-because S3 stores that ID as the append target.
+Tests: lock the edit budget in both directions (room in the bucket → the edit goes out; empty
+bucket → the edit is refused without touching the messenger), because a budget bypass on the new
+verb is the failure that writes forever. Lock the verb separation in both directions (a
+rate-limited post does not block the next edit, a rate-limited edit does not block the next
+post), because cross-route header folding is how a standing block gets cleared by the wrong
+route's headroom. Lock that `postToThread` reports a 2xx with no readable ID as ok with a null
+`messageId`, because a landed message reported as failed is the resend-and-duplicate path.
 
 ### 2. Renderer: the append fit
 
@@ -131,8 +139,10 @@ ID and exact content of the newest narration message, present only while that me
 newest. `interim` consults it inside the thread's ordering chain: state held and
 `appendNarration` accepts → `writer.edit`, and on success the remembered content updates; no
 state, no fit, or a failed edit → the existing fresh-post path runs in the same call, and a fresh
-interim run remembers its final message's ID and content as the new state. A failed edit clears
-the state first, so the fallback and every later chunk post fresh. `reply` and `mirror` clear the
+interim run remembers its final message's ID and content as the new state. The remembered content
+is the exact string handed to the writer, and it updates only on a successful edit; a run whose
+final post reported a null `messageId` remembers nothing, because there is no target to edit. A
+failed edit clears the state first, so the fallback and every later chunk post fresh. `reply` and `mirror` clear the
 thread's state whenever they hand a run to `deliver` (conservative on purpose: clearing costs one
 header, stale state costs narration appended above newer content; the echo-drop branch that posts
 nothing does not clear). A new router method, `noteThreadMessage(threadId, messageId)`, clears
@@ -204,4 +214,24 @@ The tailer, its gates, and the EchoMemory dedup are untouched here.
 None.
 
 ## Chapters
+
+### Chapter 1 - 2026-08-07
+Completed: 1. Transport and writer learn message identity and in-place edits
+Implemented By: implementer-sonnet, plus a fix round on the same agent after review
+Metrics: 2 review rounds (initial + prescriptive fix verification); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: Two spec claims were wrong on contact with the code and the spec was amended to match the fix, both flagged here. First, "same budget bucket as its posts" became per-verb budgets: a message PATCH is a different Discord rate bucket from a create POST, `budget.observe` clears a block on any headroom, and the budget holds no synthetic allowance (it is purely observed-header state), so a clean split is the faithful shape. Second, "the same no-id-in-body failure as postCard" became ok-with-null-messageId: rest.ts's readBody returns null on an unparseable 2xx, and a landed message reported as failed is the resend-and-duplicate path, worst on the permission prompt. The interface change mechanically forced stub-shape updates in six test files outside the declared scope (structural typing; no assertions changed); accepted. Security review's two latent minors are recorded as deliberate non-fixes: edit-target provenance stays at the router (the sole caller; ids flow only from postToThread responses, and the writer doc states the contract), and snowflake-shape validation at the transport is declined because every interpolated id originates from Discord's own responses or validated config, not from inbound content.
+Review Findings: 1 Critical (no-id 2xx synthesized failure) fixed; 2 Major (cross-bucket header folding, budget test that pinned nothing) fixed; Minors fixed: stale one-bucket comment, stale ThreadMessenger doc block, unused callback parameter, duplicated body-preparation, verb-blind drop log. Minors noted without fix: editing an alert-posted message would drop its mention whitelist (no such edit path exists); writer-level edit re-neutralization overlaps the renderer's ceiling check (pinned by the cross-pin test).
+Stamps: adjudicated 1, stamped 0 (claude-code-channel-and-hook-facts was opened by a subagent but covers hooks and registration, which this section never touched)
+Next: 2. Renderer: the append fit (built in parallel, closed in Chapter 2)
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-07
+Completed: 2. Renderer: the append fit
+Implemented By: implementer-opus, plus one main-session minor fix after review
+Metrics: 1 review round; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: Both reviewers approved without required changes; the implementer's out-of-tree red-first discipline (a scratchpad copy of the module, five defect injections, each failing exactly its intended test) is worth reusing on a shared live tree. The one adopted minor is a precondition guard added in the main session: appendNarration refuses an `existing` that is empty or not trimmed-and-invisible-free, since renderer output always is, so the check is identity for legitimate callers and fails closed for buggy ones. The implementer's cross-pin (inertMessage(merged) === merged at the exact ceiling) locks the writer/renderer contract Section 3 depends on. Noted without fix, both inside the documented scanFences divergence bound: a 4+-backtick fence closed by the bare three-backtick closer, and the untested chip-inside-fence case on the append path (structurally unable to diverge while the one-model rule holds).
+Review Findings: 0 Critical, 0 Major; Minors: precondition guard fixed inline with a test; the two scanner-divergence notes recorded above; the reviewers' shared demand that Section 3 remember the exact posted string and update only on a successful edit was written into the spec's Section 3 text.
+Stamps: covered by Chapter 1's adjudication (same boundary)
+Next: 3. Router coalescing and freshness tracking
+Commit Model: Commit-and-Push
 

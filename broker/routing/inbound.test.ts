@@ -84,8 +84,9 @@ function harness(options: { attachRelay?: boolean; now?: () => number } = {}) {
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       notices.push({ threadId: input.threadId, text: input.text });
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const permissions = watchedDesk();
   const router = createInboundRouter({
@@ -294,6 +295,9 @@ test("a failed notice does not propagate out of the router", async () => {
     writer: createThreadWriter({
       messenger: {
         postToThread: async () => {
+          throw new Error("discord refused");
+        },
+        editInThread: async () => {
           throw new Error("discord refused");
         },
       },

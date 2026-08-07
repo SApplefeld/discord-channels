@@ -198,7 +198,11 @@ export function createDiscordTransport(
     // addressed to the thread instead of the parent. It carries the same two suppressions every
     // other write here does: the text is Claude's own output, steered by whatever arrived from
     // Discord, so it is no more trusted than a session name.
-    postToThread: async ({ threadId, text, mentionUserId }): Promise<CallOutcome<null>> => {
+    postToThread: async ({
+      threadId,
+      text,
+      mentionUserId,
+    }): Promise<CallOutcome<{ messageId: string | null }>> => {
       const posted = await write(`/channels/${threadId}/messages`, "POST", {
         content: text,
         // The empty `parse` list still stands: no mention class is resolved from the content, so
@@ -211,7 +215,26 @@ export function createDiscordTransport(
           mentionUserId === undefined ? NO_MENTIONS : { ...NO_MENTIONS, users: [mentionUserId] },
         flags: SUPPRESS_EMBEDS,
       });
-      return posted.status === "ok" ? { status: "ok", value: null, rate: posted.rate } : posted;
+      if (posted.status !== "ok") return posted;
+
+      // Unlike postCard, a body with no readable id is not a failure: the message already landed
+      // in the thread, the id only feeds the append optimization, and reporting a landed write as
+      // failed is what invites the caller to resend text the operator can already see.
+      return { status: "ok", value: { messageId: readId(posted.value) }, rate: posted.rate };
+    },
+
+    // The edit counterpart to postToThread: it rewrites a message this bot already posted into the
+    // thread rather than posting a new one, on the same route `editCard` uses with the thread as
+    // the channel. It carries the same two suppressions every write in this file does, for the same
+    // reason: the text being replaced in is Claude's own output, steered by whatever arrived from
+    // Discord, and no more trusted than a session name.
+    editInThread: async ({ threadId, messageId, text }): Promise<CallOutcome<null>> => {
+      const edited = await write(`/channels/${threadId}/messages/${messageId}`, "PATCH", {
+        content: text,
+        allowed_mentions: NO_MENTIONS,
+        flags: SUPPRESS_EMBEDS,
+      });
+      return edited.status === "ok" ? { status: "ok", value: null, rate: edited.rate } : edited;
     },
 
     archiveThread: async ({ threadId }): Promise<CallOutcome<null>> => {

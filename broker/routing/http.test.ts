@@ -57,8 +57,9 @@ async function harness(t: TestContext): Promise<Harness> {
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const prompts: Array<{ processToken: string; request: PermissionRequest }> = [];
   // What the desk reports back about a prompt. A desk that could not post one says so, and the

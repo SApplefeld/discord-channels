@@ -359,6 +359,44 @@ export function renderAnswer(text: string): string[] {
 }
 
 /**
+ * A mid-turn chunk merged into the narration message already sitting in the thread, or `null` when
+ * it will not go there.
+ *
+ * The router grows one narration block by editing that message in place, so a working stretch reads
+ * as a single message under a single attribution rather than as a header per sentence. `existing` is
+ * the exact content that message was posted with, which has been through this renderer already: it
+ * is copied into the result untouched, because escaping it a second time would write a backslash in
+ * front of the backslashes a reader is already looking at. `text` is the raw chunk, the same
+ * untrusted class `renderMirror` receives, and it goes through the same stripping and the same
+ * escape, because the attribution rule holds for text arriving by edit exactly as it does for text
+ * arriving by post.
+ *
+ * A fence the body leaves open is closed, the way the splitter closes one at the end of a message:
+ * a merged message holding a fence open renders everything posted below it as code. The body's scan
+ * starts from no open fence because every message this renderer emits closes what it opened, which
+ * is true of a split run's last message and of the result here, so it stays true of the next merge.
+ *
+ * `null` is the only refusal, and it covers both a chunk that neutralizes to nothing and a merge
+ * over the ceiling. Nothing is truncated here: a chunk that does not fit whole posts as a fresh
+ * message through the splitter instead, which is the same fallback either answer leads to.
+ */
+export function appendNarration(existing: string, text: string): string | null {
+  // The precondition the merge rests on, checked rather than assumed. Everything this renderer
+  // emits is trimmed and free of the invisible class, so for a message that really was posted this
+  // is an identity check, and for anything else it refuses: a merge grown on a string Discord does
+  // not hold is a block whose remembered copy drifts from the thread with every append.
+  if (existing === "" || existing !== withoutInvisible(existing).trim()) return null;
+  const seen = withoutChips(withoutInvisible(text).trim());
+  if (seen === "") return null;
+  const closing = fenceAfter(null, seen) === null ? "" : `\n${FENCE}`;
+  const merged = `${existing}\n\n${seen}${closing}`;
+  // Measured in UTF-16 units, the larger of the two counts a length could mean, so holding it holds
+  // the code point count too. The message is accepted whole or not at all, so there is no cut to
+  // place and no half character to avoid placing it in.
+  return merged.length > MAX_MESSAGE_LENGTH ? null : merged;
+}
+
+/**
  * Neutralized text, packed into the messages it takes to carry it, each one carrying `prefix`.
  *
  * The whole budget is `MAX_MESSAGE_LENGTH` and every part of a message is spent against it: the

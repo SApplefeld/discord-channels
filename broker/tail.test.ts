@@ -282,8 +282,9 @@ function integration(t: TestContext) {
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input.text);
-      return { status: "ok", value: null, rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const echo = createEchoMemory();
   const outbound = createOutboundRouter({

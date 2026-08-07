@@ -94,9 +94,17 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       error: "discord is not configured",
       rate: NO_RATE_INFO,
     }),
+    editInThread: async () => ({
+      status: "failed",
+      error: "discord is not configured",
+      rate: NO_RATE_INFO,
+    }),
   };
   const writer = createThreadWriter({
-    messenger: { postToThread: (input) => messenger.postToThread(input) },
+    messenger: {
+      postToThread: (input) => messenger.postToThread(input),
+      editInThread: (input) => messenger.editInThread(input),
+    },
     now: Date.now,
     log: note,
   });
@@ -108,7 +116,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // creates no Discord capacity; it only keeps conversation rate-limit state from starving the
   // paths that reach a phone.
   const mirrorWriter = createThreadWriter({
-    messenger: { postToThread: (input) => messenger.postToThread(input) },
+    messenger: {
+      postToThread: (input) => messenger.postToThread(input),
+      editInThread: (input) => messenger.editInThread(input),
+    },
     now: Date.now,
     log: note,
   });
