@@ -381,10 +381,12 @@ export function renderAnswer(text: string): string[] {
  * message through the splitter instead, which is the same fallback either answer leads to.
  */
 export function appendNarration(existing: string, text: string): string | null {
-  // The precondition the merge rests on, checked rather than assumed. Everything this renderer
-  // emits is trimmed and free of the invisible class, so for a message that really was posted this
-  // is an identity check, and for anything else it refuses: a merge grown on a string Discord does
-  // not hold is a block whose remembered copy drifts from the thread with every append.
+  // The cheap half of the precondition, checked rather than assumed. Everything this renderer
+  // emits is trimmed and free of the invisible class, so a message that really was posted passes
+  // as an identity check, and an empty, padded, or invisible-carrying base is refused: a merge
+  // grown on a string Discord does not hold is a block whose remembered copy drifts from the
+  // thread with every append. The rest of the precondition, that the base is renderer output and
+  // not merely renderer-shaped, is the caller's provenance to keep.
   if (existing === "" || existing !== withoutInvisible(existing).trim()) return null;
   const seen = withoutChips(withoutInvisible(text).trim());
   if (seen === "") return null;

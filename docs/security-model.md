@@ -175,18 +175,19 @@ Discord through exactly the escape a mirrored reply uses, whether it enters a me
 (`renderMirror`) or by edit (`appendNarration`, which grows the narration message in place). The
 two entry points are built from the same escape and the same fence scanner, so there is no second
 reading of where a code block is: text appended by edit is stripped, escaped, and fence-closed
-exactly as text posted fresh, the base it appends to is the renderer's own prior output and is
-never escaped a second time, and a base string the renderer did not emit is refused rather than
-merged. The edit write itself carries the same mention and embed suppression every post carries,
-and its target can only be an ID Discord returned for one of the broker's own posts: no ID that
-arrives over the gateway ever becomes an edit target, gateway IDs are only compared against the
-remembered one to decide freshness. Its `✨ Claude · working` attribution is forgeable by content
-in the same way the mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it
-is a Claude-authored line opening a Claude-authored message, claiming nothing the message does not
-already claim. The operator-attributed quoted block remains the one attribution that content
-cannot draw. What an unauthorized channel member's messages can do to coalescing is end a block
-early (their gateway events clear the freshness state), which costs one attribution header and
-nothing else.
+exactly as text posted fresh, and the base it appends to is the renderer's own prior output and is
+never escaped a second time. That the base really is renderer output rests on provenance, the
+router is the only caller and only ever feeds back what the renderer returned, backstopped by a
+cheap invariant check that refuses an empty, padded, or invisible-carrying base outright. The edit
+write itself carries the same mention and embed suppression every post carries, and its target can
+only be an ID Discord returned for one of the broker's own posts: no ID that arrives over the
+gateway ever becomes an edit target, gateway IDs are only compared against the remembered one to
+decide freshness. Its `✨ Claude · working` attribution is forgeable by content in the same way the
+mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it is a Claude-authored
+line opening a Claude-authored message, claiming nothing the message does not already claim. The
+operator-attributed quoted block remains the one attribution that content cannot draw. What an
+unauthorized channel member's messages can do to coalescing is end a block early (their gateway
+events clear the freshness state), which costs one attribution header and nothing else.
 
 **Transcript content never reaches the broker log at any level.** Every line the tailer writes
 carries a static reason, a session ID, a byte count, or an offset. A `JSON.parse` failure and a
@@ -289,13 +290,14 @@ and both apply it:
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 
 **Conversation text is neutralized on a narrower rule than a name is.** A mirrored prompt, a
-mirrored reply, and a `reply` tool call are prose with code in them, so escaping the whole of
-markdown would trade the readability of the surface away. All three go through one fence-aware
-escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote marker and
-leaves the rest alone. `renderMirror` applies it to mirrored text and `renderAnswer` applies it to
-the reply tool's, both before the text reaches the message path. That is what stops either from drawing
-a mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one
-channel the operator answers permission prompts in.
+mirrored reply, a mid-turn narration chunk, and a `reply` tool call are prose with code in them, so
+escaping the whole of markdown would trade the readability of the surface away. All four go through
+one fence-aware escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote
+marker and leaves the rest alone. `renderMirror` applies it to mirrored and narration text,
+`renderAnswer` to the reply tool's, and `appendNarration` to a chunk entering an existing message by
+edit, all before the text reaches the message path. That is what stops any of them from drawing a
+mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one channel
+the operator answers permission prompts in.
 
 The quote marker is escaped inside a code fence as well as outside it, so the attribution's
 unforgeability does not rest on this project's reading of where a fence is agreeing with Discord's.

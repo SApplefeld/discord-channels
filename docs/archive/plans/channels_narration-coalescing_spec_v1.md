@@ -1,6 +1,6 @@
 # Narration coalescing: mid-turn chunks edit-append into one message
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: S3 implementer; the S2 and S3 reviewer pairs (one tier above their opus and fable writers); finishing reviews
 Created: 2026-08-07
@@ -54,8 +54,10 @@ admits, so a merged message never holds a fence open over what follows.
 
 **Failure falls back to what happens today.** An edit refused for any reason clears the state,
 and the same call then posts the chunk as a fresh message, so delivery is never lost to the
-optimization. A refused edit is never retried. Budget is neutral: an edit replaces a post
-one-for-one against the same writer budget, spent through the same `mirrorWriter`.
+optimization. A refused edit is never retried. Budget stays conversation-tier: edits go out
+through the same `mirrorWriter`, in their own budget instance beside the post one, because a
+message PATCH is a different Discord rate bucket from a create POST and one route's headers must
+never clear or install the other's block.
 
 **Only narration coalesces.** The turn's final reply (`✨ Claude`) and the reply tool's answers
 are the turn's actual word and stay their own messages. Mirrored prompts are operator-attributed
@@ -143,9 +145,10 @@ interim run remembers its final message's ID and content as the new state. The r
 is the exact string handed to the writer, and it updates only on a successful edit; a run whose
 final post reported a null `messageId` remembers nothing, because there is no target to edit. A
 failed edit clears the state first, so the fallback and every later chunk post fresh. `reply` and `mirror` clear the
-thread's state whenever they hand a run to `deliver` (conservative on purpose: clearing costs one
-header, stale state costs narration appended above newer content; the echo-drop branch that posts
-nothing does not clear).
+thread's state whenever a run of theirs goes out through `deliver`, inside the chained task at the
+moment the run hits the wire (conservative on purpose: clearing costs one header, stale state
+costs narration appended above newer content; the echo-drop branch that posts nothing does not
+clear).
 
 Freshness holds against three windows the naive clear-on-message shape misses. A new router
 method, `noteThreadMessage(threadId, messageId)`, clears the state only when the arriving ID is
@@ -205,7 +208,7 @@ write verb and its trust argument.
 ## Related
 
 Extends the delivery half of
-[`../archive/plans/interim-mirroring_spec_v1.md`](../archive/plans/interim-mirroring_spec_v1.md),
+[`interim-mirroring_spec_v1.md`](interim-mirroring_spec_v1.md),
 which built the transcript tailer and the chunk pipeline this plan changes the posting shape of.
 The tailer, its gates, and the EchoMemory dedup are untouched here.
 
@@ -268,5 +271,16 @@ Decisions / Surprises: architecture.md describes the coalescing behavior and all
 Review Findings: none (see Metrics)
 Stamps: adjudicated 0, none surfaced in the window
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-07
+Completed: finishing pass; the effort closes
+Implemented By: main session orchestrating qa-verifier, security-reviewer, adversarial-reviewer (fable), docs-curator
+Metrics: QA PASS on every criterion (585/584/0/1 against the 550/549/0/1 opening baseline, all +35 tests new); security CLEAR; final adversarial APPROVED with four wording minors, all fixed; advisor opus
+Decisions / Surprises: The finishing reviews' minors were all precision defects in prose: the security model and the appendNarration comment attributed to a runtime guard what actually holds by provenance (the router is the sole caller and feeds back only renderer output), both reworded to state the real split; the runbook's quoted log line now matches the emission; this spec's Section 3 and Approach text were aligned with the as-built freshness contract (in-task clearing, per-verb budgets). Drift Report: three deviations, no mistakes. D1 (spec Approach still claimed a shared budget) fixed in this close-out; D2 (operator-checks and the index claimed five-of-five checks passed while the file holds six with F unrun, a pre-existing untrue claim) corrected to six-with-F-unrun under the honesty gate; D3 (the security model's escape-applier enumeration missed appendNarration and had a pre-existing kind undercount) fixed by the curator in place. The curator also pointed operator check F at the coalesced surface and left one open question that only a live run can close: whether editing the bot's own message needs any Discord permission beyond what install.md grants (recall says no; the first real append is the evidence). Deployed: SCOTT's broker restarted onto this code in-session; the task-stop left the old process holding port 8787 (EADDRINUSE on the fresh bind, the new instance correctly exited), killed by PID and restarted clean, gateway reconnected, both live relays reattached, /sessions 200.
+Review Findings: finishing security 2 Minors (doc-precision wording, fixed; a contrived clock-eviction edge under a 64-thread bump storm inside one round trip, accepted, self-heals); final adversarial 4 Minors, all fixed. No Critical, no Major anywhere in the finishing round.
+Stamps: adjudicated 1, stamped 0 (claude-code-channel-and-hook-facts, third consecutive skip on the same grounds); memory written: discord-edit-and-create-are-separate-rate-buckets (project tier)
+Operator Verification pending: watch one long turn from the phone per operator check F; narration accumulates in one message under one header, your typed message breaks the block, and the next chunk posts fresh below it. Narration sitting above your message more than momentarily, a chunk that never appears, or a refused-append log line carrying a permissions error reopens this work. Carried in docs/backlog.md.
+Next: none; archived
 Commit Model: Commit-and-Push
 

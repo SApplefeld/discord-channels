@@ -6,7 +6,7 @@ Fable Spend: research, briefs, and reviews in the main session; implementation d
 Created: 2026-08-07
 
 Extended by
-[`../../plans/channels_narration-coalescing_spec_v1.md`](../../plans/channels_narration-coalescing_spec_v1.md),
+[`channels_narration-coalescing_spec_v1.md`](channels_narration-coalescing_spec_v1.md),
 which changes how the chunks this plan delivers are posted: consecutive narration chunks
 edit-append into one thread message while it remains the thread's newest.
 

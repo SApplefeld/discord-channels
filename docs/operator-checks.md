@@ -1,10 +1,11 @@
 # Operator checks
 
-Five checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
+Six checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
 proves, its result, the exact steps, and what the answer settled.
 
-**All five checks have been run and all five passed**, A through D on 2026-08-06 and E on
-2026-08-07. The procedures are kept because they are
+**Five of the six have been run and passed**, A through D on 2026-08-06 and E on
+2026-08-07; check F, the live watch of a long turn's narration, has not yet been run and now
+covers the coalesced surface. The procedures are kept because they are
 also how to re-check a new host: none of these results is inferable from the code, and two of them
 would change the design if a future host answered differently.
 
@@ -286,9 +287,13 @@ taking the mirror down with them.
    its tool calls: a task that reads a few files and narrates what it is doing between them.
 2. Watch the thread on a phone while it runs. **Pass:** narration arrives during the turn, in the
    order it was written, under a `✨ Claude · working` line that reads differently at a glance from
-   the `✨ Claude` a mirrored reply carries. **Fail:** nothing arrives until the turn ends, which
-   means the tailer was never armed for this session, or arrives under the wrong attribution.
-3. When the turn ends, read the last few messages. **Pass:** the final reply appears once. **Fail
+   the `✨ Claude` a mirrored reply carries. Consecutive chunks accumulate into one growing message
+   carrying the `(edited)` tag, so a single header over many paragraphs is the design rather than a
+   symptom. **Fail:** nothing arrives until the turn ends, which means the tailer was never armed
+   for this session, or arrives under the wrong attribution.
+3. When the turn ends, read the tail of the narration block as well as the messages under it: when
+   the dedup drops the Stop mirror's copy, the turn's final word is the last paragraph of the block
+   rather than a message of its own, or a fresh message when that chunk did not fit. **Pass:** the final reply appears once. **Fail
    one way:** the same paragraph appears twice, once as narration and once as the reply, which means
    the Stop payload and the transcript's last block are not byte-identical and the digests missed.
    That is the failure this design accepts, so record it rather than treating it as a stop; the fix
@@ -307,6 +312,10 @@ taking the mirror down with them.
    fault:** narration stops for the remainder of that turn and resumes on the next one. This is the
    arming gate failing closed, and step 4 is what it buys. Record it so a later reader does not
    diagnose it as a bug.
+7. During another long turn, type a message into the thread while narration is accumulating.
+   **Pass:** the growing message stops there and the next chunk starts a fresh message below yours.
+   **Fail:** narration appearing above your message for more than a moment, which is the freshness
+   signal not reaching the router, or a chunk that never appears at all.
 
 ### Recording the result
 
