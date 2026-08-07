@@ -19,10 +19,11 @@ is built and installable.
 
 ## Plans
 
-No plan is open. Both are archived, most recent first.
+No plan is open. All three are archived, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`archive/plans/subprocess-and-hardening-fixes_spec_v1.md`](archive/plans/subprocess-and-hardening-fixes_spec_v1.md) | Complete | Two silent-failure defects operator check E surfaced: a `claude` subprocess superseding its parent's session and quietly ending its mirroring, and the installer reporting a successful install having hardened nothing. |
 | [`archive/plans/channel-mirroring_spec_v1.md`](archive/plans/channel-mirroring_spec_v1.md) | Complete | Console-to-channel mirroring: every console prompt and every turn's final reply posted into the session's thread, making the return path structural rather than dependent on the model choosing the reply tool. Five Chapters, including the measurement that removed a whole planned script and the finishing pass that closed four cross-section gaps. |
 | [`archive/plans/sapplefeld-channels_spec_v1.md`](archive/plans/sapplefeld-channels_spec_v1.md) | Complete | The design and build record for the whole system, in seven sections, with a Chapter per section covering what shipped, the decisions, and the surprises. |
 

@@ -243,12 +243,20 @@ rewriting the access control list of an arbitrary directory an operator happened
 destructive act that no install step should be able to take by accident.
 
 This is not theoretical on these hosts: a repository checked out under a drive root that grants
-`Authenticated Users: Modify` inherits exactly that, and until the installer runs, it holds. Two
-independent checks enforce it afterwards, both calling the same rule rather than restating it: the
+`Authenticated Users: Modify` inherits exactly that, and until the installer runs, it holds. Three
+independent checks enforce it afterwards, all calling the same rule rather than restating it: the
+installer reads back every path it hardened and fails the install rather than reporting success, the
 broker refuses to start against a token file or token directory that fails, and the launch wrapper
 refuses to start a session when the hook script has lost its protection, which is what a re-clone or
 a branch switch can silently undo. A check that cannot *run* is treated as a refusal for the
 credential, and as a warning for the launcher, where blocking work would cost more than it protects.
+
+The installer's read-back walks every file and subdirectory under the hardened trees rather than
+sampling one per directory, because the hardening is not recursive: a file whose inheritance was
+already detached keeps its own access list and gains nothing from a parent's new inheritable grant.
+Hardening is also idempotent and repairing. A path already carrying the exact list is skipped without
+a write, which is what lets a re-install run unelevated, and a path that has since been granted
+anything else is rewritten back to the three trustees rather than refused.
 
 Ownership is checked, not just the permission list. A file created by an untrusted local account is
 owned by that account, so hardening it "to its owner" would hand it to the attacker and then pass

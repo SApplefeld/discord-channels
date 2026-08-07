@@ -19,19 +19,12 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   `--dangerously-load-development-channels` and its launch-dialog keypress on every host, which is
   what an unattended session supervisor is blocked on. See the launch-dialog section of
   [`install.md`](install.md).
-- A session that spawns `claude` as a subprocess supersedes its own registry record. The child
-  inherits `CHANNEL_PROCESS_TOKEN` and announces a new session ID under it, so the parent is marked
-  ended, a thread is opened for the child, and the parent's mirror posts are dropped by the
-  straggler gate from then on: mirroring stops for that session with nothing saying so. Any new
-  wrapped session mints its own token and never collides, so the fix is to supersede only on
-  `source: "clear"`, which check B measured as what `/clear` sends, and to treat a `startup` under a
-  token a live session already holds as the subprocess it is.
-- Fix the installer's silent ACL-hardening failure. `Set-Acl` in `Protect-ChannelPath` carries no
-  `-ErrorAction Stop`, so its failure is non-terminating: the surrounding catch never runs, the
-  descriptive throw never fires, and the installer reports success having hardened nothing. Root
-  cause the `SeSecurityPrivilege` refusal first, since adding the flag alone converts a silent
-  failure into a blocked install. `Install-Host.ps1` also never calls `Assert-ChannelPathProtected`,
-  the verifier that already exists beside it.
+- Re-run the installer on this host, unelevated, and confirm it completes without the seven
+  `Set-Acl` errors it printed before. That is the one acceptance criterion of
+  [`archive/plans/subprocess-and-hardening-fixes_spec_v1.md`](archive/plans/subprocess-and-hardening-fixes_spec_v1.md)
+  that names this machine; the behavior is verified on a disposable tree but not on the real
+  install. It is also what puts the windowless scheduled task and the mirror's quoting change into
+  effect, so it is one run rather than three.
 - Now that mirroring has shipped, measure mirror-versus-reply-tool duplication in real threads, and
   decide whether to suppress duplicates or coach the reply tool into a quick-summary role on top of
   the mirrored reply. Deliberately excluded from

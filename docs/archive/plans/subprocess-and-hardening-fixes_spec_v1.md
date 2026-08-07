@@ -1,6 +1,6 @@
 # Subprocess Supersession and Silent Hardening
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: finishing reviews only
 Created: 2026-08-07
@@ -120,7 +120,7 @@ temp directory and never the repository or the operator's real state root.
 
 ## Related
 
-- Follows [`docs/archive/plans/channel-mirroring_spec_v1.md`](../archive/plans/channel-mirroring_spec_v1.md),
+- Follows [`docs/archive/plans/channel-mirroring_spec_v1.md`](channel-mirroring_spec_v1.md),
   whose operator check E surfaced both defects. Neither was introduced by that effort; mirroring made
   the first one consequential and a re-install made the second one visible.
 
@@ -225,3 +225,51 @@ the protecting.
 Stamps: see the close-out.
 Next: finishing-work
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-07
+Completed: finishing-work
+Implemented By: main session, with the qa-verifier and one combined final review at fable
+Metrics: QA PASS; 1 combined finishing review; advisor opus
+Decisions / Surprises: The per-section rounds had already run adversarial, blind, and security over
+each section post-fix, and the two sections share no files, so the finishing pass was one combined
+review scoped to cross-section cohesion, spec-versus-built, debris, and the honesty of the shipped
+comments, rather than three duplicate deep passes. It confirmed the expected result on cohesion,
+that there was little to find, and earned its keep elsewhere.
+
+**A deviation from the Approach that Chapter 2 should have named and did not.** The Approach says the
+already-hardened check should read `Assert-ChannelPathProtected`'s standard. The shipped skip instead
+compares against the exact descriptor the write would apply, plus the owner, the protection flag, and
+a raw-versus-managed ACE count backstop. That is the stronger design, because it makes the skip
+provably no more permissive than the write rather than merely agreeing with a second opinion, and the
+verifier's independent standard still guards the result through the install-time read-back. Recorded
+here as a deliberate deviation rather than left implicit.
+
+QA drove the two behavioral claims directly rather than trusting the tests: on a disposable tree,
+hardening is idempotent (a second pass leaves the access list byte-identical) and repairing (an
+`Authenticated Users` grant added with `icacls` is gone after an ordinary re-run). It also correctly
+declined to conclude anything from the running broker, which predates these commits by sixteen hours.
+Review Findings: One Major fixed that the diff-scoped rounds could not see: `docs/architecture.md`
+still carried the same falsified claim about an inherited token being read as a supersession that
+this effort corrected in the wrapper. The rule is to sweep the tree for a falsified claim rather than
+the diff, and the sweep had missed the curated doc. A second Major fixed: the verification failure
+message told the operator to take ownership, which cannot clear the shape the walk most often catches,
+a child file whose inheritance was detached carrying its own grant, since re-running hardens the tree
+roots and not their children. The message now names both repairs. Minors fixed: the synopsis omitted
+`relay/` from the hardened surface it walks; a docstring claimed `Set-Acl` cannot perform either
+write unelevated when the truth is it cannot RE-apply them, which is why only installs after the
+first ever failed; and the empty-path guard was unreachable because the binder rejected an empty
+array first, so it now carries `AllowEmptyCollection`.
+Stamps: adjudicated at each Chapter; the sweep is in the close-out.
+Next: none. The effort is complete.
+Commit Model: Commit-and-Push
+
+## Operator-pending
+
+One acceptance criterion names this host and can only be exercised by the operator:
+
+- A re-install on this machine completes without the seven `Set-Acl` errors it printed before. The
+  behavior is verified unelevated on a temp tree shaped like a real install, in three passes
+  (harden, re-install as a no-op, repair injected drift), but the real host's install has not been
+  re-run. It is also how the windowless scheduled task from the mirroring effort takes effect.
+
+A failure there reopens the work as a new round.

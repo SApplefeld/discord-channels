@@ -7,8 +7,8 @@ Writes the broker's runtime configuration to %LOCALAPPDATA%\sapplefeld-channels\
 the repository. Substitutes this checkout's absolute SessionStart script path into the hooks
 fragment, validates its shape, and merges it into the user-level Claude Code settings file
 (~/.claude/settings.json), backing that file up first. Hardens the ACL on the whole execution
-surface a scheduled task and a Bypass-executed hook depend on: hooks/, wrapper/, install/, broker/,
-the bot token file, and the state root that holds it, so only this process's own account,
+surface a scheduled task and a Bypass-executed hook depend on: hooks/, relay/, wrapper/, install/,
+broker/, the bot token file, and the state root that holds it, so only this process's own account,
 Administrators, and SYSTEM can read or write any of them. Every file and subdirectory under those
 trees is then read back through the broker's own protection check, and one still open to another
 account fails the install rather than being reported as provisioned.
@@ -290,9 +290,16 @@ if (-not $SkipAcl) {
                 "still there; move or revoke it if the path it sits under is reachable by other " +
                 "accounts."
         }
+        # The remedy names both shapes, because the likelier one is not the ownership case. Hardening
+        # applies to each tree's root and is inherited by what sits under it, so a child whose
+        # inheritance was detached earlier keeps its own grants and is not repaired by re-running:
+        # that path has to have its extra grants removed, or inheritance re-enabled, by hand.
         throw "Install-Host: hardening did not hold. $($_.Exception.Message).$residue Nothing here " +
             "is provisioned against an execution surface another account on this machine can still " +
-            "write to; take ownership of the named path as the account running this install, and re-run."
+            "write to. If the named path is a file or directory inside one of the hardened trees, " +
+            "remove the grants it carries or re-enable inheritance on it, since re-running hardens " +
+            "the trees rather than their children. If it is a tree root, take ownership of it as " +
+            "the account running this install. Then re-run."
     }
     Write-Host "Verified $($verifyTargets.Count) hardened path(s) under the execution surface."
 }

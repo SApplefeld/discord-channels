@@ -667,8 +667,10 @@ makes the rewrite atomic: the original descriptor is captured first, the new one
 entirely in memory, and the single call that applies it either lands whole or throws.
 
 Both writes here, the ownership change and the descriptor itself, go through the .NET
-SetAccessControl on the item rather than Set-Acl, because Set-Acl cannot perform either of them
-unelevated. Set-Acl writes the descriptor's audit section as well, which needs SeSecurityPrivilege
+SetAccessControl on the item rather than Set-Acl, because Set-Acl cannot RE-apply either of them
+unelevated. Against a path that is not yet protected it works either way; the difference appears on
+every install after the first. Set-Acl writes the descriptor's audit section as well, which needs
+SeSecurityPrivilege
 whenever the target's DACL is already protected, and step 2 of the install runs unelevated by design.
 That requirement is gratuitous here: nothing in this function sets an audit rule. SetAccessControl
 writes only the sections the descriptor actually carries, so an already-protected path that has since
@@ -850,7 +852,10 @@ depending on where this checkout's own broker/ lives.
 #>
 function Assert-ChannelPathProtected {
     param(
-        [Parameter(Mandatory)][string[]]$Path,
+        # AllowEmptyCollection so the guard below is the thing that refuses an empty set, with a
+        # message saying why it matters. Without it the binder rejects the call first, and a
+        # verification pass that looked at nothing would be reported as a parameter error.
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Path,
         [string]$NodePath = 'node',
         [string]$CredentialsScriptPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'broker\discord\credentials.ts')
     )

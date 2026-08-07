@@ -43,7 +43,9 @@ Four pieces per host, plus an installer.
   sets `CHANNEL_SESSION` and a fresh `CHANNEL_PROCESS_TOKEN` GUID, writes a per-launch
   `--mcp-config` registering the relay, and starts `claude` with this host's channel flag. Both
   environment variables are restored when `claude` exits, because a token left behind in the
-  operator's shell would be inherited by the next session and read as a supersession.
+  operator's shell is inherited by the next `claude` started from it, which the broker then reads as
+  a subprocess of the session that holds the token: it never registers, so it gets no thread, no
+  status card, and no mirroring.
 - **Hooks** (`hooks/`). `SessionStart` is a `command` hook running `session-start.ps1`, which posts
   identity to the broker. `PostToolUse` and a `Stop` liveness tick are content-free `http` hooks
   posting straight to the broker. `UserPromptSubmit` and a second `Stop` entry are the mirror: `http`
