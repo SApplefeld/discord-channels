@@ -14,6 +14,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     name: "neo-intake",
     host: "NEO",
     lastTool: null,
+    lastToolInput: null,
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,
@@ -97,6 +98,7 @@ test("a view starts without attention until something reports it", () => {
     source: "startup",
     state: "live",
     lastTool: "Bash",
+    lastToolInput: "npm test",
     toolCount: 1,
     turnCount: 0,
     startedAt: NOW,
@@ -108,4 +110,7 @@ test("a view starts without attention until something reports it", () => {
   assert.equal(narrowed.needsAttention, false);
   assert.equal(narrowed.lifecycle, "live");
   assert.equal(narrowed.lastTool, "Bash");
+  // The tool line's two halves are surfaced together, so a preview cannot arrive at the card
+  // without the tool name it belongs to.
+  assert.equal(narrowed.lastToolInput, "npm test");
 });

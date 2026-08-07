@@ -180,6 +180,7 @@ function announce(registry: Registry): void {
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 }
 
@@ -341,6 +342,7 @@ test("a refused takeover is logged under its own reason, not counted into a beni
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 
   // The cover traffic first: unroutable posts under a token no session holds, which open the
@@ -722,6 +724,7 @@ test("a per-session suppression is logged with the session id, never content", a
     sessionId: "session-suppressed",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 
   const secret = "SECRET-suppressed-prompt";
@@ -1040,6 +1043,63 @@ test("payload fields that are not strings are ignored rather than stored", () =>
   assert.equal(parsed.intake.source, null);
 });
 
+test("a tool input is previewed from the first previewable key it carries", () => {
+  const preview = (toolInput: unknown): string | null => {
+    const parsed = parseIntake(
+      fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse") }),
+      JSON.stringify({ tool_name: "Bash", tool_input: toolInput }),
+    );
+    assert.ok("intake" in parsed);
+    return parsed.intake.toolInput;
+  };
+
+  assert.equal(preview({ command: "npm test" }), "npm test");
+  // The probe stops at the first key it matches, so a tool whose input carries both a path and the
+  // file's whole contents previews the path. `content` is on no probe list at any position.
+  assert.equal(preview({ file_path: "D:\\x\\y.ts", content: "x".repeat(5_000) }), "D:\\x\\y.ts");
+  assert.equal(preview({ file_path: "D:\\x\\y.ts", command: "npm test" }), "npm test");
+  assert.equal(preview({ prompt: "find the caller" }), "find the caller");
+  // A key whose value is empty once cleaned is not a preview, so the probe goes on to the next key
+  // rather than stopping at it and reporting nothing.
+  assert.equal(preview({ command: "   ", file_path: "D:\\x\\y.ts" }), "D:\\x\\y.ts");
+  // The order runs from what identifies a call most precisely to what identifies it least, so a
+  // tool carrying both a path and a sentence about what it is doing previews the path.
+  assert.equal(preview({ description: "reads a file", path: "D:\\x\\y.ts" }), "D:\\x\\y.ts");
+});
+
+test("a tool input with nothing previewable in it previews nothing", () => {
+  const preview = (body: string): string | null => {
+    const parsed = parseIntake(
+      fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse") }),
+      body,
+    );
+    assert.ok("intake" in parsed);
+    return parsed.intake.toolInput;
+  };
+
+  // Absent, not an object, and an object carrying none of the probed keys. The nested and
+  // array-valued cases are what keeps an unbounded structure out of a field the card renders.
+  assert.equal(preview(JSON.stringify({ tool_name: "Bash" })), null);
+  assert.equal(preview(JSON.stringify({ tool_input: "a bare string" })), null);
+  assert.equal(preview(JSON.stringify({ tool_input: ["command", "npm test"] })), null);
+  assert.equal(preview(JSON.stringify({ tool_input: { todos: [{ command: "npm test" }] } })), null);
+  assert.equal(preview(JSON.stringify({ tool_input: { command: { nested: "npm test" } } })), null);
+  assert.equal(preview(JSON.stringify({ tool_input: { offset: 12, limit: 40 } })), null);
+  // tool_response is dropped whole: nothing reads it, whatever it carries.
+  assert.equal(preview(JSON.stringify({ tool_response: { command: "npm test" } })), null);
+});
+
+test("a previewed tool input is normalized like every other payload string", () => {
+  const parsed = parseIntake(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse") }),
+    JSON.stringify({ tool_input: { command: `git log\u001b[31m ${"x".repeat(400)}` } }),
+  );
+
+  assert.ok("intake" in parsed);
+  assert.equal(parsed.intake.toolInput?.length, 256);
+  assert.ok(!parsed.intake.toolInput?.includes("\u001b"), parsed.intake.toolInput ?? "");
+});
+
 test("control characters are stripped and long fields are capped", () => {
   const parsed = parseIntake(
     fakeRequest("127.0.0.1", { headers: hookHeaders("SessionStart") }),
@@ -1173,15 +1233,25 @@ test("the broker serves a real request on a bound loopback port", async () => {
     const tooled = await fetch(`${base}/hook`, {
       method: "POST",
       headers: { "content-type": "application/json", ...hookHeaders("PostToolUse") },
-      body: JSON.stringify({ tool_name: "Bash", duration_ms: 12 }),
+      body: JSON.stringify({
+        tool_name: "Bash",
+        tool_input: { command: "git status --porcelain" },
+        duration_ms: 12,
+      }),
     });
     assert.equal(tooled.status, 200);
 
     const listed = await fetch(`${base}/sessions`);
     assert.equal(listed.status, 200);
-    const body = (await listed.json()) as { sessions: { lastTool: string; toolCount: number }[] };
+    const body = (await listed.json()) as {
+      sessions: { lastTool: string; lastToolInput: string; toolCount: number }[];
+    };
     assert.equal(body.sessions.length, 1);
     assert.equal(body.sessions[0].lastTool, "Bash");
+    // Published beside the tool name: it is already-neutralized, already-capped tool metadata of
+    // the same class. The process token, which is what a hook post is authenticated by, is not.
+    assert.equal(body.sessions[0].lastToolInput, "git status --porcelain");
+    assert.ok(!JSON.stringify(body).includes(TOKEN), "the forgery key stays withheld");
     assert.equal(body.sessions[0].toolCount, 1);
 
     // Over the cap on a real socket, where draining mid-stream could have reset the connection

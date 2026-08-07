@@ -222,6 +222,16 @@ const MAX_PREVIEW_LENGTH = 900;
 const NOTHING = "(none)";
 
 /**
+ * The card's room for a tool-input preview, in code points.
+ *
+ * Small on purpose. The preview answers one question, what the running tool is working on, and it
+ * shares a line with the tool's name on a surface read at a glance on a phone. A budget large
+ * enough to carry a whole command would let one tool call push the turn count and the heartbeat,
+ * which is what the card exists to carry, off the bottom of a glance.
+ */
+export const MAX_TOOL_INPUT_PREVIEW = 100;
+
+/**
  * One untrusted prompt field: neutralized, cut to its budget, and told apart from a whole one.
  *
  * The cut is named in the label rather than left to the ellipsis. A tool input is attacker
@@ -605,6 +615,33 @@ export function heartbeat(ageMs: number): string {
 }
 
 /**
+ * The card's tool line: the last tool's name, and what it was called with when the input carried
+ * anything previewable.
+ *
+ * The name comes first and the preview after the separator, because the thread list and a narrow
+ * phone view truncate from the right, and the name is the part that has to survive that. The cut is
+ * named rather than left to the ellipsis, on `promptField`'s reasoning: a tool input is
+ * attacker-influenced text, so it can front-load the harmless part, and a reader has to be able to
+ * tell a whole preview from a partial one. Whether it was cut is measured on the escaped text,
+ * which is what the reader sees and what the budget is spent on.
+ *
+ * A preview that neutralizes to nothing renders as no preview at all, rather than as a separator
+ * with nothing after it, and a session that has run no tool keeps the line it has always had.
+ */
+function toolLine(view: SessionView): string {
+  if (view.lastTool === null) return "Last tool: none yet";
+  // Cut to the same budget the permission prompt gives a tool name. A tool name is untrusted text
+  // capped at MAX_FIELD_LENGTH, and escaping can double what that cap allows, so a name left whole
+  // beside a bounded preview is the half of this line that can push the turn count and the
+  // heartbeat past the card's own ceiling, where the final fit() would drop them.
+  const name = fit(inertText(view.lastTool), MAX_TOOL_NAME_LENGTH);
+  const whole = view.lastToolInput === null ? "" : inertText(view.lastToolInput);
+  if (whole === "") return `Last tool: ${name}`;
+  const shown = fit(whole, MAX_TOOL_INPUT_PREVIEW);
+  return `Last tool: ${name} ${SEPARATOR} ${shown}${shown === whole ? "" : " (cut)"}`;
+}
+
+/**
  * The starter message: the thread's detail card, edited in place forever after. Six fields, each
  * one named, and no session field that is not one of them.
  */
@@ -615,7 +652,7 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
     `Session: ${inertText(view.sessionId)}`,
     `Host: ${inertText(view.host)}`,
     `State: ${state}`,
-    `Last tool: ${view.lastTool === null ? "none yet" : inertText(view.lastTool)}`,
+    toolLine(view),
     `Turns: ${view.turnCount}`,
     `Heartbeat: ${heartbeat(Math.max(now - since, 0))}`,
   ].join("\n");

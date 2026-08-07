@@ -119,6 +119,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       name,
       host: "",
       lastTool: null,
+      lastToolInput: null,
       turnCount: 0,
       lastHookAt: options.now(),
       endedAt: options.now(),

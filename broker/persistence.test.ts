@@ -24,6 +24,7 @@ function record(sessionId: string): SessionRecord {
     source: "startup",
     state: "live",
     lastTool: "Bash",
+    lastToolInput: "npm test",
     toolCount: 3,
     turnCount: 1,
     startedAt: 1_000,
@@ -142,6 +143,30 @@ test("strings read back from the state file are normalized like wire input", () 
   }
 });
 
+test("a snapshot written without lastToolInput loads with every record intact", () => {
+  // Every snapshot on disk when this field shipped was written without it. Rejecting one would
+  // empty the registry on the first restart after the upgrade, and every live session would lose
+  // the Discord thread it is bound to.
+  const { file, cleanup } = scratchFile();
+  try {
+    const older: Record<string, unknown> = { ...record("session-a") };
+    delete older.lastToolInput;
+    assert.ok(!("lastToolInput" in older), "the snapshot under test must genuinely lack the field");
+    writeFileSync(file, JSON.stringify({ version: 1, sessions: [older] }), "utf8");
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+
+    assert.deepEqual(logged, [], "an older snapshot is not corruption");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].sessionId, "session-a");
+    assert.equal(loaded[0].lastTool, "Bash");
+    assert.equal(loaded[0].lastToolInput, null);
+  } finally {
+    cleanup();
+  }
+});
+
 test("a malformed record inside a well-formed snapshot degrades to empty", () => {
   const { file, cleanup } = scratchFile();
   try {
@@ -170,6 +195,7 @@ test("the registry survives a restart", () => {
       sessionId: "session-a",
       source: "startup",
       toolName: null,
+      toolInput: null,
     });
     first.apply({
       event: "PostToolUse",
@@ -178,6 +204,7 @@ test("the registry survives a restart", () => {
       sessionId: null,
       source: null,
       toolName: "Bash",
+      toolInput: "npm test",
     });
 
     // A fresh process reading the file the previous one left behind.
@@ -192,6 +219,7 @@ test("the registry survives a restart", () => {
     assert.equal(restored.sessionId, "session-a");
     assert.equal(restored.toolCount, 1);
     assert.equal(restored.lastTool, "Bash");
+    assert.equal(restored.lastToolInput, "npm test");
 
     const onDisk = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(onDisk.sessions.length, 1, "the snapshot on disk holds the one session");

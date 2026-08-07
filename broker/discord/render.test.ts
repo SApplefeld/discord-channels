@@ -5,6 +5,7 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_MIRRORED_PROMPT_LENGTH,
   MAX_THREAD_NAME_LENGTH,
+  MAX_TOOL_INPUT_PREVIEW,
   heartbeat,
   inertMessage,
   inertText,
@@ -14,6 +15,7 @@ import {
   renderPermissionRequest,
   threadName,
 } from "./render.ts";
+import { MAX_FIELD_LENGTH } from "../sanitize.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
 import type { SessionRecord } from "../registry.ts";
@@ -26,6 +28,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     name: "neo-intake",
     host: "NEO",
     lastTool: "Bash",
+    lastToolInput: null,
     turnCount: 14,
     lastHookAt: NOW,
     endedAt: null,
@@ -113,6 +116,31 @@ test("a card is held below Discord's message limit", () => {
   assert.ok([...card].length <= MAX_CARD_LENGTH, `${[...card].length} characters`);
 });
 
+test("a long tool name cannot push the turn count and the heartbeat off the card", () => {
+  // The whole-card cap cuts the tail, and the tail is where the two fields the card exists to carry
+  // live. So holding the card under the ceiling is not enough on its own: the untrusted fields
+  // above them have to be bounded individually, or a session announcing a tool name of maximum
+  // length spends the whole card on it and the operator's glance answers nothing. Driven at the
+  // real wire cap, MAX_FIELD_LENGTH, which is what `clean` holds every payload string to, and in
+  // characters the escape doubles, which is the widest a field of that length can render.
+  const card = renderCard(
+    view({
+      sessionId: "*".repeat(MAX_FIELD_LENGTH),
+      name: "*".repeat(MAX_FIELD_LENGTH),
+      host: "*".repeat(MAX_FIELD_LENGTH),
+      lastTool: "*".repeat(MAX_FIELD_LENGTH),
+      lastToolInput: "*".repeat(MAX_FIELD_LENGTH),
+      lastHookAt: NOW - 840_000,
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.ok([...card].length <= MAX_CARD_LENGTH, `${[...card].length} characters`);
+  assert.match(card, /^Turns: 14$/m);
+  assert.match(card, /^Heartbeat: 14m ago$/m);
+});
+
 test("a name is cut on code points, never mid-character", () => {
   // A lone surrogate is not valid UTF-8, and the request body carrying it would be rejected.
   const name = threadName(view({ name: "🛰".repeat(200) }), "working");
@@ -133,6 +161,75 @@ test("the card carries the six named fields and the state", () => {
   assert.match(card, /^Last tool: Bash$/m);
   assert.match(card, /^Turns: 14$/m);
   assert.match(card, /^Heartbeat: 14m ago$/m);
+});
+
+test("the tool line carries what the tool was called with, from the record through the view", () => {
+  // The whole tail of the chain against one literal: a record's preview, narrowed to a view, drawn
+  // on the card. Tested end to end because a card that agreed with itself about a field the view
+  // never carried would look exactly like this test passing.
+  const record: SessionRecord = {
+    sessionId: "session-a",
+    processToken: "5f0c2e4a-0000-4000-8000-000000000001",
+    name: "neo-intake",
+    host: "NEO",
+    source: "startup",
+    state: "live",
+    lastTool: "Bash",
+    lastToolInput: "npm test",
+    toolCount: 3,
+    turnCount: 1,
+    startedAt: NOW,
+    lastHookAt: NOW,
+    lastRelayAt: null,
+    endedAt: null,
+  };
+
+  assert.match(renderCard(toView(record), "working", NOW), /^Last tool: Bash · npm test$/m);
+});
+
+test("a tool that supplied nothing previewable renders the line it always has", () => {
+  assert.match(renderCard(view({ lastToolInput: null }), "working", NOW), /^Last tool: Bash$/m);
+  assert.match(
+    renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW),
+    /^Last tool: none yet$/m,
+  );
+  // A preview of nothing but invisible characters neutralizes to an empty string, which renders as
+  // no preview rather than as a separator with nothing after it.
+  assert.match(
+    renderCard(view({ lastToolInput: "​‮" }), "working", NOW),
+    /^Last tool: Bash$/m,
+  );
+});
+
+test("a preview past the card's room is cut and says so", () => {
+  const long = renderCard(view({ lastToolInput: "a".repeat(MAX_TOOL_INPUT_PREVIEW + 1) }), "working", NOW);
+  const line = long.split("\n").find((text) => text.startsWith("Last tool: "));
+  assert.ok(line, long);
+  assert.ok(line.endsWith(" (cut)"), line);
+  // The marker names the cut rather than leaving it to the ellipsis: a tool input is
+  // attacker-influenced text, so it can front-load the harmless part.
+  assert.equal([...line.slice("Last tool: Bash · ".length, -" (cut)".length)].length, MAX_TOOL_INPUT_PREVIEW);
+
+  const exact = renderCard(view({ lastToolInput: "a".repeat(MAX_TOOL_INPUT_PREVIEW) }), "working", NOW);
+  assert.match(exact, new RegExp(`^Last tool: Bash · a{${MAX_TOOL_INPUT_PREVIEW}}$`, "m"));
+});
+
+test("Discord's chip syntax cannot survive into a tool-input preview", () => {
+  // The preview is a tool call's own argument, so anything the session read can steer it. A pill or
+  // a live relative timestamp drawn there sits on the one card the operator reads to tell whether a
+  // session is doing what they asked.
+  const card = renderCard(
+    view({ lastTool: "Bash", lastToolInput: "<@123456789012345678> at <t:2000000000:R>" }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(!/<@\d+>/.test(card), card);
+  assert.ok(!/<t:\d+:R>/.test(card), card);
+  assert.match(
+    card,
+    /^Last tool: Bash · \\<@123456789012345678\\> at \\<t:2000000000:R\\>$/m,
+  );
 });
 
 test("an exited card measures its heartbeat from when the session ended", () => {
@@ -165,6 +262,7 @@ test("neither the view nor the card can carry the process token", () => {
     source: "startup",
     state: "live",
     lastTool: "Bash",
+    lastToolInput: "git status",
     toolCount: 3,
     turnCount: 1,
     startedAt: NOW,

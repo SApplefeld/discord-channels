@@ -34,6 +34,7 @@ async function broker(t: TestContext) {
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
   const relays = createRelayHub({ registry, graceMs: GRACE_MS });
   const posts: Array<{ threadId: string; text: string }> = [];

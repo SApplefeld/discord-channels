@@ -22,6 +22,14 @@ export type SessionRecord = {
   source: string | null;
   state: SessionState;
   lastTool: string | null;
+  /**
+   * A bounded, neutralized preview of what the last tool was called with, so the card can say what
+   * a multi-minute Bash call is running rather than only that one is. Null when the tool's input
+   * carried nothing previewable, and written only in the same assignment `lastTool` is written in:
+   * the two are rendered as one line about one call, so a preview that could move without the name
+   * it belongs to would read as belonging to a call it never came from.
+   */
+  lastToolInput: string | null;
   toolCount: number;
   turnCount: number;
   startedAt: number;
@@ -48,6 +56,8 @@ export type HookIntake = {
   sessionId: string | null;
   source: string | null;
   toolName: string | null;
+  /** The previewable field of the tool's input, already cleaned, or null when it had none. */
+  toolInput: string | null;
 };
 
 export type RegistryOptions = {
@@ -244,6 +254,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       source: intake.source,
       state: "live",
       lastTool: null,
+      lastToolInput: null,
       toolCount: 0,
       turnCount: 0,
       startedAt: now(),
@@ -293,7 +304,15 @@ export function createRegistry(options: RegistryOptions): Registry {
 
     if (intake.event === "PostToolUse") {
       record.toolCount += 1;
-      if (intake.toolName !== null) record.lastTool = intake.toolName;
+      // The name and the preview move together, under the one guard, because the card renders them
+      // as one line describing one call. Set apart, an event carrying an input but no usable name
+      // would leave the previous call's name beside this one's input, and the card would assert a
+      // pairing that never happened. Inside the guard the preview is still unconditional, so a call
+      // whose input carried nothing previewable clears the last one's rather than keeping it.
+      if (intake.toolName !== null) {
+        record.lastTool = intake.toolName;
+        record.lastToolInput = intake.toolInput;
+      }
     } else {
       record.turnCount += 1;
     }

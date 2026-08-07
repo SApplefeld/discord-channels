@@ -31,6 +31,7 @@ function announce(registry: Registry, processToken: string, sessionId: string): 
     sessionId,
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 }
 

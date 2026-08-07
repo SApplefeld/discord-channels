@@ -10,7 +10,9 @@
 //     X-Channel-Session-Name:   the CHANNEL_SESSION human name (optional)
 //     Content-Type:             application/json
 //     body: the hook payload verbatim, exactly as Claude Code emits it, kept only as far as the
-//     fields the registry stores; a body past maxBodyBytes is drained and dropped with a 202,
+//     fields the registry stores, one of which is a bounded preview of the tool's input, so this
+//     route carries a little session content and not none; a body past maxBodyBytes is drained and
+//     dropped with a 202,
 //     because the Stop payload carries the turn's final assistant message and a refusal there is a
 //     visible error inside the session at the end of its longest turns.
 //
@@ -43,7 +45,7 @@ const HOOK_EVENTS: readonly HookEvent[] = ["SessionStart", "PostToolUse", "Stop"
 
 /**
  * The mirror route's own event vocabulary, mapped to what each payload's text means. Deliberately
- * not HOOK_EVENTS and not the HookEvent type: those belong to the content-free liveness path, no
+ * not HOOK_EVENTS and not the HookEvent type: those belong to the liveness path, no
  * liveness hook sends UserPromptSubmit, and widening either would let a mirror post masquerade as
  * a liveness event or the reverse.
  */
@@ -172,6 +174,49 @@ function payloadString(payload: Record<string, unknown>, key: string): string | 
   return cleaned === "" ? null : cleaned;
 }
 
+/**
+ * The tool-input fields a preview is taken from, in the order they are tried.
+ *
+ * An ordered probe rather than a table keyed by tool name, so an MCP tool and a tool Claude Code
+ * adds later still get a useful preview instead of nothing, and so there is no per-tool table to
+ * keep in step with a harness this project does not control. The order runs from what identifies a
+ * call most precisely to what identifies it least: a shell command before a path, a path before a
+ * free-text description.
+ */
+const TOOL_INPUT_PREVIEW_KEYS: readonly string[] = [
+  "command",
+  "file_path",
+  "pattern",
+  "url",
+  "path",
+  "description",
+  "query",
+  "prompt",
+];
+
+/**
+ * The first previewable field of a tool's input, cleaned like every other payload string.
+ *
+ * A `tool_input` that is absent, not a JSON object, or carries none of those keys previews nothing,
+ * and so does one whose value is not a string: the read goes through `payloadString`, whose type
+ * check is what keeps a nested object or an array out, prototype keys included. A field that is
+ * empty once cleaned is not a preview either, so the probe goes on to the next key rather than
+ * reporting a blank one.
+ *
+ * `tool_response` has no probe of its own and is dropped: it is unbounded, arrives after the work
+ * it describes is already done, and says nothing the card's own state does not.
+ */
+function toolInputPreview(payload: Record<string, unknown>): string | null {
+  const input = payload["tool_input"];
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const fields = input as Record<string, unknown>;
+  for (const key of TOOL_INPUT_PREVIEW_KEYS) {
+    const value = payloadString(fields, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
 export type IntakeFailure = { status: number; message: string };
 
 export function parseIntake(
@@ -217,9 +262,11 @@ export function parseIntake(
       // Recorded verbatim rather than checked against the known trigger names, so a value Claude
       // Code adds later lands in the registry instead of being refused.
       source: payloadString(fields, "source"),
-      // tool_input and tool_response are deliberately dropped: unbounded, untrusted, and of no use
-      // to any surface the broker renders.
       toolName: payloadString(fields, "tool_name"),
+      // One bounded field of tool_input is kept, for the card's `Last tool:` line; the rest of it,
+      // and the whole of tool_response, are dropped as unbounded and of no use to any surface the
+      // broker renders.
+      toolInput: toolInputPreview(fields),
     },
   };
 }
@@ -333,6 +380,7 @@ export function redact(record: SessionRecord): PublicSessionRecord {
     source: record.source,
     state: record.state,
     lastTool: record.lastTool,
+    lastToolInput: record.lastToolInput,
     toolCount: record.toolCount,
     turnCount: record.turnCount,
     startedAt: record.startedAt,

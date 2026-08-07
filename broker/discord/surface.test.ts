@@ -102,6 +102,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     name: "neo-intake",
     host: "NEO",
     lastTool: "Bash",
+    lastToolInput: null,
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,

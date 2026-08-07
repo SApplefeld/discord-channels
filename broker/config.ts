@@ -15,7 +15,9 @@ export type BrokerConfig = {
   /** How often the staleness sweep runs. */
   sweepIntervalMs: number;
   /**
-   * Hard cap on a body posted to the content-free /hook route. Anything larger is drained and
+   * Hard cap on a body posted to the /hook liveness route. That route is nearly content-free: of
+   * the payload it is posted, it keeps the session's identity, its tool's name, and one bounded
+   * preview of that tool's input, which the status card renders. Anything larger is drained and
    * dropped with a 202 rather than refused, since a refusal is a visible error inside the session
    * whose hook posted it; nothing over the cap is ever assembled or parsed.
    */
@@ -44,7 +46,7 @@ export type BrokerConfig = {
   mirror: boolean;
   /**
    * Body ceiling for the mirror route alone. Separate from maxBodyBytes, which keeps governing the
-   * content-free /hook route: a mirror body carries a whole turn's reply, and a reply past this
+   * /hook liveness route: a mirror body carries a whole turn's reply, and a reply past this
    * ceiling is drained and dropped with a 202 rather than refused, since a 413 surfaces as a visible
    * error inside the session at the end of exactly the longest turns.
    */

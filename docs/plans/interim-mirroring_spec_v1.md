@@ -289,4 +289,65 @@ this effort retires.
 
 ## Chapters
 
-(none yet; Section 1 is next)
+### Chapter 1: The card says what the tool is working on
+
+Delivered in this changeset. `PostToolUse` payloads now yield one bounded field of `tool_input`,
+carried on the session record to the status card's `Last tool:` line.
+
+**What shipped.** An ordered key probe in `broker/intake.ts` takes the first previewable string from
+`tool_input` (`command`, `file_path`, `pattern`, `url`, `path`, `description`, `query`, `prompt`),
+cleaned like every other payload string. It rides `HookIntake.toolInput` to
+`SessionRecord.lastToolInput`, through `toView` to `SessionView`, and renders as
+`Last tool: Bash · npm test`, escaped with `inertText`, cut at `MAX_TOOL_INPUT_PREVIEW = 100`, and
+marked ` (cut)` when cut. `GET /sessions` publishes it; `processToken` stays withheld.
+
+**Decisions and surprises.**
+
+- The ordered probe beat a per-tool table because the tool vocabulary belongs to a harness this
+  project does not control. Walked against the tools actually watched: Bash, Read, Edit, Write,
+  Grep, Glob, WebFetch, Task, WebSearch all preview usefully. `NotebookEdit` (`notebook_path`) and
+  `BashOutput` (`bash_id`) preview nothing, which is a blank line rather than a wrong one.
+- The snapshot validator had to be widened before the field could ship. `isSessionRecord` rejects a
+  whole snapshot on one malformed record, so a strict check on a field older snapshots do not carry
+  would have emptied the registry on the first restart after this shipped, taking every session's
+  Discord thread binding with it. `absentOrString` accepts the absence and `cleanRecord` normalizes
+  it to null. Driven red first against the strict check, which failed with exactly the predicted
+  "holds malformed records, starting empty".
+
+**Review findings addressed.** Both fresh-context reviewers independently returned CHANGES_REQUIRED
+on the same defect, and all four fixes are in this changeset.
+
+- The registry set `lastTool` behind a guard and `lastToolInput` unguarded. A `PostToolUse` carrying
+  an input but no usable `tool_name` therefore left the previous call's name beside this call's
+  input, and the card asserted a pairing that never happened. Both now move under the one guard,
+  which still satisfies the "a tool with no preview clears the last one" criterion. Driven red
+  first: the probe reproduced `'rm -rf /'` rendered under a previous `Read`.
+- The tool *name* rendered with no length cut beside a bounded preview. At the wire cap, with every
+  untrusted field markdown-dense, the card reached roughly 2247 characters against a 1900 ceiling,
+  and the whole-card `fit` cuts the tail, which is where `Turns:` and `Heartbeat:` live. The name is
+  now cut to `MAX_TOOL_NAME_LENGTH`. Driven red first, failing on `Turns:` missing from the card.
+  Worst case now lands near 1835, about 65 characters of headroom: a future card field has to be
+  paid for rather than assumed.
+- The key list's docstring said "a path before a free-text description" and the array shipped the
+  opposite. `path` moved ahead of `description`, and the order is pinned by a test.
+- `broker/config.ts` and `broker/intake.ts` called `/hook` "the content-free liveness path" in three
+  places. That became false the moment the route kept a tool-input preview, so all three now state
+  what the route actually carries.
+
+**Accepted, not engineered around.** Card-edit volume rises: a preview changes on nearly every tool
+call, so an active session's card now differs on nearly every refresh tick where before it was
+byte-identical between heartbeat buckets. The per-session cost stays at the one edit per tick the
+spec pre-authorized. The residual both reviewers named is that `maxCallsPerTick` is 10 across all
+sessions, so several busy sessions can crowd one pass. It is self-healing, since the next pass sees
+the same difference, and this is a single-operator machine. Revisit if a card is ever observed
+visibly stale during a busy stretch.
+
+**Deferred to Section 2, deliberately.** A session launched with `-NoMirror` opted out of having its
+content mirrored, and its tool arguments now reach Discord on the card regardless. The machinery
+that knows a session is suppressed is Section 2's; wiring it here would build it twice.
+
+**Gate.** Baseline before the section: 489 tests, 488 pass, 0 fail, 1 skipped, lint clean, at commit
+`b4a2cbb`. After: 501 tests, 500 pass, 0 fail, 1 skipped, lint clean. No existing test changed
+status. Re-run in the main session rather than taken from the implementer's report.
+
+**Next.** Section 2, the transcript tailer.

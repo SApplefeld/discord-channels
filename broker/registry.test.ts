@@ -25,6 +25,7 @@ function sessionStart(sessionId: string, source: string | null, name = "neo-inta
     sessionId,
     source,
     toolName: null,
+    toolInput: null,
   };
 }
 
@@ -32,6 +33,7 @@ function postToolUse(
   toolName: string,
   processToken = TOKEN,
   sessionId: string | null = null,
+  toolInput: string | null = null,
 ): HookIntake {
   return {
     event: "PostToolUse",
@@ -40,6 +42,7 @@ function postToolUse(
     sessionId,
     source: null,
     toolName,
+    toolInput,
   };
 }
 
@@ -51,6 +54,7 @@ function stop(processToken = TOKEN): HookIntake {
     sessionId: null,
     source: null,
     toolName: null,
+    toolInput: null,
   };
 }
 
@@ -77,6 +81,61 @@ test("a SessionStart from an unknown process token creates the session", () => {
   assert.equal(record.source, "startup");
   assert.equal(record.state, "live");
   assert.equal(record.lastHookAt, time.now());
+});
+
+test("a tool event sets the name and the preview together", () => {
+  // The preview describes the call the card is naming. A tool whose input carried nothing
+  // previewable has to clear the last one's preview, or the card shows a new tool name beside the
+  // previous tool's arguments, which reads as the current call's input and is simply false.
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("session-a", "startup"));
+
+  sessions.apply(postToolUse("Bash", TOKEN, null, "npm test"));
+  assert.equal(sessions.list()[0].lastTool, "Bash");
+  assert.equal(sessions.list()[0].lastToolInput, "npm test");
+
+  sessions.apply(postToolUse("TodoWrite", TOKEN, null, null));
+  assert.equal(sessions.list()[0].lastTool, "TodoWrite");
+  assert.equal(sessions.list()[0].lastToolInput, null, "the previous tool's preview is cleared");
+});
+
+test("a tool event carrying an input but no name moves neither", () => {
+  // The card renders the name and the preview as one line about one call. A payload with an input
+  // and no usable name is not a call this can describe, and taking the input alone would leave the
+  // previous call's name beside it, asserting a pairing that never happened. `tool_name` is absent,
+  // not a string, or empty once cleaned: broker/intake.ts answers null for all three.
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("session-a", "startup"));
+  sessions.apply(postToolUse("Read", TOKEN, null, "D:\\x\\y.ts"));
+
+  sessions.apply({
+    event: "PostToolUse",
+    processToken: TOKEN,
+    sessionName: null,
+    sessionId: null,
+    source: null,
+    toolName: null,
+    toolInput: "rm -rf /",
+  });
+
+  assert.equal(sessions.list()[0].lastTool, "Read");
+  assert.equal(sessions.list()[0].lastToolInput, "D:\\x\\y.ts", "the nameless input is not adopted");
+  // The event is still a tool event and still counts, which is what holds the session out of the
+  // staleness sweep; only the pair the card renders is left alone.
+  assert.equal(sessions.list()[0].toolCount, 2);
+});
+
+test("a new session starts with no tool and no preview", () => {
+  const time = clock();
+  const sessions = registry(time.now);
+
+  const record = sessions.apply(sessionStart("session-a", "startup"));
+
+  assert.ok(record);
+  assert.equal(record.lastTool, null);
+  assert.equal(record.lastToolInput, null);
 });
 
 test("a source clear SessionStart creates a second record and ends the first", () => {
@@ -483,6 +542,7 @@ test("a live session is never evicted to hold the cap", () => {
       sessionId: `session-${index}`,
       source: "startup",
       toolName: null,
+      toolInput: null,
     });
   }
 
@@ -567,6 +627,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 
   const stolen = registry.apply({
@@ -576,6 +637,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 
   assert.equal(stolen, null, "the takeover is refused, not merged");
@@ -599,6 +661,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
   registry.relayClosed(first, "session-a");
 
@@ -609,6 +672,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
   assert.notEqual(reused, null);
   assert.equal(registry.current(second)?.processToken, second);
@@ -624,6 +688,7 @@ test("relayClosed ends only the session it names, held by the token that names i
     sessionId: "session-a",
     source: "startup",
     toolName: null,
+    toolInput: null,
   });
 
   assert.equal(registry.relayClosed("another-token", "session-a"), null, "not this token's to end");

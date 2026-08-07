@@ -30,6 +30,19 @@ function optionalString(value: unknown): boolean {
   return value === null || typeof value === "string";
 }
 
+/**
+ * For a field a snapshot on disk may predate: absent is accepted alongside null and a string, and
+ * `cleanRecord` below is what turns absent into null.
+ *
+ * A strict check here would be a whole-snapshot rejection, because one malformed record empties the
+ * registry, and every session in it would lose the Discord thread its record is what binds it to.
+ * The cost of the tolerance is bounded to this one field, which every surface already renders as
+ * "nothing to say".
+ */
+function absentOrString(value: unknown): boolean {
+  return value === undefined || optionalString(value);
+}
+
 function optionalNumber(value: unknown): boolean {
   return value === null || isFiniteNumber(value);
 }
@@ -53,6 +66,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     typeof value.state === "string" &&
     STATES.includes(value.state as SessionState) &&
     optionalString(value.lastTool) &&
+    absentOrString(value.lastToolInput) &&
     isFiniteNumber(value.toolCount) &&
     isFiniteNumber(value.turnCount) &&
     isFiniteNumber(value.startedAt) &&
@@ -65,6 +79,9 @@ function isSessionRecord(value: unknown): value is SessionRecord {
 // The same normalization the wire applies. A state file is an ordinary file that anything running
 // as this user can rewrite, so a string read back from it is no more trusted than one posted in.
 function cleanRecord(record: SessionRecord): SessionRecord {
+  // Widened because a snapshot predating this field carries no value for it, which the validator
+  // above accepts. It lands as null here, so nothing downstream ever meets an undefined.
+  const lastToolInput: string | null | undefined = record.lastToolInput;
   return {
     ...record,
     sessionId: clean(record.sessionId),
@@ -73,6 +90,8 @@ function cleanRecord(record: SessionRecord): SessionRecord {
     host: clean(record.host),
     source: record.source === null ? null : clean(record.source),
     lastTool: record.lastTool === null ? null : clean(record.lastTool),
+    lastToolInput:
+      lastToolInput === undefined || lastToolInput === null ? null : clean(lastToolInput),
   };
 }
 

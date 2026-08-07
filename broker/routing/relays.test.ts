@@ -26,6 +26,7 @@ function announce(
     sessionId,
     source,
     toolName: null,
+    toolInput: null,
   });
 }
 

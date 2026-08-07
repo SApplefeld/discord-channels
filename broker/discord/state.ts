@@ -18,6 +18,8 @@ export type SessionView = {
   name: string | null;
   host: string;
   lastTool: string | null;
+  /** A bounded preview of what that tool was called with, or null when it had none. */
+  lastToolInput: string | null;
   turnCount: number;
   /** Timestamp of the most recent hook event, which is what the heartbeat and idleness read. */
   lastHookAt: number;
@@ -34,6 +36,7 @@ export function toView(record: SessionRecord, needsAttention = false): SessionVi
     name: record.name,
     host: record.host,
     lastTool: record.lastTool,
+    lastToolInput: record.lastToolInput,
     turnCount: record.turnCount,
     lastHookAt: record.lastHookAt,
     endedAt: record.endedAt,
