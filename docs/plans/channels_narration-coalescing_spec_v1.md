@@ -145,9 +145,21 @@ final post reported a null `messageId` remembers nothing, because there is no ta
 failed edit clears the state first, so the fallback and every later chunk post fresh. `reply` and `mirror` clear the
 thread's state whenever they hand a run to `deliver` (conservative on purpose: clearing costs one
 header, stale state costs narration appended above newer content; the echo-drop branch that posts
-nothing does not clear). A new router method, `noteThreadMessage(threadId, messageId)`, clears
-the state unless the ID matches the remembered message. The state map is bounded the way the
-drop log is bounded, so a fleet of threads cannot grow it without limit.
+nothing does not clear).
+
+Freshness holds against three windows the naive clear-on-message shape misses. A new router
+method, `noteThreadMessage(threadId, messageId)`, clears the state only when the arriving ID is
+strictly newer than the remembered message by snowflake ordering (an unparseable ID clears
+conservatively), so the late echo of an older message, the remembered message's own echo
+included, cannot clear state for a message that genuinely is the thread's newest. Every
+invalidation, with or without an ID, bumps a per-thread invalidation clock; the interim task
+snapshots the clock inside its chained task before posting fresh and refuses to remember the run
+when the clock moved during the post's round trip, so a message that landed mid-post is never
+buried by later appends. And the steering writer's notice and alert paths, which post outside
+this router and would otherwise clear only by gateway echo, clear the thread's state directly on
+a successful post through a router method that needs no ID, so a permission prompt ends the
+narration block even while the gateway is disconnected. The state map and the clock map are
+bounded the way the drop log is bounded, so a fleet of threads cannot grow them without limit.
 
 `InboundMessage` gains `messageId`, read from `message.id` in
 `broker/routing/gateway.ts`. The wiring in `broker/index.ts` calls
@@ -164,7 +176,10 @@ Acceptance: `npm test` green.
 Tests: lock the freshness gate in both directions (a foreign gateway message clears the state and
 the next chunk posts fresh; the remembered message's own echo does not clear it), because the
 inverted failure is narration silently burying an operator message, in the one channel approvals
-are answered in. Lock the edit-failure fallback (the chunk still lands as a fresh post in the
+are answered in. Lock the three freshness windows: an invalidation arriving during the fresh
+post's round trip means the run is not remembered; a late echo of an older message does not
+clear a genuinely-newest remembered message; a successful notice or alert clears the block with
+no gateway involved. Lock the edit-failure fallback (the chunk still lands as a fresh post in the
 same call), because the fail direction of this feature must be "more messages", never "lost
 narration". Lock that a reply run clears the state, and that the append decision made inside the
 chain honors an invalidation that arrived while the append was queued.
@@ -233,5 +248,15 @@ Decisions / Surprises: Both reviewers approved without required changes; the imp
 Review Findings: 0 Critical, 0 Major; Minors: precondition guard fixed inline with a test; the two scanner-divergence notes recorded above; the reviewers' shared demand that Section 3 remember the exact posted string and update only on a successful edit was written into the spec's Section 3 text.
 Stamps: covered by Chapter 1's adjudication (same boundary)
 Next: 3. Router coalescing and freshness tracking
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-07
+Completed: 3. Router coalescing and freshness tracking
+Implemented By: implementer-fable, plus two fix rounds on the same agent (one orchestrator finding pre-review, one review round)
+Metrics: 2 review rounds (initial three-reviewer round + prescriptive fix verification); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The orchestrator caught one defect before review: deliver cleared coalescing state at hand-off rather than inside its chained task, which both posted a needless header for a queued append that was still valid and left stale state when a reply landed behind a remembered fresh post; fixed with a watched-red test. The review round then converged on the same generator from three angles: freshness had a single source (the gateway echo) and no memory of what it had seen, so an invalidation processed during a fresh post's HTTP round trip was lost, and out-of-router posts (notices, permission alerts) could not clear at all during a gateway outage. The fix is the spec's amended three-window contract: snowflake-ordered clearing (only a strictly newer ID clears, so a split run's own late echoes cannot end its block), a per-thread invalidation clock consulted before remembering a fresh run, and endNarration, a no-ID clear wired in index.ts to successful notice and alert posts via a steeringWriter wrapper (writer.ts stays uncoupled from the router). Deliberate non-fixes, with reasons: LRU-ordering the eviction would require re-setting the map entry on append, which would resurrect state an invalidation just cleared, the exact bug the in-place mutation prevents; the tail.test first-chunk assertion is covered by adjacent tests. Accepted residues, both failing conservative (a needless header, never a burial): a run's own gateway echo beating its REST response costs that run its remembered state, and a clock entry evicted mid-round-trip under 64-plus-thread bump pressure can let a run remember anyway.
+Review Findings: 1 converged Major (lost invalidation during the post round trip) fixed; 1 blind Major (echo-only clearing for out-of-router posts) fixed; Minors fixed: older-echo over-clearing (snowflake ordering), silent refused edit (drop-log line, error class only); Minors noted: insertion-order eviction (reasoned above), security reviewer rated the whole surface CLEAR with edit-target provenance and escaping parity confirmed.
+Stamps: adjudicated 1, stamped 0 (claude-code-channel-and-hook-facts again, opened by a subagent; hooks and registration facts did not steer router logic)
+Next: 4. The docs carry the coalesced surface
 Commit Model: Commit-and-Push
 

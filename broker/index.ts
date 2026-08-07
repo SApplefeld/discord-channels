@@ -28,6 +28,7 @@ import { createInboundRouter } from "./routing/inbound.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import { createRelayRoutes } from "./routing/http.ts";
 import { createThreadWriter } from "./routing/writer.ts";
+import type { ThreadWriter } from "./routing/writer.ts";
 import type { MessageSource } from "./routing/gateway.ts";
 
 export type Broker = {
@@ -136,6 +137,26 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
     ...(interim === null ? {} : { echo: interim.echo }),
   });
+  // The steering writer's notices and permission alerts land in threads without passing the
+  // outbound router, so a successful post tells the router directly that the thread's narration
+  // block is over. Their only other clear is their own gateway echo, and a dropped gateway loses
+  // echoes while REST keeps posting, which would let narration grow above a permission prompt.
+  // Wrapped here because this is where the writer and the router both exist: the writer knows
+  // nothing about routing.
+  const steeringWriter: ThreadWriter = {
+    reply: (threadId, text) => writer.reply(threadId, text),
+    edit: (threadId, messageId, text) => writer.edit(threadId, messageId, text),
+    notice: async (threadId, text) => {
+      const written = await writer.notice(threadId, text);
+      if (written) outbound.endNarration(threadId);
+      return written;
+    },
+    alert: async (threadId, text, mentionUserId) => {
+      const written = await writer.alert(threadId, text, mentionUserId);
+      if (written) outbound.endNarration(threadId);
+      return written;
+    },
+  };
   let tail: TranscriptTailer | null = null;
   let tailTimer: NodeJS.Timeout | null = null;
   let tailInFlight: Promise<void> = Promise.resolve();
@@ -318,7 +339,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       registry,
       relays,
       threadFor: (sessionId) => surface.threadFor(sessionId),
-      writer,
+      writer: steeringWriter,
       operatorId: gate.operatorId,
       now: Date.now,
       log: note,
@@ -329,7 +350,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       gate,
       permissions,
       threadFor: (sessionId) => surface.threadFor(sessionId),
-      writer,
+      writer: steeringWriter,
       now: Date.now,
       log: note,
     });
@@ -339,7 +360,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     gateway = createGatewayMessageSource({
       token: discord.token,
       channelId: discord.channelId,
-      onMessage: (message) => inbound.deliver(message),
+      onMessage: (message) => {
+        // Ahead of deliver, which drops bot-authored messages first: the broker's own posts are
+        // most of what lands below a narration block, and the freshness gate must see exactly
+        // those to know the block is no longer the thread's newest message.
+        outbound.noteThreadMessage(message.threadId, message.messageId);
+        return inbound.deliver(message);
+      },
       log: note,
     });
     // Awaited: a login failure belongs to startup, where it is reported, rather than surfacing

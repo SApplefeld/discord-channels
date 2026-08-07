@@ -5,7 +5,7 @@
 // the thread this session owns now, and Claude may reply having received no event at all. Routing
 // by session is what makes an unprompted reply land correctly, and it is also what stops a reply
 // from being addressable: the relay never forwards a chat_id, so there is nothing here to honor.
-import { renderAnswer, renderMirror } from "../discord/render.ts";
+import { appendNarration, renderAnswer, renderMirror } from "../discord/render.ts";
 import type { MirrorKind } from "../discord/render.ts";
 import { withoutInvisible } from "../sanitize.ts";
 import type { Registry } from "../registry.ts";
@@ -93,6 +93,47 @@ function createDropLog(
 }
 
 /**
+ * How many threads the narration coalescing maps hold entries for at once, the state map and the
+ * invalidation clock alike.
+ *
+ * A state entry normally clears the moment anything newer lands in its thread, but a fleet of
+ * threads all mid-turn holds one each with nothing arriving to clear them, and the clock gains an
+ * entry for any thread a message lands in, so both maps are capped the way the drop log is. Past
+ * the cap the oldest entry is evicted, and what that costs its thread is at most one attribution
+ * header: the next chunk there posts fresh instead of appending.
+ */
+const MAX_NARRATION_THREADS = 64;
+
+/**
+ * The newest narration message in a thread, as this router last wrote it: the target of the next
+ * chunk's edit, and the exact content that message holds on Discord, which is the precondition
+ * `appendNarration` merges on. Held only while that message is believed the thread's newest, so
+ * anything else landing in the thread drops the entry.
+ */
+type NarrationTail = { messageId: string; content: string };
+
+/**
+ * A Discord snowflake as a comparable number, or null when the string is not one.
+ *
+ * Snowflakes carry their creation time in the high bits, so numeric order is thread order, which
+ * is what `noteThreadMessage` reads to tell the late echo of an older message from something
+ * genuinely newer than the remembered narration message.
+ */
+function asSnowflake(id: string): bigint | null {
+  return /^\d+$/.test(id) ? BigInt(id) : null;
+}
+
+/** Drops the oldest entry other than `kept` once `map` outgrows the cap these maps share. */
+function capBeside<T>(map: Map<string, T>, kept: string): void {
+  if (map.size <= MAX_NARRATION_THREADS) return;
+  for (const key of map.keys()) {
+    if (key === kept) continue;
+    map.delete(key);
+    break;
+  }
+}
+
+/**
  * How the Claude Code harness opens the envelope it wraps a channel message in before injecting it
  * into the session as a user prompt.
  *
@@ -151,8 +192,39 @@ export type OutboundRouter = {
    * tailer holds a session ID and no process token, and which sessions it reads at all is
    * already gated by the registry's live set. Delivery goes through the same per-thread chain
    * the other paths use, so an interim chunk cannot land between the messages of a split reply.
+   *
+   * Consecutive chunks coalesce: while the newest message in the thread is the narration message
+   * this path last wrote, a chunk that fits appends into it by edit, so a working stretch reads
+   * as one growing block under one attribution rather than a header per sentence. A chunk that
+   * will not fit, or one arriving after anything else landed in the thread, posts fresh through
+   * the split path exactly as every chunk did before coalescing, and a refused edit falls back to
+   * that same fresh post in the same call: the fail direction is always more messages, never
+   * lost narration.
    */
   interim: (sessionId: string, text: string) => Promise<ReplyResult>;
+  /**
+   * Records that a message landed in one of this broker's threads, as read off the gateway.
+   *
+   * This is the freshness signal narration coalescing rests on: a chunk appends into the
+   * remembered narration message only while that message is the thread's newest. The state
+   * clears only for an ID strictly newer than the remembered message by snowflake order (or one
+   * the comparison cannot place, cleared conservatively): gateway echoes arrive late and out of
+   * band, so the remembered message's own echo, and the echoes of everything older that it was
+   * posted or grown above, announce nothing newer and must not end the block. Edits emit no
+   * gateway message-create event, so an append never clears its own state. Every clear here
+   * also bumps the thread's invalidation clock, and so does any message arriving while no state
+   * is held, which is what reaches an interim task mid-way through a fresh post's round trip.
+   */
+  noteThreadMessage: (threadId: string, messageId: string) => void;
+  /**
+   * Ends a thread's narration block without naming a message: the caller only knows its post
+   * landed. For the writes that reach a thread outside this router, the notices and permission
+   * alerts posted through the steering writer, whose only other clear is their own gateway echo,
+   * and a dropped gateway loses echoes while REST keeps posting: without this, the block would
+   * grow above a permission prompt for as long as chunks fit. Bumps the invalidation clock like
+   * every other invalidation, so a fresh interim run mid-post is not remembered above the post.
+   */
+  endNarration: (threadId: string) => void;
 };
 
 export function createOutboundRouter(options: OutboundRouterOptions): OutboundRouter {
@@ -230,29 +302,88 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     return running;
   }
 
+  // The coalescing state: one entry per thread whose newest message is believed to be the
+  // narration message this router last posted or edited there. Written only by the interim path,
+  // and cleared by everything that puts something newer in the thread: `deliver` as its run goes
+  // out, `noteThreadMessage` for what arrives over the gateway, and `endNarration` for the
+  // notices and alerts that post outside this router.
+  const narration = new Map<string, NarrationTail>();
+
+  // The per-thread invalidation clock. The interim task takes its entry off the map for the
+  // whole of a fresh post's round trip, so an invalidation landing in that window finds nothing
+  // to clear; every invalidation bumps this counter as well, whether or not an entry was held,
+  // and the task refuses to remember its run when the counter moved while its posts were on the
+  // wire. Without it, a message landing mid-post would sit under state that outlived it, and
+  // every later append would pile above that message until something else cleared.
+  const invalidations = new Map<string, number>();
+
+  function bumpInvalidation(threadId: string): void {
+    invalidations.set(threadId, (invalidations.get(threadId) ?? 0) + 1);
+    capBeside(invalidations, threadId);
+  }
+
+  function rememberNarration(threadId: string, tail: NarrationTail): void {
+    narration.set(threadId, tail);
+    // Unlike the drop log's sweep there is no window to wait out: evicting a live entry only
+    // costs its thread one fresh header.
+    capBeside(narration, threadId);
+  }
+
   /**
-   * Posts one rendered run of messages, in order, as one task on the thread's chain, so nothing
-   * else this router posts lands between the messages of one answer or one mirrored reply. A post
-   * refused part way through stops the run: the rest posted around a hole reads as text the author
-   * never wrote, and the transport that refused one message refuses the next for the same reason.
+   * Posts one rendered run of messages, in order. A post refused part way through stops the run:
+   * the rest posted around a hole reads as text the author never wrote, and the transport that
+   * refused one message refuses the next for the same reason.
    *
-   * One function for both posting paths on purpose: the landed count and the error wording are
-   * part of what the callers log and report, and two copies of this loop would let those drift.
+   * One loop for every posting path on purpose: the landed count and the error wording are part
+   * of what the callers log and report, and two copies would let those drift. Not chained here,
+   * because the interim path runs it inside a chain task of its own, where taking a second place
+   * on the same chain would deadlock; `deliver` below is the chained doorway everything else uses.
+   *
+   * `lastMessageId` is the id of the run's final message, carried only when the whole run landed
+   * and Discord's response yielded one: it is what the interim path remembers as the target of
+   * the next chunk's edit, and a mid-run id would name a message with newer ones below it.
+   */
+  async function postRun(
+    threadId: string,
+    messages: string[],
+  ): Promise<{ landed: number; error: string | null; lastMessageId: string | null }> {
+    let landed = 0;
+    let lastMessageId: string | null = null;
+    for (const message of messages) {
+      const outcome = await options.mirrorWriter.reply(threadId, message);
+      if (outcome.status !== "ok") {
+        return {
+          landed,
+          error: outcome.status === "rate-limited" ? "rate limited" : outcome.error,
+          lastMessageId: null,
+        };
+      }
+      landed += 1;
+      lastMessageId = outcome.value.messageId;
+    }
+    return { landed, error: null, lastMessageId };
+  }
+
+  /**
+   * Posts one rendered run as one task on the thread's chain, so nothing else this router posts
+   * lands between the messages of one answer or one mirrored reply.
+   *
+   * A run through here is also what ends the thread's narration block, and the state clears
+   * inside the chained task, at the moment the run actually goes on the wire, because that is
+   * when these messages become newer than the remembered one. Cleared at hand-off instead, it
+   * would act on a thread whose chain may still hold an older append that is entitled to go
+   * first: that chunk would post a needless fresh header and re-remember a message this very run
+   * is about to post below, which is exactly the stale state the clear exists to prevent. The
+   * branches that post nothing, the mirror's echo drop above all, never come through here and
+   * never clear.
    */
   async function deliver(
     threadId: string,
     messages: string[],
   ): Promise<{ landed: number; error: string | null }> {
-    return inOrder(threadId, async () => {
-      let landed = 0;
-      for (const message of messages) {
-        const outcome = await options.mirrorWriter.reply(threadId, message);
-        if (outcome.status !== "ok") {
-          return { landed, error: outcome.status === "rate-limited" ? "rate limited" : outcome.error };
-        }
-        landed += 1;
-      }
-      return { landed, error: null };
+    return inOrder(threadId, () => {
+      narration.delete(threadId);
+      return postRun(threadId, messages);
     });
   }
 
@@ -417,21 +548,114 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "no-thread" };
       }
 
-      const messages = renderMirror("interim", text);
-      // Nothing visible once the invisible class is stripped. The tailer's next chunk narrates
-      // whatever this one did not, so the drop is reported to the caller and not logged.
-      if (messages.length === 0) return { status: "failed", error: "the message was empty" };
+      // The whole delivery is one task on the chain, the append decision included: the state is
+      // consulted at the moment the write is about to go on the wire, never at call time, so an
+      // invalidation that arrives while this chunk is queued behind a reply run is honored and
+      // the chunk posts fresh below whatever cleared it.
+      const run = await inOrder(
+        threadId,
+        async (): Promise<{ landed: number; total: number; error: string | null }> => {
+          const tail = narration.get(threadId);
+          if (tail !== undefined) {
+            const merged = appendNarration(tail.content, text);
+            if (merged !== null) {
+              const outcome = await options.mirrorWriter.edit(threadId, tail.messageId, merged);
+              if (outcome.status === "ok") {
+                // Updated in place on the entry this task read, never re-inserted: an
+                // invalidation that arrived while the edit was on the wire has already dropped
+                // the entry, and a map write here would resurrect state for a message that is no
+                // longer the thread's newest.
+                tail.content = merged;
+                return { landed: 1, total: 1, error: null };
+              }
+              // A refused edit is never retried, and the state clears before the fallback so
+              // this chunk and every later one post fresh: the fail direction of coalescing is
+              // always more messages, never lost narration. The line is the discriminator for a
+              // systematically failing PATCH route, which otherwise looks exactly like coalescing
+              // switched off; it carries the error class and never the text.
+              dropped(
+                `the narration append from session ${sessionId} was refused, the chunk posts ` +
+                  `fresh: ${outcome.status === "rate-limited" ? "rate limited" : outcome.error}`,
+              );
+              narration.delete(threadId);
+            }
+          }
 
-      const run = await deliver(threadId, messages);
+          const messages = renderMirror("interim", text);
+          // Nothing visible once the invisible class is stripped. Nothing posts, nothing in the
+          // thread changes, so whatever narration state is held stays valid.
+          if (messages.length === 0) {
+            return { landed: 0, total: 0, error: "the message was empty" };
+          }
+
+          // These posts are about to be newer than any remembered narration message: a chunk the
+          // merge would not fit reaches this line with the state still held.
+          narration.delete(threadId);
+          // The entry is off the map for the whole round trip below, so an invalidation landing
+          // while the posts are on the wire has nothing to clear; the clock is how it reaches
+          // this task, and a moved clock means the run is not remembered. Refusing costs one
+          // header, while remembering would bury the mid-post arrival, a permission prompt as
+          // easily as the operator's message, under every later append.
+          const clock = invalidations.get(threadId) ?? 0;
+          const posted = await postRun(threadId, messages);
+          // The new block to grow, remembered only when the whole run landed and Discord's body
+          // yielded an id to edit by. The content is the exact string the writer was handed,
+          // which is the precondition `appendNarration` merges on.
+          if (
+            posted.error === null &&
+            posted.lastMessageId !== null &&
+            (invalidations.get(threadId) ?? 0) === clock
+          ) {
+            rememberNarration(threadId, {
+              messageId: posted.lastMessageId,
+              content: messages[messages.length - 1],
+            });
+          }
+          return { landed: posted.landed, total: messages.length, error: posted.error };
+        },
+      );
       if (run.error === null) return { status: "sent" };
+      // A chunk with nothing visible in it posted nothing. The tailer's next chunk narrates
+      // whatever this one did not, so the drop is reported to the caller and not logged.
+      if (run.total === 0) return { status: "failed", error: run.error };
 
       // The counts and the transport's error class only: transcript content is conversation
       // content, and it never appears in the broker log at any level.
       log(
         `routing: the interim narration from session ${sessionId} stopped after ` +
-          `${run.landed} of ${messages.length} messages: ${run.error}`,
+          `${run.landed} of ${run.total} messages: ${run.error}`,
       );
       return { status: "failed", error: run.error };
+    },
+
+    noteThreadMessage(threadId, messageId) {
+      const tail = narration.get(threadId);
+      // No entry to compare against. The reachable case that matters is an interim task holding
+      // its entry off the map for a fresh post's round trip: the bump is the only way this
+      // arrival reaches that task, and it answers by not remembering the run.
+      if (tail === undefined) {
+        bumpInvalidation(threadId);
+        return;
+      }
+      // The remembered message's own echo: every post this broker makes comes back over the
+      // gateway, and the narration message announcing itself is not something newer than itself.
+      if (tail.messageId === messageId) return;
+      const arriving = asSnowflake(messageId);
+      const remembered = asSnowflake(tail.messageId);
+      // The late echo of an older message: a split run's earlier messages, or a reply run's
+      // echoes arriving after a later narration message was remembered. The remembered message
+      // is still the thread's newest, so neither the state nor the clock moves; clearing here
+      // would silently end coalescing after every split run for as long as the gateway lags.
+      if (arriving !== null && remembered !== null && arriving <= remembered) return;
+      // Strictly newer, or an ID the comparison cannot place, which clears conservatively: a
+      // wrongly ended block costs one header, a wrongly kept one appends above the arrival.
+      narration.delete(threadId);
+      bumpInvalidation(threadId);
+    },
+
+    endNarration(threadId) {
+      narration.delete(threadId);
+      bumpInvalidation(threadId);
     },
   };
 }

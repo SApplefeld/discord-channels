@@ -2,7 +2,7 @@
 // nothing else, which is what lets Claude reply unprompted and still land in the right thread.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_MESSAGE_LENGTH, renderAnswer, renderMirror } from "../discord/render.ts";
+import { MAX_MESSAGE_LENGTH, appendNarration, renderAnswer, renderMirror } from "../discord/render.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
@@ -1046,4 +1046,357 @@ test("an interim run that stops part way logs its counts, never its text", async
   const captured = lines.join("\n");
   assert.ok(captured.includes(`1 of ${total} messages`), captured);
   assert.ok(!captured.includes("SECRET-interim-marker"), `transcript content leaked into the routing log: ${captured}`);
+});
+
+/**
+ * The coalescing seam: a messenger that hands every post its own snowflake-shaped id (`1001`,
+ * `1002`, ... in landing order) and records edits, plus the knobs the freshness tests turn.
+ * `nextPostIdNull` makes the next post land as ok with no readable id, `editError` makes every
+ * edit fail with that error, and the delay knobs hold a write on the wire so an invalidation can
+ * arrive while it is out.
+ */
+function narrationHarness(threadFor: (sessionId: string) => string | null = () => THREAD) {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const posts: Array<{ threadId: string; text: string }> = [];
+  const edits: Array<{ threadId: string; messageId: string; text: string }> = [];
+  const lines: string[] = [];
+  const control = {
+    nextPostIdNull: false,
+    editError: null as string | null,
+    editDelayMs: 0,
+    postDelayMs: 0,
+  };
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      if (control.postDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, control.postDelayMs));
+      }
+      posts.push({ threadId: input.threadId, text: input.text });
+      const messageId = control.nextPostIdNull ? null : String(1_000 + posts.length);
+      control.nextPostIdNull = false;
+      return { status: "ok", value: { messageId }, rate: NO_RATE_INFO };
+    },
+    editInThread: async (input) => {
+      if (control.editDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, control.editDelayMs));
+      }
+      edits.push({ threadId: input.threadId, messageId: input.messageId, text: input.text });
+      if (control.editError !== null) {
+        return { status: "failed", error: control.editError, rate: NO_RATE_INFO };
+      }
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+  };
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({
+    registry,
+    threadFor,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    echo,
+    log: (message) => lines.push(message),
+  });
+  return { router, posts, edits, lines, control, echo };
+}
+
+test("consecutive interim chunks grow one narration message by edit", async () => {
+  const { router, posts, edits } = narrationHarness();
+
+  assert.deepEqual(await router.interim("session-a", "reading the failing test"), { status: "sent" });
+  assert.deepEqual(await router.interim("session-a", "found the off-by-one"), { status: "sent" });
+
+  assert.equal(posts.length, 1, "the second chunk edits instead of posting a second header");
+  const merged = appendNarration(renderMirror("interim", "reading the failing test")[0], "found the off-by-one");
+  assert.ok(merged !== null);
+  assert.deepEqual(edits, [{ threadId: THREAD, messageId: "1001", text: merged }]);
+});
+
+test("a foreign gateway message breaks the block and the next chunk posts fresh", async () => {
+  // The inverted failure is the one that matters: narration silently appending above the
+  // operator's own message, in the one channel approvals are answered in.
+  const { router, posts, edits } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+
+  router.noteThreadMessage(THREAD, "2000");
+  await router.interim("session-a", "chunk two");
+
+  assert.deepEqual(edits, [], "nothing appends above the operator's message");
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].text, renderMirror("interim", "chunk two")[0]);
+});
+
+test("the remembered message's own gateway echo does not break the block", async () => {
+  // Every post this broker makes comes back over the gateway. The narration message's own echo
+  // announces nothing newer than itself, and treating it as foreign would put a fresh header on
+  // every chunk, which is the wall of headers coalescing exists to end.
+  const { router, posts, edits } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+
+  router.noteThreadMessage(THREAD, "1001");
+  await router.interim("session-a", "chunk two");
+
+  assert.equal(posts.length, 1, "the echo must not force a fresh post");
+  assert.equal(edits.length, 1);
+});
+
+test("a reply run breaks the block, and so does a mirrored prompt", async () => {
+  // Conservative on purpose: the clear costs one header, while stale state risks narration
+  // appended above newer content.
+  const { router, posts, edits } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+  await router.reply(TOKEN, "the answer");
+  await router.interim("session-a", "chunk two");
+  await router.mirror(TOKEN, "prompt", "keep going", "session-a");
+  await router.interim("session-a", "chunk three");
+
+  assert.deepEqual(edits, [], "narration never appends above a reply or a prompt");
+  assert.equal(posts.length, 5, posts.map((post) => post.text).join("\n---\n"));
+});
+
+test("a Stop mirror dropped as the tailer's echo does not break the block", async () => {
+  // The echo-drop branch posts nothing, so the narration message is still the thread's newest
+  // and the block it ends a turn with stays growable.
+  const { router, posts, edits, echo } = narrationHarness();
+  await router.interim("session-a", "the final text");
+  // The tailer records what it delivers; the harness stands in for it here.
+  echo.noteInterim("session-a", "the final text");
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "the final text", "session-a"), {
+    status: "sent",
+  });
+  assert.equal(posts.length, 1, "the echo drop posts nothing");
+
+  await router.interim("session-a", "and one more thing");
+  assert.equal(edits.length, 1, "a branch that posted nothing must not cost the block");
+  assert.equal(posts.length, 1);
+});
+
+test("a failed edit falls back to a fresh post in the same call, and is never retried", async () => {
+  // The fail direction of coalescing is always more messages, never lost narration.
+  const { router, posts, edits, lines, control } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+
+  control.editError = "HTTP 404";
+  assert.deepEqual(await router.interim("session-a", "chunk two"), { status: "sent" });
+  assert.equal(edits.length, 1, "the refused edit is never retried");
+  assert.equal(posts.length, 2, "the chunk still lands, as a fresh message, in the same call");
+  assert.equal(posts[1].text, renderMirror("interim", "chunk two")[0]);
+
+  // The refusal leaves a line, because a systematically failing PATCH route otherwise reads
+  // exactly like coalescing switched off. The error class only: transcript content is
+  // conversation content, and it never appears in the broker log at any level.
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("HTTP 404"), lines[0]);
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(!lines[0].includes("chunk two"), `transcript content leaked into the routing log: ${lines[0]}`);
+
+  // The fallback post is the new block: the next chunk appends to it, not to the message whose
+  // edit was refused.
+  control.editError = null;
+  await router.interim("session-a", "chunk three");
+  assert.equal(edits.length, 2);
+  assert.equal(edits[1].messageId, "1002");
+});
+
+test("a post that landed without a readable id starts no block", async () => {
+  // A 2xx whose body yields no id is reported ok with a null messageId: the message is in front
+  // of the operator, but there is no target to edit, so nothing must remember it and try.
+  const { router, posts, edits, control } = narrationHarness();
+  control.nextPostIdNull = true;
+  assert.deepEqual(await router.interim("session-a", "chunk one"), { status: "sent" });
+
+  await router.interim("session-a", "chunk two");
+  assert.deepEqual(edits, [], "there is no id to edit by, so nothing tries");
+  assert.equal(posts.length, 2);
+});
+
+test("the remembered content is the exact string handed to the writer, append after append", async () => {
+  // appendNarration's precondition is that `existing` is the exact content the message holds on
+  // Discord. Any drift between the remembered copy and what the last edit was handed breaks
+  // every later merge, so the second edit is the pin: its base must be the first edit's output.
+  const { router, edits } = narrationHarness();
+  await router.interim("session-a", "one");
+  await router.interim("session-a", "two");
+  await router.interim("session-a", "three");
+
+  const first = renderMirror("interim", "one")[0];
+  const second = appendNarration(first, "two");
+  assert.ok(second !== null);
+  const third = appendNarration(second, "three");
+  assert.ok(third !== null);
+  assert.deepEqual(
+    edits.map((edit) => edit.text),
+    [second, third],
+  );
+});
+
+test("a split interim run remembers only its final message", async () => {
+  // Appending to any earlier message of the run would put text above the messages that followed
+  // it; the run's last message is the only one with nothing below it.
+  const { router, posts, edits } = narrationHarness();
+  const narration = longReply(30);
+  const messages = renderMirror("interim", narration);
+  assert.ok(messages.length >= 3, `${messages.length} message(s)`);
+  await router.interim("session-a", narration);
+  assert.equal(posts.length, messages.length);
+
+  await router.interim("session-a", "a small chunk after");
+  const merged = appendNarration(messages[messages.length - 1], "a small chunk after");
+  assert.ok(merged !== null);
+  assert.deepEqual(edits, [
+    { threadId: THREAD, messageId: String(1_000 + messages.length), text: merged },
+  ]);
+});
+
+test("a chunk the merge cannot hold posts fresh, and the block moves to it", async () => {
+  const { router, posts, edits } = narrationHarness();
+  const wide = "x".repeat(MAX_MESSAGE_LENGTH - 100);
+  await router.interim("session-a", wide);
+  assert.equal(posts.length, 1, "the wide chunk itself fits one message");
+
+  // Too big to merge into the wide block, small enough for a message of its own.
+  await router.interim("session-a", "y".repeat(200));
+  assert.equal(edits.length, 0, "an over-ceiling merge is refused, not truncated");
+  assert.equal(posts.length, 2);
+
+  await router.interim("session-a", "tail");
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0].messageId, "1002", "the block is the fresh post, not the full one");
+});
+
+test("an interim chunk queued ahead of a reply run still appends, and the reply clears behind it", async () => {
+  // The clear runs inside the reply's chained task, at the moment its messages actually go out,
+  // never at hand-off: until the reply task runs, the narration message really is the thread's
+  // newest, and the append queued ahead of it is entitled to go first. A hand-off clear would
+  // instead make the queued chunk post fresh and re-remember, leaving state that names a message
+  // with the reply below it.
+  const { router, posts, edits } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+
+  // Both queued before either task runs: the chunk holds the earlier place on the chain.
+  const append = router.interim("session-a", "chunk two");
+  const reply = router.reply(TOKEN, "the answer");
+  assert.deepEqual(await append, { status: "sent" });
+  assert.deepEqual(await reply, { status: "sent" });
+
+  assert.equal(edits.length, 1, "the queued chunk appends: nothing newer had landed when it ran");
+  assert.equal(edits[0].messageId, "1001");
+  assert.equal(posts.length, 2, "the reply posts below the grown block");
+  assert.equal(posts[1].text, renderAnswer("the answer")[0]);
+
+  // The reply's task cleared the state as it ran, so nothing appends above the reply.
+  await router.interim("session-a", "chunk three");
+  assert.equal(edits.length, 1);
+  assert.equal(posts.length, 3, "the chunk after the reply posts fresh, below it");
+});
+
+test("an invalidation arriving while an append is queued is honored at the wire", async () => {
+  // The state is consulted inside the chained task, at the moment the write goes out, never at
+  // call time. Chunk two's edit is held on the wire, chunk three queues behind it, and the
+  // foreign message arrives while both are pending: chunk two's late success must not resurrect
+  // the state, and chunk three must post fresh, below whatever landed.
+  const { router, posts, edits, control } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+
+  control.editDelayMs = 30;
+  const second = router.interim("session-a", "chunk two");
+  // Lets chunk two's task start, so its edit is on the wire before the invalidation rather than
+  // queued behind it.
+  await new Promise((resolve) => setImmediate(resolve));
+  const third = router.interim("session-a", "chunk three");
+  router.noteThreadMessage(THREAD, "the-operators-message");
+  assert.deepEqual(await second, { status: "sent" });
+  assert.deepEqual(await third, { status: "sent" });
+
+  assert.equal(edits.length, 1, "chunk two's append was already committed to the wire");
+  assert.equal(posts.length, 2, "chunk three's decision was made at the wire, so it posts fresh");
+  assert.equal(posts[1].text, renderMirror("interim", "chunk three")[0]);
+});
+
+test("the coalescing state is bounded, so a fleet of threads cannot grow it without limit", async () => {
+  // The cap is MAX_NARRATION_THREADS in outbound.ts, 64 like the drop log's. The 65th thread's
+  // insert evicts the oldest entry, and what that costs the evicted thread is one fresh header.
+  const { router, posts, edits } = narrationHarness((sessionId) => `thread-${sessionId}`);
+  for (let index = 0; index <= 64; index += 1) {
+    await router.interim(`s${index}`, "a chunk");
+  }
+
+  await router.interim("s0", "another chunk");
+  assert.deepEqual(edits, [], "the oldest entry was evicted at the cap");
+  assert.equal(posts.length, 66);
+
+  await router.interim("s64", "another chunk");
+  assert.equal(edits.length, 1, "an entry inside the cap still appends");
+});
+
+test("an invalidation during the fresh post's round trip means the run is not remembered", async () => {
+  // The task takes its entry off the map before posting, so a message landing while the post is
+  // on the wire finds nothing to clear; the moved invalidation clock is how it reaches the task.
+  // Refusing to remember costs one header, while remembering would bury the mid-post arrival, a
+  // permission prompt as easily as the operator's message, under every later append.
+  const { router, posts, edits, control } = narrationHarness();
+  control.postDelayMs = 30;
+  const first = router.interim("session-a", "chunk one");
+  // Lets the task start, so the post is on the wire when the foreign message arrives.
+  await new Promise((resolve) => setImmediate(resolve));
+  router.noteThreadMessage(THREAD, "2000");
+  assert.deepEqual(await first, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("session-a", "chunk two");
+  assert.deepEqual(edits, [], "a run posted around a foreign message is not a block to grow");
+  assert.equal(posts.length, 2);
+});
+
+test("a late echo of an older message does not clear the newest narration message", async () => {
+  // A split run's earlier messages echo back after its final one was remembered, and a reply
+  // run's echoes can trail a fresh interim post the same way. Snowflake order is thread order,
+  // so only something strictly newer than the remembered message ends the block; clearing on the
+  // old echoes would silently end coalescing after every split run for as long as the gateway
+  // lags.
+  const { router, posts, edits } = narrationHarness();
+  const narration = longReply(30);
+  const messages = renderMirror("interim", narration);
+  assert.ok(messages.length >= 3, `${messages.length} message(s)`);
+  await router.interim("session-a", narration);
+
+  // The echoes of every message of the run arrive, the remembered final one included.
+  for (let index = 1; index <= messages.length; index += 1) {
+    router.noteThreadMessage(THREAD, String(1_000 + index));
+  }
+  await router.interim("session-a", "a small chunk after");
+  assert.equal(edits.length, 1, "the run's own echoes must not force a fresh header");
+  assert.equal(edits[0].messageId, String(1_000 + messages.length));
+
+  // Something genuinely newer still clears.
+  router.noteThreadMessage(THREAD, "9999");
+  await router.interim("session-a", "after the operator spoke");
+  assert.equal(edits.length, 1);
+  assert.equal(posts.length, messages.length + 1);
+});
+
+test("a notice or alert posting outside the router ends the block without the gateway", async () => {
+  // Notices and permission alerts go out through the steering writer, never through this
+  // router, and their gateway echoes are lost while the gateway is disconnected. endNarration is
+  // the direct clear index.ts wires to their successful posts.
+  const { router, posts, edits, control } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+  router.endNarration(THREAD);
+  await router.interim("session-a", "chunk two");
+  assert.deepEqual(edits, [], "nothing appends above the notice");
+  assert.equal(posts.length, 2);
+
+  // Landing during a fresh post's round trip, it bumps the invalidation clock as well, so the
+  // run posted around it is not remembered above it.
+  router.endNarration(THREAD);
+  control.postDelayMs = 30;
+  const third = router.interim("session-a", "chunk three");
+  await new Promise((resolve) => setImmediate(resolve));
+  router.endNarration(THREAD);
+  assert.deepEqual(await third, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("session-a", "chunk four");
+  assert.deepEqual(edits, [], "chunk four posts fresh below the prompt");
+  assert.equal(posts.length, 4);
 });

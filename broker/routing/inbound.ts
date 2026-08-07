@@ -25,6 +25,12 @@ import type { ThreadWriter } from "./writer.ts";
 export type InboundMessage = {
   /** The thread it was posted in, which is what identifies the session it is addressed to. */
   threadId: string;
+  /**
+   * The message's own Discord ID. Nothing in inbound routing reads it: it is the freshness signal
+   * the outbound router's narration coalescing consumes, riding here because every message that
+   * lands in a thread, this bot's own posts included, arrives over this one gateway event.
+   */
+  messageId: string;
   /** The author's Discord user ID. The allowlist over it is the only authority for anything here. */
   senderId: string;
   /** True when this bot wrote it. Its own cards, replies, and notices all come back over the gateway. */

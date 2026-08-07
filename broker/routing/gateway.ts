@@ -44,6 +44,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
     void options
       .onMessage({
         threadId: message.channelId,
+        messageId: message.id,
         senderId: message.author.id,
         // Reported rather than filtered here: every message this broker writes comes back over
         // this connection, and dropping it is a routing decision like any other.

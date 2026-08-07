@@ -279,12 +279,16 @@ function integration(t: TestContext) {
     transcriptPath: null,
   });
   const posts: string[] = [];
+  const edits: string[] = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input.text);
       return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
-    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    editInThread: async (input) => {
+      edits.push(input.text);
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
   };
   const echo = createEchoMemory();
   const outbound = createOutboundRouter({
@@ -301,7 +305,7 @@ function integration(t: TestContext) {
   });
   tailer.learn(SESSION, file);
   tailer.allow(SESSION);
-  return { file, tailer, outbound, posts };
+  return { file, tailer, outbound, posts, edits };
 }
 
 test("a final reply mirrored first is not posted again by the tailer", async (t) => {
@@ -342,17 +346,21 @@ test("a final reply the tailer posted first is not posted again by the Stop mirr
 
 test("interim text between the final reply and the turn's earlier narration still posts", async (t) => {
   // The dedup holds one digest per side, so ordinary narration around the deduplicated reply is
-  // untouched: only the text both paths carry is suppressed.
-  const { file, tailer, outbound, posts } = integration(t);
+  // untouched: only the text both paths carry is suppressed. The two chunks coalesce into one
+  // narration message, the first by post and the second by edit, so both are on the thread.
+  const { file, tailer, outbound, posts, edits } = integration(t);
   await tailer.poll();
 
   const final = "The build is green.";
   appendFileSync(file, assistantText("Running the suite now.") + assistantText(final), "utf8");
   await tailer.poll();
-  assert.equal(posts.length, 2, posts.join("\n---\n"));
+  assert.equal(posts.length, 1, posts.join("\n---\n"));
+  assert.equal(edits.length, 1, "the second chunk grows the first's message in place");
+  assert.ok(edits[0].includes(final), edits[0]);
 
   await outbound.mirror(TOKEN, "reply", final, SESSION);
-  assert.equal(posts.length, 2, "the final text arrived once by each path and posted once in total");
+  assert.equal(posts.length, 1, "the final text arrived once by each path and landed once in total");
+  assert.equal(edits.length, 1);
 });
 
 test("an echo match answers once: text a later turn repeats still posts", async (t) => {

@@ -104,6 +104,7 @@ function harness(options: { attachRelay?: boolean; now?: () => number } = {}) {
 function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
     threadId: THREAD,
+    messageId: "910000000000000001",
     senderId: OPERATOR,
     fromBot: false,
     text: "please run the migration",
