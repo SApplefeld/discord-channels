@@ -35,6 +35,9 @@ whether or not the model cooperates, and the `Stop` payload already carries
 is therefore structural, and the `reply` tool remains for what the model wants to say on its own
 initiative.
 
+What the model writes *between* tool calls, mid-turn, reaches no hook payload at all; the transcript
+tailer below is what recovers it.
+
 ## Components
 
 Four pieces per host, plus an installer.
@@ -47,17 +50,20 @@ Four pieces per host, plus an installer.
   a subprocess of the session that holds the token: it never registers, so it gets no thread, no
   status card, and no mirroring.
 - **Hooks** (`hooks/`). `SessionStart` is a `command` hook running `session-start.ps1`, which posts
-  identity to the broker. `PostToolUse` and a `Stop` liveness tick are content-free `http` hooks
-  posting straight to the broker. `UserPromptSubmit` and a second `Stop` entry are the mirror: `http`
-  hooks posting their whole payload, which already carries the console prompt and the turn's final
-  assistant reply, to the content-bearing route. The transport split is fixed by observation: the
-  `http` type never delivered `SessionStart`.
+  identity to the broker. `PostToolUse` and a `Stop` liveness tick are `http` hooks posting straight
+  to the broker; the broker keeps a bounded, neutralized preview of the tool's input from
+  `PostToolUse` for the status card and each event's `transcript_path` for the tailer below, and
+  drops the rest of the payload unread. `UserPromptSubmit` and a second `Stop` entry are the mirror:
+  `http` hooks posting their whole payload, which already carries the console prompt and the turn's
+  final assistant reply, to the content-bearing route. The transport split is fixed by observation:
+  the `http` type never delivered `SessionStart`.
 - **Relay** (`relay/`). A stdio MCP child of one Claude Code process. It declares
   `claude/channel` and `claude/channel/permission`, exposes a `reply` tool, and holds one HTTP
   stream open to the broker for the life of the process.
 - **Broker** (`broker/`). The per-host daemon. It owns the bot token, one Discord gateway
-  connection, the session registry, the thread bindings, and the three Discord surfaces. It runs as
-  a scheduled task at logon.
+  connection, the session registry, the thread bindings, the three Discord surfaces, and a poll loop
+  (`broker/tail.ts`) that tails each live session's own transcript file for mid-turn narration. It
+  runs as a scheduled task at logon.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
   and the scheduled task.
@@ -69,16 +75,20 @@ listener.
 
 1. **Identity and activity, session to broker.** `POST /hook` takes a `SessionStart`, `PostToolUse`,
    or `Stop` payload with the event name, the process token, and the session name in headers. The
-   registry turns those into a session record: session ID, name, host, source, last tool, tool
-   count, turn count, and last-seen timestamp. A `SessionStart` with `source: "clear"` supersedes
-   the prior record for that token rather than mutating it. `GET /sessions` publishes the registry
-   for debugging, with the process token withheld.
+   registry turns those into a session record: session ID, name, host, source, last tool, a bounded
+   preview of that tool's input (the card's `Last tool: Bash · npm test` line), tool count, turn
+   count, and last-seen timestamp. Every credited post also teaches the transcript tailer where that
+   session's transcript file lives, without adding the path to the record itself. A `SessionStart`
+   with `source: "clear"` supersedes the prior record for that token rather than mutating it. `GET
+   /sessions` publishes the registry for debugging, with the process token and the transcript path
+   both withheld.
 2. **Conversation, session to broker.** `POST /mirror` is the one content-bearing route, dedicated
    rather than folded into `/hook` so the larger ceiling and the log-suppression rule hold in one
    place. It takes a `UserPromptSubmit` or `Stop` payload under the same three identity headers plus
    `X-Channel-Mirror`, authenticates on the process token alone, and hands the payload's `prompt` or
    `last_assistant_message` to the routing layer for the session's bound thread. Every drop path
-   answers 202, and the content never reaches the broker log at any level.
+   answers 202, and the content never reaches the broker log at any level. A post on this route also
+   arms or disarms the transcript tailer for the session it names: see "Mid-turn narration" below.
 3. **Messages, both directions.** `GET /relay/stream` is the held-open pipe: its first line carries
    a reply key, later lines carry inbound messages and permission verdicts, and its closing is the
    session's death signal. `POST /relay/reply` and `POST /relay/permission` carry the other
@@ -89,21 +99,53 @@ listener.
    thread names, the starter-message card, and any reply, mirrored message, or notice waiting to be
    written. Mirror posts spend their own rate-limit budget rather than the one permission prompts
    spend, so a reply arriving as twenty messages cannot starve the alert a parked session waits on.
-   Posts are ordered per thread, so a turn's reply, the prompt after it, and a reply-tool call reach
-   the thread in the order the broker received them.
+   Posts are ordered per thread, so a turn's reply, the prompt after it, a mid-turn narration chunk,
+   and a reply-tool call reach the thread in the order the broker received or read them.
 
 The registry persists to a JSON file on every mutation, and the thread bindings persist beside it,
 so a restart at logon rebinds existing threads rather than opening duplicates.
+
+## Mid-turn narration
+
+The mirror above carries only the two moments a hook payload reaches: the prompt that opens a turn
+and the reply that closes it. What the model writes in between is not delivered to any hook, so
+`broker/tail.ts` recovers it from the same file Claude Code already writes for its own purposes: the
+session's transcript, JSONL appended beside the session and never authored for this broker's benefit.
+
+The tailer polls, on `CHANNEL_INTERIM_POLL_MS` (20 seconds by default), every session the registry
+currently holds live. For each one it reads past the byte offset the previous pass left, up to a
+bounded ceiling per pass, and stops at the last complete line so a line still being flushed is left
+for the next pass. A line contributes text only when it is an `assistant` line, not a sidechain, and
+carries the session ID the path was learned for; a `text` content block from such a line is one
+interim chunk. On learning a path for the first time, the tailer takes the file's current end without
+reading anything, so what a transcript already held before this broker process learned about the
+session is never republished into the thread.
+
+Each surviving chunk posts through the same routing and rendering path a mirrored reply uses,
+`renderMirror`, under a `✨ Claude · working` attribution that marks it as mid-turn rather than final.
+A chunk that cannot be posted (the thread is not open yet, Discord refuses it) is dropped rather than
+queued, the rule the whole routing layer follows.
+
+**How this relates to the mirror the tailer deduplicates against.** The turn's own final reply is
+read twice by design: once by the Stop mirror within milliseconds of turn end, and again by the
+tailer's own next pass over the same transcript line, up to one poll interval later. A shared digest
+memory, keyed per session, records which text each side already posted and drops whichever side's
+post is the second to arrive, so the operator sees the duplicate paragraph once rather than twice.
+
+Reading a session's transcript at all is gated on an explicit mirror-on verdict seen for that session
+under the current broker process; see [`security-model.md`](security-model.md) for what that gate
+covers and why it fails in the direction it does.
 
 ## External integrations
 
 Three, and each one fails in its own way.
 
 - **Claude Code's hook protocol.** The user-level settings file registers four events and five hooks:
-  `SessionStart`, `PostToolUse`, and a `Stop` liveness tick carry no content, while
-  `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the turn's final
-  assistant reply to the mirror. All of them fail open: a broker that is down cannot slow or block a
-  session.
+  `SessionStart`, `PostToolUse`, and a `Stop` liveness tick carry a session's identity and activity
+  plus the two bounded fields above (a tool-input preview and a transcript path), never the
+  conversation itself, while `UserPromptSubmit` and a second `Stop` entry carry the console prompt
+  and the turn's final assistant reply to the mirror. All of them fail open: a broker that is down
+  cannot slow or block a session.
 - **Claude Code's channel protocol.** The relay registers only from the interactive REPL, and only
   when `channelsEnabled` is on and the plugin is allowlisted. Claude Code refuses a channel whose
   negotiated protocol revision is at or past `2026-07-28`.
@@ -126,9 +168,9 @@ green when it matched no test files).
 
 A host running this has a Discord channel whose thread list is a live dashboard of every session on
 that machine, a card in each thread carrying what that session is doing right now, the conversation
-itself mirrored into the thread turn by turn, and a path for sending it a message or approving its
-tool calls from a phone. The status path, the message path, and the mirror fail independently, which
-is what makes a dead message path visible instead of silent.
+itself mirrored into the thread turn by turn, mid-turn narration on a long turn, and a path for
+sending it a message or approving its tool calls from a phone. The status path, the message path,
+and the mirror fail independently, which is what makes a dead message path visible instead of silent.
 
 Installing a host is [`install.md`](install.md). Running one is [`operations.md`](operations.md).
 What the design trusts and what it does not is [`security-model.md`](security-model.md).

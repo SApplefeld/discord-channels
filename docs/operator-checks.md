@@ -262,3 +262,53 @@ the per-session off switch actually stops mirror posts on a real host.
 
 Write the outcome of each step here the way checks A through D record theirs. Step 2 is the one that
 can change the design; the rest confirm the wiring.
+
+## F. Does a long turn narrate itself, once, without doubling its ending?
+
+**Result: not yet run.**
+
+**Why it needs a human.** The tailer is pinned against real transcript files by tests, and the
+dedup against the Stop mirror is pinned in both orderings. What no test in this repository can reach
+is the claim the dedup rests on: that the Stop payload's `last_assistant_message` is byte-identical
+to the final text block the transcript holds. It held across every assistant line sampled from this
+project's history, none of which carried more than one text block, but a turn that ends in several
+of them would miss the digest. Only a real long turn on a real host settles it, and the answer is
+visible only from the phone, which is the surface this whole effort exists to serve.
+
+**What it proves.** That a turn running for many minutes stops being silence on the operator's
+phone, that mid-turn narration is distinguishable at a glance from the turn's actual answer, that
+the answer arrives exactly once, and that both off switches genuinely silence narration without
+taking the mirror down with them.
+
+### Steps
+
+1. From a wrapped session, start a turn that will run for several minutes and write prose between
+   its tool calls: a task that reads a few files and narrates what it is doing between them.
+2. Watch the thread on a phone while it runs. **Pass:** narration arrives during the turn, in the
+   order it was written, under a `✨ Claude · working` line that reads differently at a glance from
+   the `✨ Claude` a mirrored reply carries. **Fail:** nothing arrives until the turn ends, which
+   means the tailer was never armed for this session, or arrives under the wrong attribution.
+3. When the turn ends, read the last few messages. **Pass:** the final reply appears once. **Fail
+   one way:** the same paragraph appears twice, once as narration and once as the reply, which means
+   the Stop payload and the transcript's last block are not byte-identical and the digests missed.
+   That is the failure this design accepts, so record it rather than treating it as a stop; the fix
+   is to compare on the transcript's last block rather than on the whole payload. **Fail the other
+   way:** the final reply appears nowhere at all, which is the failure the design does not accept
+   and is a defect to root-cause before anything else.
+4. Launch a session with `Enter-ClaudeSession -NoMirror` and run the same kind of long turn.
+   **Pass:** its thread carries no narration, no prompt, and no reply, and its status card keeps
+   ticking. **Fail:** any narration at all, which is the privacy switch failing open in the one
+   direction the tailer was specifically built to prevent.
+5. Set `CHANNEL_INTERIM_MIRROR=off` in `broker.env`, restart the broker, and run a long turn in an
+   ordinarily mirrored session. **Pass:** the prompt and the final reply still mirror, and nothing
+   arrives in between. **Fail:** narration that survives the switch, or a mirror that went quiet
+   with it, which means the two are not independent.
+6. Restart the broker in the middle of a long turn in a mirrored session. **Expected, and not a
+   fault:** narration stops for the remainder of that turn and resumes on the next one. This is the
+   arming gate failing closed, and step 4 is what it buys. Record it so a later reader does not
+   diagnose it as a bug.
+
+### Recording the result
+
+Write the outcome of each step here the way checks A through E record theirs. Step 3 is the one that
+can change the design; the rest confirm the wiring and the switches.

@@ -193,7 +193,7 @@ live data; `isSidechain` is defense against a build that starts interleaving sub
 
 **Posting.** Each surviving text block is one interim chunk, posted in order through the existing
 routing and rendering path. `MirrorKind` in `broker/discord/render.ts` gains a third member,
-`interim`, with attribution `✨ Claude · working\n` — unquoted, like `reply`, since the quoted block
+`interim`, with attribution `✨ Claude · working\n`, unquoted like `reply`, since the quoted block
 is the one that must stay unforgeable. `renderMirror` treats it exactly as `reply` (uncapped, split
 across messages, chips escaped). `OutboundRouter` gains
 `interim(sessionId: string, text: string): Promise<ReplyResult>`, which resolves the thread with
@@ -450,3 +450,38 @@ skipped, lint clean. No existing test changed status at either step. Both gates 
 session rather than taken from a report.
 
 **Next.** Section 3, documentation and operator checks.
+
+### Chapter 3: The docs describe both surfaces, and the security model describes the new one honestly
+
+Delivered in this changeset. `docs/architecture.md` gains the tailer as a component and the card's
+tool-input preview; `docs/operations.md` gains the two knobs, the `tail:` log vocabulary, and the
+mid-turn-restart behavior; `docs/security-model.md` gains the section this effort most needed;
+`docs/operator-checks.md` gains check F; `broker/README.md` gains the module; `docs/backlog.md` has
+its duplication-measurement item widened rather than closed, because interim narration is a third
+stream in the same thread and the question it asks got bigger rather than answered.
+
+**What the security model had to say.** Two of its existing claims stopped being true and are
+corrected rather than supplemented. It described `-NoMirror` as suppressing what the hooks post,
+which no longer covers the one stream the broker reads for itself, and it said the broker drops the
+tool fields after parsing, which is now false for the bounded preview. The new section states the
+thing the effort turns on: everywhere else, suppression means the hooks post nothing, so an absent
+signal means absent content, and the tailer inverts that, so the arming gate exists to put the fail
+direction back. Three residuals are named in "Accepted, and worth stating": an unregistered session
+ID can be claimed and its transcript read, the line filter fails to silence rather than to
+publication and does so quietly, and a turn's final reply can arrive labelled as mid-turn.
+
+**Surprise worth recording for the next session.** The dispatched implementer could not write to
+`docs/` at all: both `Edit` and `Write` are hard-blocked under that role in this harness, whatever
+the content. It drafted `architecture.md` and `operations.md` into `.kit/scratch/` before the block
+ended its run, and those drafts were reviewed against the as-built code and applied from the main
+session; the remaining four files were written in the main session directly. A documentation section
+in this project is main-session work, not dispatchable work.
+
+**Gate.** 541 tests, 540 pass, 0 fail, 1 skipped, lint clean, unchanged from the end of Section 2,
+which is what an all-prose section should do. Two claims in the applied drafts were checked against
+the source rather than trusted: the `broker: a transcript poll pass failed` log string
+(`broker/index.ts:150`) and the poll interval's 1s to 5m bounds (`broker/config.ts:91-92`). Five em
+dashes arrived with the drafts and were removed.
+
+**Next.** The whole-effort finishing pass: QA verification against every acceptance criterion, then
+the finishing reviews, then this plan to Complete and into the archive.

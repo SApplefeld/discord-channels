@@ -61,6 +61,12 @@ under the paragraph above. The switch exists for the operator's privacy from the
 as a defense against a process that holds the token. `CHANNEL_MIRROR=off` is decided at the broker
 and holds against any poster.
 
+The switch governs the transcript tailer too, and there it is enforced at the broker rather than at
+the poster, because the broker reads that content itself. See "Mid-turn narration is read, not
+posted" below. What neither switch reaches is the bounded tool-input preview on the status card: it
+rides the identity-and-activity path rather than the mirror, so a `-NoMirror` session still shows
+what its last tool was called with on its own card.
+
 That also makes an environment variable a privacy control surface, alongside the files below:
 anything that can set `CHANNEL_SESSION_MIRROR` for a session influences whether that session is
 mirrored, and anything that can set `CHANNEL_MIRROR` in the broker's own environment influences the
@@ -112,6 +118,58 @@ per thread: past **3 prompts a minute** the message still arrives and is still a
 mentioning the operator, and only past **12 a minute** is a prompt dropped. The ping stops; the
 session does not park. The split is deliberate, because a single ceiling that drops prompts would let
 a local process park every session on the host by spending it first, turning phishing into denial.
+
+## Mid-turn narration is read, not posted
+
+Everything above describes content that reaches Discord because a session posted it. Mid-turn
+narration is the one stream that reaches Discord because the broker went and read it: the text a
+model writes between tool calls is carried by no hook payload, so `broker/tail.ts` polls the
+session's own transcript file, the JSONL Claude Code appends beside every session, and posts the
+assistant text blocks it finds.
+
+That inverts the direction a mirror switch has to fail in, and the design accounts for it.
+Everywhere else, suppression means the hooks post nothing, so an absent signal means absent content.
+Here an absent signal would mean the broker reads and publishes anyway. **So the tailer reads
+nothing until it is armed.** A session's transcript is not opened at all until an explicit
+mirror-on verdict has arrived for that session under the current broker process, which every
+`/mirror` post from a live session carries. A session launched `-NoMirror` is never armed under any
+ordering, a broker restarted mid-turn narrates nothing for the remainder of that turn, and a
+transcript path learned without an accompanying verdict is a path that is never read.
+
+**What a token holder gains is a second door to a capability it already had, not a new one.** The
+broker's scheduled task runs as the operator at limited integrity, the same account a token-holding
+subprocess runs as, so making the broker perform the read confers no privilege. Such a process can
+already read any of the operator's files and post arbitrary text to the thread through the mirror
+route. Through the tailer it costs one additional forged `/mirror` post to arm the session, and what
+it can aim at is bounded twice over: the path must pass validation below, and a line yields text only
+when its own recorded session ID matches the session the path was learned for, so another registered
+session's transcript yields nothing.
+
+**The transcript path is treated as an instruction to open a file, not as a display string.** It is
+control-character stripped and trimmed, then refused whole rather than normalized if it is over
+length, not absolute, or a UNC path. Refusing on length rather than truncating is what keeps a
+too-long path from becoming a path that silently never opens, which is indistinguishable from an
+unreadable file. Refusing UNC is what keeps `\\host\share\x.jsonl` from making the broker open an
+outbound SMB connection carrying the operator's credentials. The path is held only in memory: it is
+never written to the registry snapshot, never published by `GET /sessions`, and never logged.
+
+**Transcript content is untrusted text of the same class as a mirrored reply**, and it reaches
+Discord through exactly the escape a mirrored reply uses, `renderMirror`, with no second escape and
+no second splitter. Its `✨ Claude · working` attribution is forgeable by content in the same way the
+mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it is a Claude-authored
+line opening a Claude-authored message, claiming nothing the message does not already claim. The
+operator-attributed quoted block remains the one attribution that content cannot draw.
+
+**Transcript content never reaches the broker log at any level.** Every line the tailer writes
+carries a static reason, a session ID, a byte count, or an offset. A `JSON.parse` failure and a
+filesystem failure are both discarded unread, because the parse error embeds an excerpt of the line
+that produced it and the filesystem error carries the path.
+
+**Reads are bounded** to a ceiling per session per pass, measured against the file's size before
+anything is parsed, so a transcript that grew faster than the poll is skipped to its current end
+rather than read out as a backlog. Only whole lines are consumed. Nothing is queued and nothing is
+retried: a chunk that cannot be posted now is dropped, which is what keeps a refusal from becoming a
+retry storm against the operator's channel.
 
 ## The sender gate
 
@@ -293,10 +351,27 @@ authenticated account or a non-administrative service account.
   message exchanged with the operator. The mirror posts cross for every Claude Code session on the
   host, including unwrapped sessions in unrelated repositories, because the hooks are installed at
   user level; those posts carry no process token, and the broker answers them without assembling a
-  body. The broker drops the tool fields after parsing, but dropping after receipt is
-  not the same as not transmitting: anything running as this user can read all of it off the
-  loopback interface, and a local process that wins the race to bind the port before the broker
-  starts sees it directly. The loopback bind and the `Host` check are what this rests on.
+  body. Of the tool fields the broker keeps one bounded preview of `tool_input` for the status card
+  and drops the rest, but dropping after receipt is not the same as not transmitting: anything
+  running as this user can read all of it off the loopback interface, and a local process that wins
+  the race to bind the port before the broker starts sees it directly. The loopback bind and the
+  `Host` check are what this rests on.
+- **A session ID nothing has registered can be claimed.** An unwrapped session on the host holds no
+  registry record, so its session ID is unclaimed, and a token holder that registers that ID can arm
+  the tailer against that session's transcript and read its mid-turn prose into a thread of its own.
+  This is the same-user file read plus arbitrary Discord post the mirror route already grants, by a
+  different door; the session-ID match in the line filter is what keeps a *registered* session's
+  transcript out of another session's thread.
+- **The tailer's line filter fails to silence, never to publication.** A line contributes text only
+  when its own recorded session ID matches the session the transcript path was learned for. If a
+  future Claude Code build writes a transcript whose internal session ID differs from the one its
+  hooks report, mid-turn narration stops entirely and nothing distinguishes that from a model that
+  wrote nothing between tool calls. The feature goes inert rather than publishing wrongly, which is
+  the direction to fail in, but it fails quietly.
+- **A turn's final reply can arrive labelled as mid-turn.** The Stop mirror and the tailer read the
+  same text, and whichever posts first is the one the operator sees. When the tailer wins the race,
+  the turn's conclusion carries the `✨ Claude · working` attribution rather than `✨ Claude`. The
+  text and the count are right; only the label reads as mid-turn.
 - **One allowlisted Discord user per host.** There is no multi-user model and no per-user
   permissions.
 - **A session cannot be started or restarted remotely.** A channel injects into a running session; it

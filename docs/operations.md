@@ -101,6 +101,56 @@ rather than the oldest evicted, because the oldest is the session that has been 
 Inbound chat has its own ceiling: **20 messages a minute per session**. Past it a message is dropped
 with a log line and no in-thread notice.
 
+## Mid-turn narration
+
+On a long turn the thread otherwise shows nothing between the prompt that opened it and the final
+reply that closes it, which can be many minutes later. `broker/tail.ts` polls each live session's own
+transcript file and posts what the model wrote in between, in order, under a `✨ Claude · working`
+attribution distinct from a mirrored reply's plain `✨ Claude`. It reads only what a hook has already
+identified as belonging to that session's transcript, and posts through the same routing and
+rendering path a mirrored reply uses.
+
+Two knobs govern it, both in `broker.env`:
+
+| Setting | Default | What it decides |
+|---|---|---|
+| `CHANNEL_INTERIM_MIRROR` | on | Whether mid-turn narration is tailed and posted at all; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns both off together |
+| `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; refuses below 1 s or above 5 min |
+
+Turning `CHANNEL_INTERIM_MIRROR` off, or `CHANNEL_MIRROR` off, silences mid-turn narration while
+leaving the mirrored prompt and the mirrored final reply untouched: the two mirror the same content
+by different means and stop independently. A session launched with `-NoMirror` narrates nothing
+either, for the same reason its prompts and replies do not mirror.
+
+**The log carries `tail:` lines**, each naming a session ID, a count, or a byte offset and never any
+transcript text:
+
+- `tail: session <id>'s transcript shrank below the held offset (...)`: the transcript file was
+  replaced or truncated since the last pass; the tailer resumes from the file's new end rather than
+  republishing the conversation from the start.
+- `tail: session <id>'s transcript outgrew one pass (...)`: more grew between two polls than one
+  pass reads; the excess is skipped and narration resumes from the file's current end rather than
+  reading out a backlog minutes late.
+- `tail: session <id>'s interim delivery failed (...)`: one chunk could not be posted and was
+  dropped; it does not hold up any other chunk in the same pass.
+- `tail: session <id>'s transcript pass failed (...)`: the file could not be opened or read this
+  pass; the next pass tries again.
+- `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
+  aggregated into one summary line rather than logged once per poll.
+
+A related line from the routing layer, `routing: the mirrored reply from session <id> was dropped,
+the tailer already posted the same text as interim narration`, is not a lost reply: it is the
+deduplication between the tailer and the Stop mirror working as designed, and the text is already on
+the thread. A rejection out of the whole poll pass, which normal operation should never produce, logs
+as `broker: a transcript poll pass failed; the error detail is withheld, it can carry content`.
+
+**One operational surprise worth knowing.** Narration for a session is armed by a `/mirror` post
+carrying that session's mirror-on verdict, not by the session simply being live, so a broker
+restarted mid-turn narrates nothing for the remainder of that turn: the verdict that would arm it
+already arrived before the restart, under the previous process. The next turn's `UserPromptSubmit`
+re-arms it as normal. See [`security-model.md`](security-model.md) for why the gate fails in that
+direction rather than the other.
+
 ## Tunables
 
 Everything below lives in `broker.env` and takes effect when the broker restarts. Only these keys are
@@ -131,6 +181,8 @@ the process that reads the bot token.
 | `CHANNEL_DISCORD_ARCHIVE_ON_END` | off | Whether an ended session's thread is archived |
 | `CHANNEL_MIRROR` | on | Whether console prompts and turn replies are mirrored into the thread |
 | `CHANNEL_MIRROR_MAX_BYTES` | 256 KB | Largest mirror post accepted; a larger one is dropped |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether mid-turn narration is tailed and posted; also gated by `CHANNEL_MIRROR` |
+| `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to
 `node` pinned at install time, which `Start-Broker.ps1` reads directly so it never resolves `node`
@@ -210,9 +262,10 @@ whole host, which is the first thing to check because it survives restarts and n
 says so. The second is per session: a session launched with `Enter-ClaudeSession -NoMirror` sends a
 header that turns the mirror off for that session alone, and every other session on the host keeps
 mirroring. A suppressed post is logged as such, naming the session and no content, which is what
-tells a deliberately quiet mirror apart from a broken one. The status card, the tool counts, and the
-permission prompts all keep working either way, because the liveness path carries no content and is
-not affected by either switch.
+tells a deliberately quiet mirror apart from a broken one. The status card and the permission prompts
+keep working either way, because the identity-and-activity path they are fed from is not affected by
+either switch; only the tool-input preview on the card is unaffected by `-NoMirror` specifically, and
+is documented as such in [`security-model.md`](security-model.md).
 
 `-NoMirror` depends on a header the mirror hooks carry, so it needs the hooks installed from a
 version of this repository that has it. The wrapper refuses to launch rather than running the
@@ -231,7 +284,8 @@ wrote the message. Discord renders `\<` as `<` in ordinary prose, so the backsla
 where Discord processes no escapes: inside an inline code span, and in front of a line-leading `>`
 inside a code block. A fenced code block is otherwise left exactly as it was written, which is why a
 mirrored reply full of generics and comparisons reads normally. A message posted by the `reply` tool
-carries the same escape, because it lands in the same thread beside mirrored text.
+carries the same escape, because it lands in the same thread beside mirrored text, and so does a
+mid-turn narration chunk from the transcript tailer.
 
 **A long reply arrives cut short with the thread otherwise healthy.** A multi-message reply stops at
 the first message Discord refuses and does not post the rest, and the log names how far it got and

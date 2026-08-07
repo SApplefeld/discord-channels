@@ -24,9 +24,12 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 - Register the broker's scheduled task and restart it on this host, so the windowless task and the
   mirror's quoting change take effect. The installer prints the exact elevated command, now carrying
   the pinned `-EnvFile`. The broker currently running was started before either landed.
-- Now that mirroring has shipped, measure mirror-versus-reply-tool duplication in real threads, and
-  decide whether to suppress duplicates or coach the reply tool into a quick-summary role on top of
-  the mirrored reply. Deliberately excluded from
+- Measure duplication across the three streams that now land in one thread in real use: the mirrored
+  reply, the reply tool's answer, and mid-turn narration from the transcript tailer. Decide whether
+  to suppress duplicates or coach the reply tool into a quick-summary role on top of the mirrored
+  reply. The tailer already deduplicates itself against the Stop mirror, so what is left to measure
+  is the reply tool against both of the others, and whether narration plus a full mirrored reply is
+  more than one thread wants to carry. Deliberately excluded from
   [`archive/plans/channel-mirroring_spec_v1.md`](archive/plans/channel-mirroring_spec_v1.md);
   measure first.
 
