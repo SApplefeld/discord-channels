@@ -143,11 +143,37 @@ function capBeside<T>(map: Map<string, T>, kept: string): void {
  * How the Claude Code harness opens the envelope it wraps a channel message in before injecting it
  * into the session as a user prompt.
  *
- * The harness's contract, not this project's: an external shape that can change without notice, and
- * a change to it costs the operator a duplicate of their own message in the thread rather than
- * anything unsafe, which is why the match is a plain prefix rather than a parse.
+ * The harness's contract, not this project's: an external shape that can change without notice.
+ * The two consumers of this marker fail in opposite directions when the harness's shape moves out
+ * from under it. On the hook-carried mirror path, a mismatch costs the operator a duplicate of
+ * their own message in the thread rather than anything unsafe. On the queued-prompt path the
+ * transcript tailer's allowlist already admits only `origin.kind === "human"` lines, so a channel
+ * injection never reaches this check there; its only reachable effect on that path is a false
+ * positive, a prompt that opens with this marker for some other reason (for instance, one that
+ * pastes text starting with it) being mistaken for an echoed channel message and dropped, costing
+ * the operator their thread's only copy of a message they actually typed. The match is a plain
+ * prefix rather than a parse either way.
  */
 const CHANNEL_ENVELOPE = "<channel source=";
+
+/**
+ * Whether a prompt is the harness's injection of a message the operator posted in the thread this
+ * post would land in. Mirrored, it shows the operator their own message a second time, attributed
+ * to a console they were not sitting at.
+ *
+ * Read before the renderer's escapes touch the text, so what is tested is the string the harness
+ * composed rather than a rewritten copy of it: escaping can neither hide the envelope from this nor
+ * build one that was not there. The invisible class is stripped first, though, by the same rule the
+ * renderer strips it, because a zero-width character in front of the envelope would otherwise hide
+ * it from a prefix match while changing nothing the reader sees. Only the opening counts, so a
+ * prompt that quotes the marker mid-text still mirrors.
+ *
+ * One reading for both paths a prompt reaches a thread by, the hook-carried mirror and the queued
+ * prompt the transcript tailer extracts, so the two cannot answer differently for one message.
+ */
+function fromChannel(text: string): boolean {
+  return withoutInvisible(text).trimStart().startsWith(CHANNEL_ENVELOPE);
+}
 
 /** Why a reply could not be posted, in the terms the relay reports back to Claude. */
 export type ReplyResult =
@@ -208,6 +234,24 @@ export type OutboundRouter = {
    * lost narration.
    */
   interim: (sessionId: string, text: string) => Promise<ReplyResult>;
+  /**
+   * Posts one queued mid-turn prompt from the transcript tailer to the session's own thread.
+   *
+   * A message typed at the console while the model is working is queued and injected without a
+   * UserPromptSubmit ever firing, so it reaches this router off the transcript rather than off a
+   * hook. Addressed by session ID through `threadFor`, exactly as `interim` is, and rendered
+   * through the same `renderMirror("prompt", ...)` the hook-carried mirror renders through, so the
+   * two are indistinguishable on the thread: the operator's words under the operator's
+   * attribution, escaped by the one machinery that makes that attribution unforgeable, whether the
+   * text arrived through a file read or through a hook. The channel-envelope check is the same one
+   * for the same reason, because whichever line shape the harness records it under, the operator's
+   * own channel message must not echo back into the thread it was typed in.
+   *
+   * Delivered through the thread's ordering chain, so the post takes its place among the messages
+   * around it and ends any narration block being grown there: the operator's message is newer than
+   * the narration above it, and the next chunk belongs below it.
+   */
+  interimPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
   /**
    * Records that a message landed in one of this broker's threads, as read off the gateway.
    *
@@ -271,8 +315,9 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     return { sessionId: record.sessionId, threadId };
   }
 
-  // Per-thread ordering, held here because this router is the one place both conversation-carrying
-  // paths pass through: a mirrored prompt, a mirrored reply, and a reply-tool post. The writer
+  // Per-thread ordering, held here because this router is the one place every conversation-carrying
+  // path passes through: a mirrored prompt, a mirrored reply, a reply-tool post, and the transcript
+  // tailer's two kinds, a narration chunk and a queued mid-turn prompt. The writer
   // orders nothing (it takes one message at a time and knows nothing about the next), and delivery
   // from the mirror intake is fire-and-forget, so nothing upstream orders one post against the
   // next either. Without this a turn's reply and the prompt that followed it race, and a reply
@@ -574,18 +619,9 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       }
 
       // A message the operator posted in this very thread, handed to the session as a prompt and on
-      // its way back to where it was typed. Mirrored, it shows the operator their own message a
-      // second time, attributed to a console they were not sitting at.
-      //
-      // Matched before the renderer's escapes touch the text, so what is tested is the string the
-      // harness composed rather than a rewritten copy of it: escaping can neither hide the envelope
-      // from this nor build one that was not there. The invisible class is stripped first, though,
-      // by the same rule the renderer strips it, because a zero-width character in front of the
-      // envelope would otherwise hide it from a prefix match while changing nothing the reader
-      // sees. Only the opening counts, so a prompt that quotes the marker mid-text still mirrors,
-      // and only a prompt is examined, because a reply is Claude's own words about the envelope
-      // rather than one.
-      if (kind === "prompt" && withoutInvisible(text).trimStart().startsWith(CHANNEL_ENVELOPE)) {
+      // its way back to where it was typed. Only a prompt is examined, because a reply is Claude's
+      // own words about the envelope rather than one.
+      if (kind === "prompt" && fromChannel(text)) {
         dropped(
           `the mirrored prompt from session ${located.sessionId} was dropped, it is the operator's ` +
             `own channel message echoed back to the thread it was posted in`,
@@ -733,6 +769,53 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       log(
         `routing: the interim narration from session ${sessionId} stopped after ` +
           `${run.landed} of ${run.total} messages: ${run.error}`,
+      );
+      return { status: "failed", error: run.error };
+    },
+
+    async interimPrompt(sessionId, text) {
+      const threadId = options.threadFor(sessionId);
+      // Dropped, never queued, like every other post here, and the line carries the cause and the
+      // session and never the text: a queued prompt that never lands is silence in the thread,
+      // which reads exactly like a session nobody typed at.
+      if (threadId === null) {
+        dropped(
+          `the queued prompt from session ${sessionId} was dropped, its thread is not open yet`,
+        );
+        return { status: "no-thread" };
+      }
+
+      if (fromChannel(text)) {
+        dropped(
+          `the queued prompt from session ${sessionId} was dropped, it is the operator's own ` +
+            `channel message echoed back to the thread it was posted in`,
+        );
+        return { status: "failed", error: "the message came from the channel" };
+      }
+
+      const messages = renderMirror("prompt", text);
+      // Nothing visible once the invisible class is stripped. Logged, unlike the interim path's
+      // own empty drop: a chunk of narration that carried nothing is answered by the next chunk,
+      // while this is the operator's only copy of a message they typed, so its absence from the
+      // thread is worth a line.
+      if (messages.length === 0) {
+        dropped(
+          `the queued prompt from session ${sessionId} was dropped, it carried no visible text`,
+        );
+        return { status: "failed", error: "the message was empty" };
+      }
+
+      // Through the chained doorway, which clears the thread's narration state as the run goes on
+      // the wire: what follows the operator's message posts fresh below it rather than growing the
+      // block above it.
+      const run = await deliver(threadId, messages);
+      if (run.error === null) return { status: "sent" };
+
+      // The counts and the transport's error class only: a queued prompt is conversation content,
+      // and it never appears in the broker log at any level.
+      log(
+        `routing: the queued prompt from session ${sessionId} stopped after ` +
+          `${run.landed} of ${messages.length} messages: ${run.error}`,
       );
       return { status: "failed", error: run.error };
     },

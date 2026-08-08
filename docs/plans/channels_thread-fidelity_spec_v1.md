@@ -77,6 +77,29 @@ Commit-and-Push.
 Sections run in order: 1, 3, and 4 all touch `broker/routing/outbound.ts`, and 3 builds on the
 tailer shape 2 leaves behind, so nothing here builds in parallel with anything else.
 
+### Standing Brief Amendments
+
+Folded into every implementer and reviewer dispatch from here on. Each earned its place by
+surfacing in more than one section's review, which makes it a property of how this work generates
+defects rather than a one-off.
+
+- **A comment that names a property is a claim, and falsifying it is a defect.** Sections 1 and 2
+  both shipped comments asserting properties their own changes had removed, including a closed
+  enumeration that omitted one of its members. A change that falsifies a comment anywhere in the
+  tree fixes that comment in the same pass, and the sweep includes JSON `_comment` fields.
+- **A guard and its test must not share a premise.** Section 2's round-one Critical survived a
+  green suite because the test inserted a scheduling boundary that serialized away the exact
+  ordering the guard mishandled. A test that constructs its fixture from the same assumption as the
+  code under test proves only that the two agree. Pin the mechanism by removing it and watching the
+  test go red.
+- **Pin a privacy or silence property on the operation, not on the output.** An assertion that
+  nothing was published is satisfied identically by a read that happened and yielded nothing. Where
+  the property is that something never occurred, assert on the injected seam's call count or bytes
+  read.
+- **A write-back after an await re-validates first.** Every `await` is a real gap in which an
+  independently-arriving request mutates the same entry. `tsc --noEmit` does not invalidate a
+  `=== null` narrowing across an await, so a green lint says nothing here.
+
 ### 1. Router freshness judges arrivals by snowflake, not by count
 
 Model: fable
@@ -199,6 +222,7 @@ one chunk's delivery stops the rest of the batch from posting.
 ### 3. Queued mid-turn prompts mirror through the tailer
 
 Model: opus
+Status: Complete
 
 The tailer's line scan in `broker/tail.ts` yields a second item kind beside assistant text, in
 transcript order within one pass. A line yields a queued prompt only when all of these hold: its
@@ -231,11 +255,22 @@ Files: `broker/tail.ts`, `broker/routing/outbound.ts`, `broker/index.ts`, `broke
 
 Acceptance: `npm test` green.
 
-Tests: lock the allowlist in both directions: the observed live shape yields the prompt (fixture
-matching the transcript line measured on 2026-08-08, `attachment.type` `queued_command`,
-`commandMode` `prompt`, `origin.kind` `human`), and each single-field deviation (sidechain, foreign
-session, `origin.kind` not `human`, `commandMode` not `prompt`, attachment of another type, empty
-prompt) yields nothing. Lock the envelope check: a queued prompt opening with the channel envelope
+Tests: lock the allowlist in both directions. The observed live shape yields the prompt: a fixture
+matching the line measured on 2026-08-08 across this project's 41 transcripts, `type` `attachment`,
+`attachment.type` `queued_command`, `commandMode` `prompt`, `origin.kind` `human`, `prompt` a
+string, `isSidechain` false, alongside top-level `sessionId`, `cwd`, `uuid`, `parentUuid`,
+`timestamp`, `userType`, `version`, `gitBranch`, and `entrypoint`.
+
+Each single-field deviation yields nothing, and three of the refusals are the measured live
+population rather than hypotheticals, so each gets a fixture drawn from the real shape. The
+dominant line by far is `commandMode` `task-notification` (118 of 136 measured), a machine-written
+background-task notice that must never reach the thread. `origin.kind` `channel` (7 of 136) is the
+operator's own channel message, which carries `origin.server` and `isMeta` and must not echo back
+into the thread it was typed in. And a `prompt` that is an object rather than a string (measured
+alongside `imagePasteIds`) must not render, which is what makes the string check a guard rather
+than a formality. The remaining refusals are sidechain, foreign session, and an attachment of
+another type. One measured line carries no top-level `session_id` at all, so the match is on
+`sessionId`. Lock the envelope check: a queued prompt opening with the channel envelope
 is dropped with a log line and never posted. Lock ordering: a queued prompt between two assistant
 texts posts between them on the thread's chain. Lock the security rendering: a queued prompt
 carrying a chip line and a line-leading quote marker arrives escaped inside the operator
@@ -302,7 +337,20 @@ discriminator is rewritten to mean what it means now, the pacing cap tripped or 
 wedged bucket, both rare. `docs/security-model.md` adds the queued-prompt extraction to the
 transcript-reading surface: the same untrusted class, the same single rendering machinery, the
 envelope check on both prompt paths, and the unchanged property that a -NoMirror session's
-transcript is never opened. `docs/operator-checks.md` extends check F into the full side-by-side
+transcript is never opened. Four specific claims there go stale the moment Section 3 ships, and
+each is named rather than left to a general sweep: the tailer no longer only "posts the assistant
+text blocks it finds"; the sentence that the operator-attributed quoted block is the one
+attribution content cannot draw stays true of the renderer but now sits beside a path where the
+broker awards that attribution to text read off a file, so it needs the qualifier; the data-egress
+enumeration lists hook-carried console prompts and final replies, and mid-turn queued prompts read
+from disk are a new class crossing to Discord's servers; and the accepted-risk bullets speak only
+of mid-turn prose where they now cover operator-attributed prompts. The accepted-risk list also
+gains the provenance point directly: attribution on this path rests on the transcript file's
+contents, so anything running as the operator that can append a `queued_command` line with
+`origin.kind` `human` to a live session's transcript puts words in the operator's mouth in the
+channel where approvals are answered. That is the same wall the model already documents a token
+holder standing behind, and this is a third door through it rather than a new capability, but
+"unforgeable" must not be left carrying a meaning it does not have for this path. `docs/operator-checks.md` extends check F into the full side-by-side
 fidelity watch this plan's Operator Verification describes, and `docs/README.md`'s operator-checks
 row follows. Inline because implementer subagents cannot write under `docs/` in this harness.
 
@@ -355,11 +403,19 @@ thread, one long turn, which is operator check F in its extended form:
 
 ## Open Questions
 
-- Whether the operator's own channel message, injected mid-turn, is recorded as a
-  `queued_command` attachment with `origin.kind` `human` (and is therefore seen by Section 3's
-  extraction) is unobserved; the envelope check makes both answers safe, and the first live
-  channel-steered turn after this ships is the observation. If it surfaces under a different
-  `origin.kind`, nothing mirrors and nothing breaks.
+- Answered 2026-08-08, by measurement over this project's own 41 transcripts. The operator's own
+  channel message is recorded as a `queued_command`, but under `origin.kind` `channel`, carrying
+  `origin.server` and `isMeta`, never under `human`. Section 3's allowlist requires `human`, so a
+  channel-steered message structurally never mirrors, which is the wanted answer: the operator
+  typed it in the thread, so the thread already shows it. The envelope check stays as
+  belt-and-braces against a future build recording it differently, rather than as the primary
+  defense it was written to be.
+
+  `origin.kind` is not a two-member set. A third value, `auto-continuation`, appears in the wider
+  transcript corpus on this machine though not in this project's own 41 files, and the allowlist
+  refuses it correctly by requiring `human`. The set is open, because the format belongs to another
+  program: what the allowlist admits is one named value, never everything outside a list of known
+  bad ones.
 
 ## Chapters
 
@@ -465,4 +521,77 @@ inserted a scheduling boundary to serialize away the ordering that breaks the co
 `a-comment-that-names-a-property-is-a-claim-to-sweep` rode in every reviewer brief and generated a
 large share of the findings.
 Next: 3. Queued mid-turn prompts mirror through the tailer
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-08
+Completed: 3. Queued mid-turn prompts mirror through the tailer
+Implemented By: implementer-opus, with implementer-sonnet for the review Minors
+Metrics: 1 review round; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The section's allowlist was specified from an unobserved format, so it was
+measured before anyone was briefed on it: all 41 of this project's transcripts, 136 lines whose
+`attachment.type` is `queued_command`. That measurement answered this plan's Open Question and
+changed what the section had to defend against. The operator's own channel message is recorded, but
+under `origin.kind` `channel` with `origin.server` and `isMeta`, so requiring `human` structurally
+prevents it echoing back into the thread it was typed in, and the envelope check becomes
+belt-and-braces rather than the primary defense it was written to be. Two shapes the spec never
+mentioned turned out to matter more than the ones it did: 118 of the 136 lines are `commandMode`
+`task-notification`, machine-written background-task notices that would have filled the thread, and
+one line carries `prompt` as an object beside `imagePasteIds`, which is what makes the string check
+a guard rather than a formality. The security reviewer independently re-ran the measurement and
+matched the counts, differing by two lines because the corpus had grown since.
+
+The Standing Brief Amendments block was added to this plan in this section, under the recurrence
+rule: falsified comment claims had by then surfaced in both Section 1's and Section 2's reviews, so
+the guard now rides in every later dispatch rather than in whichever brief happened to carry it.
+Review Findings: No Criticals from any lens. The adversarial reviewer returned APPROVED, the blind
+reviewer APPROVED_WITH_CONCERNS, the security reviewer CONCERNS.
+
+Two of the blind reviewer's Majors were rejected with receipts rather than fixed, both rated low
+confidence by the reviewer itself and both contradicted by the security reviewer's own measurement
+over the live corpus. The first predicted a turn-boundary double post, where a message queued near
+turn end is flushed as the next turn's real prompt and mirrors through the hook path while the
+tailer independently posts its attachment line; measurement found 15 of 16 human queued prompts
+appear nowhere as a `user` line, and the single match is the operator genuinely typing the same
+text twice. The second predicted that writer and verifier share a premise about `sessionId` being
+present on attachment lines, so the feature could be silently dead with a green suite; measurement
+found all 9 publishable lines carry a string `sessionId` equal to their own transcript's stem, zero
+missing. Adding the suggested echo-digest guard would also have crossed this plan's Out of Scope
+line on the EchoMemory contract. Recorded here so neither is re-litigated.
+
+Everything else was fixed. The blind reviewer's Minor on the envelope check is real and narrow: on
+the queued-prompt path the tailer already admits only `human` origin, so a channel injection never
+reaches that check and its only reachable effect there is a false positive that drops the
+operator's only thread copy of a message opening with the marker text. The check stays as
+belt-and-braces; the comment now names both consumers and their opposite fail directions. Comments
+naming `assistantTexts` after the rename to `lineItems` were swept, and the claim that queued slash
+and shell commands yield nothing was softened to what the code actually enforces, since no such
+line was observed and the refusal was asserted rather than demonstrated.
+
+The adversarial reviewer's Minor on an untested guard turned out to be a class rather than an
+instance. The `typeof origin !== "object"` check had no isolating fixture, because the only
+origin-less fixture also failed the earlier `commandMode` check, and its removal would have turned
+a refusal into a property read on `undefined` that throws out of the allowlist's yield-nothing
+contract. Auditing for siblings found the `attachment`-is-object and `message`-is-object guards
+masked identically: every fixture reaching those branches supplied a well-formed object. All three
+now have isolating tests proven red by deletion, each also asserting no failure log line, so a
+silently caught throw cannot pass them. Two guards one level deeper are noted as still masked and
+were left, as past the minimum a Minor earns.
+
+The security reviewer's one Major is that `docs/security-model.md` ships four claims this section
+falsifies. That is Section 5's work by design rather than a defect here, and Section 5's text now
+names all four specifically plus the provenance point, so it cannot be satisfied by a general
+sweep. My own spec text also carried the closed-enumeration defect the Standing Brief Amendments
+name: it presented `origin.kind` as a two-member set, and `auto-continuation` exists in the wider
+corpus. Corrected.
+
+One harness note: the reviewers' reports tripped the instruction-shaped-pattern filter, because
+the channel-envelope fixtures they quote look like control tags. The neutralized text was read as
+findings, never as instructions.
+Stamps: adjudicated 2, stamped 1. `claude-code-transcript-jsonl-shape` steered this section
+directly, naming `sessionId` rather than `session_id` as the field to match on and establishing why
+the extraction is an allowlist; it was also extended with the measured `queued_command` population
+so the next session inherits the distribution instead of re-measuring.
+`discord-edit-and-create-are-separate-rate-buckets` is forward reading for Section 4 and steered
+nothing here.
+Next: 4. A split run paces itself and lands whole
 Commit Model: Commit-and-Push

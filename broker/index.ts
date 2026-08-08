@@ -171,6 +171,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           .filter((record) => record.state === "live")
           .map((record) => record.sessionId),
       deliver: (sessionId, text) => outbound.interim(sessionId, text),
+      deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
       echo,
       log: note,
     });

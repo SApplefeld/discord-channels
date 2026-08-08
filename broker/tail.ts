@@ -1,11 +1,13 @@
 // The transcript tailer: mid-turn narration for a thread whose session is deep in a long turn.
 //
-// The assistant text written between tool calls is carried by no hook payload, so the only place
-// it exists is the transcript file Claude Code appends beside the session. This module polls that
-// file for the sessions the registry holds live, reads what grew since the last pass, and hands
-// each new assistant text block to the routing layer as one interim chunk. Everything it needs
-// from the broker arrives as injected callbacks; what it owns is a map of session ID to tail
-// position and nothing else about the world.
+// Two things the console shows are carried by no hook payload, so the only place they exist is the
+// transcript file Claude Code appends beside the session: the assistant text written between tool
+// calls, and a message the operator types while the model is mid-turn, which is queued and injected
+// without a UserPromptSubmit ever firing. This module polls that file for the sessions the registry
+// holds live, reads what grew since the last pass, and hands the routing layer each new assistant
+// text block as one interim chunk and each queued typed message as one mirrored prompt, in
+// transcript order. Everything it needs from the broker arrives as injected callbacks; what it owns
+// is a map of session ID to tail position and nothing else about the world.
 //
 // The gate fails closed. The mirror routes only ever carry content a hook chose to post, so
 // there an absent signal meant absent content; the tailer reads content itself, so here an
@@ -211,6 +213,13 @@ export type TranscriptTailerOptions = {
    * cycle: a typo'd status string here would otherwise compile and silently never match.
    */
   deliver: (sessionId: string, text: string) => Promise<ReplyResult>;
+  /**
+   * Posts one queued mid-turn prompt to the session's own thread; the outbound router's
+   * `interimPrompt`. The status is read only to keep the shared result vocabulary; nothing here
+   * queues or retries, and no echo digest is recorded for a prompt, because no other path posts
+   * this text.
+   */
+  deliverPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
@@ -303,25 +312,46 @@ function createRepeatLog(
 }
 
 /**
- * The text blocks one transcript line contributes, decided by an allowlist and never a denylist.
+ * One thing a transcript line contributes: a block of assistant narration, or a mid-turn message
+ * the operator typed at the console. Both carry untrusted text, and they differ in where they go,
+ * `deliver` against `deliverPrompt`, and therefore in how the thread attributes them.
+ */
+type TailItem = { kind: "text" | "prompt"; text: string };
+
+/**
+ * What one transcript line contributes, decided by an allowlist and never a denylist. Two line
+ * shapes yield anything, and both must first not be a sidechain and must name in `sessionId` the
+ * session this transcript was learned for.
  *
- * A line yields text only when all of these hold: its `type` is `assistant`, it is not a
- * sidechain, its `sessionId` names the session this transcript was learned for, its
- * `message.content` is an array, and a block in that array is a `text` block carrying a non-empty
- * string. Everything else yields nothing: thinking blocks, tool calls, tool results, attachments,
- * system lines, user lines, and every line type this build has never seen. The transcript is
- * another program's file format that can grow new line types without notice, so the safe default
- * for the unrecognized is silence, never publication.
+ * A line yields assistant text when its `type` is `assistant`, its `message.content` is an array,
+ * and a block in that array is a `text` block carrying a non-empty string.
+ *
+ * A line yields a queued prompt when its `type` is `attachment` and its `attachment` is an object
+ * whose `type` is `queued_command`, whose `commandMode` is `prompt`, whose `origin.kind` is
+ * `human`, and whose `prompt` is a non-empty string. That is the shape of a message typed at the
+ * console while the model was working, which fires no hook and writes no user line. The narrower
+ * clauses are each load-bearing against a real line: `task-notification` is the mode of the
+ * machine-written background-task notices that make up the bulk of `queued_command` lines,
+ * `origin.kind` `channel` is the harness's injection of a message the operator posted in the
+ * thread itself, and a `prompt` that is an object rather than a string carries pasted image
+ * references rather than prose.
+ *
+ * Everything else yields nothing: thinking blocks, tool calls, tool results, attachments of other
+ * types, a `queued_command` whose `commandMode` is not `prompt`, withdrawn queue entries, system
+ * lines, user lines, and every line type this build has never seen. The transcript is another
+ * program's file format that can grow new line types without notice, so the safe default for the
+ * unrecognized is silence, never publication.
  *
  * The `sessionId` match is what carries the weight, because it is the one field verifiable
  * against live data; `isSidechain` is defense against a build that starts interleaving subagent
- * traffic into the main session's file.
+ * traffic into the main session's file. `sessionId` rather than `session_id`, which some lines of
+ * these shapes carry and some do not.
  *
  * A parse failure yields nothing and the error is discarded unread: the file is written by
  * another process, so a half-flushed line is not an error, and the parse error's message embeds
  * an excerpt of the line's own text, which must never reach a log.
  */
-function assistantTexts(line: string, sessionId: string): string[] {
+function lineItems(line: string, sessionId: string): TailItem[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -330,22 +360,39 @@ function assistantTexts(line: string, sessionId: string): string[] {
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
   const record = parsed as Record<string, unknown>;
-  if (record["type"] !== "assistant") return [];
   if (record["isSidechain"] === true) return [];
   if (record["sessionId"] !== sessionId) return [];
-  const message = record["message"];
-  if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
-  const content = (message as Record<string, unknown>)["content"];
-  if (!Array.isArray(content)) return [];
-  const texts: string[] = [];
-  for (const block of content) {
-    if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
-    const fields = block as Record<string, unknown>;
-    if (fields["type"] !== "text") continue;
-    const text = fields["text"];
-    if (typeof text === "string" && text !== "") texts.push(text);
+  if (record["type"] === "assistant") {
+    const message = record["message"];
+    if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
+    const content = (message as Record<string, unknown>)["content"];
+    if (!Array.isArray(content)) return [];
+    const items: TailItem[] = [];
+    for (const block of content) {
+      if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
+      const fields = block as Record<string, unknown>;
+      if (fields["type"] !== "text") continue;
+      const text = fields["text"];
+      if (typeof text === "string" && text !== "") items.push({ kind: "text", text });
+    }
+    return items;
   }
-  return texts;
+  if (record["type"] === "attachment") {
+    const attachment = record["attachment"];
+    if (typeof attachment !== "object" || attachment === null || Array.isArray(attachment)) {
+      return [];
+    }
+    const fields = attachment as Record<string, unknown>;
+    if (fields["type"] !== "queued_command") return [];
+    if (fields["commandMode"] !== "prompt") return [];
+    const origin = fields["origin"];
+    if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return [];
+    if ((origin as Record<string, unknown>)["kind"] !== "human") return [];
+    const prompt = fields["prompt"];
+    if (typeof prompt !== "string" || prompt === "") return [];
+    return [{ kind: "prompt", text: prompt }];
+  }
+  return [];
 }
 
 /**
@@ -626,7 +673,29 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
 
     for (const line of consumed.split("\n")) {
       if (line === "") continue;
-      for (const text of assistantTexts(line, sessionId)) {
+      for (const item of lineItems(line, sessionId)) {
+        if (item.kind === "prompt") {
+          // The operator's own typed words, delivered on the same one-await-per-item rule the
+          // chunks below follow, so a prompt sitting between two assistant lines reaches the
+          // thread between them. No echo digest is recorded: no other path posts this text, so
+          // there is no duplicate to answer for. A delivery that could not be made is dropped and
+          // never retried, and the error is discarded unread, because it can quote the text.
+          try {
+            await options.deliverPrompt(sessionId, item.text);
+            // Every point past an await re-checks the epoch it started under, the rule the rest of
+            // this function follows: a suppress landing during this delivery stops the batch here
+            // rather than publishing the items behind it.
+            if (!stillValid()) return;
+          } catch {
+            repeats(
+              `session ${sessionId}'s queued prompt delivery failed`,
+              "the prompt is dropped; the error detail is withheld, it can carry content",
+            );
+            if (!stillValid()) return;
+          }
+          continue;
+        }
+        const text = item.text;
         // The Stop mirror may already have posted this exact text as the turn's final reply, and
         // an earlier pass may have posted it as the last interim chunk. Either match is an echo,
         // skipped rather than shown to the operator twice.
@@ -640,7 +709,8 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
           options.echo.noteInterim(sessionId, text);
           continue;
         }
-        // One await per chunk, so a session's chunks post in transcript order. A chunk that
+        // One await per item, here and on the prompt branch above, so a session's chunks and its
+        // queued prompts post in the order the transcript holds them. A chunk that
         // could not be posted is dropped and never retried, the rule the whole routing layer
         // follows, and its digest is not recorded: the Stop mirror carrying the same text must
         // still post it, because nothing else will. The catch holds each failure to its own

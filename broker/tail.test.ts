@@ -72,8 +72,45 @@ function assistantText(
   });
 }
 
+/**
+ * A queued mid-turn prompt in the real shape: the line Claude Code writes when the operator types
+ * at the console while the model is working, carrying the top-level keys those lines carry.
+ * `extra` replaces whole fields, `attachment` included, so a deviation is expressed as the one
+ * field it deviates in.
+ */
+function queuedPrompt(
+  text: string,
+  sessionId: string = SESSION,
+  extra: Record<string, unknown> = {},
+): string {
+  return line({
+    parentUuid: "00000000-0000-4000-8000-000000000000",
+    isSidechain: false,
+    type: "attachment",
+    attachment: {
+      type: "queued_command",
+      commandMode: "prompt",
+      origin: { kind: "human" },
+      prompt: text,
+    },
+    uuid: "00000000-0000-4000-8000-000000000002",
+    timestamp: "2026-08-08T00:00:00.000Z",
+    sessionId,
+    session_id: sessionId,
+    cwd: "/repo",
+    userType: "external",
+    version: "fixture",
+    gitBranch: "main",
+    entrypoint: "cli",
+    ...extra,
+  });
+}
+
 function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   const posts: string[] = [];
+  const prompts: string[] = [];
+  /** Both kinds in the order the tailer delivered them, which is transcript order. */
+  const delivered: string[] = [];
   const logs: string[] = [];
   const live = new Set<string>([SESSION]);
   const echo = createEchoMemory();
@@ -81,6 +118,12 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     liveSessions: () => [...live],
     deliver: async (_sessionId, text) => {
       posts.push(text);
+      delivered.push(`interim:${text}`);
+      return { status: "sent" };
+    },
+    deliverPrompt: async (_sessionId, text) => {
+      prompts.push(text);
+      delivered.push(`prompt:${text}`);
       return { status: "sent" };
     },
     echo,
@@ -88,7 +131,7 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     now: () => 1_000,
     ...overrides,
   });
-  return { tailer, posts, logs, live, echo };
+  return { tailer, posts, prompts, delivered, logs, live, echo };
 }
 
 test("what a transcript held before it was learned is never republished", async (t) => {
@@ -713,7 +756,7 @@ test("every other line type posts nothing, including one this build has never se
   // case is the invented type carrying an otherwise-valid text block: a denylist of known
   // non-assistant types would publish it, an allowlist keyed on type === "assistant" cannot.
   const file = transcriptFile(t);
-  const { tailer, posts } = harness();
+  const { tailer, posts, prompts } = harness();
   tailer.learn(SESSION, file);
   tailer.allow(SESSION);
   await tailer.poll();
@@ -744,9 +787,25 @@ test("every other line type posts nothing, including one this build has never se
         sessionId: SESSION,
       }) +
       line({ type: "attachment", attachment: { type: "diagnostics" }, sessionId: SESSION }) +
+      // An attachment of another type carrying an otherwise-valid queued-prompt payload: the
+      // sharpest case for the second kind's allowlist, which keys on the attachment type.
+      queuedPrompt("unused", SESSION, {
+        attachment: {
+          type: "selected_lines_in_ide",
+          commandMode: "prompt",
+          origin: { kind: "human" },
+          prompt: "SECRET-other-attachment-type",
+        },
+      }) +
       line({ type: "system", content: "SECRET-system-line", sessionId: SESSION }) +
       line({ type: "custom-title", customTitle: "SECRET-title", sessionId: SESSION }) +
-      line({ type: "queue-operation", operation: "add", sessionId: SESSION }) +
+      // A withdrawn queue entry was never part of the conversation, whatever it carried.
+      line({
+        type: "queue-operation",
+        operation: "remove",
+        prompt: "SECRET-withdrawn-queue-entry",
+        sessionId: SESSION,
+      }) +
       line({
         type: "wormhole",
         isSidechain: false,
@@ -757,6 +816,7 @@ test("every other line type posts nothing, including one this build has never se
   );
   await tailer.poll();
   assert.deepEqual(posts, [], "no non-assistant line may post");
+  assert.deepEqual(prompts, [], "no line outside the queued-prompt shape may post");
 
   // The positive control: the pass over this same file is demonstrably live.
   appendFileSync(file, assistantText("a real narration line"), "utf8");
@@ -786,6 +846,275 @@ test("a foreign session's line and a sidechain line post nothing", async (t) => 
   appendFileSync(file, assistantText("the main session's own line"), "utf8");
   await tailer.poll();
   assert.deepEqual(posts, ["the main session's own line"]);
+});
+
+test("a mid-turn typed message is delivered as a queued prompt", async (t) => {
+  // A message typed while the model is working fires no UserPromptSubmit and writes no user line,
+  // so this attachment line is the only place it exists. The fixture is the shape Claude Code
+  // writes for it.
+  const file = transcriptFile(t);
+  const { tailer, posts, prompts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, queuedPrompt("also check the migration order"), "utf8");
+  await tailer.poll();
+
+  assert.deepEqual(prompts, ["also check the migration order"]);
+  assert.deepEqual(posts, [], "a queued prompt is not narration");
+});
+
+test("a queued prompt is matched on sessionId, whatever session_id says or omits", async (t) => {
+  // Some of these lines carry a top-level session_id and some carry none, so `sessionId` is the
+  // field the match reads. JSON.stringify drops the undefined key, which is the line with none.
+  const file = transcriptFile(t);
+  const { tailer, prompts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    queuedPrompt("a line carrying no session_id", SESSION, { session_id: undefined }) +
+      queuedPrompt("a line whose session_id disagrees", SESSION, { session_id: OTHER_SESSION }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(prompts, [
+    "a line carrying no session_id",
+    "a line whose session_id disagrees",
+  ]);
+});
+
+test("a queued command deviating from the typed-prompt shape delivers nothing", async (t) => {
+  // The allowlist criterion for the second line kind, driven one field per case. Three of these
+  // are the live population rather than hypotheticals: the background-task notice is the dominant
+  // queued_command line by an order of magnitude, the channel-origin line is the operator's own
+  // Discord message the relay injected, and the object prompt rides with pasted images.
+  const file = transcriptFile(t);
+  const { tailer, posts, prompts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    queuedPrompt("unused", SESSION, {
+      attachment: {
+        type: "queued_command",
+        commandMode: "task-notification",
+        prompt: "SECRET-background-task-notice",
+      },
+    }) +
+      queuedPrompt("unused", SESSION, {
+        isMeta: true,
+        attachment: {
+          type: "queued_command",
+          commandMode: "prompt",
+          origin: { kind: "channel", server: "channel-relay" },
+          prompt: "SECRET-channel-message",
+        },
+      }) +
+      queuedPrompt("unused", SESSION, {
+        attachment: {
+          type: "queued_command",
+          commandMode: "prompt",
+          origin: { kind: "human" },
+          prompt: { text: "SECRET-image-paste", imagePasteIds: ["paste_1"] },
+        },
+      }) +
+      queuedPrompt("unused", SESSION, {
+        attachment: {
+          type: "queued_command",
+          commandMode: "prompt",
+          origin: { kind: "human" },
+          prompt: "",
+        },
+      }) +
+      // The foreign line's own session_id names this session, so a match reading that field
+      // instead would publish another conversation's typed message into this thread.
+      queuedPrompt("SECRET-foreign-session", OTHER_SESSION, { session_id: SESSION }) +
+      queuedPrompt("SECRET-sidechain", SESSION, { isSidechain: true }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(prompts, [], "only the human-typed prompt shape may reach the thread");
+  assert.deepEqual(posts, []);
+
+  // The positive control: the pass over this same file is demonstrably live.
+  appendFileSync(file, queuedPrompt("a real typed message"), "utf8");
+  await tailer.poll();
+  assert.deepEqual(prompts, ["a real typed message"]);
+});
+
+test("a queued command missing the origin field entirely delivers nothing", async (t) => {
+  // The only other deviant fixture missing `origin` (the task-notification one above) also fails
+  // the earlier commandMode check, so it cannot alone prove the origin-object guard does anything.
+  // This fixture is otherwise the full typed-prompt shape, commandMode "prompt" included, with
+  // `origin` dropped rather than merely mismatched, so it reaches the origin guard and nothing
+  // before it.
+  const file = transcriptFile(t);
+  const { tailer, posts, prompts, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    queuedPrompt("unused", SESSION, {
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        prompt: "SECRET-no-origin-field",
+      },
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(prompts, [], "a queued command with no origin field is not the human-typed shape");
+  assert.deepEqual(posts, []);
+  // A refusal, not a crash: reading `origin.kind` off a missing origin without first checking it is
+  // an object would throw instead, which pollOne's own catch would report as a failed pass rather
+  // than as the allowlist quietly yielding nothing.
+  assert.ok(
+    !logs.some((entry) => entry.includes("transcript pass failed")),
+    `the line must be refused, not thrown past the allowlist: ${logs.join("\n")}`,
+  );
+
+  // The positive control: the pass over this same file is demonstrably live.
+  appendFileSync(file, queuedPrompt("a real typed message"), "utf8");
+  await tailer.poll();
+  assert.deepEqual(prompts, ["a real typed message"]);
+});
+
+test("an attachment line missing the attachment field entirely posts nothing", async (t) => {
+  // No fixture elsewhere in this suite gives a `type: "attachment"` line a missing or non-object
+  // `attachment` field while everything else about the line still matches (sessionId, isSidechain):
+  // the closest deviation, the diagnostics-type attachment, still carries an attachment object.
+  // Reading `attachment.type` off a missing attachment without first checking it is an object would
+  // throw rather than refuse.
+  const file = transcriptFile(t);
+  const { tailer, posts, prompts, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    line({
+      parentUuid: "00000000-0000-4000-8000-000000000000",
+      isSidechain: false,
+      type: "attachment",
+      uuid: "00000000-0000-4000-8000-000000000002",
+      timestamp: "2026-08-08T00:00:00.000Z",
+      sessionId: SESSION,
+      version: "fixture",
+      gitBranch: "main",
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(prompts, []);
+  assert.deepEqual(posts, []);
+  assert.ok(
+    !logs.some((entry) => entry.includes("transcript pass failed")),
+    `the line must be refused, not thrown past the allowlist: ${logs.join("\n")}`,
+  );
+
+  // The positive control: the pass over this same file is demonstrably live.
+  appendFileSync(file, queuedPrompt("a real typed message"), "utf8");
+  await tailer.poll();
+  assert.deepEqual(prompts, ["a real typed message"]);
+});
+
+test("an assistant line missing the message field entirely posts nothing", async (t) => {
+  // No fixture elsewhere in this suite gives a `type: "assistant"` line a missing or non-object
+  // `message` field: every assistant fixture, including the deviant-content-block ones, still
+  // carries a message object. Reading `message.content` off a missing message without first
+  // checking it is an object would throw rather than refuse.
+  const file = transcriptFile(t);
+  const { tailer, posts, prompts, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    line({
+      parentUuid: "00000000-0000-4000-8000-000000000000",
+      isSidechain: false,
+      type: "assistant",
+      requestId: "req_fixture",
+      uuid: "00000000-0000-4000-8000-000000000001",
+      timestamp: "2026-08-07T00:00:00.000Z",
+      sessionId: SESSION,
+      version: "fixture",
+      gitBranch: "main",
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(posts, []);
+  assert.deepEqual(prompts, []);
+  assert.ok(
+    !logs.some((entry) => entry.includes("transcript pass failed")),
+    `the line must be refused, not thrown past the allowlist: ${logs.join("\n")}`,
+  );
+
+  // The positive control: the pass over this same file is demonstrably live.
+  appendFileSync(file, assistantText("a real narration line"), "utf8");
+  await tailer.poll();
+  assert.deepEqual(posts, ["a real narration line"]);
+});
+
+test("a queued prompt between two assistant texts is delivered between them", async (t) => {
+  // Transcript order across both kinds, from one pass: the operator's typed message belongs
+  // between the narration it interrupted and the narration that followed it.
+  const file = transcriptFile(t);
+  const { tailer, delivered } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantText("reading the failing test") +
+      queuedPrompt("check the migration order too") +
+      assistantText("found the off-by-one"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(delivered, [
+    "interim:reading the failing test",
+    "prompt:check the migration order too",
+    "interim:found the off-by-one",
+  ]);
+});
+
+test("a queued prompt that could not be delivered is dropped, not retried", async (t) => {
+  // The rule the whole routing layer follows: a message that lands minutes late answers a
+  // question the operator stopped asking. No digest is recorded either, because no other path
+  // posts this text.
+  const file = transcriptFile(t);
+  const attempts: string[] = [];
+  const { tailer } = harness({
+    deliverPrompt: async (_sessionId, text) => {
+      attempts.push(text);
+      return { status: "no-thread" };
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, queuedPrompt("a message nobody saw"), "utf8");
+  await tailer.poll();
+  await tailer.poll();
+
+  assert.deepEqual(attempts, ["a message nobody saw"], "the refused prompt is attempted once");
 });
 
 test("a trailing partial line waits for its newline and then posts exactly once", async (t) => {
@@ -850,6 +1179,7 @@ function integration(t: TestContext) {
   const tailer = createTranscriptTailer({
     liveSessions: () => [SESSION],
     deliver: (sessionId, text) => outbound.interim(sessionId, text),
+    deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
     echo,
     now: () => 1_000,
   });
@@ -857,6 +1187,29 @@ function integration(t: TestContext) {
   tailer.allow(SESSION);
   return { file, tailer, outbound, posts, edits };
 }
+
+test("a queued prompt takes its place on the thread between the chunks it interrupted", async (t) => {
+  // End to end over the seam index.ts wires: the tailer's second item kind reaches the thread
+  // through the router's queued-prompt path, rendered as the operator's own words, in the order
+  // the transcript recorded.
+  const { file, tailer, posts } = integration(t);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantText("reading the failing test") +
+      queuedPrompt("check the migration order too") +
+      assistantText("found the off-by-one"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(posts, [
+    renderMirror("interim", "reading the failing test")[0],
+    renderMirror("prompt", "check the migration order too")[0],
+    renderMirror("interim", "found the off-by-one")[0],
+  ]);
+});
 
 test("a final reply mirrored first is not posted again by the tailer", async (t) => {
   // The common order: the Stop hook posts the turn's final reply within milliseconds of turn end,
@@ -1084,7 +1437,7 @@ test("a suppress landing in the same tick as the allow that preceded it means th
 
 test("a tail read reachable only through a corrupted offset must never surface bytes written during the suppressed window", async () => {
   // Pinned on the bytes the injected readFile actually returned, not on `posts`: the content
-  // grown here belongs to a foreign session, which the assistantTexts allowlist filters from
+  // grown here belongs to a foreign session, which the lineItems allowlist filters from
   // `posts` regardless of whether the file was ever touched for it. Asserting `posts` stays empty
   // alone would pass identically whether the suppressed-window bytes were read and then filtered,
   // or never read at all; only counting bytes actually read off the transcript proves the latter.
@@ -1113,7 +1466,7 @@ test("a tail read reachable only through a corrupted offset must never surface b
   await new Promise((resolve) => setImmediate(resolve));
 
   tailer.suppress(SESSION);
-  // A foreign session's line: assistantTexts filters it out by sessionId either way, so a `posts`
+  // A foreign session's line: lineItems filters it out by sessionId either way, so a `posts`
   // assertion alone cannot tell a read that touched these bytes from one that never started.
   content = assistantText("SECRET-foreign-session-content-written-while-suppressed", OTHER_SESSION);
   tailer.allow(SESSION); // re-allowed in the same tick, before the stale probe has any chance to settle
@@ -1509,6 +1862,53 @@ test("a suppress landing during chunk 1's delivery stops the batch: chunk 2 and 
   );
 });
 
+test("a suppress landing during a queued prompt's delivery stops the batch behind it", async () => {
+  // The mirror-off switch reaches every kind the batch carries. Driven through the injected
+  // `readFile` seam so the suppress lands inside the prompt's own gated delivery rather than
+  // merely near it.
+  let content = "";
+  const delivered: string[] = [];
+  let releasePrompt: () => void = () => {};
+  const promptGate = new Promise<void>((resolve) => {
+    releasePrompt = resolve;
+  });
+  const { tailer } = harness({
+    readFile: async (_path, offset, maxBytes) => {
+      const bytes = Buffer.from(content, "utf8");
+      const length = Math.max(Math.min(bytes.length - offset, maxBytes), 0);
+      return { size: bytes.length, bytes: bytes.subarray(offset, offset + length) };
+    },
+    deliver: async (_sessionId, text) => {
+      delivered.push(`interim:${text}`);
+      return { status: "sent" };
+    },
+    deliverPrompt: async (_sessionId, text) => {
+      await promptGate;
+      delivered.push(`prompt:${text}`);
+      return { status: "sent" };
+    },
+  });
+
+  tailer.learn(SESSION, "fixture-path");
+  tailer.allow(SESSION);
+  await tailer.poll(); // baselines against the still-empty content
+
+  content = queuedPrompt("the typed message") + assistantText("narration after it");
+  const pass = tailer.poll(); // starts delivering the prompt, gated by promptGate
+
+  await new Promise((resolve) => setImmediate(resolve)); // lets the pass reach the gated call
+  tailer.suppress(SESSION); // lands while the prompt's own delivery is still in flight
+
+  releasePrompt();
+  await pass;
+
+  assert.deepEqual(
+    delivered,
+    ["prompt:the typed message"],
+    "a suppress landing mid-delivery must stop the batch after the item already in flight",
+  );
+});
+
 test("no log line produced by the tailer carries transcript text", async (t) => {
   // Asserted, not eyeballed: every path that touches content is driven with its own secret, and
   // the assertion is that no secret reaches the captured log, while the log is demonstrably live.
@@ -1521,6 +1921,10 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
     liveSessions: () => [...live],
     deliver: async (_sessionId, text) => {
       if (explode) throw new Error(`delivery exploded while posting: ${text}`);
+      return { status: "sent" };
+    },
+    deliverPrompt: async (_sessionId, text) => {
+      if (explode) throw new Error(`prompt delivery exploded while posting: ${text}`);
       return { status: "sent" };
     },
     echo,
@@ -1536,7 +1940,11 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
   appendFileSync(file, assistantText("SECRET-posted-chunk") + "SECRET-garbage-line{\n", "utf8");
   await tailer.poll();
   explode = true;
-  appendFileSync(file, assistantText("SECRET-exploding-chunk"), "utf8");
+  appendFileSync(
+    file,
+    assistantText("SECRET-exploding-chunk") + queuedPrompt("SECRET-exploding-prompt"),
+    "utf8",
+  );
   await tailer.poll();
   // A shrink whose replacement content is itself a secret.
   writeFileSync(file, "SECRET-shrunk-away\n", "utf8");

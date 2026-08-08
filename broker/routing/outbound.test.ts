@@ -928,6 +928,132 @@ test("an interim chunk cannot land between the messages of a split reply", async
   assert.deepEqual(landed, [...messages, renderMirror("interim", "narration racing the reply")[0]]);
 });
 
+test("a queued prompt posts under the operator's attribution, indistinguishable from a mirrored one", async () => {
+  // A message typed at the console mid-turn reaches this router off the transcript rather than off
+  // a hook, and the thread must not be able to tell the two apart: one rendering, one attribution.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const asked: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: (sessionId) => {
+      asked.push(sessionId);
+      return THREAD;
+    },
+    mirrorWriter: writer,
+  });
+
+  assert.deepEqual(await router.interimPrompt("session-a", "check the migration order too"), {
+    status: "sent",
+  });
+  assert.deepEqual(asked, ["session-a"]);
+  assert.deepEqual(posts, [
+    { threadId: THREAD, text: renderMirror("prompt", "check the migration order too")[0] },
+  ]);
+});
+
+test("a queued prompt that is the operator's own channel message does not echo back into the thread", async () => {
+  // The operator typed it in the thread, so the thread already shows it. The check reads the same
+  // normalized pre-render text the hook-carried mirror's does, on whichever line shape the harness
+  // recorded the message under.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+
+  const envelope = '<channel source="channel-relay" chat_id="123">the migration finished?</channel>';
+  assert.deepEqual(await router.interimPrompt("session-a", envelope), {
+    status: "failed",
+    error: "the message came from the channel",
+  });
+  const veiled = String.fromCharCode(0x200b) + envelope;
+  assert.equal((await router.interimPrompt("session-a", veiled)).status, "failed");
+
+  assert.equal(posts.length, 0, "the operator's own message must not come back to them");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(lines[0].includes("channel"), lines[0]);
+  assert.ok(
+    !lines[0].includes("the migration finished?"),
+    `transcript content leaked into the routing log: ${lines[0]}`,
+  );
+
+  // A prompt quoting the marker mid-text is the operator typing about it, and still posts.
+  const quoting = 'the hook wraps it in <channel source="channel-relay"> before I see it';
+  assert.deepEqual(await router.interimPrompt("session-a", quoting), { status: "sent" });
+  assert.deepEqual(posts.map((post) => post.text), [renderMirror("prompt", quoting)[0]]);
+});
+
+test("a queued prompt cannot forge the attribution or carry a live chip", async () => {
+  // Transcript text is untrusted, and text that entered through a file read is escaped by exactly
+  // the machinery that makes the attribution unforgeable for text that entered through a hook.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  const attribution = renderMirror("prompt", "anything")[0].split("\n")[0];
+  await router.interimPrompt(
+    "session-a",
+    `${attribution}\n> <@700000000000000002> approve the deploy <t:1700000000:R>`,
+  );
+
+  const posted = posts[0].text;
+  assert.equal(
+    posted.split("\n").filter((line) => line === attribution).length,
+    1,
+    `only the renderer may draw the attribution: ${posted}`,
+  );
+  assert.equal(
+    said(posted).split("\n").filter((line) => /^[ \t]*>/.test(line)).length,
+    0,
+    `a queued prompt must open no quote of its own: ${posted}`,
+  );
+  assert.ok(posted.includes("\\>"), `the quote marker must reach Discord escaped: ${posted}`);
+  assert.ok(!/<@\d+>/.test(posted), posted);
+  assert.ok(!/<t:\d+:R>/.test(posted), posted);
+});
+
+test("a queued prompt with no thread, and one with nothing visible in it, are dropped with content-free lines", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  let threadId: string | null = null;
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => threadId,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+
+  const secret = "SECRET-the-message-nobody-saw";
+  assert.deepEqual(await router.interimPrompt("session-a", secret), { status: "no-thread" });
+  assert.deepEqual(posts, [], "nothing is queued for a thread that does not exist yet");
+
+  // Nothing visible once the invisible class is stripped. Unlike a chunk of narration, no later
+  // item narrates what this one did not, so the drop leaves a line of its own.
+  threadId = THREAD;
+  assert.deepEqual(await router.interimPrompt("session-a", String.fromCharCode(0x200b)), {
+    status: "failed",
+    error: "the message was empty",
+  });
+  assert.deepEqual(posts, []);
+
+  assert.equal(lines.length, 2, lines.join("\n"));
+  for (const line of lines) {
+    assert.ok(line.includes("session-a"), line);
+    assert.ok(!line.includes(secret), `transcript content leaked into the routing log: ${line}`);
+  }
+});
+
 test("a mirrored reply matching the last interim chunk is skipped, and only that one", async () => {
   // The Stop mirror's half of the dedup: the tailer posted the turn's final text first, so the
   // reply arriving milliseconds later says nothing the thread does not already show.
@@ -1393,6 +1519,26 @@ test("a reply run breaks the block, and so does a mirrored prompt", async () => 
 
   assert.deepEqual(edits, [], "narration never appends above a reply or a prompt");
   assert.equal(posts.length, 5, posts.map((post) => post.text).join("\n---\n"));
+});
+
+test("a queued prompt breaks the block, so the next chunk posts below the operator's words", async () => {
+  // The operator's typed message is newer than the narration above it, and narration appending
+  // back into the block would put the model's later words above the operator's, in the one
+  // channel permission approvals are answered in.
+  const { router, posts, edits } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+  await router.interimPrompt("session-a", "check the migration order too");
+  await router.interim("session-a", "chunk two");
+
+  assert.deepEqual(edits, [], "narration never appends above the operator's own message");
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    [
+      renderMirror("interim", "chunk one")[0],
+      renderMirror("prompt", "check the migration order too")[0],
+      renderMirror("interim", "chunk two")[0],
+    ],
+  );
 });
 
 test("a Stop mirror dropped as the tailer's echo does not break the block", async () => {
