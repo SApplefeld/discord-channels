@@ -133,6 +133,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     registry,
     threadFor: (sessionId) => threadFor(sessionId),
     mirrorWriter,
+    taskNotifications: config.taskNotifications,
     log: note,
     ...(echo === null ? {} : { echo }),
   });

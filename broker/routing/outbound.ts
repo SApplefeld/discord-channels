@@ -5,7 +5,7 @@
 // the thread this session owns now, and Claude may reply having received no event at all. Routing
 // by session is what makes an unprompted reply land correctly, and it is also what stops a reply
 // from being addressable: the relay never forwards a chat_id, so there is nothing here to honor.
-import { appendNarration, renderAnswer, renderMirror } from "../discord/render.ts";
+import { appendNarration, renderAnswer, renderMirror, renderTaskNotice } from "../discord/render.ts";
 import type { MirrorKind } from "../discord/render.ts";
 import { withoutInvisible } from "../sanitize.ts";
 import type { Registry } from "../registry.ts";
@@ -40,6 +40,15 @@ export type OutboundRouterOptions = {
    * Without the memory, replies mirror exactly as they did before interim mirroring existed.
    */
   echo?: EchoMemory;
+  /**
+   * How a wake prompt, the harness's injection when a background task finishes while its session
+   * is idle, reaches the thread. `brief`, the default when absent, posts the one-line notice
+   * `renderTaskNotice` composes in place of the injected report; `full` mirrors the whole report
+   * exactly as an ordinary prompt; `off` posts nothing and leaves a log line. Applied on both
+   * paths a prompt reaches a thread by, the hook-carried mirror and the queued prompt the
+   * transcript tailer extracts, so one wake prompt gets one answer whichever way it arrived.
+   */
+  taskNotifications?: "brief" | "full" | "off";
   log?: (message: string) => void;
   /**
    * The clock this router reads: the drop log's window, and what a paced run's reactive waits are
@@ -237,6 +246,41 @@ function fromChannel(text: string): boolean {
   return withoutInvisible(text).trimStart().startsWith(CHANNEL_ENVELOPE);
 }
 
+/**
+ * How the Claude Code harness opens the prompt it injects to wake an idle session when a
+ * background task that session dispatched finishes. The injection carries the task's entire final
+ * report, which the console renders compactly and the mirror would otherwise post whole, as an
+ * operator-attributed block split across many messages.
+ *
+ * The harness's contract, not this project's, like the channel envelope above: an external shape
+ * that can change without notice. The two failure directions are bounded the same way. A shape
+ * move that stops this matching costs the thread the loud behavior the knob exists to compress, a
+ * whole report mirrored as if typed; a false positive, a prompt the operator really typed that
+ * opens with this literal, costs their words being compressed to the one-line notice, which the
+ * `full` setting restores. The match is a plain prefix rather than a parse either way, and the
+ * literal deliberately stops before the closing bracket: a harness revision that grows the tag an
+ * attribute (`<task-notification id="...">`) would otherwise silently disable the compression,
+ * which is the loud fail direction the knob exists to close, while what the missing bracket
+ * admits is only a prompt opening with a longer tag name of this prefix, which nobody types.
+ */
+const TASK_NOTIFICATION = "<task-notification";
+
+/**
+ * Whether a prompt is the harness's wake-up injection for a finished background task.
+ *
+ * Read on the raw text before the renderer's escapes touch it, and through the same invisible
+ * strip, on `fromChannel`'s reasoning exactly: escaping must be able to neither hide a match nor
+ * manufacture one, and a zero-width character in front of the marker changes nothing a reader
+ * sees, so it must not be what lets the whole report through. Only the opening counts, so a
+ * prompt quoting the marker mid-text is the operator typing about it.
+ *
+ * One reading for both paths a prompt reaches a thread by, the hook-carried mirror and the queued
+ * prompt the transcript tailer extracts, so the two cannot answer differently for one message.
+ */
+function isTaskNotification(text: string): boolean {
+  return withoutInvisible(text).trimStart().startsWith(TASK_NOTIFICATION);
+}
+
 /** Why a reply could not be posted, in the terms the relay reports back to Claude. */
 export type ReplyResult =
   | { status: "sent" }
@@ -349,6 +393,9 @@ export type OutboundRouter = {
 
 export function createOutboundRouter(options: OutboundRouterOptions): OutboundRouter {
   const log = options.log ?? ((): void => {});
+  // Brief when absent, matching the config knob's own default: a caller that says nothing gets
+  // the compressed notice, and only an explicit `full` restores the whole-report mirror.
+  const taskNotifications = options.taskNotifications ?? "brief";
   const now = options.now ?? Date.now;
   const dropped = createDropLog(log, now);
   const sleep =
@@ -599,6 +646,32 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     });
   }
 
+  /**
+   * Posts the one-line notice a recognized wake prompt compresses to under the `brief` setting,
+   * shared by the two prompt paths so the notice and its logging cannot drift between them.
+   *
+   * Through the chained `deliver` doorway rather than a bare write: the notice takes its
+   * thread-order place among the messages around it and ends any narration block being grown
+   * there, exactly as the whole-report mirror it replaces would have. On a run error the line
+   * carries the counts and the transport's error class only, the discipline every posting path
+   * here holds: a wake prompt is conversation content, and it never appears in the broker log at
+   * any level.
+   */
+  async function deliverTaskNotice(
+    threadId: string,
+    sessionId: string,
+    text: string,
+  ): Promise<ReplyResult> {
+    const messages = [renderTaskNotice(text)];
+    const run = await deliver(threadId, messages);
+    if (run.error === null) return { status: "sent" };
+    log(
+      `routing: the task notice for session ${sessionId} stopped after ` +
+        `${run.landed} of ${messages.length} messages: ${run.error}`,
+    );
+    return { status: "failed", error: run.error };
+  }
+
   return {
     async reply(processToken, text) {
       const located = locate(processToken);
@@ -738,6 +811,23 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
             `own channel message echoed back to the thread it was posted in`,
         );
         return { status: "failed", error: "the message came from the channel" };
+      }
+
+      // A wake prompt: the harness's injection of a finished background task's report, not
+      // something the operator typed. After the envelope check, because the envelope names what a
+      // prompt is before this names what it carries, and only under a setting that changes
+      // anything: `full` falls through and the report mirrors exactly as an ordinary prompt.
+      if (kind === "prompt" && taskNotifications !== "full" && isTaskNotification(text)) {
+        if (taskNotifications === "off") {
+          // The cause and the session, never the text: a wake suppressed on purpose reads on
+          // every other surface exactly like one that is broken, so this line is the discriminator.
+          dropped(
+            `the task notification waking session ${located.sessionId} was dropped, ` +
+              `task notifications are off`,
+          );
+          return { status: "failed", error: "task notification suppressed" };
+        }
+        return deliverTaskNotice(located.threadId, located.sessionId, text);
       }
 
       const messages = renderMirror(kind, text);
@@ -902,6 +992,22 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
             `channel message echoed back to the thread it was posted in`,
         );
         return { status: "failed", error: "the message came from the channel" };
+      }
+
+      // The same wake-prompt treatment the hook-carried mirror applies, after the same envelope
+      // check, because whichever line shape the harness records the injection under, one wake
+      // prompt must get one answer: the notice under `brief`, silence under `off`, and under
+      // `full` the fall-through to the whole-report mirror below.
+      if (taskNotifications !== "full" && isTaskNotification(text)) {
+        if (taskNotifications === "off") {
+          // The cause and the session, never the text, matching the mirror path's own line.
+          dropped(
+            `the task notification waking session ${sessionId} was dropped, ` +
+              `task notifications are off`,
+          );
+          return { status: "failed", error: "task notification suppressed" };
+        }
+        return deliverTaskNotice(threadId, sessionId, text);
       }
 
       const messages = renderMirror("prompt", text);

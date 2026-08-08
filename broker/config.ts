@@ -59,6 +59,14 @@ export type BrokerConfig = {
   interimMirror: boolean;
   /** How often the tailer polls live sessions' transcripts for new mid-turn text. */
   interimPollMs: number;
+  /**
+   * How a background task's wake prompt reaches a session's thread. When a subagent finishes while
+   * its parent session is idle, the harness wakes the session by injecting a prompt that carries
+   * the subagent's entire final report, and the mirror would post the whole report into the thread
+   * as if the operator had typed it. `brief` compresses that wake-up to a one-line notice, `full`
+   * mirrors the whole report exactly as an ordinary prompt, and `off` posts nothing at all.
+   */
+  taskNotifications: "brief" | "full" | "off";
 };
 
 /**
@@ -189,6 +197,24 @@ function strictFlag(raw: string | undefined, fallback: boolean): boolean {
   );
 }
 
+const TASK_NOTIFICATION_MODES: ReadonlyArray<"brief" | "full" | "off"> = ["brief", "full", "off"];
+
+/**
+ * Refuses rather than guesses, holding the line `strictFlag` holds: the value is a three-way
+ * choice rather than a flag, so a typo like `CHANNEL_TASK_NOTIFICATION=freif` read permissively
+ * would silently land on whichever mode the parser leaned toward, and a knob silently moved is a
+ * knob whose behavior nobody can reason about later.
+ */
+function taskNotificationMode(raw: string | undefined): "brief" | "full" | "off" {
+  if (raw === undefined || raw.trim() === "") return "brief";
+  const value = raw.trim().toLowerCase();
+  const mode = TASK_NOTIFICATION_MODES.find((candidate) => candidate === value);
+  if (mode !== undefined) return mode;
+  throw new Error(
+    `expected one of ${TASK_NOTIFICATION_MODES.join(", ")}, got ${JSON.stringify(raw)}`,
+  );
+}
+
 /**
  * The state file lives outside the repository by default: the broker is installed as a service
  * and its runtime state is not source.
@@ -241,5 +267,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       MAX_INTERIM_POLL_MS,
       DEFAULT_INTERIM_POLL_MS,
     ),
+    // Brief by default: the console renders these wake-ups compactly, and a thread louder than
+    // the terminal it mirrors is the reported failure. `full` is the escape hatch for an operator
+    // who wants the whole report in the thread.
+    taskNotifications: taskNotificationMode(env.CHANNEL_TASK_NOTIFICATION),
   };
 }

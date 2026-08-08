@@ -14,6 +14,7 @@ import {
   renderCard,
   renderMirror,
   renderPermissionRequest,
+  renderTaskNotice,
   threadName,
 } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
@@ -1055,4 +1056,62 @@ test("a cut prompt field says it was cut, in the label", () => {
   const long = prompt({ inputPreview: "x".repeat(5_000), description: "y".repeat(5_000) });
   assert.ok(long.includes("Input (cut): "), long.split("\n")[4]);
   assert.ok(long.includes("What (cut): "), long.split("\n")[3]);
+});
+
+test("a task notice carries the first task id, on one line", () => {
+  const wake =
+    "<task-notification>Background task completed.\n<task-id>agent-42</task-id>\n\nThe full report follows.";
+  assert.equal(renderTaskNotice(wake), "📨 background task finished · agent-42");
+
+  // The first pair wins: the rest of the report is untrusted text that can carry more pairs.
+  assert.equal(
+    renderTaskNotice("<task-id>first</task-id> then <task-id>second</task-id>"),
+    "📨 background task finished · first",
+  );
+});
+
+test("a task id the notice cannot trust falls back to the bare line", () => {
+  // Over the bound: half an id identifies nothing, so an over-long one is absent, not truncated.
+  assert.equal(
+    renderTaskNotice(`<task-id>${"x".repeat(65)}</task-id>`),
+    "📨 background task finished",
+  );
+  assert.equal(
+    renderTaskNotice(`<task-id>${"x".repeat(64)}</task-id>`),
+    `📨 background task finished · ${"x".repeat(64)}`,
+    "an id exactly at the bound is still an id",
+  );
+
+  // No pair at all, an empty pair, and one that is only whitespace all read as no id.
+  assert.equal(renderTaskNotice("<task-notification>done, no id here"), "📨 background task finished");
+  assert.equal(renderTaskNotice("<task-id></task-id>"), "📨 background task finished");
+  assert.equal(renderTaskNotice("<task-id>   </task-id>"), "📨 background task finished");
+});
+
+test("a task id reaches the notice inert, and no input makes it throw", () => {
+  // The id is conversation content landing in the channel permission prompts are answered in, so
+  // markdown and the chip syntax arrive escaped, exactly as a permission prompt's fields do.
+  assert.equal(
+    renderTaskNotice("<task-id>**bold**<@123></task-id>"),
+    "📨 background task finished · \\*\\*bold\\*\\*\\<@123\\>",
+  );
+
+  // A text of nothing but invisibles, and an id of nothing but invisibles, both compose the bare
+  // line rather than throwing or carrying an empty separator.
+  const invisible = String.fromCharCode(0x200b, 0x202e, 0x200b);
+  assert.equal(renderTaskNotice(invisible), "📨 background task finished");
+  assert.equal(renderTaskNotice(`<task-id>${invisible}</task-id>`), "📨 background task finished");
+  assert.equal(renderTaskNotice(""), "📨 background task finished");
+});
+
+test("the id scan reads through the same invisible strip the wake recognizer reads through", () => {
+  // An invisible character inside the tag literals must not hide a pair from the scan that the
+  // recognizer's reading of the same prompt still saw: both read the invisible-stripped text, so
+  // the two cannot disagree about one message. The invisibles ride in by code point, never as raw
+  // bytes a reader cannot see in the source.
+  const zw = String.fromCharCode(0x200b);
+  assert.equal(
+    renderTaskNotice(`<task${zw}-id>agent-42</task${zw}-id>`),
+    "📨 background task finished · agent-42",
+  );
 });

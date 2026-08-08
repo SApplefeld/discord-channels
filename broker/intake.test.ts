@@ -134,6 +134,7 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,
+    taskNotifications: "brief",
     ...overrides,
   };
 }

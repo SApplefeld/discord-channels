@@ -281,6 +281,46 @@ export function renderPermissionRequest(input: {
   ].join("\n");
 }
 
+/**
+ * The most of a task id the notice below will carry, in code points. A real id is a short token,
+ * so anything longer is not an id worth showing: it is treated as absent rather than truncated,
+ * because half an id identifies nothing, and the bound is what keeps a crafted pair from turning
+ * the one-line notice into a message-length paste.
+ */
+const MAX_TASK_ID_LENGTH = 64;
+
+/**
+ * The first `<task-id>…</task-id>` pair's content in a wake prompt. Bounded lazily so the scan
+ * costs one pass over the text; the length bound above is applied to what it captures.
+ */
+const TASK_ID = /<task-id>([\s\S]*?)<\/task-id>/;
+
+/**
+ * The one-line notice a background task's wake prompt compresses to: broker-composed text with a
+ * single neutralized untrusted field, following `renderPermissionRequest`'s pattern.
+ *
+ * `text` is the whole injected prompt, untrusted conversation content that arrives untruncated
+ * (the mirror route drops an oversized body whole rather than cutting it, so no pair here can be
+ * the front half of a cut). The scan runs on the invisible-stripped text, the same reading the
+ * wake recognizer matches the prompt on, so the two cannot disagree about one message: an
+ * invisible character inside the tag literals would otherwise hide a pair from this scan that the
+ * recognizer's reading still saw. The id is the only part of the prompt this notice repeats, and
+ * it goes through `inertText` because the notice lands in the one channel the operator answers
+ * permission prompts in: an id is attacker-influenceable text, and one that could draw a chip or
+ * a quote would spoof exactly the surface this line exists to keep quiet. An id that is absent,
+ * empty once trimmed, or over the length bound leaves the bare line, never a throw: whatever the
+ * prompt carries, the notice composes.
+ */
+export function renderTaskNotice(text: string): string {
+  const line = "📨 background task finished";
+  const match = TASK_ID.exec(withoutInvisible(text));
+  if (match === null) return line;
+  const id = match[1].trim();
+  if (id === "" || [...id].length > MAX_TASK_ID_LENGTH) return line;
+  const shown = inertText(id);
+  return shown === "" ? line : `${line} ${SEPARATOR} ${shown}`;
+}
+
 /** The label a session is known by. A session launched without the wrapper carries no name. */
 function displayName(view: SessionView): string {
   const named = view.name === null ? "" : inertName(view.name);

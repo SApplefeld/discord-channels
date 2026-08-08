@@ -25,6 +25,7 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,
+    taskNotifications: "brief",
     ...overrides,
   };
 }

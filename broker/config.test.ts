@@ -86,6 +86,29 @@ test("the interim mirror knobs default on and sane, and refuse a typo", () => {
   }
 });
 
+test("the task notification knob defaults to brief, honors its three modes, and refuses a typo", () => {
+  // The default is the compression: the console renders a wake-up compactly, and a thread louder
+  // than the terminal it mirrors is the reported failure the knob exists to fix.
+  assert.equal(loadConfig({}).taskNotifications, "brief");
+  assert.equal(loadConfig({ CHANNEL_TASK_NOTIFICATION: "" }).taskNotifications, "brief");
+  assert.equal(loadConfig({ CHANNEL_TASK_NOTIFICATION: "   " }).taskNotifications, "brief");
+
+  assert.equal(loadConfig({ CHANNEL_TASK_NOTIFICATION: "brief" }).taskNotifications, "brief");
+  assert.equal(loadConfig({ CHANNEL_TASK_NOTIFICATION: "full" }).taskNotifications, "full");
+  assert.equal(loadConfig({ CHANNEL_TASK_NOTIFICATION: "off" }).taskNotifications, "off");
+  assert.equal(loadConfig({ CHANNEL_TASK_NOTIFICATION: " FULL " }).taskNotifications, "full");
+
+  // A three-way knob read permissively turns a typo into a silent default, the same hazard the
+  // boolean knobs refuse; the refusal names the vocabulary and the value it got.
+  for (const raw of ["breif", "on", "1", "none", "true"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_TASK_NOTIFICATION: raw }),
+      new RegExp(`expected one of brief, full, off, got ${JSON.stringify(raw)}`),
+      raw,
+    );
+  }
+});
+
 test("the mirror body ceiling is its own knob, wider than the hook cap by default", () => {
   const defaults = loadConfig({});
   assert.equal(defaults.mirrorMaxBytes, 256 * 1024);

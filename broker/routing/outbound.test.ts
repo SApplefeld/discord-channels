@@ -2,7 +2,13 @@
 // nothing else, which is what lets Claude reply unprompted and still land in the right thread.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_MESSAGE_LENGTH, appendNarration, renderAnswer, renderMirror } from "../discord/render.ts";
+import {
+  MAX_MESSAGE_LENGTH,
+  appendNarration,
+  renderAnswer,
+  renderMirror,
+  renderTaskNotice,
+} from "../discord/render.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
@@ -1071,6 +1077,195 @@ test("a queued prompt with no thread, and one with nothing visible in it, are dr
     assert.ok(line.includes("session-a"), line);
     assert.ok(!line.includes(secret), `transcript content leaked into the routing log: ${line}`);
   }
+});
+
+/**
+ * A wake prompt: the harness's injection when a background task finishes while its session is
+ * idle, opening with the marker and carrying the task's whole final report.
+ */
+const WAKE =
+  "<task-notification>Background task completed.\n<task-id>agent-42</task-id>\n\n" +
+  "The subagent's whole final report, many paragraphs of it.";
+
+test("a wake prompt compresses to exactly one notice message by default", async () => {
+  // The injected report renders compactly at the console, so mirrored whole it makes the thread
+  // louder than the terminal: with the option absent the compression is the behavior.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", WAKE, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1, posts.map((post) => post.text).join("\n---\n"));
+  assert.deepEqual(posts, [{ threadId: THREAD, text: renderTaskNotice(WAKE) }]);
+  assert.ok(posts[0].text.startsWith("📨 background task finished"), posts[0].text);
+
+  // Only a prompt is a wake-up: a reply opening with the marker is Claude's own words about one,
+  // and it mirrors exactly as any reply does.
+  await router.mirror(TOKEN, "reply", WAKE, "session-a");
+  assert.equal(posts[1].text, renderMirror("reply", WAKE)[0]);
+});
+
+test("an invisible character in front of the marker does not carry the whole report past the compression", async () => {
+  // The recognizer reads through the same invisible strip the envelope check does: a zero-width
+  // character in front of the marker changes nothing the operator would read, so it must not be
+  // what floods the thread.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  const veiled = String.fromCharCode(0x200b) + WAKE;
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", veiled, "session-a"), { status: "sent" });
+  assert.deepEqual(posts, [{ threadId: THREAD, text: renderTaskNotice(WAKE) }]);
+});
+
+test("a wake marker that grows an attribute still compresses", async () => {
+  // The recognizer's literal stops before the closing bracket on purpose: a harness revision that
+  // gives the tag an attribute must not silently disable the compression, because the silent fail
+  // direction is the flood the knob exists to close.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  const grown = '<task-notification id="a4f5">Background task completed.\n<task-id>agent-42</task-id>';
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", grown, "session-a"), { status: "sent" });
+  assert.deepEqual(posts, [{ threadId: THREAD, text: renderTaskNotice(grown) }]);
+});
+
+test("full restores the whole-report mirror exactly as an ordinary prompt", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    taskNotifications: "full",
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", WAKE, "session-a"), { status: "sent" });
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    renderMirror("prompt", WAKE),
+    "the pre-compression rendering, byte for byte",
+  );
+  assert.ok(posts[0].text.startsWith(">>> ⌨ typed at the console\n"), posts[0].text);
+});
+
+test("off posts nothing and leaves one line naming the session, never the report", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    taskNotifications: "off",
+    log: (message) => lines.push(message),
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", WAKE, "session-a"), {
+    status: "failed",
+    error: "task notification suppressed",
+  });
+  assert.deepEqual(posts, [], "a suppressed wake reaches no thread");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(
+    !lines[0].includes("agent-42") && !lines[0].includes("report"),
+    `wake prompt content leaked into the routing log: ${lines[0]}`,
+  );
+});
+
+test("the envelope drop and an ordinary prompt are unchanged on every setting", async () => {
+  // The wake check sits after the envelope check, and neither it nor the knob may touch what was
+  // already true: the operator's own channel message never echoes back, and an ordinary prompt
+  // mirrors whole.
+  const envelope = '<channel source="channel-relay" chat_id="123">the migration finished?</channel>';
+  for (const mode of ["brief", "full", "off"] as const) {
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const { writer, posts } = fakeWriter();
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      taskNotifications: mode,
+    });
+
+    assert.deepEqual(
+      await router.mirror(TOKEN, "prompt", envelope, "session-a"),
+      { status: "failed", error: "the message came from the channel" },
+      mode,
+    );
+    assert.deepEqual(await router.interimPrompt("session-a", envelope), {
+      status: "failed",
+      error: "the message came from the channel",
+    });
+    assert.equal(posts.length, 0, mode);
+
+    assert.deepEqual(await router.mirror(TOKEN, "prompt", "run the migration", "session-a"), {
+      status: "sent",
+    });
+    assert.deepEqual(
+      posts.map((post) => post.text),
+      [renderMirror("prompt", "run the migration")[0]],
+      mode,
+    );
+  }
+});
+
+test("a queued wake prompt gets the same brief, full, and off treatment", async () => {
+  // A wake-up the harness records as a queued line reaches the thread off the transcript rather
+  // than off a hook, and one wake prompt must get one answer whichever way it arrived.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+
+  const brief = fakeWriter();
+  const briefRouter = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: brief.writer });
+  assert.deepEqual(await briefRouter.interimPrompt("session-a", WAKE), { status: "sent" });
+  assert.deepEqual(brief.posts, [{ threadId: THREAD, text: renderTaskNotice(WAKE) }]);
+  const veiled = String.fromCharCode(0x200b) + WAKE;
+  assert.deepEqual(await briefRouter.interimPrompt("session-a", veiled), { status: "sent" });
+  assert.equal(brief.posts[1].text, renderTaskNotice(WAKE), "the invisible-stripped prefix is recognized here too");
+
+  const full = fakeWriter();
+  const fullRouter = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: full.writer,
+    taskNotifications: "full",
+  });
+  assert.deepEqual(await fullRouter.interimPrompt("session-a", WAKE), { status: "sent" });
+  assert.deepEqual(
+    full.posts.map((post) => post.text),
+    renderMirror("prompt", WAKE),
+    "full reproduces the operator-attributed block off the transcript too",
+  );
+
+  const off = fakeWriter();
+  const lines: string[] = [];
+  const offRouter = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: off.writer,
+    taskNotifications: "off",
+    log: (message) => lines.push(message),
+  });
+  assert.deepEqual(await offRouter.interimPrompt("session-a", WAKE), {
+    status: "failed",
+    error: "task notification suppressed",
+  });
+  assert.deepEqual(off.posts, []);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(
+    !lines[0].includes("agent-42") && !lines[0].includes("report"),
+    `wake prompt content leaked into the routing log: ${lines[0]}`,
+  );
 });
 
 test("a mirrored reply matching the last interim chunk is skipped, and only that one", async () => {
