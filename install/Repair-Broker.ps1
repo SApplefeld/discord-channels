@@ -123,7 +123,9 @@ function Select-ChannelBrokerProcess {
             $candidate
         }
     }
-    return , @($selected)
+    # Returned bare so the callers' @() collects the enumerated items; a comma-wrapped return
+    # would nest the array and hand a foreach one element holding every descriptor at once.
+    return @($selected)
 }
 
 <#
@@ -294,14 +296,17 @@ function Stop-ChannelBrokerProcess {
             continue
         }
         $reason = "it holds port $Port in LISTEN"
-        $reasons = if ($targets.Contains($key)) { @($targets[$key]) } else { @() }
+        # The @() wraps the whole if: an if used as an expression enumerates its output, so a
+        # one-element array would otherwise collapse to a string and += would concatenate text
+        # instead of appending a reason.
+        $reasons = @(if ($targets.Contains($key)) { $targets[$key] } else { })
         if ($reasons -notcontains $reason) { $reasons += $reason }
         $targets[$key] = $reasons
     }
 
     if ($targets.Count -eq 0) {
         Write-Host '  no broker process to kill.'
-        return , @()
+        return @()
     }
 
     $killed = @()
@@ -316,7 +321,9 @@ function Stop-ChannelBrokerProcess {
             Write-Host "  PID $processId ($proof) was not killed: $($_.Exception.Message)"
         }
     }
-    return , @($killed)
+    # Returned bare: the callers wrap with @(), and a comma-wrapped return would nest the array
+    # inside theirs, turning the summary's join into "System.Object[]".
+    return $killed
 }
 
 <#
