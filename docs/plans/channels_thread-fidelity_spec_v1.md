@@ -80,6 +80,7 @@ tailer shape 2 leaves behind, so nothing here builds in parallel with anything e
 ### 1. Router freshness judges arrivals by snowflake, not by count
 
 Model: fable
+Status: Complete
 
 The interim path's remember decision in `broker/routing/outbound.ts` changes its evidence. Today
 `noteThreadMessage` with no held entry bumps the thread's invalidation clock unconditionally, and
@@ -91,7 +92,10 @@ clock did not move during the round trip and the high-water mark is absent or no
 than the run's own `lastMessageId` by snowflake order. Snowflakes are monotonic in creation time,
 so the run's own echoes and the late echoes of everything older can never exceed the run's final
 message, while a foreign message genuinely created after it always does; the high-water mark needs
-no clearing for correctness, only bounding for memory. The ID-less clock remains for what cannot be
+no clearing for correctness, only bounding for memory, and the bound bumps the evicted thread's
+ID-less clock so a dropped mark refuses a remember rather than permitting one. The run's own posted
+message IDs raise the mark like any arrival, so a thread whose gateway echoes are lost does not hold
+a mark that ages while REST keeps posting under it. The ID-less clock remains for what cannot be
 judged: `endNarration` (a notice or alert posted outside this router) keeps bumping it, and so does
 an arrival whose ID does not parse as a snowflake, both refusing the remember conservatively
 exactly as today. The held-entry semantics of `noteThreadMessage` change in no way: the remembered
@@ -309,4 +313,31 @@ thread, one long turn, which is operator check F in its extended form:
 
 ## Chapters
 
-None yet.
+### Chapter 1 - 2026-08-07
+Completed: 1. Router freshness judges arrivals by snowflake, not by count
+Implemented By: implementer-fable
+Metrics: 1 review round; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The spec's "the high-water mark needs no clearing for correctness, only
+bounding for memory" hid a fork the implementation had to resolve: `capBeside` evicting a mark
+fails in the opposite direction from evicting a state or clock entry. A dropped state entry costs
+one attribution header, while a dropped mark makes the remember gate read the thread as having
+seen nothing newer, so a run posted around a foreign message would be remembered above it, in the
+channel permission approvals are answered in. The first implementation documented that asymmetry
+and shipped it as accepted; both reviewers independently rated it Major with the same one-line
+fix, and it now bumps the evicted thread's ID-less clock, which converts the failure to one fresh
+header. The spec's Approach paragraph carries the amended contract. Two hazards were briefed up
+front and both proved load-bearing: the mark is a monotonic max rather than a blind overwrite
+(out-of-order gateway echoes would otherwise lower it below a foreign message and permit the
+remember), and the falsified comment claim at the shared cap constant was swept.
+Review Findings: 1 Major from each reviewer, the same one (permissive mark eviction), fixed with a
+red-first probe: with the clock bump removed the new eviction test fails, with it restored it
+passes. 3 Minors, all fixed: the invalidations-map comment omitted the held-entry clear from its
+list of bumpers; the run's own posted IDs did not raise the mark, so the mark's stated contract
+held only of echoes; the bounded-map test pinned only the refusal direction, so a regression
+refusing on any held mark would have stayed green (a permits-direction test now pins it). Two test
+names carrying change-narrative phrasing were reworded to state the property.
+Stamps: adjudicated 3, stamped 1 (`a-brokers-own-gateway-echo-races-ahead-of-its-rest-response`,
+which is the root cause this section fixes; the transcript-shape and rate-bucket records were read
+as forward reading for Sections 2 to 4 and steered nothing here).
+Next: 2. The tailer baselines at the mirror-on verdict, not the next poll tick
+Commit Model: Commit-and-Push

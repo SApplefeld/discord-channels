@@ -97,14 +97,16 @@ function createDropLog(
 }
 
 /**
- * How many threads the narration coalescing maps hold entries for at once, the state map and the
- * invalidation clock alike.
+ * How many threads the narration coalescing maps hold entries for at once: the state map, the
+ * invalidation clock, and the high-water mark alike.
  *
  * A state entry normally clears the moment anything newer lands in its thread, but a fleet of
- * threads all mid-turn holds one each with nothing arriving to clear them, and the clock gains an
- * entry for any thread a message lands in, so both maps are capped the way the drop log is. Past
- * the cap the oldest entry is evicted, and what that costs its thread is at most one attribution
- * header: the next chunk there posts fresh instead of appending.
+ * threads all mid-turn holds one each with nothing arriving to clear them, and the clock and the
+ * mark gain an entry for any thread a message lands in, so all three maps are capped the way the
+ * drop log is. Past the cap the oldest entry is evicted, and what that costs the evicted thread
+ * is at most one attribution header: the next chunk there posts fresh instead of appending. That
+ * holds for the state map and the clock by construction, and for the high-water map because its
+ * eviction bumps the evicted thread's clock, which its own comment explains.
  */
 const MAX_NARRATION_THREADS = 64;
 
@@ -215,9 +217,15 @@ export type OutboundRouter = {
    * the comparison cannot place, cleared conservatively): gateway echoes arrive late and out of
    * band, so the remembered message's own echo, and the echoes of everything older that it was
    * posted or grown above, announce nothing newer and must not end the block. Edits emit no
-   * gateway message-create event, so an append never clears its own state. Every clear here
-   * also bumps the thread's invalidation clock, and so does any message arriving while no state
-   * is held, which is what reaches an interim task mid-way through a fresh post's round trip.
+   * gateway message-create event, so an append never clears its own state.
+   *
+   * Every arrival with a parseable snowflake also raises the thread's high-water mark, the
+   * newest message ID this router has seen land there, which is what an interim task consults
+   * after a fresh post's round trip: the run is remembered only when nothing strictly newer
+   * than its own final message arrived while its posts were on the wire, so the run's own echo,
+   * which Discord routinely delivers before the REST response resolves, cannot forfeit the
+   * state. An arrival whose ID does not parse bumps the ID-less invalidation clock instead,
+   * refusing that remember conservatively, and so does every clear here.
    */
   noteThreadMessage: (threadId: string, messageId: string) => void;
   /**
@@ -225,8 +233,9 @@ export type OutboundRouter = {
    * landed. For the writes that reach a thread outside this router, the notices and permission
    * alerts posted through the steering writer, whose only other clear is their own gateway echo,
    * and a dropped gateway loses echoes while REST keeps posting: without this, the block would
-   * grow above a permission prompt for as long as chunks fit. Bumps the invalidation clock like
-   * every other invalidation, so a fresh interim run mid-post is not remembered above the post.
+   * grow above a permission prompt for as long as chunks fit. Bumps the ID-less invalidation
+   * clock, because a post this router cannot place by snowflake order landed, so a fresh
+   * interim run mid-post is not remembered above the post.
    */
   endNarration: (threadId: string) => void;
 };
@@ -313,17 +322,60 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   // notices and alerts that post outside this router.
   const narration = new Map<string, NarrationTail>();
 
-  // The per-thread invalidation clock. The interim task takes its entry off the map for the
-  // whole of a fresh post's round trip, so an invalidation landing in that window finds nothing
-  // to clear; every invalidation bumps this counter as well, whether or not an entry was held,
-  // and the task refuses to remember its run when the counter moved while its posts were on the
-  // wire. Without it, a message landing mid-post would sit under state that outlived it, and
-  // every later append would pile above that message until something else cleared.
+  // The per-thread ID-less invalidation clock, for what snowflake order cannot judge. The
+  // interim task takes its entry off the map for the whole of a fresh post's round trip, so an
+  // invalidation landing in that window finds nothing to clear; the task refuses to remember its
+  // run when the counter moved while its posts were on the wire. What bumps it: an
+  // `endNarration`, an arrival whose ID does not parse, every clear of a held entry, and the
+  // eviction of a thread's high-water mark, which is the same "something landed here that this
+  // router can no longer place" answer in each case. An arrival that carries a parseable ID and
+  // finds no held entry is judged by the high-water mark below instead, so the run's own gateway
+  // echo does not count against it. Without the clock, a mid-post arrival this router cannot
+  // place would sit under state that outlived it, and every later append would pile above it
+  // until something cleared.
   const invalidations = new Map<string, number>();
 
   function bumpInvalidation(threadId: string): void {
     invalidations.set(threadId, (invalidations.get(threadId) ?? 0) + 1);
     capBeside(invalidations, threadId);
+  }
+
+  // The per-thread high-water mark: the newest message ID this router has seen land in the
+  // thread, by snowflake order, whether it arrived over the gateway or came back as the id of
+  // this router's own post. Raised monotonically and never lowered, because gateway echoes
+  // arrive out of order and a late echo of an older message says nothing about what the thread's
+  // newest is: overwritten blindly, the late echo of a run's first message would lower a mark a
+  // newer foreign message set mid-round-trip, and the run would be remembered above it. Never
+  // cleared either: snowflakes are monotonic in creation time, so every future post outranks
+  // every mark already held.
+  const highWater = new Map<string, bigint>();
+
+  /**
+   * Bounds the mark map at the cap its siblings hold, bumping the evicted thread's ID-less clock.
+   *
+   * `capBeside` alone would fail in the opposite direction from every other eviction here:
+   * dropping a state or clock entry costs a thread one attribution header, while dropping a mark
+   * makes the remember gate read the thread as having seen nothing newer, so a run posted around
+   * a foreign arrival would be remembered above it, in the channel permission approvals are
+   * answered in. The clock bump is what an evicted thread's in-flight interim task reads instead,
+   * and it refuses that remember, so the fail direction stays the one every path here holds: one
+   * fresh header, never narration above an arrival.
+   */
+  function capHighWater(kept: string): void {
+    if (highWater.size <= MAX_NARRATION_THREADS) return;
+    for (const key of highWater.keys()) {
+      if (key === kept) continue;
+      highWater.delete(key);
+      bumpInvalidation(key);
+      break;
+    }
+  }
+
+  function raiseHighWater(threadId: string, arriving: bigint): void {
+    const held = highWater.get(threadId);
+    if (held !== undefined && arriving <= held) return;
+    highWater.set(threadId, arriving);
+    capHighWater(threadId);
   }
 
   function rememberNarration(threadId: string, tail: NarrationTail): void {
@@ -627,13 +679,28 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           // These posts are about to be newer than any remembered narration message: a chunk the
           // merge would not fit reaches this line with the state still held.
           narration.delete(threadId);
-          // The entry is off the map for the whole round trip below, so an invalidation landing
-          // while the posts are on the wire has nothing to clear; the clock is how it reaches
-          // this task, and a moved clock means the run is not remembered. Refusing costs one
-          // header, while remembering would bury the mid-post arrival, a permission prompt as
-          // easily as the operator's message, under every later append.
+          // The entry is off the map for the whole round trip below, so anything landing while
+          // the posts are on the wire has nothing to clear; the clock and the high-water mark
+          // are how it reaches this task. The run is remembered only when the ID-less clock did
+          // not move and nothing strictly newer than the run's own final message has landed, by
+          // snowflake order: the run's own gateway echo, which Discord routinely delivers
+          // before the REST response resolves, can never outrank the run's final message, so it
+          // does not forfeit the state, while a foreign message genuinely created after it
+          // always does. Refusing costs one header, while remembering would bury the mid-post
+          // arrival, a permission prompt as easily as the operator's message, under every later
+          // append.
           const clock = invalidations.get(threadId) ?? 0;
           const posted = await postRun(threadId, messages);
+          // The mark read before this run's own posts raise it, so the comparison below is
+          // against what landed from elsewhere rather than against the run itself.
+          const mark = highWater.get(threadId);
+          const own =
+            posted.lastMessageId === null ? null : asSnowflake(posted.lastMessageId);
+          // The run's own posts are messages that landed in this thread, so they raise the mark
+          // like any gateway arrival: the echoes of these ids are still coming, and a thread
+          // whose gateway echoes are lost would otherwise hold a mark that ages while REST keeps
+          // posting under it.
+          if (own !== null) raiseHighWater(threadId, own);
           // The new block to grow, remembered only when the whole run landed and Discord's body
           // yielded an id to edit by. The content is the exact string the writer was handed,
           // which is the precondition `appendNarration` merges on.
@@ -642,10 +709,16 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
             posted.lastMessageId !== null &&
             (invalidations.get(threadId) ?? 0) === clock
           ) {
-            rememberNarration(threadId, {
-              messageId: posted.lastMessageId,
-              content: messages[messages.length - 1],
-            });
+            // An absent mark means nothing judgeable has landed in the thread; a mark the run's
+            // final message equals or outranks is the run's own echoes or something older. A
+            // final message whose own ID does not parse cannot be judged against a held mark,
+            // so it refuses conservatively: one header, never narration above an arrival.
+            if (mark === undefined || (own !== null && mark <= own)) {
+              rememberNarration(threadId, {
+                messageId: posted.lastMessageId,
+                content: messages[messages.length - 1],
+              });
+            }
           }
           return { landed: posted.landed, total: messages.length, error: posted.error };
         },
@@ -665,18 +738,25 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     },
 
     noteThreadMessage(threadId, messageId) {
+      const arriving = asSnowflake(messageId);
+      // Every judgeable arrival raises the thread's high-water mark, whatever else it means
+      // below: the mark is what the interim task's remember gate reads after a fresh post's
+      // round trip, and raising it costs nothing when the arrival is only the run's own echo,
+      // because the gate compares by snowflake order rather than by whether anything arrived.
+      if (arriving !== null) raiseHighWater(threadId, arriving);
       const tail = narration.get(threadId);
       // No entry to compare against. The reachable case that matters is an interim task holding
-      // its entry off the map for a fresh post's round trip: the bump is the only way this
-      // arrival reaches that task, and it answers by not remembering the run.
+      // its entry off the map for a fresh post's round trip: the mark above is how a judgeable
+      // arrival reaches that task, which remembers its run only when nothing strictly newer
+      // than its own final message landed, and the clock bump is how an unjudgeable one refuses
+      // the same remember conservatively.
       if (tail === undefined) {
-        bumpInvalidation(threadId);
+        if (arriving === null) bumpInvalidation(threadId);
         return;
       }
       // The remembered message's own echo: every post this broker makes comes back over the
       // gateway, and the narration message announcing itself is not something newer than itself.
       if (tail.messageId === messageId) return;
-      const arriving = asSnowflake(messageId);
       const remembered = asSnowflake(tail.messageId);
       // The late echo of an older message: a split run's earlier messages, or a reply run's
       // echoes arriving after a later narration message was remembered. The remembered message

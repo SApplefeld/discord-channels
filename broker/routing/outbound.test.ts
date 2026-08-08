@@ -1590,6 +1590,126 @@ test("an invalidation during the fresh post's round trip means the run is not re
   assert.equal(posts.length, 2);
 });
 
+test("the run's own gateway echo mid-round-trip does not forfeit the block", async () => {
+  // Discord routinely delivers a bot's own MESSAGE_CREATE echo over the websocket before the
+  // REST response resolves, so this ordering is the common case of every fresh post, not a rare
+  // race. The echo carries the run's own message, which announces nothing newer than the run's
+  // final message by snowflake order, so the state is remembered and the next chunk appends.
+  const { router, posts, edits, control } = narrationHarness();
+  control.postDelayMs = 30;
+  const first = router.interim("session-a", "chunk one");
+  // Lets the task start, so the post is on the wire when its own echo arrives.
+  await new Promise((resolve) => setImmediate(resolve));
+  router.noteThreadMessage(THREAD, "1001");
+  assert.deepEqual(await first, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("session-a", "chunk two");
+  assert.equal(edits.length, 1, "the next chunk appends: the echo announced nothing newer");
+  assert.equal(edits[0].messageId, "1001");
+  assert.equal(posts.length, 1);
+});
+
+test("a late echo of an older message mid-round-trip does not forfeit the block", async () => {
+  // A reply run's echoes can trail into the next fresh interim post's round trip. Older than
+  // the run's own final message by snowflake order, they announce nothing newer, so the state
+  // is remembered all the same.
+  const { router, posts, edits, control } = narrationHarness();
+  await router.interim("session-a", "chunk one");
+  await router.reply(TOKEN, "the answer");
+
+  control.postDelayMs = 30;
+  const fresh = router.interim("session-a", "chunk two");
+  await new Promise((resolve) => setImmediate(resolve));
+  // The reply message's late echo, older than the fresh post going out as message 1003.
+  router.noteThreadMessage(THREAD, "1002");
+  assert.deepEqual(await fresh, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("session-a", "chunk three");
+  assert.equal(edits.length, 1, "the reply's late echo is older than the run's final message");
+  assert.equal(edits[0].messageId, "1003");
+  assert.equal(posts.length, 3);
+});
+
+test("a foreign newer arrival still refuses the remember when an older echo lands after it", async () => {
+  // Gateway echoes arrive out of order: a foreign message can echo first and the run's own,
+  // older message after it. The high-water mark is monotonic, the max of everything seen, never
+  // a blind overwrite: lowered by the late echo, the gate would read nothing newer, remember the
+  // run, and the next chunk would append above the foreign message, in the channel approvals
+  // are answered in.
+  const { router, posts, edits, control } = narrationHarness();
+  control.postDelayMs = 30;
+  const first = router.interim("session-a", "chunk one");
+  await new Promise((resolve) => setImmediate(resolve));
+  router.noteThreadMessage(THREAD, "9999");
+  router.noteThreadMessage(THREAD, "1001");
+  assert.deepEqual(await first, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("session-a", "chunk two");
+  assert.deepEqual(edits, [], "nothing appends above the foreign message");
+  assert.equal(posts.length, 2, "the next chunk posts fresh, below what landed");
+  assert.equal(posts[1].text, renderMirror("interim", "chunk two")[0]);
+});
+
+test("an arrival whose ID does not parse mid-round-trip still refuses the remember", async () => {
+  // What snowflake order cannot judge falls to the ID-less clock and refuses conservatively,
+  // exactly as an endNarration does: the fail direction is one fresh header, never narration
+  // appended above an arrival that might be newer.
+  const { router, posts, edits, control } = narrationHarness();
+  control.postDelayMs = 30;
+  const first = router.interim("session-a", "chunk one");
+  await new Promise((resolve) => setImmediate(resolve));
+  router.noteThreadMessage(THREAD, "not-a-snowflake");
+  assert.deepEqual(await first, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("session-a", "chunk two");
+  assert.deepEqual(edits, [], "an unjudgeable arrival is treated as newer");
+  assert.equal(posts.length, 2, "the next chunk posts fresh");
+});
+
+test("the high-water map is bounded, and an eviction mid-round-trip refuses the remember", async () => {
+  // The cap is MAX_NARRATION_THREADS, shared with the sibling maps, but a dropped mark would
+  // fail in the opposite direction from a dropped state or clock entry: the remember gate would
+  // read the thread as having seen nothing newer and remember a run posted around the very
+  // foreign message the evicted mark carried. The eviction bumps the evicted thread's ID-less
+  // clock for exactly that reason, so the fail direction is the one every path here holds: one
+  // fresh header, never narration above an arrival.
+  const { router, posts, edits, control } = narrationHarness((sessionId) => `thread-${sessionId}`);
+  control.postDelayMs = 30;
+  const first = router.interim("s0", "a chunk");
+  await new Promise((resolve) => setImmediate(resolve));
+  // A foreign message lands in s0's thread while its post is on the wire, and the mark carrying
+  // it is then evicted by 64 other threads' arrivals before the round trip resolves.
+  router.noteThreadMessage("thread-s0", "9999");
+  for (let index = 1; index <= 64; index += 1) {
+    router.noteThreadMessage(`thread-s${index}`, "9999");
+  }
+  assert.deepEqual(await first, { status: "sent" });
+  control.postDelayMs = 0;
+
+  await router.interim("s0", "another chunk");
+  assert.deepEqual(edits, [], "the evicted mark's thread refuses the remember, it does not permit it");
+  assert.equal(posts.length, 2, "the next chunk posts fresh, below what landed");
+});
+
+test("a held mark older than the run's final message permits the remember", async () => {
+  // The gate compares by snowflake order rather than by whether any mark is held: a thread this
+  // router has posted into before holds a mark from those messages, and every later post
+  // outranks it, so a held mark must not refuse on its own. Without this, the mark would end
+  // coalescing on the second chunk of every thread the gateway has ever echoed.
+  const { router, posts, edits } = narrationHarness();
+  // The echo of an earlier post, older than everything this run will send.
+  router.noteThreadMessage(THREAD, "500");
+
+  await router.interim("session-a", "chunk one");
+  await router.interim("session-a", "chunk two");
+  assert.equal(edits.length, 1, "the older mark does not refuse the remember");
+  assert.equal(posts.length, 1);
+});
+
 test("a late echo of an older message does not clear the newest narration message", async () => {
   // A split run's earlier messages echo back after its final one was remembered, and a reply
   // run's echoes can trail a fresh interim post the same way. Snowflake order is thread order,
