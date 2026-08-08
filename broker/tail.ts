@@ -710,9 +710,9 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
           continue;
         }
         // One await per item, here and on the prompt branch above, so a session's chunks and its
-        // queued prompts post in the order the transcript holds them. A chunk that
-        // could not be posted is dropped and never retried, the rule the whole routing layer
-        // follows, and its digest is not recorded: the Stop mirror carrying the same text must
+        // queued prompts post in the order the transcript holds them. A chunk the router could not
+        // land is dropped, never kept for a later call, the rule the whole routing layer follows,
+        // and its digest is not recorded: the Stop mirror carrying the same text must
         // still post it, because nothing else will. The catch holds each failure to its own
         // chunk: the consumed bytes are already behind the offset, so a throw that escaped this
         // loop would lose every later chunk in the batch with no way to re-read them. The error

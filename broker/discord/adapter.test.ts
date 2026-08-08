@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createDiscordTransport } from "./adapter.ts";
+import { MAX_RUN_WAIT_MS } from "../routing/outbound.ts";
+import { MAX_USABLE_WAIT_MS, createDiscordTransport } from "./adapter.ts";
 import type { RawRequest, RawResult } from "./adapter.ts";
+import { createBudget } from "./budget.ts";
 
 const CHANNEL = "999000111";
 
@@ -190,6 +192,71 @@ test("a client that refuses before sending reports the same refusal", async () =
 
   assert.equal(outcome.status, "rate-limited");
   assert.equal(outcome.rate.retryAfterMs, 4_000);
+});
+
+test("a wait that is not a finite number never reaches the budget that spends it", async () => {
+  // The value crosses into this process from the client, and a non-finite one is not a long wait,
+  // it is a number no arithmetic above here survives: folded into a bucket it becomes a block no
+  // clock reaches, and the bucket then refuses every write it is asked for until the process
+  // restarts. On the post bucket that is every reply, notice, and permission alert for the life of
+  // the broker, so the clamp is pinned here on the pair rather than on the field alone.
+  for (const raw of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    const { transport } = transportWith(() => ({ kind: "rate-limited", retryAfterMs: raw }));
+    const outcome = await transport.postToThread({ threadId: "thread-77", text: "hello" });
+
+    assert.equal(outcome.status, "rate-limited", String(raw));
+    assert.equal(outcome.rate.retryAfterMs, 0, `a wait of ${String(raw)} names no usable wait`);
+
+    const budget = createBudget();
+    budget.observe(outcome.rate, 1_000);
+    assert.ok(
+      budget.affordable(1_000),
+      `a ${String(raw)} wait bricked the bucket: blockedUntil is ${String(budget.blockedUntil())}`,
+    );
+  }
+});
+
+test("a wait too large to act on never wedges the budget that spends it", async () => {
+  // Magnitude is the same hazard as a non-finite value and needs no overflow to reach it: a wait
+  // of 1e30 folded into a bucket is a block roughly 1e33 milliseconds out, which no clock reaches,
+  // and the bucket then refuses every write it is asked for until the process restarts. On the
+  // create-message bucket that is every reply, notice, and permission alert for the life of the
+  // broker. Every arm a refusal can arrive on is driven, because a wait bounded on one of them and
+  // raw on another is a bucket wedged by whichever refusal Discord happens to send: the client's
+  // own pre-send refusal, a 429 carrying the wait in its header, and a 429 carrying it in its body.
+  // The two header-and-body cases are also where a value finite on the wire turns infinite, since
+  // the seconds a response reports are multiplied by a thousand on the way in.
+  const refusals: RawResult[] = [
+    { kind: "rate-limited", retryAfterMs: 1e30 },
+    { kind: "response", status: 429, header: headers({ "retry-after": "1e306" }), body: null },
+    { kind: "response", status: 429, header: headers({}), body: { retry_after: 1e306 } },
+    { kind: "rate-limited", retryAfterMs: Number.NaN },
+    { kind: "rate-limited", retryAfterMs: Number.POSITIVE_INFINITY },
+    { kind: "rate-limited", retryAfterMs: Number.NEGATIVE_INFINITY },
+  ];
+
+  for (const [index, refusal] of refusals.entries()) {
+    const { transport } = transportWith(() => refusal);
+    const outcome = await transport.postToThread({ threadId: "thread-77", text: "hello" });
+    assert.equal(outcome.status, "rate-limited", `refusal ${index}`);
+
+    // Pinned on the pair rather than on the field, because the field alone says nothing about
+    // whether the bucket survives being handed it.
+    const budget = createBudget();
+    budget.observe(outcome.rate, 1_000);
+    assert.ok(
+      budget.affordable(1_000 + MAX_USABLE_WAIT_MS),
+      `refusal ${index} wedged the bucket past the ceiling: it blocks until ${String(budget.blockedUntil())}`,
+    );
+  }
+});
+
+test("the wait ceiling is the longest wait the router above it can act on", () => {
+  // The router stops a run rather than sit out more than its own per-run cap, and a budget blocks
+  // for exactly as long as the wait it is handed names. A ceiling above the cap would therefore
+  // bound nothing any decision reads, and one below it would shorten a wait a run would have spent
+  // in full. Nothing at runtime would report the two as crossed.
+  assert.equal(MAX_USABLE_WAIT_MS, MAX_RUN_WAIT_MS);
 });
 
 test("a refused or broken call is a failure with no bucket claim", async () => {

@@ -1,7 +1,12 @@
 // Configuration bounds that nothing at runtime would report as wrong.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RELAY_READ_TIMEOUT_MS, loadConfig } from "./config.ts";
+import {
+  RELAY_READ_TIMEOUT_MS,
+  RELAY_REPLY_IDLE_MS,
+  REPLY_HEARTBEAT_MS,
+  loadConfig,
+} from "./config.ts";
 
 test("the relay heartbeat is refused outside the window the relay can survive", () => {
   // The relay's read timeout lives in another process and cannot see this value. A heartbeat slower
@@ -22,6 +27,20 @@ test("the relay heartbeat is refused outside the window the relay can survive", 
   assert.ok(
     loadConfig({}).relayHeartbeatMs * 2 < RELAY_READ_TIMEOUT_MS,
     "the default must leave room for a missed heartbeat inside the relay's timeout",
+  );
+});
+
+test("a reply's heartbeat leaves room for a missed beat inside the relay's idle window", () => {
+  // The arithmetic half of the relation, against the day someone replaces the derivation with a
+  // literal: the two values live in different processes, and a heartbeat at or past the idle window
+  // reports every long reply as failed while its messages are still going up, which is what makes a
+  // model send the whole answer again over the top of what landed. The mechanism half is in
+  // relay/broker.test.ts, where a real relay waits out a run held open past several of its own idle
+  // windows and still reports the reply as sent.
+  assert.ok(REPLY_HEARTBEAT_MS > 0);
+  assert.ok(
+    REPLY_HEARTBEAT_MS * 2 < RELAY_REPLY_IDLE_MS,
+    `a beat every ${REPLY_HEARTBEAT_MS}ms against a ${RELAY_REPLY_IDLE_MS}ms window`,
   );
 });
 

@@ -46,11 +46,55 @@ const NO_MENTIONS = { parse: [] as string[] };
  */
 const SUPPRESS_EMBEDS = 4;
 
-/** Seconds on the wire, milliseconds everywhere above this file. */
+/**
+ * The longest wait any layer above this file can act on.
+ *
+ * A wait is read for two decisions and neither one moves past this value. The router stops a run
+ * rather than sit out more than `MAX_RUN_WAIT_MS` of refusals across it, and a budget holds its
+ * bucket blocked for exactly as long as the wait it was handed names. So a larger number carries
+ * no more information than this one and carries a hazard instead: a `blockedUntil` far enough in
+ * the future is a block no clock reaches, and the bucket then refuses every write it is asked for
+ * until the process restarts. On the create-message bucket that is every reply, every notice, and
+ * every permission alert for the life of the broker. adapter.test.ts pins this against the router's
+ * cap, because two literals with nothing holding them together are two literals that drift.
+ */
+export const MAX_USABLE_WAIT_MS = 60_000;
+
+/**
+ * Seconds on the wire, milliseconds everywhere above this file, bounded like every other wait here.
+ *
+ * The bounding happens after the multiplication rather than before it, because the multiplication
+ * is itself a producer: `1e306` is a finite number of seconds and an infinite number of
+ * milliseconds. Text that is not a number at all stays null, which is a different answer from a
+ * wait of zero: null is what tells the budget this response said nothing about its bucket.
+ */
 function secondsToMs(raw: string | null): number | null {
   if (raw === null) return null;
   const seconds = Number(raw);
-  return Number.isFinite(seconds) ? Math.max(seconds, 0) * 1000 : null;
+  return Number.isFinite(seconds) ? usableWaitMs(seconds * 1000) : null;
+}
+
+/**
+ * A reported rate-limit wait, reduced to a number the layers above can do arithmetic with:
+ * milliseconds, never negative, never `NaN` or infinite, and never longer than
+ * `MAX_USABLE_WAIT_MS`.
+ *
+ * The value arrives from Discord or from the library that speaks to it, so neither its shape nor
+ * its size is this process's to assume, and both fail the same way. Folded into a budget the wait
+ * becomes a `blockedUntil`, and a `blockedUntil` no clock reaches drops every later write that
+ * bucket pays for until the process restarts. A non-finite value reaches that state on shape alone:
+ * it passes a `> 0` test, so a blind-fallback branch does not catch it, and it fails every `>` a cap
+ * is checked with, so no cap catches it either. A merely enormous one reaches it on size, with
+ * nothing overflowing anywhere. Zero is the answer an absent wait already gives, and a refusal
+ * naming no usable wait is sat out blind by the router.
+ *
+ * Exported because two other producers hand a wait to the same budgets and the same retry loop: the
+ * discord.js boundary, which reports its own refusal in milliseconds, and the thread writer, whose
+ * pre-flight refusal computes the wait off a bucket rather than reading it off the wire.
+ */
+export function usableWaitMs(raw: number): number {
+  if (!Number.isFinite(raw)) return 0;
+  return Math.min(Math.max(raw, 0), MAX_USABLE_WAIT_MS);
 }
 
 function count(raw: string | null): number | null {
@@ -67,7 +111,14 @@ function observe(header: (name: string) => string | null): RateLimitObservation 
   };
 }
 
-/** A 429's wait, preferring the body's `retry_after` and falling back to the `Retry-After` header. */
+/**
+ * A 429's wait, preferring the body's `retry_after` and falling back to the `Retry-After` header.
+ *
+ * Every path returns a usable wait, because this is the value a 429 hands straight to the budget
+ * that a reply, a notice, and a permission alert all spend. The bounding sits after the conversion
+ * from seconds for the reason it does in `secondsToMs`: the conversion is where a finite number of
+ * seconds becomes an infinite number of milliseconds.
+ */
 function retryAfterMs(result: {
   header: (name: string) => string | null;
   body: unknown;
@@ -75,7 +126,7 @@ function retryAfterMs(result: {
   const body = result.body;
   if (typeof body === "object" && body !== null && "retry_after" in body) {
     const seconds = Number((body as Record<string, unknown>).retry_after);
-    if (Number.isFinite(seconds)) return Math.max(seconds, 0) * 1000;
+    if (Number.isFinite(seconds)) return usableWaitMs(seconds * 1000);
   }
   return secondsToMs(result.header("retry-after")) ?? 0;
 }
@@ -92,7 +143,10 @@ function classify(result: RawResult): CallOutcome<unknown> {
     return { status: "failed", error: result.error, rate: NO_RATE_INFO };
   }
   if (result.kind === "rate-limited") {
-    return { status: "rate-limited", rate: { ...NO_RATE_INFO, retryAfterMs: result.retryAfterMs } };
+    return {
+      status: "rate-limited",
+      rate: { ...NO_RATE_INFO, retryAfterMs: usableWaitMs(result.retryAfterMs) },
+    };
   }
   const rate = observe(result.header);
   if (result.status === 429) {

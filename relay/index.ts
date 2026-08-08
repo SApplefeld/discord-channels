@@ -10,9 +10,11 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_PORT } from "../broker/config.ts";
 import { runDirectly } from "../broker/entrypoint.ts";
 import { createBrokerClient } from "./broker.ts";
+import type { ReplyStatus } from "./broker.ts";
 import {
   PermissionRequestNotificationSchema,
   channelCapabilities,
@@ -28,6 +30,40 @@ const REPLY_FAILURES: Record<string, string> = {
   "no-thread": "Not sent: this session's Discord thread has not been opened yet.",
   failed: "Not sent: the broker could not post the message.",
 };
+
+/**
+ * What the model is told about one reply, from what the reply came to.
+ *
+ * Held apart from the server wiring so the mapping can be driven on its own: what a status becomes
+ * is the whole of this tool's model-facing behavior, and `isError` is the load-bearing half of it.
+ * An error is the signal that invites another attempt, so it is set on every outcome that had
+ * nowhere to land and withheld from the one that may already be part-way up the thread.
+ */
+export function replyToolResult(status: ReplyStatus): CallToolResult {
+  if (status === "sent") {
+    return { content: [{ type: "text", text: "Sent to the operator's thread." }] };
+  }
+  if (status === "still-posting") {
+    // The broker was answering right up to the moment the wait ran out, so the messages may be
+    // going up in the thread now: sending them again is how the operator reads the whole answer
+    // twice. The instruction leads, because it is the part that has to survive being skimmed.
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            "Do not send this message again. The broker is still posting it, so it may already " +
+            "be in the operator's thread in whole or in part.",
+        },
+      ],
+    };
+  }
+  // Own properties only. `status` is a string off the wire, so a plain lookup would resolve
+  // `constructor` or `toString` through the prototype chain and carry a function where the model
+  // expects one of the sentences above.
+  const text = Object.hasOwn(REPLY_FAILURES, status) ? REPLY_FAILURES[status] : REPLY_FAILURES.failed;
+  return { content: [{ type: "text", text }], isError: true };
+}
 
 function port(env: NodeJS.ProcessEnv): number {
   const raw = env.CHANNEL_BROKER_PORT?.trim();
@@ -122,11 +158,7 @@ export async function startRelay(env: NodeJS.ProcessEnv = process.env): Promise<
     // Whatever chat_id was passed is left where it is. The broker routes by session, which is what
     // lets an unprompted reply, sent with no chat_id at all, still reach the right thread.
     const result = await broker.reply(message);
-    if (result.status === "sent") {
-      return { content: [{ type: "text", text: "Sent to the operator's thread." }] };
-    }
-    const text = REPLY_FAILURES[result.status] ?? REPLY_FAILURES.failed;
-    return { content: [{ type: "text", text }], isError: true };
+    return replyToolResult(result.status);
   });
 
   // The stream is opened only once the connection is initialized. Claude Code probes a stdio

@@ -126,14 +126,21 @@ rather than the oldest evicted, because the oldest is the session that has been 
 Inbound chat has its own ceiling: **20 messages a minute per session**. Past it a message is dropped
 with a log line and no in-thread notice.
 
-## Mid-turn narration
+## Mid-turn narration and typed messages
 
 On a long turn the thread otherwise shows nothing between the prompt that opened it and the final
 reply that closes it, which can be many minutes later. `broker/tail.ts` polls each live session's own
 transcript file and posts what the model wrote in between, in order, under a `✨ Claude · working`
 attribution distinct from a mirrored reply's plain `✨ Claude`. It reads only what a hook has already
 identified as belonging to that session's transcript, and posts through the same routing and
-rendering path a mirrored reply uses.
+rendering path a mirrored reply uses. Narration carries the turn's own first chunk: the file's
+position is taken when the session's mirror-on verdict arrives, seconds before the model writes
+anything, rather than at the poll tick after it.
+
+The same pass carries a message you type at the console while the model is working. The harness
+queues such a message and injects it without firing the hook the mirror rides, so the transcript is
+the only place it exists. It lands in the thread as an operator-attributed quote, in its place among
+the narration around it, and the chunk after it starts a fresh message below your words.
 
 In the thread, a working stretch reads as one growing message: consecutive chunks append into the
 newest narration message by editing it in place (the `(edited)` tag on it is normal), and a new
@@ -151,15 +158,18 @@ Two knobs govern it, both in `broker.env`:
 
 | Setting | Default | What it decides |
 |---|---|---|
-| `CHANNEL_INTERIM_MIRROR` | on | Whether mid-turn narration is tailed and posted at all; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns both off together |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed at all, which is what carries both mid-turn narration and a message typed at the console mid-turn; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns both off together |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; refuses below 1 s or above 5 min |
 
-Turning `CHANNEL_INTERIM_MIRROR` off, or `CHANNEL_MIRROR` off, silences mid-turn narration while
-leaving the mirrored prompt and the mirrored final reply posting as before: the two mirror the same
-content by different means and stop independently. The one-copy close above survives an interim-off
-host, because the record the mirror compares against is written by the reply tool rather than by the
-tailer, and it exists whenever `CHANNEL_MIRROR` is on. A session launched with `-NoMirror` narrates
-nothing either, for the same reason its prompts and replies do not mirror.
+Turning `CHANNEL_INTERIM_MIRROR` off silences everything the tailer carries, mid-turn narration and
+mid-turn typed messages alike, while the prompt that opens a turn and the reply that closes it keep
+mirroring: those two ride hooks rather than the transcript, and the two mechanisms stop
+independently. What an interim-off host loses on the prompt side is the mid-turn kind alone, the one
+no hook fires for. `CHANNEL_MIRROR` off stops all of it, hooks included. The one-copy close above
+survives an interim-off host, because the record the mirror compares against is written by the reply
+tool rather than by the tailer, and it exists whenever `CHANNEL_MIRROR` is on. A session launched
+with `-NoMirror` neither narrates nor carries the messages typed into it, for the same reason its
+prompts and replies do not mirror.
 
 **The log carries `tail:` lines**, each naming a session ID, a count, or a byte offset and never any
 transcript text:
@@ -175,6 +185,9 @@ transcript text:
   chunk Discord refused, or one for a thread that is not open yet, returns a status rather than
   throwing and logs under `routing:` instead, so narration that is missing without a `tail:` line
   to explain it should be looked for there.
+- `tail: session <id>'s queued prompt delivery failed (...)`: the delivery of one mid-turn typed
+  message threw, and it was dropped without holding up the rest of the pass. The thread carries no
+  copy of that message; the console does.
 - `tail: session <id>'s transcript pass failed (...)`: the file could not be opened or read this
   pass; the next pass tries again.
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
@@ -195,6 +208,13 @@ budget, so a blocked PATCH bucket costs extra headers and leaves replies, mirror
 and permission prompts untouched. A rejection out of the whole poll pass, which normal operation
 should never produce, logs as `broker: a transcript poll pass failed; the error detail is withheld,
 it can carry content`.
+
+One further `routing:` line costs a message rather than a header. `routing: the queued prompt from
+session <id> was dropped, it is the operator's own channel message echoed back to the thread it was
+posted in` is the check that keeps a message you typed in the thread from arriving back in it a
+second time. A message typed at the console is recorded differently and never matches that check, so
+this line beside a console message missing from the thread means the message opened with the text
+the harness wraps a channel message in, and the console holds its only copy.
 
 **One operational surprise worth knowing.** Narration for a session is armed by a `/mirror` post
 carrying that session's mirror-on verdict, not by the session simply being live, so a broker
@@ -233,7 +253,7 @@ the process that reads the bot token.
 | `CHANNEL_DISCORD_ARCHIVE_ON_END` | off | Whether an ended session's thread is archived |
 | `CHANNEL_MIRROR` | on | Whether console prompts and turn replies are mirrored into the thread |
 | `CHANNEL_MIRROR_MAX_BYTES` | 256 KB | Largest mirror post accepted; a larger one is dropped |
-| `CHANNEL_INTERIM_MIRROR` | on | Whether mid-turn narration is tailed and posted; also gated by `CHANNEL_MIRROR` |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration and mid-turn typed messages; also gated by `CHANNEL_MIRROR` |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to
@@ -341,11 +361,27 @@ mirrored reply full of generics and comparisons reads normally. A message posted
 carries the same escape, because it lands in the same thread beside mirrored text, and so does a
 mid-turn narration chunk from the transcript tailer.
 
-**A long reply arrives cut short with the thread otherwise healthy.** A multi-message reply stops at
-the first message Discord refuses and does not post the rest, and the log names how far it got and
-what the refusal was. One cause is the mirror's rate-limit budget, which is deliberately
-separate from the budget the permission prompts and notices spend, so a long reply can exhaust its
-own writes without costing you a prompt you were waiting on.
+**A long reply arrives cut short with the thread otherwise healthy.** A reply that renders into many
+messages is paced against the thread's create bucket, and a post the bucket refuses anyway is waited
+out and sent again, so a long report ordinarily arrives over seconds and lands whole. While a run is
+pacing it holds that thread's turn to post, so anything the session posts next, a mid-turn message
+you typed included, lands after the report rather than inside it. The log names how far a run got
+and what stopped it, and the two causes read differently. `stopped after N of M messages: rate
+limited` is the run reaching its ceiling on waiting, a minute of it within one run, which takes a
+bucket that stays empty across repeated waits: a thread being written to heavily from elsewhere, or
+a genuinely wedged bucket, both rare. Every other refusal names its own error class and stops the
+run where it stands, because rate limiting is the one class where nothing landed and sending the
+same message again cannot double-post it. The mirror's rate-limit budget is deliberately separate
+from the budget the permission prompts and notices spend, so a long reply can exhaust its own writes
+without costing you a prompt you were waiting on.
+
+**A reply the model was told not to send again.** A reply is answered across the whole of its run,
+and the relay waits on it for as long as the broker keeps feeding the response, up to a ceiling of
+fifteen minutes on one reply. A run still going at the ceiling is reported to the model as still
+posting rather than as failed, with an instruction not to send the message again, because its
+messages may be going up in the thread at that moment. The log line for such a run is `relay: a
+/relay/reply run settled <status> after its caller had closed the connection`, and it is the only
+place that run's outcome is reported to anyone: the connection that would have carried it is gone.
 
 **A closed session takes half a minute to show as exited.** That is the design, not a lag. The relay
 reconnects on its own, and a pipe that closed and came back is a reconnect rather than a death, so

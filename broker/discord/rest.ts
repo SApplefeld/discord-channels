@@ -2,6 +2,7 @@
 // surfaces, the budget, and the wire shapes are all testable without the library, a token, or a
 // network.
 import { DiscordAPIError, REST, RateLimitError, RequestMethod } from "discord.js";
+import { usableWaitMs } from "./adapter.ts";
 import type { RawRequest } from "./adapter.ts";
 
 /**
@@ -51,9 +52,12 @@ export function createRestRequest(token: string): RawRequest {
         body: await readBody(response),
       };
     } catch (error) {
-      // RateLimitError reports its wait in milliseconds.
+      // RateLimitError reports its wait in milliseconds. It is held to the same shape a wait read
+      // off a response header is held to, because it reaches the same budget and the same retry
+      // loop: the library's field is typed a number and nothing about the value behind it is this
+      // process's to assume.
       if (error instanceof RateLimitError) {
-        return { kind: "rate-limited", retryAfterMs: error.retryAfter };
+        return { kind: "rate-limited", retryAfterMs: usableWaitMs(error.retryAfter) };
       }
       // The client throws on a 4xx rather than returning the response, so the status is put back
       // where the adapter classifies every other one. A 401 is the case that matters: it is the

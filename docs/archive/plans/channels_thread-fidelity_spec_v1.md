@@ -1,6 +1,6 @@
 # Thread fidelity: the thread carries what the console carried
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: S1 implementer and its reviewer pair; the S3 and S4 reviewer pairs (one tier above their opus writers); finishing reviews
 Created: 2026-08-07
@@ -280,6 +280,7 @@ the next chunk posts fresh below the operator's words rather than appending abov
 ### 4. A split run paces itself and lands whole
 
 Model: opus
+Status: Complete
 
 `postRun` in `broker/routing/outbound.ts` stops truncating on rate limits. Two mechanisms, both
 inside the run's existing chained task, driven by an injectable `sleep` on
@@ -288,9 +289,12 @@ run are spaced by a pacing gap, a named constant `RUN_PACE_MS` of 1500ms, no gap
 post, which holds a run's send rate under Discord's roughly five-per-five-seconds create bucket so
 the budget rarely empties mid-run. Reactively, a post refused as `rate-limited` waits out the
 refusal and retries that same message once per refusal: the wait is the outcome's reported
-`retryAfterMs`, with a blind 5-second fallback when the outcome carries none, and every reactive
-wait accrues against a per-run cap, a named constant `MAX_RUN_WAIT_MS` of 60 seconds, pacing gaps
-excluded. A run that exhausts the cap stops and logs exactly the truncation line the runbook names
+`retryAfterMs`, with a blind 5-second fallback, and every reactive wait accrues against a per-run
+cap, a named constant `MAX_RUN_WAIT_MS` of 60 seconds, pacing gaps excluded. The fallback covers
+a reported wait of zero or less as well as an absent one, which is what makes the cap reachable in
+finite steps: the reported value comes off the wire from a service this process does not control,
+and a wait of zero accrues nothing against the cap, so a refusal that kept reporting it would spin
+the loop forever. Every reactive wait is therefore positive. A run that exhausts the cap stops and logs exactly the truncation line the runbook names
 today. Every non-rate-limited refusal stops the run exactly as today, because those are the
 refusals where retrying can double-post or hammer a broken route. The remember-only-when-whole
 rules downstream are untouched and simply fire more often: echo digests and coalescing state are
@@ -306,8 +310,64 @@ steering writer never enters this router. A paced run holds its thread's chain w
 which is intended: later conversation posts for that thread belong after the report they follow.
 Broker shutdown mid-sleep drops the run's remainder as any shutdown mid-run does today.
 
+Pacing a run changes what the rest of the system was sized for, and three things still spoke the
+old fast-run contract.
+
+The relay's reply timeout was the worst of them. The broker sent no bytes on `/relay/reply` until
+the run resolved, and the relay destroyed a pending request after a hand-set 15 seconds, reporting
+the reply as failed with no landed count. At `RUN_PACE_MS`, an 11-message answer passes that from
+pacing alone, so the model would be told its reply failed while the broker was still posting it,
+and a resend would double-post everything already landed: strictly worse than the truncation this
+section removes.
+
+Deriving the timeout from the run's worst case does not hold, and the attempt is recorded because
+the reasoning generalizes. `/relay/reply` does not wait on its own run alone: `deliver` puts every
+posting run on the thread's ordering chain and the mirror path enters through the same doorway, so
+a reply queued behind an in-flight paced mirror run waits that run's full duration plus its own,
+and nothing bounds how much sits ahead of it. No per-run constant can bound a per-thread queue. The
+fix is the early acknowledgment the Open Question records: the relay's timer measures whether the
+broker is alive rather than how long the run takes, which removes the arithmetic entirely.
+
+One relation still crosses a boundary this repo does not own, so it is named and pinned rather than
+left to coincidence, which is the mistake this section already paid for twice. Claude Code bounds
+an MCP tool call with two timers: a wall clock that progress notifications do not extend, and an
+idle timer that they do reset, defaulting to 30 minutes for a stdio server and 5 for HTTP. The
+relay connects over stdio, so its own 15-minute ceiling settles well inside the 30-minute window
+and vastly inside the wall clock, which is why the relay needs to emit no progress notification at
+all. The window is recorded as a named constant beside the ceiling, marked as Claude Code's value
+rather than this project's, with a test holding the ceiling under it.
+
+A wait that is not a finite number, or merely an enormous one, never terminates and poisons what it
+touches. A `NaN` makes the cap test false forever, `sleep` fire immediately, and
+`Budget.blockedUntil` compare false forever; a finite `1e30` wedges the same bucket with no overflow
+at all. That is the severe one, because the writer's post budget is spent by the steering path's
+permission alerts, so one such observation drops every alert for the process lifetime with no
+self-heal: `withBudget` returns before the call, so no headers are ever observed again and the
+clearing branch is unreachable. The clamp therefore bounds magnitude as well as kind, and lands on
+every arm that can produce a wait, with the finiteness reading taken AFTER the seconds-to-
+milliseconds multiplication rather than before it, since a `retry_after` of `1e306` is finite at the
+check and infinite after the multiply. The writer's own pre-flight refusal is a second producer that
+the transport's clamp never sees, computing its wait from `blockedUntil`, so it shares the clamp.
+The run loop's finiteness check remains as defense in depth against a producer added later.
+
+A very small positive wait is a request storm. The cap accrued what a wait asked for, so a refusal
+reporting a sliver of a millisecond passed the blind fallback, lapsed its budget block within the
+timer's own floor, and issued a real post per millisecond indefinitely. Two changes close it: a
+named `MIN_REACTIVE_WAIT_MS` floor of 1 second, which is the shortest wait that can change the
+answer given the create bucket refills over seconds, and accrual of elapsed time rather than
+requested time, which turns the cap into a bound on attempt count as well as duration.
+
+The cap bounds reactive waiting only. Pacing holds the thread's ordering chain for as long as the
+run is long, with no constant bounding it, so a body near the mirror route's ceiling paces for
+minutes and the operator's own queued prompt lands after the report. That is accepted rather than
+fixed, because bounding total run duration reintroduces truncation; what changed is that the
+comment now states it instead of claiming a bound the code does not have.
+
 Files: `broker/routing/outbound.ts`, `broker/routing/writer.ts`,
-`broker/routing/outbound.test.ts`, `broker/routing/writer.test.ts`.
+`broker/routing/outbound.test.ts`, `broker/routing/writer.test.ts`, and, for the contracts pacing
+broke, `broker/config.ts`, `broker/config.test.ts`, `broker/discord/adapter.ts`,
+`broker/discord/adapter.test.ts`, `broker/discord/rest.ts`, `broker/routing/http.ts`,
+`broker/tail.ts`, `relay/broker.ts`, `relay/broker.test.ts`.
 
 Acceptance: `npm test` green.
 
@@ -327,6 +387,7 @@ refuses when something did.
 
 Model: session
 Locus: inline
+Status: Complete
 
 `docs/architecture.md` describes narration coalescing's freshness by snowflake high-water, the
 allow-time baseline, queued-prompt mirroring as the second prompt path, and paced delivery.
@@ -365,15 +426,15 @@ trust argument.
 ## Related
 
 Amends the freshness contract of
-[`channels_narration-coalescing_spec_v1.md`](../archive/plans/channels_narration-coalescing_spec_v1.md)
+[`channels_narration-coalescing_spec_v1.md`](./channels_narration-coalescing_spec_v1.md)
 (Section 1 here replaces the clock-only remember refusal whose own-echo residue that plan's
 Chapter 3 accepted as rare and the first live run measured as dominant). Extends the tailer of
-[`interim-mirroring_spec_v1.md`](../archive/plans/interim-mirroring_spec_v1.md) (Sections 2 and 3)
+[`interim-mirroring_spec_v1.md`](./interim-mirroring_spec_v1.md) (Sections 2 and 3)
 and the split-run delivery of
-[`channel-mirroring_spec_v1.md`](../archive/plans/channel-mirroring_spec_v1.md) and
-[`channel-quality-and-plugin_spec_v1.md`](../archive/plans/channel-quality-and-plugin_spec_v1.md)
+[`channel-mirroring_spec_v1.md`](./channel-mirroring_spec_v1.md) and
+[`channel-quality-and-plugin_spec_v1.md`](./channel-quality-and-plugin_spec_v1.md)
 (Section 4). The EchoMemory dedup contract of
-[`channels_reply-dedup-and-repair_spec_v1.md`](../archive/plans/channels_reply-dedup-and-repair_spec_v1.md)
+[`channels_reply-dedup-and-repair_spec_v1.md`](./channels_reply-dedup-and-repair_spec_v1.md)
 is untouched.
 
 ## Out of Scope
@@ -402,6 +463,29 @@ thread, one long turn, which is operator check F in its extended form:
   queued prompt, or a report that still ends early reopens the work.
 
 ## Open Questions
+
+- Answered 2026-08-08 by the operator: the broker acknowledges early, so the relay's timer measures
+  liveness rather than run length. The relay's timeout is an idle timer, firing on socket silence
+  rather than on elapsed time, so the broker writes its response head as soon as the request is
+  validated and then a newline every heartbeat period while the run is in flight. Whitespace is
+  insignificant leading JSON, so a parser at the other end ignores the heartbeat and reads the
+  outcome that follows. The relay stays patient exactly as long as the broker is demonstrably
+  working, which is what a timeout should measure, and no arithmetic about run length is involved.
+
+  Two consequences shaped the rest. HTTP cannot send bytes before a status, so acknowledging early
+  means committing to 200 before the outcome is known: the reply route now carries success or
+  failure in the body, which cost nothing because the relay already read the body and ignored the
+  status. Every refusal that fires before the run starts keeps its own status untouched. And an
+  idle timer alone would wait forever on a genuinely wedged ordering chain, so the relay also holds
+  an absolute ceiling whose expiry is reported distinguishably: a broker gone quiet still reports
+  failure, while the ceiling reports that the answer may already be going up and must not be
+  resent. That distinction is what keeps the backstop from reintroducing the double-post it exists
+  to bound.
+
+  This retires the derived constant and its holes: `broker/config.ts` no longer computes a reply
+  timeout from the body cap and the pacing constants, and no longer value-imports the router and
+  the renderer to do it. The operator-settable body cap can no longer cross a timeout it cannot
+  see.
 
 - Answered 2026-08-08, by measurement over this project's own 41 transcripts. The operator's own
   channel message is recorded as a `queued_command`, but under `origin.kind` `channel`, carrying
@@ -595,3 +679,239 @@ so the next session inherits the distribution instead of re-measuring.
 nothing here.
 Next: 4. A split run paces itself and lands whole
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-08
+Completed: nothing; 4. A split run paces itself and lands whole is BLOCKED on an operator decision
+Implemented By: implementer-opus, three rounds
+Metrics: 2 review rounds; 0 NEEDS_CONTEXT; 0 tier escalations (see the comparison below); advisor
+opus
+Decisions / Surprises: The section builds and its own behavior is right. What it broke is
+everything that was sized for a fast run, and that is where both review rounds landed.
+
+Round one returned three Criticals from two lenses. The per-run wait cap accrued what a wait ASKED
+for rather than what it COST, so a 429 reporting a sliver of a millisecond passed the blind
+fallback, lapsed its budget block inside the timer's own floor, and issued a real post per
+millisecond indefinitely. A non-finite wait on the unclamped discord.js path made the cap
+unreachable, spun the loop, and set `blockedUntil` to `NaN`, which compares false forever; because
+the post budget is the one the steering path's permission alerts spend, that single observation
+would have dropped every alert for the process lifetime with no self-heal. And the paced run
+outlives the relay's reply timeout, so the model is told its reply failed while the broker is still
+posting, and a resend double-posts everything already landed.
+
+That last one is the section's real lesson, and it is the doctrine's own rule about naming what
+still speaks the old contract. Nothing in the diff was wrong in isolation. The defect lived
+entirely in the relationship between two constants in two different processes that had only ever
+been coincidentally ordered, and no test pinned the relation because each side was tested against
+its own literal.
+
+Round two closed the accrual Critical outright, confirmed by both lenses: the wait is floored at a
+named minimum and the cap now accrues elapsed time, which bounds attempt count as well as duration
+even against a clock that does not advance. The wire-value Critical came back, same class and a
+different site: the clamp had been applied to two arms but not the primary HTTP 429 arm, and it
+bounded kind rather than magnitude, so a finite `1e30` wedged the bucket with no overflow at all,
+and the finiteness reading sat before the seconds-to-milliseconds multiply where a `1e306` header is
+still finite. That is now clamped for magnitude on every arm, after the multiply, with the writer's
+own pre-flight refusal sharing the clamp because it manufactures a wait from `blockedUntil` and the
+transport's clamp never sees it. The pin is on the operation rather than the output: each hostile
+value is folded into a real budget and the bucket is asserted still affordable, which is the
+property that keeps permission alerts alive.
+
+The tier-escalation comparison, run before deciding not to spend a bump. The wire-value class
+repeats across both rounds, which is the signal that says the tier is the lever. The relay-timeout
+Critical does not: it survived because the premise in the dispatch brief was wrong, not because the
+implementer missed anything. The brief prescribed deriving the reply timeout from the run's worst
+case, and both round-two lenses independently showed that no per-run constant can work, because
+`/relay/reply` waits on the thread's ordering chain and the backlog ahead of it is unbounded. A
+stronger implementer cannot fix a brief that is itself wrong, so the section is raised as a
+decision rather than re-dispatched. The derived constant stays in the tree as a stopgap that raises
+the ceiling without closing the hole, and the Open Question names the three candidate fixes.
+
+Two further open items are recorded rather than fixed. `CHANNEL_MAX_BODY_BYTES` is operator-settable
+with no maximum while the derived ceiling reads the default, and the relay cannot see the broker's
+env, so raising that knob re-opens the double-post with no runtime signal. And a reviewer showed the
+2x headroom is exhausted by a single default-cap body of escape-heavy prose, since the renderer
+escapes every angle bracket before splitting. Both are subsumed by the Open Question: no headroom
+factor survives an unbounded queue.
+
+One reviewer rationale was falsified rather than accepted. The claim that writing to a destroyed
+socket throws, and so risks an unhandled rejection inside the catch, did not reproduce: a probe on
+Node 24.19.0 with a destroyed `ServerResponse` showed no synchronous throw and no unhandled error.
+The guard was kept as directed because it makes both paths read alike, but no test was written for
+it, because a test that passes with and without the guard earns nothing. The comment the section had
+shipped asserting the throw was corrected.
+
+Out of scope by the operator's own Out of Scope line, and left alone: `alert` has no retry, so
+mirror contention on the shared per-channel post bucket can drop a permission alert and park the
+session. Pacing makes the mirror path push where it used to stop, so this is a real degradation
+rather than a theoretical one, and it is raised to the operator alongside the blocking question.
+Review Findings: Round one, 3 Criticals across two lenses, all addressed. Round two, 2 Criticals
+(one class repeating, one new site of it), addressed; 5 Majors, of which the relay timeout and its
+two corollaries are the blocking Open Question, one was a claim-accuracy fix to this spec's own
+text, and one is the accepted pacing chain-hold now stated rather than denied. Minors fixed: the
+permission route had inherited a timeout derived for replies and now has its own; the error path
+gained the guard the success path had; several comments asserting properties the code lacks were
+swept, including a closed enumeration missing its third member. Left: `transport.ts` documents
+`retryAfterMs` as null unless refused for rate limiting, which the writer's pre-flight refusal made
+imprecise, and the file was outside the fix scope.
+Stamps: adjudicated 1, stamped 1. `discord-edit-and-create-are-separate-rate-buckets` steered the
+writer seam directly: it is why the pre-flight refusal reads `blockedUntil` off the per-verb budget
+the verb actually spends rather than a merged one, and both reviewers confirmed the two buckets stay
+separate on both the check and the report.
+Next: 4 is blocked pending the operator's answer on the reply-timeout Open Question; 5. The docs
+carry the fidelity surface follows it, since the runbook text depends on what 4 finally does.
+Commit Model: Commit-and-Push, deviated deliberately: this round is committed to the branch
+`section-4-pacing` rather than to main, because main should not carry a pacing change whose known
+open defect is a double-posted reply. Merging is the operator's call once the Open Question is
+answered.
+
+### Chapter 5 - 2026-08-08
+Completed: 4. A split run paces itself and lands whole
+Implemented By: implementer-opus, two further rounds
+Metrics: 1 review round on this fix; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The operator chose the early acknowledgment. The relay's timeout is an idle
+timer, so the broker writes its head as soon as the request validates and a newline every heartbeat
+while the run is in flight, and the relay stays patient exactly as long as the broker is
+demonstrably alive. Whitespace is insignificant leading JSON, so the heartbeat costs the parser
+nothing. The arithmetic is gone, and with it the derived constant, its 2x headroom guess, its hole
+where an operator-settable body cap crossed a timeout it could not see, and the value import that
+had pulled the router and the renderer into a config module nearly everything imports.
+
+HTTP cannot send bytes before a status, so the route commits to 200 and carries the outcome in the
+body. That cost nothing, and the reason is worth recording: the relay already ignored the status
+and read the body, so the relocated failure is byte-for-byte what it always was, and every refusal
+that fires before the run starts keeps its own status. The implementer refined the placement, acking
+after the body read and reply-key check rather than at the top of the route, so no pre-run failure
+mode moved at all.
+
+The reviewer's remaining Major was a third timeout nobody had measured: Claude Code's own MCP tool
+timeout, sitting above both of ours. Measured rather than assumed, and it resolves with margin. A
+tool call is bounded by two independent timers, a wall clock that progress notifications do not
+extend, defaulting to about 28 hours, and an idle timer that they do reset, defaulting to 30
+minutes for a stdio server and 5 for HTTP. This relay connects over `StdioServerTransport`, so the
+30-minute window applies and the 15-minute ceiling settles inside it, which is also why the relay
+needs no progress notifications at all. Neither variable is set in this environment. The window is
+now a named constant beside the ceiling, marked as Claude Code's value rather than this project's,
+with a test holding the ceiling under it, and the facts are banked in the operator memory tier
+where the next project meets the same question.
+
+Two claims were falsified by probe rather than accepted. A reviewer held that writing to a
+destroyed socket throws and risks an unhandled rejection; on Node 24.19.0 it does neither. And a
+reviewer held that a client disconnecting during the body read reaches the head write with the
+response already destroyed; it does not, because the body read itself throws and control leaves for
+the catch. The guard for that case ships anyway as forward defense and is recorded here as
+deliberately unpinned: no test can reach it without a production change, and it becomes live the
+moment anyone inserts an await between the body read and the head write, which this very session
+did twice elsewhere in the same function.
+Review Findings: No Criticals. Both lenses confirmed every pre-existing failure report still
+reaches the model despite the status change, that the heartbeat cannot leak or land after the body,
+and that the two give-up shapes stay distinguishable rather than collapsing. One Major fixed: a run
+resolving after its caller closed dropped its result and logged wording that asserted success, which
+made a late failure silent on the one path where the model has been told not to resend; the log now
+carries the outcome and reads neutrally. One Major resolved by measurement, above. Minors fixed: a
+comment claiming a clamp that does not exist, a ceiling comment claiming a run is "never" cut off
+when the record establishes an unbounded backlog, a test pointer naming the wrong file, and the
+missing arithmetic pin that the replaced test used to carry, now restored as the worst single run
+measured through the real renderer against the ceiling. The model-facing still-posting mapping was
+extracted to a testable seam and pinned in both directions, since a stray error flag there would
+invite the very resend the design prevents.
+Stamps: adjudicated 0, stamped 0; nothing new surfaced in the window, and this round's durable
+learning went to the operator tier as `claude-code-mcp-tool-timeouts` rather than to a stamp.
+Next: 5. The docs carry the fidelity surface
+Commit Model: Commit-and-Push, still on branch `section-4-pacing`. The blocking defect is closed, so
+this branch is ready to merge to main; the merge happens in finishing-work.
+
+### Chapter 6 - 2026-08-08
+Completed: 5. The docs carry the fidelity surface
+Implemented By: main session, with implementer-opus drafting the prose and returning it for
+placement, since a subagent cannot write under `docs/` in this harness
+Metrics: 0 review rounds at the section (finishing-work covers the changeset); 0 NEEDS_CONTEXT; 0
+escalations; advisor opus
+Decisions / Surprises: The drafter found two things wrong with its own brief, and both changed the
+edits. Queued-prompt mirroring is gated by `CHANNEL_INTERIM_MIRROR`, because the tailer is
+constructed only when interim mirroring is on and `deliverPrompt` is one of its options, so three
+`operations.md` claims were stale rather than the one the security review had named: the switch
+governs both halves of what the tailer carries, and the sentence telling the operator it leaves
+"the mirrored prompt" posting as before was actively wrong for the mid-turn kind. And pacing is not
+confined to split replies: `interim` reaches `postRun` directly while `mirror`, `reply`, and
+`interimPrompt` reach it through `deliver`, so the spacing and the bounded retry apply to every
+posting path, which widened the drop-never-queue correction from the security model into
+`architecture.md` as well.
+
+The edits were applied through a verifying applier rather than by hand: 30 replacements, each
+required to match exactly once, with nothing written unless every one matched. That converts the
+usual risk of a bulk doc edit, a near-miss string silently skipped, into a reported failure. All 30
+matched on the first run.
+Review Findings: None at the section. Swept the result directly instead: no em dash in any of the
+five files, no change-narrative phrasing introduced, and the section's own acceptance criteria
+checked by grep, so no doc still claims a run truncates at the first refusal or that nothing is ever
+retried.
+Stamps: adjudicated 0, stamped 0; nothing surfaced in the window.
+Next: finishing-work
+Commit Model: Commit-and-Push, on branch `section-4-pacing`. Merging to main happens in
+finishing-work.
+
+### Chapter 7 - 2026-08-08 (close-out)
+Completed: the effort. All five sections Complete.
+Implemented By: implementer-fable (S1), implementer-sonnet (S2), implementer-opus (S3, S4), main
+session (S5)
+Metrics: 8 review rounds across the effort; 0 NEEDS_CONTEXT; 0 tier escalations; advisor opus
+Decisions / Surprises: The gate moved from 624 tests / 623 pass / 0 fail / 1 skipped at the base
+commit to 689 / 688 / 0 fail / 1 skipped, the single skip pre-existing and unchanged throughout.
+Lint clean. Measured directly rather than inherited: the base numbers came from a clean worktree at
+the base commit, which also served as the red state proving the sections' regression tests
+discriminate.
+
+The effort's own lesson, earned twice: pacing a run changed what the rest of the system had been
+sized for, and both times the defect lived in a relation between two constants in different
+components that nothing pinned. The relay's reply timeout was the first, and deriving a better
+constant failed too, because the reply waits on a per-thread queue whose backlog nothing bounds. The
+fix that held was structural rather than arithmetic, making the relay's timer measure whether the
+broker is alive instead of how long the run takes. Claude Code's own MCP idle window was the second,
+and it resolved by measurement with margin. Where a relation crosses a boundary this project does
+not own, it is now a named constant with its source stated and a test holding the relation.
+Review Findings: QA verification PASS, with every named regression test read and confirmed to assert
+what the spec claims. Final security review CLEAR: no Criticals, no Majors, and it independently
+traced the three properties that matter most across all five sections together, that no route reads
+a never-allowed transcript, that no suppressed-window content can reach a thread, and that
+operator-attributed text cannot escalate into the permission-verdict path. Final adversarial review
+APPROVED_WITH_CONCERNS.
+
+One Major accepted rather than fixed, with the reasoning recorded because it is a real inverted
+failure. The coalescing freshness map is bounded, and if 64 or more other threads narrate during one
+run, an evicted clock entry reads as "no arrival", so a run could be remembered above a foreign
+message: the exact failure Section 1 forbids, in the channel where approvals are answered. Section 4
+widened the window from one HTTP round trip to a paced run. It is accepted because reachability
+requires 64 concurrently narrating threads against a two-host installation, and because the clean
+fix, a global monotonic arrival counter, would make any ID-less arrival anywhere end every in-flight
+run's coalescing, trading an everyday behavior for an unreachable edge. It is carried in
+`docs/backlog.md` so a growing fleet reopens it rather than losing it.
+
+Two Minors fixed at the close: the relay's failure-text lookup resolved a wire-supplied status
+through the prototype chain, so it now matches own properties only, and the transport's
+`retryAfterMs` comment named only a 429 when the writer's own pre-flight refusal also populates it.
+
+Drift: one item, Class deviation, no mistakes. `docs/install.md`'s data-egress sentence omits
+mid-turn narration, which predates this effort; this effort narrowed the gap rather than widening
+it, since that sentence's claim about every prompt typed at the console was false for the mid-turn
+kind before Section 3 and is true now. The accurate egress enumeration lives in
+`docs/security-model.md`.
+Stamps: adjudicated across the effort, 5 stamped:
+`a-brokers-own-gateway-echo-races-ahead-of-its-rest-response` (S1),
+`a-switch-that-suppresses-a-post-fails-differently-from-one-that-gates-a-read`,
+`two-components-agreeing-is-not-two-checks`, `a-comment-that-names-a-property-is-a-claim-to-sweep`
+(S2), `claude-code-transcript-jsonl-shape` (S3), and
+`discord-edit-and-create-are-separate-rate-buckets` (S4). Memory written: the transcript-shape record
+gained the measured `queued_command` population, and the operator tier gained
+`claude-code-mcp-tool-timeouts`.
+
+Operator-pending, and the only thing between here and the goal being observably met: operator check
+F, the side-by-side fidelity watch, on both SCOTT and NEO restarted onto this code. Console beside
+thread, one long turn. The turn's first narration chunk must appear and narration must accumulate in
+one growing message; a message typed at the console mid-turn must appear as an operator-attributed
+quote in order, with the next chunk starting fresh below it; and a reply splitting into six or more
+messages must land whole, checked against the console copy section by section. Narration sitting
+above a typed message more than momentarily, a missing chunk, a missing queued prompt, or a report
+that still ends early reopens the work as a new round. Carried in `docs/backlog.md` so it survives
+the archive.
+Next: none; the effort is complete and archived.
+Commit Model: Commit-and-Push. The branch `section-4-pacing` merges to main in this close-out.

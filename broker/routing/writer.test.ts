@@ -4,6 +4,8 @@
 // the channel this fleet is watched from.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { MAX_USABLE_WAIT_MS } from "../discord/adapter.ts";
+import { createBudget } from "../discord/budget.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createThreadWriter } from "./writer.ts";
@@ -291,4 +293,90 @@ test("a reply and a notice name no user to mention at all", async () => {
       "only the permission prompt is allowed to ping",
     );
   }
+});
+
+test("a refusal the bucket makes itself reports how much of the block is left", async () => {
+  // The wait a caller sits out before trying the same message again, in the one field a 429 from
+  // Discord reports it in: a pre-flight refusal that named no wait would leave a paced run
+  // guessing at a number this writer already knows exactly.
+  const { messenger, posts } = fakeMessenger([
+    { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: 4_000 } },
+  ]);
+  let now = 1_000;
+  const writer = createThreadWriter({ messenger, now: () => now });
+
+  await writer.reply(THREAD, "the 429 that earned the block");
+  now += 2_500;
+
+  const refused = await writer.reply(THREAD, "refused before it reaches the messenger");
+  assert.equal(refused.status, "rate-limited");
+  assert.equal(refused.rate.retryAfterMs, 1_500, "the block runs to 5000 and the clock reads 3500");
+  assert.equal(posts.length, 1, "the refusal is made here, without a call");
+});
+
+test("a refusal the bucket makes itself reports a wait a caller can act on, however wedged the bucket", async () => {
+  // This refusal is a producer of the wait field in its own right: it subtracts a clock from a
+  // block the bucket already holds, so a bucket blocked absurdly far out hands the caller the same
+  // unusable number without any response being read. The caller folds what it is told into a
+  // budget of its own, which is where an unbounded wait stops being one call's problem.
+  const { messenger } = fakeMessenger([
+    { status: "rate-limited", rate: { remaining: 0, resetAfterMs: null, retryAfterMs: 1e30 } },
+  ]);
+  let now = 1_000;
+  const writer = createThreadWriter({ messenger, now: () => now });
+
+  await writer.reply(THREAD, "the refusal that wedged the bucket");
+  now += 1_000;
+
+  const refused = await writer.reply(THREAD, "refused before it reaches the messenger");
+  assert.equal(refused.status, "rate-limited");
+  const budget = createBudget();
+  budget.observe(refused.rate, now);
+  assert.ok(
+    budget.affordable(now + MAX_USABLE_WAIT_MS),
+    `the reported wait wedges a bucket that reads it: it blocks until ${String(budget.blockedUntil())}`,
+  );
+});
+
+test("a bucket with room in it posts and reports the wait the response itself carried", async () => {
+  const { messenger, posts } = fakeMessenger([
+    { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 9_000, retryAfterMs: 7_000 } },
+  ]);
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  const refused = await writer.reply(THREAD, "reaches Discord and is refused there");
+  assert.equal(refused.status, "rate-limited");
+  assert.equal(refused.rate.retryAfterMs, 7_000, "Discord's own retry_after is passed through");
+  assert.deepEqual(posts, [{ threadId: THREAD, text: "reaches Discord and is refused there" }]);
+});
+
+test("each verb's refusal reports its own bucket's block, never the other verb's", async () => {
+  // A post create and a message PATCH are separate Discord rate buckets, so the wait one route
+  // earned is no answer for the other: reported across, a caller would sit out an edit's long
+  // block before a post that was never refused, or retry a post inside a block it must not.
+  const posts: Array<{ threadId: string; text: string }> = [];
+  const edits: Array<{ threadId: string; messageId: string }> = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push({ threadId: input.threadId, text: input.text });
+      return { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: 4_000 } };
+    },
+    editInThread: async (input) => {
+      edits.push({ threadId: input.threadId, messageId: input.messageId });
+      return { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 40_000, retryAfterMs: 30_000 } };
+    },
+  };
+  let now = 1_000;
+  const writer = createThreadWriter({ messenger, now: () => now });
+
+  await writer.reply(THREAD, "earns the post block");
+  await writer.edit(THREAD, "msg-42", "earns the edit block");
+  now += 1_000;
+
+  const refusedPost = await writer.reply(THREAD, "refused pre-flight");
+  const refusedEdit = await writer.edit(THREAD, "msg-42", "refused pre-flight");
+  assert.equal(refusedPost.rate.retryAfterMs, 3_000, "the post block runs to 5000");
+  assert.equal(refusedEdit.rate.retryAfterMs, 29_000, "the edit block runs to 31000");
+  assert.equal(posts.length, 1);
+  assert.equal(edits.length, 1);
 });

@@ -41,9 +41,71 @@ export type OutboundRouterOptions = {
    */
   echo?: EchoMemory;
   log?: (message: string) => void;
-  /** Drives the drop-log rate limiter. Injected so a test moves its window without sleeping. */
+  /**
+   * The clock this router reads: the drop log's window, and what a paced run's reactive waits are
+   * measured against so the cap bounds the time they really cost. Injected so a test moves both
+   * without sleeping, alongside the `sleep` below, which is what advances an injected one.
+   */
   now?: () => number;
+  /**
+   * Waits, which is what paces a split run and what sits out a rate-limited refusal before the
+   * refused message is posted again. Injected so a test drives a paced run's timing without
+   * spending it.
+   *
+   * The default timer does not hold the event loop open, so a broker shutting down mid-gap exits
+   * rather than lingering for the rest of the run, which drops the remainder exactly as a shutdown
+   * mid-run does.
+   */
+  sleep?: (ms: number) => Promise<void>;
 };
+
+/**
+ * The gap between consecutive posts of one run. No gap precedes a run's first post.
+ *
+ * Discord allows roughly five message creates per five seconds in one thread, and a long report
+ * renders into more messages than that. Fired back to back they empty the bucket part way through
+ * and the rest of the report is refused; spaced by this, a run's send rate stays under the bucket
+ * and the refusal is rare rather than routine. The cost is that a report arrives over seconds,
+ * which is what the operator reading it on a phone would choose over half of it.
+ */
+export const RUN_PACE_MS = 1_500;
+
+/**
+ * How much of one run's time may be spent waiting out rate-limit refusals. Pacing gaps are not
+ * counted against it: they are the mechanism that keeps the bucket full, not evidence it is empty.
+ *
+ * Past this a run stops where it got to and reports the count, the same answer it gives any
+ * refusal it cannot pass. What it bounds is the waiting and nothing else. The pacing is the larger
+ * hold and no constant here bounds it: it scales with the message count, so a body near the mirror
+ * route's ceiling paces for minutes, and the thread's ordering chain is held for all of it, with
+ * the operator's own queued prompt and every later post for that thread landing after the report
+ * they follow. That order is the one a thread reads correctly in; what this cap keeps off the end
+ * of it is an unbounded wait on a genuinely wedged bucket.
+ */
+export const MAX_RUN_WAIT_MS = 60_000;
+
+/**
+ * How long a rate-limited refusal that names no usable wait is sat out.
+ *
+ * Reached by a refusal carrying no `retryAfterMs` at all, one carrying a wait that has already
+ * elapsed, and one carrying a value that is not a finite number: none of the three names a wait
+ * this run can act on. Every reactive wait is therefore strictly positive, which is what makes the
+ * cap above reachable in a finite number of retries rather than a bound on a loop that never
+ * advances.
+ */
+const BLIND_RETRY_MS = 5_000;
+
+/**
+ * The shortest a rate-limited refusal is sat out, whatever wait it reported.
+ *
+ * A reported wait comes off the wire, and a sub-millisecond one is a request storm rather than a
+ * pause: `setTimeout` floors at about a millisecond, so a run honoring such a wait literally would
+ * fire roughly a thousand real posts a second at a bucket that has not moved, and the cap above
+ * would take hundreds of millions of iterations to catch it. Discord's create bucket refills over
+ * seconds, so a second is the shortest wait that can plausibly change the refusal's answer, and it
+ * is what turns the cap into a bound on the number of attempts as well as on their duration.
+ */
+const MIN_REACTIVE_WAIT_MS = 1_000;
 
 /** How long a run of the same drop line for the same session is aggregated before its next flush. */
 const DROP_WINDOW_MS = 60_000;
@@ -205,11 +267,12 @@ export type OutboundRouter = {
    * written by the session holding the pipe rather than by whatever inherited the token.
    *
    * This is the seam where mirror text becomes Discord messages. The renderer decides how many it
-   * takes, and they are posted in order through the mirror writer. A post refused part way through
-   * stops the run: the rest are dropped and never retried, so the thread shows a reply that ends
-   * early rather than a reply with an invisible hole in the middle, and the count that landed is
-   * logged. Retrying would be a second reason to write into a thread whose budget has already said
-   * no.
+   * takes, and they are posted in order through the mirror writer, spaced so a long reply stays
+   * under the thread's create bucket and a refusal earned anyway is waited out and the same
+   * message posted again. A refusal the run cannot pass, one that is not rate limiting or one that
+   * has exhausted the run's waiting cap, stops it: the rest are dropped and never retried, so the
+   * thread shows a reply that ends early rather than a reply with an invisible hole in the middle,
+   * and the count that landed is logged.
    */
   mirror: (
     processToken: string,
@@ -286,7 +349,16 @@ export type OutboundRouter = {
 
 export function createOutboundRouter(options: OutboundRouterOptions): OutboundRouter {
   const log = options.log ?? ((): void => {});
-  const dropped = createDropLog(log, options.now ?? Date.now);
+  const now = options.now ?? Date.now;
+  const dropped = createDropLog(log, now);
+  const sleep =
+    options.sleep ??
+    ((ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        // Unreferenced, so a pending gap is not something the process waits out before it can
+        // exit: a shutdown mid-run drops the run's remainder rather than delaying the shutdown.
+        setTimeout(resolve, ms).unref();
+      }));
 
   // Resolution shared by both posting paths, held in one place so the two cannot drift: a post is
   // addressed by the session currently holding the process token and by nothing else, and nothing
@@ -327,9 +399,11 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   // busy session would otherwise hold every other session's writes behind it.
   //
   // This is ordering, not queueing. A task waits only on the posts already on the wire for its own
-  // thread; nothing is held for a thread that has none, and nothing is retried or kept for later,
+  // thread; nothing is held for a thread that has none, and nothing is kept for a later call,
   // which is the rule the whole routing layer follows: a message that lands minutes late answers a
-  // question the operator stopped asking. Alerts and notices do not come through here, which is
+  // question the operator stopped asking. What a run does hold its own chain for is its pacing and
+  // its rate-limit waits, which are one in-flight run finishing rather than anything queued behind
+  // a call that already answered. Alerts and notices do not come through here, which is
   // what keeps a permission prompt from queueing behind a long mirrored reply.
   //
   // The order this holds is the order posts reach this router, and the mirror intake hands one over
@@ -431,14 +505,22 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   }
 
   /**
-   * Posts one rendered run of messages, in order. A post refused part way through stops the run:
-   * the rest posted around a hole reads as text the author never wrote, and the transport that
-   * refused one message refuses the next for the same reason.
+   * Posts one rendered run of messages, in order, paced so the whole run lands.
+   *
+   * A run is spaced by `RUN_PACE_MS` between consecutive posts, and a post refused for rate
+   * limiting waits out the refusal and goes again with the same message, under a per-run cap on
+   * how long the waiting may total. Rate limiting is the one refusal class where nothing landed
+   * and the same call will be accepted later, so a retry cannot double-post; every other refusal
+   * stops the run where it got to, because the rest posted around a hole reads as text the author
+   * never wrote and a route refusing the request itself refuses the next one identically. A run
+   * that exhausts the cap stops the same way.
    *
    * One loop for every posting path on purpose: the landed count and the error wording are part
    * of what the callers log and report, and two copies would let those drift. Not chained here,
    * because the interim path runs it inside a chain task of its own, where taking a second place
    * on the same chain would deadlock; `deliver` below is the chained doorway everything else uses.
+   * The thread's ordering chain is held for the whole of a paced run, which is the order a thread
+   * reads correctly in: what a session posts after a report belongs below it.
    *
    * `lastMessageId` is the id of the run's final message, carried only when the whole run landed
    * and Discord's response yielded one: it is what the interim path remembers as the target of
@@ -450,14 +532,43 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   ): Promise<{ landed: number; error: string | null; lastMessageId: string | null }> {
     let landed = 0;
     let lastMessageId: string | null = null;
+    let waited = 0;
     for (const message of messages) {
-      const outcome = await options.mirrorWriter.reply(threadId, message);
+      // Between posts and never before the first, so a run of one message spends nothing. Taken
+      // whether or not the previous message had to be waited out: a reactive wait is evidence the
+      // bucket emptied, not a reason for the next post to skip the spacing that keeps it full.
+      if (landed > 0) await sleep(RUN_PACE_MS);
+      let outcome = await options.mirrorWriter.reply(threadId, message);
+      while (outcome.status === "rate-limited") {
+        const reported = outcome.rate.retryAfterMs;
+        // A wait this run can act on is a finite positive number of milliseconds, floored so that
+        // a refusal naming a sliver of one is a pause rather than a request storm. Anything else
+        // is sat out blind. The finiteness reading is defense in depth rather than the only guard:
+        // every producer of this field bounds it already, the transport where the wire's value
+        // crosses into the process and the writer where its own refusal computes one. What it
+        // covers is a producer added later, because a `NaN` reaching this loop is a wait that
+        // passes the positive test, defeats the cap below (every comparison against it is false),
+        // and sleeps for no time at all.
+        const wait =
+          reported !== null && Number.isFinite(reported) && reported > 0
+            ? Math.max(reported, MIN_REACTIVE_WAIT_MS)
+            : BLIND_RETRY_MS;
+        // Stopping rather than waiting past the cap. The run reports the count it reached, which
+        // is what the callers log, and the messages it did not reach are dropped.
+        if (waited + wait > MAX_RUN_WAIT_MS) {
+          return { landed, error: "rate limited", lastMessageId: null };
+        }
+        const before = now();
+        await sleep(wait);
+        // The greater of what the wait asked for and what it actually cost. The request alone
+        // would bound how many retries a run takes and not how long they hold the thread's chain,
+        // so a run whose waits overrun would sit past the cap; the elapsed time alone would
+        // advance nothing against a clock that does not move. Both together bound both.
+        waited += Math.max(now() - before, wait);
+        outcome = await options.mirrorWriter.reply(threadId, message);
+      }
       if (outcome.status !== "ok") {
-        return {
-          landed,
-          error: outcome.status === "rate-limited" ? "rate limited" : outcome.error,
-          lastMessageId: null,
-        };
+        return { landed, error: outcome.error, lastMessageId: null };
       }
       landed += 1;
       lastMessageId = outcome.value.messageId;

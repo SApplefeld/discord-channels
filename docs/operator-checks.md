@@ -4,8 +4,9 @@ Six checks that need a human at a terminal, a phone, or an Administrator prompt.
 proves, its result, the exact steps, and what the answer settled.
 
 **Five of the six have been run and passed**, A through D on 2026-08-06 and E on
-2026-08-07; check F, the live watch of a long turn's narration, has not yet been run and covers the
-coalesced surface and the one-copy close of a turn. The procedures are kept because they are
+2026-08-07; check F, the side-by-side watch of a long turn with the console beside the thread, has
+not yet been run and covers the coalesced surface, the one-copy close of a turn, and whether the
+thread carries everything the console carried. The procedures are kept because they are
 also how to re-check a new host: none of these results is inferable from the code, and two of them
 would change the design if a future host answered differently.
 
@@ -264,7 +265,7 @@ the per-session off switch actually stops mirror posts on a real host.
 Write the outcome of each step here the way checks A through D record theirs. Step 2 is the one that
 can change the design; the rest confirm the wiring.
 
-## F. Does a long turn narrate itself, once, without doubling its ending?
+## F. Does the thread carry what the console carried?
 
 **Result: not yet run.**
 
@@ -279,15 +280,28 @@ real final text land on the intended side of the 0.85 threshold. Only a real lon
 host settles either, and the answer is visible only from the phone, which is the surface this whole
 effort exists to serve.
 
+The fidelity half needs a human for a second reason: it is a comparison between two surfaces, the
+console and the thread, and only a person watching both at once can say whether one is a faithful
+copy of the other. Coalescing turns on gateway timing, a mid-turn typed message on how the harness
+records it, and a split reply on Discord's live rate-limit budget, none of which a test process
+observes.
+
 **What it proves.** That a turn running for many minutes stops being silence on the operator's
 phone, that mid-turn narration is distinguishable at a glance from the turn's actual answer, that
 the answer arrives exactly once, and that both off switches genuinely silence narration without
-taking the mirror down with them.
+taking the mirror down with them. And that the thread is a faithful copy of the console: narration
+that starts with the turn's first chunk and grows as one message, a message typed at the console
+mid-turn arriving in the thread in order, and a reply long enough to split arriving whole.
 
 ### Steps
 
+Run this with the console and the thread side by side, one host at a time.
+
 1. From a wrapped session, start a turn that will run for several minutes and write prose between
-   its tool calls: a task that reads a few files and narrates what it is doing between them.
+   its tool calls: a task that reads a few files and narrates what it is doing between them. **Pass
+   on the opening:** the turn's first narration chunk reaches the thread, matching the first prose
+   the console showed. **Fail:** narration that begins part way into the turn with the console's
+   opening paragraphs appearing nowhere, which is the file's position being taken past them.
 2. Watch the thread on a phone while it runs. **Pass:** narration arrives during the turn, in the
    order it was written, under a `✨ Claude · working` line that reads differently at a glance from
    the `✨ Claude` a mirrored reply carries. Consecutive chunks accumulate into one growing message
@@ -328,8 +342,21 @@ taking the mirror down with them.
    **Pass:** the growing message stops there and the next chunk starts a fresh message below yours.
    **Fail:** narration appearing above your message for more than a moment, which is the freshness
    signal not reaching the router, or a chunk that never appears at all.
+8. During another long turn, type a message at the **console** while the model is working, so the
+   harness queues it rather than opening a turn with it. **Pass:** it appears in the thread as an
+   operator-attributed quote, in its place among the narration around it, and the next chunk starts
+   a fresh message below it. **Fail:** it appears nowhere in the thread, or it appears under
+   Claude's own attribution rather than the operator's. This is the mid-turn kind specifically:
+   step 7's message is typed in the thread and exercises the freshness signal instead.
+9. Get the session to produce a reply long enough to split into six or more messages, a full report
+   rather than a paragraph. **Pass:** every part lands, checked against the console copy section by
+   section, arriving over seconds rather than all at once. **Fail:** a reply that ends part way
+   while the console shows more, which the log names as `stopped after N of M messages`, and the
+   reason it carries says whether the run ran out of waiting or met a refusal waiting cannot pass.
 
 ### Recording the result
 
 Write the outcome of each step here the way checks A through E record theirs. Step 3 is the one that
-can change the design; the rest confirm the wiring and the switches.
+can change the design; steps 1, 8, and 9 are the fidelity watch, and any of the three failing
+reopens the work rather than being recorded as an accepted cost. The rest confirm the wiring and the
+switches.
