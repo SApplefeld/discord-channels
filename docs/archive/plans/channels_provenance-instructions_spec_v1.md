@@ -1,6 +1,6 @@
 # The relay's instructions describe the sender gate
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: n/a (Fable-led session)
 Created: 2026-08-08
@@ -141,10 +141,10 @@ treats channel content as unattributed or lower-authority.
 
 ## Related
 
-- [`../security-model.md`](../security-model.md), whose sender-gate section is the control this
-  plan's text describes and whose channel-event paragraph this plan rewrites.
-- [`../archive/plans/sapplefeld-channels_spec_v1.md`](../archive/plans/sapplefeld-channels_spec_v1.md),
-  the original design record where the sender gate and the relay's instructions were first built.
+- [`../../security-model.md`](../../security-model.md), whose sender-gate section is the control
+  this plan's text describes and whose channel-event paragraph this plan rewrites.
+- [`sapplefeld-channels_spec_v1.md`](sapplefeld-channels_spec_v1.md), the original design record
+  where the sender gate and the relay's instructions were first built.
 
 ## Open Questions
 
@@ -171,5 +171,15 @@ Decisions / Surprises: The blind reviewer was skipped for this section with caus
 Review Findings: 0 Critical, 0 Major; 2 Minor: an operator-facing sentence stated model behavior as a guarantee rather than as instruction text, fixed with the reviewer's wording (the honesty gate applies to promises on operator surfaces); the steering-deference paragraph's placement under the permission-prompt heading noted, kept beside the inbound-chat ceiling where inbound-message content already lives.
 Stamps: none surfaced (memq unstamped --since 1h returned 0)
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-08
+Completed: close-out
+Implemented By: main session
+Metrics: finishing pass (qa-verifier, security-reviewer, adversarial-reviewer, docs-curator, all at the session model on a Fable-led session); 0 escalations; advisor opus
+Decisions / Surprises: QA PASS with the suite at exact baseline (689 tests, 688 pass, 0 fail, 1 pre-existing skip; lint exit 0) and the INSTRUCTIONS literal verified character-for-character against the spec's blockquote. Security review CLEAR; final adversarial APPROVED, both concurring with the Chapter 1 adjudications rather than reopening them. Drift Report: two deviations, no mistakes. D1, delivery lifetime: the instructions are an MCP Server constructor option delivered once at initialize, so a broker restart does not refresh a running session's posture and only a new session launch picks up an edited text; sharper than the spec's "until their relay reconnects", accepted and documented in operations.md by the curator. D2, pre-existing thesis looseness: the security model's "every field crossing it is data rather than instruction" universal coexists with the verdict path the same document describes; the curator scoped the thesis with one added sentence and left the universal in place, and tightening it further is deliberately not taken here. During the pass the operator reported live that a long channel message truncates silently; confirmed as the designed 2,000-code-point inbound bound with no notice on either end, answered in-thread, and filed to the backlog as a candidate fix.
+Review Findings: finishing round produced 0 Critical, 0 Major; 2 Minor (a close-out sequencing reminder, honored by this delivery, and the already-adjudicated phrase-pin reach note).
+Stamps: adjudicated 3, stamped 0 (three operator-tier reads surfaced at close, permission-rule and Azure facts touched by a subagent's index load; none steered this effort)
+Next: none; effort complete, delivered in this changeset
 Commit Model: Commit-and-Push
 

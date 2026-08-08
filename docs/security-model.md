@@ -4,7 +4,8 @@ What this system trusts, what it does not, and the risks it accepts deliberately
 
 The short version: anything that can post to the broker can eventually put text in front of Claude,
 so the intake is the main attack surface, and every field crossing it is data rather than
-instruction.
+instruction. What standing a channel message then has with the model is a separate question,
+settled by the relay's instructions and resting on the sender gate below.
 
 ## The trust boundary
 

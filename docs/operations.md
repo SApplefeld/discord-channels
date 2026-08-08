@@ -129,7 +129,9 @@ with a log line and no in-thread notice.
 A message you type in a thread reaches the session as your own steering, at the same standing as
 the keyboard: the relay's instructions tell the model every delivered message has passed the sender
 gate. The same instructions keep the confirm-first discipline: the model is told to confirm before
-anything irreversible or outward-facing, exactly as at the console.
+anything irreversible or outward-facing, exactly as at the console. A session reads those
+instructions once, when its channel connects at launch, so an edited instruction text reaches the
+next session to start rather than the ones already running.
 
 ## Mid-turn narration and typed messages
 
