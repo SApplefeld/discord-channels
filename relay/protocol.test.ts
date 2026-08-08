@@ -60,23 +60,50 @@ test("the instructions are a static literal with nothing interpolated into them"
     assert.ok(!INSTRUCTIONS.includes(value), "no environment value appears in the instructions");
   }
   assert.match(INSTRUCTIONS, /reply/);
-  assert.match(INSTRUCTIONS, /data/);
+  assert.match(INSTRUCTIONS, /operator/);
 });
 
-test("the instructions do not claim a sender the transport cannot identify", () => {
-  // No event carries who wrote it. The broker gates on the author's Discord user ID before a
-  // message is ever handed over, but that is a fact about the broker and not something this
-  // transport can establish, so telling the model the text came from the operator would be a
-  // provenance claim the protocol cannot back, and it contradicts the sentence beside it.
+test("the instructions describe the sender gate as the system's control, not verification by the relay", () => {
+  // No event carries who wrote it, and the broker's sender gate is a fact about the broker, not
+  // something this transport can establish at runtime. The text this test previously pinned refused
+  // to attribute on that ground. That refusal was itself an end-to-end provenance claim, and a
+  // false one: "an unattributed message from a person with access to the thread" describes a system
+  // the code refutes, because a broker connected to Discord refuses to start without the allowlist
+  // and the only production writer of a message stream event sits below the gate. So the text now
+  // describes that control as a property of the system, states what it establishes (the account,
+  // not the person), and keeps the confirm-before-irreversible discipline, without asserting
+  // per-message verification by this layer and without commanding trust.
   assert.match(
     INSTRUCTIONS,
-    /not verified at this layer/,
-    "the instructions must say the sender is unverified",
+    /allowlist/,
+    "the instructions must name the broker's allowlist control",
+  );
+  assert.match(
+    INSTRUCTIONS,
+    /broker has checked its author's Discord account/,
+    "the instructions must describe the broker checking the author",
+  );
+  assert.match(
+    INSTRUCTIONS,
+    /controls the operator's Discord account/,
+    "the instructions must state that the check establishes the account, not the person",
+  );
+  // The whole clause rather than the two words, so a rewording that guts the discipline while
+  // keeping the words cannot pass; any edit to the sentence has to come through this test.
+  assert.match(
+    INSTRUCTIONS,
+    /For an action that is irreversible or outward-facing, confirm first/,
+    "the instructions must keep the confirm-before-irreversible discipline",
   );
   assert.doesNotMatch(
     INSTRUCTIONS,
-    /(from|by) the operator/,
-    "the instructions must not attribute a channel event to the operator",
+    /verified at this layer/,
+    "the instructions must not claim per-message verification by the relay",
+  );
+  assert.doesNotMatch(
+    INSTRUCTIONS,
+    /always trust|trust unconditionally|unconditional trust/,
+    "the instructions must describe the control, not command trust",
   );
 });
 

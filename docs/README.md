@@ -19,7 +19,9 @@ is built and installable.
 
 ## Plans
 
-No plan is in progress.
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_provenance-instructions_spec_v1.md`](plans/channels_provenance-instructions_spec_v1.md) | In Progress | The relay's MCP instructions describe the sender gate instead of calling channel messages unattributed: a delivered message has passed the broker's one-account allowlist, so the session treats channel steering as the operator's own, at the keyboard's standing, with the confirm-before-irreversible discipline kept explicit. |
 
 Archived plans, most recent first.
 
