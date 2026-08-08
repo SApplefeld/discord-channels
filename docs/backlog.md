@@ -33,11 +33,6 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 - Remove the retired `mcp__channel-relay__reply` rule from `~/.claude/settings.json` on NEO and on
   ASR: both were provisioned while the fragment still shipped it, and `Install-Host.ps1` never
   removes a rule already there. SCOTT's copy is already done.
-- Inbound truncation is silent: the broker cuts a channel message to 2,000 code points
-  (`MAX_INBOUND_TEXT_LENGTH`, `broker/routing/inbound.ts`) with no in-thread notice and no marker on
-  what the session receives, so a long dictation loses its tail with no signal on either end, which
-  the operator hit live on 2026-08-08. Options, cheapest first: an in-thread truncation notice, a
-  truncation marker appended to the delivered text, or raising the constant toward Discord's 4,000.
 
 ## Snapshots
 

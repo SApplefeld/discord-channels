@@ -8,7 +8,7 @@
 //
 // A process token identifies a pipe. It is not evidence about who sent a message, and no check
 // here consults it for that.
-import { sliceCodePoints, withoutInvisible } from "../sanitize.ts";
+import { withoutInvisible } from "../sanitize.ts";
 import { parseVerdict } from "../security/permission.ts";
 import type { PermissionDesk } from "../security/permission.ts";
 import type { SenderGate } from "../security/senders.ts";
@@ -39,11 +39,13 @@ export type InboundMessage = {
 };
 
 /**
- * Ceiling on the text handed to a session, in code points. Discord allows a longer message than
- * this from a boosted server, and the pipe carrying it is the session's own MCP transport, so the
- * bound is the broker's to set rather than Discord's.
+ * Ceiling on the text handed to a session, in code points. It matches Discord's own maximum
+ * message length, the 4,000-character Nitro ceiling and the longest message any client can send,
+ * so no message Discord delivers is cut. The slice below is the backstop for a future cap change,
+ * not a working path. The pipe carrying the text is the session's own MCP transport, so the bound
+ * stays the broker's to set rather than Discord's.
  */
-export const MAX_INBOUND_TEXT_LENGTH = 2_000;
+export const MAX_INBOUND_TEXT_LENGTH = 4_000;
 
 /**
  * Most messages one session is handed in a window, and the window. A session steered from a phone
@@ -61,9 +63,19 @@ const INBOUND_WINDOW_MS = 60_000;
  * site: the text goes to the model, while the operator reads the original in Discord. A bidi
  * override is exactly the character that would show those two different messages, and the whole
  * control this design rests on is a person deciding what is safe to send.
+ *
+ * Whether the cut fired rides along with the text, because announcing it is not this function's
+ * call: the notice belongs only to a message that was actually delivered, and only the caller
+ * knows whether one was.
  */
-function bounded(text: string): string {
-  return sliceCodePoints(withoutInvisible(text).trim(), MAX_INBOUND_TEXT_LENGTH);
+function bounded(text: string): { text: string; truncated: boolean } {
+  const visible = withoutInvisible(text).trim();
+  const characters = [...visible];
+  const truncated = characters.length > MAX_INBOUND_TEXT_LENGTH;
+  return {
+    text: truncated ? characters.slice(0, MAX_INBOUND_TEXT_LENGTH).join("") : visible,
+    truncated,
+  };
 }
 
 export type InboundRouterOptions = {
@@ -119,6 +131,16 @@ export const UNREACHABLE_NOTICE =
   "This session has no channel connected, so the message was not delivered. It is still running; " +
   "it was started without the relay, or the relay is reconnecting.";
 
+/**
+ * Posted after a cut message was delivered, so the loss of the tail is never silent. Only the
+ * delivered path earns it: a cut on text that reached no session is noise about a message nobody
+ * received.
+ */
+export const TRUNCATED_NOTICE =
+  `This message was cut at ${MAX_INBOUND_TEXT_LENGTH.toLocaleString("en-US")} characters, so ` +
+  "the session received only the beginning. The rest was not delivered: resend it as its own " +
+  "message.";
+
 export function createInboundRouter(options: InboundRouterOptions): InboundRouter {
   const log = options.log ?? ((): void => {});
   const now = options.now ?? Date.now;
@@ -169,7 +191,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         return;
       }
 
-      const text = bounded(message.text);
+      const { text, truncated } = bounded(message.text);
       // An attachment, a sticker, or a message whose whole content was invisible. There is nothing
       // to hand a session, and a notice would only be noise.
       if (text === "") return;
@@ -178,7 +200,12 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // hand the model a message the operator wrote for the broker, in the middle of a turn parked
       // on the very prompt it answers. The pattern is anchored, so ordinary prose that happens to
       // carry a verdict is not one and falls through to the session below.
-      const verdict = parseVerdict(text);
+      //
+      // A truncated message is never parsed as a verdict: the message the operator actually sent
+      // was not one, and the pattern tolerates enough interior whitespace that a cut can land on
+      // an exact match, which would approve a tool call on words the full text never said. The cut
+      // text flows to the session as chat instead, announced below.
+      const verdict = truncated ? null : parseVerdict(text);
       if (verdict !== null) {
         await options.permissions.resolve(message.threadId, verdict);
         return;
@@ -209,7 +236,34 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         chatId: message.threadId,
         text,
       });
-      if (delivered) return;
+      if (delivered) {
+        // Announced only here, after the truncated text reached a live session: on every
+        // undelivered path (no thread, ended session, over the rate ceiling, no relay), a cut is
+        // noise about text nobody received.
+        //
+        // Posted as a reply rather than a notice, deliberately: the notice floor would let a
+        // recent failure notice swallow this announcement, or let this announcement swallow the
+        // next failure notice, and a suppressed announcement recreates the silent loss it exists
+        // to kill. Its volume is bounded without the floor: the inbound rate ceiling caps
+        // deliveries per minute, and the writer's post budget paces the wire.
+        if (truncated) {
+          try {
+            const outcome = await options.writer.reply(message.threadId, TRUNCATED_NOTICE);
+            if (outcome.status !== "ok") {
+              log(
+                `routing: could not announce a truncation in thread ${message.threadId}: ` +
+                  outcome.status,
+              );
+            }
+          } catch (error) {
+            log(
+              `routing: could not announce a truncation in thread ${message.threadId}: ` +
+                String(error),
+            );
+          }
+        }
+        return;
+      }
 
       log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
       await notice(message.threadId, UNREACHABLE_NOTICE);

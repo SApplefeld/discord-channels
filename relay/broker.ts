@@ -137,8 +137,11 @@ export const MCP_TOOL_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
  */
 const REPLY_CEILING_MS = 15 * 60 * 1000;
 
-/** Bounded so a broker that never sends a newline cannot grow this without limit. */
-const MAX_LINE_BYTES = 64 * 1024;
+/**
+ * Bounded so a broker that never sends a newline cannot grow this without limit. Exported so the
+ * broker's inbound routing can pin its worst-case stream line under this cap.
+ */
+export const MAX_LINE_BYTES = 64 * 1024;
 
 export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
   const log = options.log ?? ((): void => {});

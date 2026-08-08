@@ -7,6 +7,7 @@
 // classify the file as binary, and a test nobody can ever read a diff of is a test nobody reviews.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { MAX_LINE_BYTES } from "../../relay/broker.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
@@ -20,6 +21,7 @@ import {
   ENDED_NOTICE,
   MAX_INBOUND_PER_WINDOW,
   MAX_INBOUND_TEXT_LENGTH,
+  TRUNCATED_NOTICE,
   UNREACHABLE_NOTICE,
   createInboundRouter,
 } from "./inbound.ts";
@@ -189,6 +191,98 @@ test("a message longer than the cap is cut on code points, never mid-character",
   const text = (sent[0] as { text: string }).text;
   assert.equal([...text].length, MAX_INBOUND_TEXT_LENGTH);
   assert.equal(text, astral.repeat(MAX_INBOUND_TEXT_LENGTH), "no half character survived the cut");
+});
+
+test("a message of exactly the cap is delivered whole, with no cut and no notice", async () => {
+  // The cap matches Discord's own maximum message length, so this is the longest message any
+  // client can send, and it must land untouched: the slice is a backstop, not a working path.
+  const astral = String.fromCodePoint(0x1f600);
+  const { router, sent, notices } = harness();
+  await router.deliver(message({ text: astral.repeat(MAX_INBOUND_TEXT_LENGTH) }));
+  assert.deepEqual(sent, [
+    { type: "message", chatId: THREAD, text: astral.repeat(MAX_INBOUND_TEXT_LENGTH) },
+  ]);
+  assert.deepEqual(notices, [], "a message delivered whole earns no notice");
+});
+
+test("a delivered cut is announced in the thread, never suffered in silence", async () => {
+  // The expensive failure is the tail of a dictation vanishing with no signal on either end: the
+  // operator resumes the conversation believing the session heard all of it.
+  const { router, sent, notices } = harness();
+  await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  assert.deepEqual(sent, [
+    { type: "message", chatId: THREAD, text: "a".repeat(MAX_INBOUND_TEXT_LENGTH) },
+  ]);
+  assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
+});
+
+test("a cut on a message that reached no session posts no notice", async () => {
+  // The truncation notice belongs to a delivery: announcing a cut on text nobody received would be
+  // noise in a thread this broker does not even own.
+  const { router, sent, notices } = harness();
+  await router.deliver(
+    message({ threadId: "900000000000000099", text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }),
+  );
+  assert.deepEqual(sent, []);
+  assert.deepEqual(notices, []);
+});
+
+test("two delivered cuts in immediate succession are both announced", async () => {
+  // The announcement is unfloored: a per-thread notice floor here would let the first cut swallow
+  // the second's announcement, recreating the silent loss the announcement exists to kill.
+  const { router, sent, notices } = harness();
+  await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  await router.deliver(message({ text: "b".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  assert.equal(sent.length, 2);
+  assert.deepEqual(notices, [
+    { threadId: THREAD, text: TRUNCATED_NOTICE },
+    { threadId: THREAD, text: TRUNCATED_NOTICE },
+  ]);
+});
+
+test("a truncation announcement does not spend the floor the failure notices need", async () => {
+  // The ended and unreachable notices share a per-thread floor in the writer. The announcement
+  // posts outside it, so a delivered cut followed straight away by a message into the session's
+  // corpse still earns the ended notice.
+  const { registry, router, notices } = harness();
+  await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  registry.relayClosed(TOKEN, "session-a");
+  await router.deliver(message());
+  assert.deepEqual(notices, [
+    { threadId: THREAD, text: TRUNCATED_NOTICE },
+    { threadId: THREAD, text: ENDED_NOTICE },
+  ]);
+});
+
+test("an over-ceiling message whose cut lands on a verdict shape is chat, never a verdict", async () => {
+  // The verdict pattern tolerates a run of interior whitespace, so an over-ceiling message can be
+  // cut into an exact verdict match. The message the operator actually sent was not a verdict, and
+  // resolving one from the cut would approve a tool call on words the full text never said, so a
+  // truncated message is never parsed as one: it flows to the session as chat, announced.
+  const prefix = `y${" ".repeat(MAX_INBOUND_TEXT_LENGTH - 6)}abcde`;
+  const { router, verdicts, sent, notices } = harness();
+  await router.deliver(message({ text: `${prefix} and then the tail Discord accepted` }));
+  assert.deepEqual(verdicts, [], "a cut resolved a permission request the full message never stated");
+  assert.deepEqual(sent, [{ type: "message", chatId: THREAD, text: prefix }]);
+  assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
+});
+
+test("the worst-case inbound line fits under the relay's stream buffer cap", () => {
+  // The broker writes a stream line the relay reads, and the relay silently drops any line past
+  // its buffer cap. The widest per-code-point encoding a message can reach on that wire is a lone
+  // surrogate: it survives the invisible strip and the code-point cut as one code point, and
+  // JSON.stringify escapes it as six bytes. The relay's guard compares the UTF-16 length of its
+  // accumulated decoded buffer, and a string's UTF-8 byte length is always at least its UTF-16
+  // unit count, so the byte-length bound here is the conservative one. Both constants are imported
+  // real: neither can move without this relation being re-proven.
+  const loneSurrogate = String.fromCharCode(0xd800);
+  const event = {
+    type: "message",
+    // Snowflakes reach twenty digits.
+    chatId: "90000000000000000001",
+    text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH),
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(event), "utf8") < MAX_LINE_BYTES);
 });
 
 test("a message with no text at all is dropped without a notice", async () => {

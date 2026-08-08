@@ -19,7 +19,9 @@ is built and installable.
 
 ## Plans
 
-No plan is in progress.
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_inbound-whole-delivery_spec_v1.md`](plans/channels_inbound-whole-delivery_spec_v1.md) | In Progress | The inbound ceiling rises to Discord's own 4,000-character maximum so every deliverable channel message lands in the session whole, as one event, and a message over the ceiling is cut with an in-thread notice instead of in silence. |
 
 Archived plans, most recent first.
 

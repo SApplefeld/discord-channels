@@ -48,3 +48,8 @@ the live backlog carries active items only.
   shipping the plugin-scoped rule alone, and swapped out of SCOTT's `~/.claude/settings.json` by
   hand (which had carried only the development rule; the plugin-scoped rule replaced it). The
   remaining per-host hand edits on NEO and ASR stay on the live backlog.
+- **Make an inbound cut impossible for a deliverable message, and loud otherwise.** The inbound
+  ceiling rose to Discord's own 4,000-character maximum, so no message a client can send is cut;
+  a message over the ceiling is delivered cut with an unfloored in-thread notice asking for the
+  tail as its own message. Closed by `channels_inbound-whole-delivery_spec_v1.md` the same day the
+  operator hit the old silent 2,000 cut live.
