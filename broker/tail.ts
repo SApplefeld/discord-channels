@@ -195,7 +195,13 @@ export function createEchoMemory(): EchoMemory {
 export type TranscriptSlice = { size: number; bytes: Buffer };
 
 export type TranscriptTailerOptions = {
-  /** The session IDs the registry currently holds live. Only these are ever read. */
+  /**
+   * The session IDs the registry currently holds live; what `pass()` iterates on each poll. A
+   * zero-byte baseline probe started from `allow` or `learn` is dispatched off the poll cycle, one
+   * microtask after the call, and does not consult this set, so a session credited with an allow
+   * or a learned path but not (yet, or any longer) in this list can still see one such read before
+   * the next pass sweeps it out.
+   */
   liveSessions: () => string[];
   /**
    * Posts one interim chunk to the session's own thread; the outbound router's `interim`. The
@@ -216,15 +222,35 @@ export type TranscriptTailerOptions = {
 export type TranscriptTailer = {
   /** Teaches the tailer where a session's transcript lives, from a credited hook post. */
   learn: (sessionId: string, path: string) => void;
-  /** Permits a session's transcript to be read, on the session's mirror-on verdict. */
+  /**
+   * Permits a session's transcript to be read, on the session's mirror-on verdict. When the
+   * session already has a learned path and no held offset, this is also the moment the baseline
+   * probe fires: a zero-byte read of the transcript's current size, taken now instead of left to
+   * the next poll tick, so the file's size is captured before the model's first text can land
+   * rather than after it already has. A session already baselined, or one whose path is not yet
+   * known, starts no probe here; the latter starts one from `learn` instead, once the path
+   * arrives, because a mirror-on verdict and its matching hook post carry no ordering guarantee
+   * between them.
+   */
   allow: (sessionId: string) => void;
-  /** Stops a session's transcript being read at all, on the session's own mirror-off switch. */
+  /**
+   * Stops a session's transcript from being read further, on the session's own mirror-off switch.
+   * No new read starts for a suppressed session, and a read already in flight when this lands
+   * writes nothing back: it bumps the entry's epoch, and every write-back point re-checks its read
+   * against the epoch it captured at dispatch. Also drops the held offset, so a later re-allow
+   * rebaselines rather than resuming from before the suppressed window: the transcript keeps
+   * growing while mirroring is off, and resuming from the old offset would publish everything
+   * written during it.
+   */
   suppress: (sessionId: string) => void;
   /**
-   * One pass over every live, allowed session with a learned path. A call while a pass is
-   * running answers with that same pass, so shutdown awaits the read actually in flight. Never
-   * rejects in normal operation, but the caller still catches: a rejection reaching the timer
-   * would end the daemon.
+   * One pass over every live, allowed session with a learned path, plus a drain of every baseline
+   * probe started during that pass, including one an allow() or learn() started too late for its
+   * own per-session closure to have awaited: the promise this hands back does not settle while
+   * one of those still holds a file handle. A probe started between poll ticks, outside any pass,
+   * is drained only by a pass that is running or subsequently starts. A call while a pass is
+   * running answers with that same pass. Never rejects in normal operation, but the caller still
+   * catches: a rejection reaching the timer would end the daemon.
    */
   poll: () => Promise<void>;
   /** Drops the session's tail position and its echo digests. */
@@ -345,12 +371,37 @@ type TailEntry = {
   /** Learned from hook posts. Null for a session only ever seen through a mirror verdict. */
   path: string | null;
   /**
-   * Where the next read starts, in bytes. Null until the first pass over a learned path, which
-   * takes the file's current end without consuming anything: what a transcript held before this
-   * tailer learned it is conversation already had, and reading it out would republish it whole
-   * into the operator's thread.
+   * Where the next read starts, in bytes. Null until baselined, which happens as soon as the
+   * session is allowed and its path is known (whichever of `allow` or `learn` completes that
+   * pair fires the probe below), or, failing that, at the first poll pass that still finds it
+   * unbaselined. Either way the position taken is the file's size at that moment, consuming
+   * nothing: what a transcript held before this tailer baselined it is conversation already had,
+   * and reading it out would republish it whole into the operator's thread. `suppress` unsets it
+   * again, so a later re-allow baselines fresh rather than resuming into a suppressed window.
    */
   offset: number | null;
+  /**
+   * The in-flight baseline probe `allow` or `learn` started, so a poll landing before it resolves
+   * can wait for it instead of racing it with a second read. Null whenever nothing is outstanding:
+   * no probe was ever needed, one already settled, `suppress` cleared it, or `forget` dropped this
+   * entry out from under it. The probe's own resolution writes `offset` only if the map still
+   * holds this exact entry under its session ID, the entry's epoch still equals the one captured
+   * at dispatch, the session is still allowed, and it still names the path it was probed for with
+   * no offset yet set. Every one of those is checked again at resolution, not just at dispatch,
+   * because the read in between is a real open, stat, and close, milliseconds wide rather than a
+   * microtask. The guard does not depend on how `allow` and `suppress` interleave, which is why it
+   * holds regardless of the order they arrive in. Map identity, current path, and current
+   * `allowed` are not sufficient by themselves: a `suppress` immediately followed by a same-tick
+   * `allow`, with no macrotask boundary between them for the stale read to resolve in, restores
+   * `allowed` to true and leaves `path` unchanged, so both would read as if nothing happened even
+   * though a mirror-off window genuinely elapsed. The epoch is what that interleaving cannot fake:
+   * `suppress`, and `learn` on a path change, bump it, and a probe dispatched before the bump
+   * carries the old value forever. Map identity is what covers a re-created entry: `forget`
+   * deletes the entry from the map, so a later `learn` for the same session ID installs a
+   * different object at that key, whose fresh epoch could otherwise collide with a stale probe's
+   * captured value.
+   */
+  probe: Promise<void> | null;
   /**
    * The session's mirror verdict, and the gate every read is behind. False until an explicit
    * mirror-on signal arrives for this session under the current process, because the tailer
@@ -362,6 +413,16 @@ type TailEntry = {
    * moments of narration.
    */
   allowed: boolean;
+  /**
+   * Bumped by `suppress`, by `forget`, and by `learn` on a path change, never by `allow`. Every
+   * in-flight probe and every `pollOne` pass captures this value the moment it starts, and every
+   * point where either would write back to the entry checks the capture against the live value
+   * again. A mismatch means a suppression, or a relearn onto a different path, happened since that
+   * read began, regardless of what `allowed` or `path` read as by the time the write-back is
+   * attempted: `allowed` alone cannot carry this signal, because a re-allow arriving before a
+   * stale read resolves restores it to true and leaves the rest of the entry looking untouched.
+   */
+  epoch: number;
 };
 
 export function createTranscriptTailer(options: TranscriptTailerOptions): TranscriptTailer {
@@ -373,49 +434,163 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
   // pass over the same offsets would read and post the same chunks twice. The pass itself is
   // held, not a flag, because the promise a busy poll answers with is what shutdown awaits.
   let running: Promise<void> | null = null;
+  // Every baseline probe outstanding right now, across every session, independent of whether the
+  // entry it targets still references it. A pass only awaits the probe of a session whose own
+  // per-session closure read `allowed` as true when the closure ran; a probe that `allow` or
+  // `learn` starts later in the same pass, after that closure already returned, is not covered by
+  // that await. This set is what `poll` drains on top of the pass itself, so the promise it hands
+  // back does not settle while any probe still holds an open file handle.
+  const pendingProbes = new Set<Promise<void>>();
 
   function entry(sessionId: string): TailEntry {
     let held = sessions.get(sessionId);
     if (held === undefined) {
-      held = { path: null, offset: null, allowed: false };
+      held = { path: null, offset: null, probe: null, allowed: false, epoch: 0 };
       sessions.set(sessionId, held);
     }
     return held;
+  }
+
+  /**
+   * Starts the zero-byte baseline probe for an entry that is allowed, has a learned path, and
+   * holds neither an offset nor a probe already; a no-op otherwise. Called from both `allow` and
+   * `learn`, because the mirror-on verdict and the hook-taught path arrive on independent routes
+   * with no ordering guarantee between them, so whichever of the two completes the pair is the
+   * one that must fire it.
+   */
+  function startProbe(sessionId: string, held: TailEntry): void {
+    if (!held.allowed || held.path === null || held.offset !== null || held.probe !== null) return;
+    const path = held.path;
+    const epoch = held.epoch;
+    // The entry must still be this one, in this map, at the same epoch it was dispatched under,
+    // still allowed, still naming this path, and still unbaselined. Checked identically at
+    // dispatch and at resolution: the read in between is a real open, stat, and close,
+    // milliseconds wide rather than a microtask, and `allow` and `suppress` arrive on independent
+    // HTTP requests, so a suppress landing inside that window must stop the probe from baselining
+    // a session no longer allowed as surely as one landing before the read starts. The epoch
+    // clause is what `allowed` alone cannot cover: a suppress immediately followed by a same-tick
+    // re-allow restores `allowed` to true before this probe ever resolves, but it still bumped the
+    // epoch, so the stale probe's capture no longer matches.
+    const stillValid = (): boolean =>
+      sessions.get(sessionId) === held &&
+      held.epoch === epoch &&
+      held.allowed &&
+      held.path === path &&
+      held.offset === null &&
+      held.probe === pending;
+    const pending: Promise<void> = Promise.resolve()
+      .then(() => {
+        // Deferred one tick so a suppress() issued right after the call that started this probe,
+        // with no read in between, still finds the transcript never opened: this is the last
+        // point the read itself can still be skipped.
+        if (!stillValid()) return null;
+        return read(path, 0, 0);
+      })
+      .then((probe) => {
+        if (probe === null || !stillValid()) return;
+        held.offset = probe.size;
+      })
+      .catch(() => {
+        // Swallowed unread; the poll-time null-offset branch in pollOne is the fallback for a
+        // probe that never resolved usefully, so nothing here needs the error's detail.
+      })
+      .finally(() => {
+        if (held.probe === pending) held.probe = null;
+        pendingProbes.delete(pending);
+      });
+    held.probe = pending;
+    pendingProbes.add(pending);
   }
 
   function learn(sessionId: string, path: string): void {
     const held = entry(sessionId);
     // Every credited hook post re-teaches the same path, and the held offset must survive that:
     // resetting it here would skip to the file's end on every PostToolUse and drop the narration
-    // in between. Only a path this tailer has never read starts over, with the offset unset so
-    // the first pass takes the new file's end rather than a position from a file it no longer
-    // describes.
+    // in between. Only a path this tailer has never read starts over: the offset unsets, any
+    // probe still pending for the path being left behind is dropped from the entry (its own
+    // guards already refuse to write once the path no longer matches, but leaving it referenced
+    // here would block a probe for the new path from starting at all), and a fresh probe starts
+    // at once when the session is already allowed. That last part is what closes the ordering
+    // where a mirror-on verdict reaches this session before the hook post that teaches it its
+    // path: the two routes carry no guarantee about which arrives first.
     if (held.path === path) return;
+    held.epoch += 1;
     held.path = path;
     held.offset = null;
+    held.probe = null;
+    startProbe(sessionId, held);
   }
 
   function allow(sessionId: string): void {
-    entry(sessionId).allowed = true;
+    const held = entry(sessionId);
+    held.allowed = true;
+    startProbe(sessionId, held);
   }
 
   function suppress(sessionId: string): void {
-    entry(sessionId).allowed = false;
+    const held = entry(sessionId);
+    held.allowed = false;
+    // The transcript keeps growing while mirroring is off, and the held offset is this tailer's
+    // only memory of where the next read may resume: leaving it in place would let a later
+    // re-allow resume from before the suppressed window and publish everything written during
+    // it, exactly the content the mirror-off signal exists to hide. Dropping it here, so a
+    // re-allow rebaselines from scratch, costs at most one poll interval of narration at the
+    // moment mirroring resumes; that is the correct direction, silence over republishing an
+    // opted-out stretch. The pending probe reference is dropped alongside it, freeing the field
+    // for a fresh probe on the next allow; what actually stops the dropped probe (or a pollOne
+    // pass already reading) from writing back is the epoch bump below, not this field clearing or
+    // the `allowed` flag, because a same-tick re-allow with no macrotask boundary between it and
+    // suppress restores `allowed` to true before a read in flight resolves. A read dispatched
+    // before this bump carries the pre-suppress epoch forever, so its write-back is refused no
+    // matter what `allowed` or `offset` read as by the time it resolves.
+    held.epoch += 1;
+    held.offset = null;
+    held.probe = null;
   }
 
   function forget(sessionId: string): void {
+    // Bumped before the delete, on the entry object itself rather than on the map. Every
+    // `stillValid` closure checks map identity first, and the delete below already fails that
+    // check for any reader still holding this object, so the bump is defence in depth rather than
+    // a guard this function relies on: a later change to the check order must not rediscover
+    // `forget` as the reason removing it seemed safe.
+    const held = sessions.get(sessionId);
+    if (held !== undefined) held.epoch += 1;
     sessions.delete(sessionId);
     options.echo.forget(sessionId);
   }
 
   async function pollOne(sessionId: string, held: TailEntry, path: string): Promise<void> {
+    // The pass's own per-session closure read `allowed`, `path`, and `epoch` before calling this,
+    // but every await below is a real gap: `suppress`, `learn` onto a different path, and
+    // `forget` all arrive on independent HTTP requests and can land in it. The epoch captured here
+    // is what every write-back below is checked against, alongside map identity, `allowed`, and
+    // `path`, because `allowed` and `path` alone can read as unchanged even when a suppress (or a
+    // relearn and a re-allow) genuinely happened in between: a re-allow restores `allowed`, and a
+    // relearn back onto the same path restores `path`, but neither restores the epoch a
+    // suppression or a path change bumped.
+    const epoch = held.epoch;
+    const stillValid = (): boolean =>
+      sessions.get(sessionId) === held && held.epoch === epoch && held.allowed && held.path === path;
+
+    // A baseline probe from allow() or learn() may still be on its way to the filesystem;
+    // awaiting it here rather than racing it with a second read is what keeps a first pass from
+    // double-probing.
+    if (held.probe !== null) await held.probe;
+    if (!stillValid()) return;
     if (held.offset === null) {
       const probe = await read(path, 0, 0);
-      held.offset = probe.size;
+      if (!stillValid()) return;
+      // The awaited probe above can have set the offset while this fallback read of its own was
+      // in flight (nothing was pending when this function checked, so a probe starting after that
+      // check races this read); only write when the field is still unset, so this fallback never
+      // clobbers a baseline the real probe already established.
+      if (held.offset === null) held.offset = probe.size;
       return;
     }
 
     const slice = await read(path, held.offset, MAX_TAIL_READ_BYTES);
+    if (!stillValid()) return;
     if (slice.size < held.offset) {
       // A session ID maps to one transcript file that only grows, so a shrink means something
       // this tailer does not model: the file was replaced or truncated. Resuming from zero would
@@ -474,12 +649,21 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         // is discarded unread; it can quote the text it failed to post.
         try {
           const outcome = await options.deliver(sessionId, text);
+          // A suppress() landing during this very await must not record the echo digest: the
+          // deliver call itself already happened and cannot be undone, but recording the digest
+          // is its own write-back, and every write-back this loop makes is checked against the
+          // epoch it started under, the same rule pollOne's other reads and writes follow.
+          if (!stillValid()) return;
           if (outcome.status === "sent") options.echo.noteInterim(sessionId, text);
         } catch {
           repeats(
             `session ${sessionId}'s interim delivery failed`,
             "the chunk is dropped; the error detail is withheld, it can carry content",
           );
+          // A suppress() landing mid-loop must not keep publishing the rest of the batch: the
+          // consumed bytes are already behind the offset either way, so what stops here is only
+          // further delivery, not a write this loop was ever going to make.
+          if (!stillValid()) return;
         }
       }
     }
@@ -490,7 +674,29 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     // second pass over the same offsets would post the same chunks twice, and the promise handed
     // back is what shutdown awaits, so it has to be the pass actually holding file handles.
     if (running !== null) return running;
-    running = pass().finally(() => {
+    running = (async () => {
+      try {
+        await pass();
+      } finally {
+        // Drained in `finally`, not chained off a successful pass, so a pass() that rejects still
+        // drains: `pollOne`'s own per-session try/catch means a rejection here is not the normal
+        // case, but a drain that only ran on success would otherwise leave every probe an
+        // unanticipated failure skipped holding its file handle open indefinitely.
+        //
+        // A pass's own per-session closures only await the probe a session already held when
+        // that closure ran; a probe allow() or learn() starts later in the same pass, for a
+        // session whose closure already returned, is not covered by that await. Two bounded
+        // rounds against a snapshot of the set, rather than looping while it is non-empty, catch
+        // that probe without letting a probe that keeps re-arming (a hung read, or a session
+        // cycling allow/suppress across this exact drain) hold every later poll() hostage: a
+        // probe still outstanding after both rounds is left running, and pollOne's own await of
+        // held.probe catches up with it on the next pass.
+        const firstRound = [...pendingProbes];
+        if (firstRound.length > 0) await Promise.all(firstRound);
+        const secondRound = [...pendingProbes];
+        if (secondRound.length > 0) await Promise.all(secondRound);
+      }
+    })().finally(() => {
       running = null;
     });
     return running;

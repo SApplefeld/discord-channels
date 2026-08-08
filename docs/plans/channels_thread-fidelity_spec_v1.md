@@ -121,17 +121,51 @@ asserts the next chunk posts fresh.
 ### 2. The tailer baselines at the mirror-on verdict, not the next poll tick
 
 Model: sonnet
+Status: Complete
 
-`allow` in `broker/tail.ts` gains the baseline probe. When it flips a session that has a learned
-path and no held offset, it starts the same zero-byte size probe `pollOne` performs today
-(`read(path, 0, 0)`) and holds the pending promise on the entry; the probe's resolution sets the
-offset to the observed size only when the entry still holds the same path and the offset is still
-unset, and a rejection is swallowed so the poll-time fallback covers it. `pollOne` awaits a pending
-probe before its own null-offset branch, which remains as the fallback for a session whose allow
-arrived pathless or whose probe failed. A second allow while a probe is pending starts nothing new.
-`forget` guards apply: a probe resolving after its session was dropped writes nothing. The
-`-NoMirror` property is preserved structurally: allow is the only new probe trigger, a suppressed
-session never receives one, and so its transcript is still never opened, not even for a stat.
+`broker/tail.ts` gains the baseline probe: the same zero-byte size probe `pollOne` performs today
+(`read(path, 0, 0)`), fired the moment a session is both allowed and has a learned path, with the
+pending promise held on the entry. Either of `allow` and `learn` can complete that pair, and
+whichever does is the one that fires it: the mirror-on verdict and the hook post that teaches the
+path arrive on independent routes with no ordering guarantee between them, so an allow-before-learn
+session would otherwise wait for the next poll tick and lose exactly the opening chunk this section
+exists to save. A second allow while a probe is pending starts nothing new. `pollOne` awaits a
+pending probe before its own null-offset branch, which remains as the fallback for a session whose
+probe failed, and `poll` drains the probes outstanding once its pass finishes, including one
+started too late in the pass for any per-session closure to have awaited. The drain runs in a
+`finally`, so a pass that rejects still drains rather than settling while a read holds a file
+handle, and it is bounded to two rounds against a snapshot rather than looping while the set is
+non-empty: a probe that keeps re-arming would otherwise hold `running` non-null forever and halt
+narration for every session. A probe still outstanding after both rounds is left running, and
+`pollOne`'s own await of the pending probe catches up with it on the next pass. What this covers is
+probes started during a pass; a probe fired between poll ticks is not awaited by the broker's
+shutdown, which awaits the last pass rather than the tailer's outstanding reads.
+
+A probe's resolution is not enough evidence on its own, because the state it validates against can
+be restored by the very signals that should invalidate it: a re-allow restores `allowed`, and a
+relearn back onto the same path restores `path`, so a probe dispatched before a suppression can
+resolve after a re-allow with every field reading unchanged and write its pre-suppression size as
+the baseline, publishing the whole mirror-off window on the next pass. The discriminator is a
+per-entry epoch counter, bumped by `suppress`, by `forget`, and by `learn` on a path change, and
+captured at dispatch: a write-back lands only when the map still holds this exact entry, the epoch
+still matches, the session is still allowed, and the path is still the one read. `pollOne` captures
+the epoch on entry and re-checks all four after every await it makes (the pending probe, the
+fallback read, the content read, and each delivery), because a suppression landing inside any of
+those gaps otherwise reaches an unguarded write: in particular `held.offset += lastNewline + 1`
+against a nulled offset evaluates `null + n` to `n`, silently converting an absolute file position
+into a slice-relative one, and neither the shrink guard nor the overrun guard catches it (`size <
+null` is false and `size - null` is `size`). A probe rejection is swallowed so the poll-time
+fallback covers it.
+
+`suppress` also drops the held offset, so a later re-allow rebaselines rather than resuming from
+before the suppressed window: the transcript keeps growing while mirroring is off, and resuming
+from the old position would publish everything written during it. The cost is at most one poll
+interval of narration at the moment mirroring resumes, which is the correct direction.
+
+The `-NoMirror` property is preserved structurally: `startProbe` requires `allowed` at dispatch, so
+a session that is never allowed never receives a probe and its transcript is never opened, not even
+for a stat. The narrower statement that now holds of a suppressed session is that no new read is
+started for it and a read already in flight writes nothing back.
 
 Files: `broker/tail.ts`, `broker/tail.test.ts`.
 
@@ -139,12 +173,28 @@ Acceptance: `npm test` green.
 
 Tests: lock the regression, red first: text appended to the transcript after the allow signal but
 before the first poll pass is delivered as narration, which is exactly the first-turn opening chunk
-that vanishes today. Lock the fail-closed direction: a session that is learned but never allowed
-gets zero reads of any kind, probe included, asserted on the injected `readFile`'s call count. Lock
-the staleness guards: a path relearned between the probe starting and resolving discards the stale
-size; a probe rejection falls back to the poll-time baseline without republishing anything older
-than the fallback's own observation. Lock that a second allow during a pending probe does not
-double-probe.
+that vanishes today. Lock the same for an allow that arrives before the matching learn. Lock the
+fail-closed direction: a session that is learned but never allowed gets zero reads of any kind,
+probe included, asserted on the injected `readFile`'s call count. Lock the staleness guards: a path
+relearned between the probe starting and resolving discards the stale size; a probe rejection falls
+back to the poll-time baseline without republishing anything older than the fallback's own
+observation. Lock that a second allow during a pending probe does not double-probe, and that an
+allow arriving after the baseline is already set does not move it.
+
+Lock the epoch, which is the guard the whole privacy direction rests on. A probe dispatched before
+a suppression and resolving after an immediate re-allow, with no macrotask boundary serializing the
+two, writes no offset; a suppression landing during `pollOne`'s own content read leaves no
+slice-relative offset behind; and a `learn` onto a new path landing during `pollOne`'s await of a
+stale probe does not baseline the new path with the old file's size. Lock that content written
+during a suppressed window is never published by the re-allow that follows. At least one of these
+pins on bytes actually read rather than on messages posted, because an assertion that nothing was
+published is satisfied identically by a read that happened and yielded nothing, which is the weaker
+claim; the rest discriminate through non-empty same-session fixture content, so a failed guard
+yields a non-empty post list.
+
+Lock the two mechanisms whose removal would otherwise leave the suite green: `poll` does not settle
+while a probe started from inside its own pass is still reading, and a suppression landing during
+one chunk's delivery stops the rest of the batch from posting.
 
 ### 3. Queued mid-turn prompts mirror through the tailer
 
@@ -340,4 +390,79 @@ Stamps: adjudicated 3, stamped 1 (`a-brokers-own-gateway-echo-races-ahead-of-its
 which is the root cause this section fixes; the transcript-shape and rate-bucket records were read
 as forward reading for Sections 2 to 4 and steered nothing here).
 Next: 2. The tailer baselines at the mirror-on verdict, not the next poll tick
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-08
+Completed: 2. The tailer baselines at the mirror-on verdict, not the next poll tick
+Implemented By: implementer-sonnet (an earlier session left the section built but uncommitted,
+unreviewed, and unchaptered; this session gated it, ran two review rounds, and dispatched
+implementer-sonnet twice to address findings)
+Metrics: 2 review rounds; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The section as found in the tree was materially larger than the section as
+specified, and three of the four additions were right. `learn` fires the baseline probe as well as
+`allow`, which the spec's "allow is the only new probe trigger" forbade but the ordering demands:
+the mirror-on verdict and the hook post that teaches the path arrive on independent routes, so an
+allow-before-learn session would otherwise wait for the next tick and lose the very chunk the
+section exists to save. `poll` drains the probes outstanding after its pass. And `suppress` drops
+the held offset, which is a contract change to a function the section does not name: it closes a
+pre-existing privacy leak, proved real by a test that is red at Chapter 1's commit, where a
+re-allow resumed from before the mirror-off window and published everything written during it.
+Kept rather than reverted, because reverting restores the leak; the spec's Section 2 now carries
+all three, and the widened scope is the deliberate deviation this Chapter records.
+
+The baseline this section was measured against is Chapter 1's commit, not the tree as found: the
+first `npm test` run of the session was already post-change and proved nothing about regressions.
+A clean worktree at ba8ab34 gave the real numbers, 624 tests / 623 pass / 0 fail / 1 skipped, and
+doubled as the red state: 7 of the 11 tests found in the tree fail there, the headline
+first-turn-narration pin among them, so the section's regression tests genuinely discriminate. The
+skip is pre-existing. Final gate is 641 / 640 / 0 fail / 1 skipped, lint clean.
+Review Findings: Round one returned CHANGES_REQUIRED from the adversarial and blind reviewers and
+BLOCK from the security reviewer, all three landing independently on the same Critical: a baseline
+probe dispatched before a `suppress` and resolving after a later `allow` passed every clause of its
+own validity check, because a re-allow restores `allowed` and a relearn restores `path`, so it
+wrote its pre-suppression size and the next pass published the entire mirror-off window. The blind
+and security reviewers each found a second Critical the adversarial one missed: `pollOne` wrote
+back to `held.offset` after its awaits with no re-validation, where `held.offset += lastNewline + 1`
+against an offset `suppress` had nulled evaluates `null + n` to `n`, silently converting an absolute
+file position into a slice-relative one, with both the shrink guard (`size < null` is false) and
+the overrun guard (`size - null` is `size`) passing it through. `tsc --noEmit` cannot see this: the
+`=== null` narrowing survives the await, so lint stayed green over it.
+
+The fix is a per-entry epoch counter, bumped by `suppress`, `forget`, and `learn` on a path change,
+captured at dispatch and re-checked at every write-back, with `pollOne` re-validating after all
+four of its awaits. Confirmed load-bearing by a single-knob probe run in an isolated worktree:
+deleting only the `held.epoch === epoch` clause turns exactly the two leak tests red, and one of
+those pins on bytes read rather than on messages posted, so it cannot be satisfied by a read that
+happened and yielded nothing. Round two returned no Criticals from any lens, and all three
+independently confirmed both classes closed.
+
+Round two's Majors were all fixed rather than justified: the probe drain moved into a `finally`, so
+a rejecting pass still drains instead of settling with file handles open, and it is bounded to two
+snapshot rounds rather than looping while the set is non-empty, so a re-arming probe can no longer
+hold `running` non-null and halt narration for every session. `stillValid` gained
+`held.probe === pending`, free and self-sufficient. The rest were falsified comment claims, which
+this codebase treats as defects in their own right, including a closed enumeration of the epoch's
+bumpers that omitted `forget`, a `liveSessions` doc calling the probe an immediate open when the
+code defers it a microtask deliberately, and a `poll` doc claiming shutdown awaits every read in
+flight when the broker awaits the last completed pass. Two mechanisms whose deletion left the suite
+green now have red-first tests: the probe drain, and the guard that stops a batch mid-delivery when
+the operator throws the mirror-off switch.
+
+Two claims are corrected rather than asserted. Whether a mid-session suppress and re-allow is
+reachable in production is disputed between rounds, so the comment now says the guard does not
+depend on how the two signals interleave rather than claiming a reachable window. And the spec's
+own Tests paragraph, written this session, claimed all four epoch locks pin on bytes; only one
+does, and the sentence now says so.
+Stamps: adjudicated 5, stamped 3. The two `memq unstamped` surfaced
+(`discord-edit-and-create-are-separate-rate-buckets`,
+`claude-code-transcript-jsonl-shape`) are forward reading for Sections 3 and 4 and steered nothing
+here, so neither was stamped. Three that steered this section reached it through the recall digest
+rather than a file read, so they never entered the unstamped list:
+`a-switch-that-suppresses-a-post-fails-differently-from-one-that-gates-a-read` is why the
+suppressed-window property is pinned on reads rather than on posts;
+`two-components-agreeing-is-not-two-checks` named the round-one Critical's exact shape, a test that
+inserted a scheduling boundary to serialize away the ordering that breaks the code; and
+`a-comment-that-names-a-property-is-a-claim-to-sweep` rode in every reviewer brief and generated a
+large share of the findings.
+Next: 3. Queued mid-turn prompts mirror through the tailer
 Commit Model: Commit-and-Push
