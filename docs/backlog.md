@@ -9,9 +9,10 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 
 ## Active
 
-- Run operator check F (`operator-checks.md`), the live watch of a long turn's narration, which now
-  covers the coalesced surface: one growing `(edited)` message under one header, and a typed
-  message breaking the block. Its first successful append is also the evidence that closes the
+- Run operator check F (`operator-checks.md`), the live watch of a long turn's narration, which
+  covers the coalesced surface (one growing `(edited)` message under one header, and a typed message
+  breaking the block) and the one-copy close (the turn's closing words appearing once, under
+  whichever attribution posted them first). Its first successful append is also the evidence that closes the
   open question of whether editing the bot's own message needs any permission beyond the six
   `install.md` already grants (a refused-append log line carrying a permissions error reopens
   that). A failed check reopens the narration-coalescing effort as a new round. SCOTT's broker

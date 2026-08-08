@@ -210,7 +210,11 @@ write verb and its trust argument.
 Extends the delivery half of
 [`interim-mirroring_spec_v1.md`](interim-mirroring_spec_v1.md),
 which built the transcript tailer and the chunk pipeline this plan changes the posting shape of.
-The tailer, its gates, and the EchoMemory dedup are untouched here.
+The tailer, its gates, and the EchoMemory dedup are untouched here. The duplication question
+this plan's Out of Scope deferred is completed by
+[`channels_reply-dedup-and-repair_spec_v1.md`](channels_reply-dedup-and-repair_spec_v1.md),
+whose repair script also grew out of the orphaned-broker incident this plan's close-out Chapter
+records.
 
 ## Out of Scope
 

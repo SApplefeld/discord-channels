@@ -29,8 +29,10 @@ a session, not who can read. Everyone with access to the channel sees every mess
 approval prompt carries the tool's actual input: the shell command, the patch body, file contents.
 
 **With mirroring on, which is the default, the conversation itself leaves the machine too.** Every
-prompt typed at the console and every turn's final assistant reply is posted into that session's
-thread, in full, so the operator can read and steer from a phone. Discord retains all of it.
+prompt typed at the console and every turn's final assistant reply reaches that session's thread in
+full, so the operator can read and steer from a phone. Discord retains all of it. A turn that closed
+through the reply tool lands one copy of its closing words rather than two, and
+[`security-model.md`](security-model.md) carries the bound on what that suppression can cost.
 
 Two switches turn it off. `CHANNEL_MIRROR=off` in `broker.env` covers every session on the host, and
 `Enter-ClaudeSession -NoMirror` covers one session while every other session keeps mirroring.

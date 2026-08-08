@@ -1,6 +1,6 @@
 # Reply dedup and the broker repair script
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: S2 implementer; the S1, S2, and S3 reviewer pairs (one tier above their writers); finishing reviews
 Created: 2026-08-07
@@ -203,6 +203,16 @@ Files: `docs/operations.md`, `docs/security-model.md`, `docs/backlog.md`,
 Acceptance: no doc claims the memory holds digests only; the script is findable from
 operations.md; the backlog item is in the snapshot, not struck through in place.
 
+## Related
+
+Extends the `EchoMemory` contract that
+[`interim-mirroring_spec_v1.md`](interim-mirroring_spec_v1.md)
+created for the tailer-versus-Stop-mirror dedup, adding the reply-tool answer as its third
+record, and completes the duplication question
+[`channels_narration-coalescing_spec_v1.md`](channels_narration-coalescing_spec_v1.md)
+declared out of scope. The repair script exists because of the orphaned-broker incident that
+plan's close-out Chapter records.
+
 ## Out of Scope
 
 - Suppressing or altering reply-tool messages themselves: a deliberate model-authored message to
@@ -228,7 +238,7 @@ None.
 
 ## Chapters
 
-### Chapter 1 - 2026-08-08
+### Chapter 1 - 2026-08-07
 Completed: 1. The similarity sketch
 Implemented By: implementer-opus
 Metrics: 1 review round (combined over S1-S3); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
@@ -238,7 +248,7 @@ Stamps: none surfaced in the window
 Next: 2. The dedup wiring (built beside Section 3, closed in Chapters 2-3)
 Commit Model: Commit-and-Push
 
-### Chapter 2 - 2026-08-08
+### Chapter 2 - 2026-08-07
 Completed: 2. The dedup wiring
 Implemented By: implementer-fable, plus a fix round on the same agent after the combined review
 Metrics: 2 review rounds (combined initial + prescriptive fix verification); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
@@ -248,7 +258,7 @@ Stamps: none surfaced in the window
 Next: 3. The repair script (closed in Chapter 3)
 Commit Model: Commit-and-Push
 
-### Chapter 3 - 2026-08-08
+### Chapter 3 - 2026-08-07
 Completed: 3. The repair script
 Implemented By: implementer-opus, plus two fix rounds on the same agent (the port-holder refusal pre-review, the decision table after review)
 Metrics: 2 review rounds; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
@@ -258,7 +268,7 @@ Stamps: none surfaced in the window
 Next: 4. The docs carry both changes
 Commit Model: Commit-and-Push
 
-### Chapter 4 - 2026-08-08
+### Chapter 4 - 2026-08-07
 Completed: 4. The docs carry both changes
 Implemented By: main session (docs/ writes; Locus: inline as planned)
 Metrics: 0 review rounds (prose-only section; the finishing pass covers it); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
@@ -266,4 +276,15 @@ Decisions / Surprises: security-model.md's "every turn's final reply is posted i
 Review Findings: none (see Metrics)
 Stamps: none surfaced in the window
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-07
+Completed: finishing pass; the effort closes
+Implemented By: main session orchestrating qa-verifier, security-reviewer, adversarial-reviewer (fable), docs-curator, plus the real Repair-Broker runs on SCOTT
+Metrics: QA PASS on every criterion (618/617/0/1 against the effort's 585/584/0/1 opening baseline, all +33 tests new); finishing security CONCERNS with two Minors, both fixed; final adversarial APPROVED_WITH_CONCERNS whose one Major was a stale comment, fixed; advisor opus
+Decisions / Surprises: The real-run gate earned its place in the spec twice over. The first SCOTT run exposed four instances of one PowerShell 5.1 idiom the pure-function tests could not see: an if used as an expression collapses a one-element array to a scalar (the kill line's reasons concatenated without their separator) and a comma-wrapped return nests inside the caller's array collector (the summary printed System.Object[], and a multi-target selection would have merged PIDs into one corrupted key). All four returns now enumerate bare; the second run printed the joined reason, the formatted PID, and a green readiness line over 11 live sessions, and the run itself deployed the dedup onto SCOTT's live broker. Finishing fixes beyond that: the echo memory is now swept from the registry sweep interval (on a mirror-only host nothing else swept it), the snapshot-miss port-holder fallback fetches the command line by targeted CIM query before classifying (a name-only classification could kill a node bystander that bound the port between the two enumerations), two stale comments contradicting the gate widening were corrected, the security model's "always posts" clause was scoped so it no longer contradicts the accepted residual two sentences later, and Chapter dates were aligned to local convention. Drift Report: six deviations, no mistakes, all documentation lagging the deliberate build and all fixed in place by the curator, the weightiest being operator check F, which would have recorded a fail against a healthy build (it expected the turn's final word inside the narration block, and the one-copy close now leaves the reply-tool message as the last word). Accepted residues, recorded: a Stop mirror that never reaches the router (intake drop, straggler gate) leaves the answer record standing one extra turn, where biting still requires a 0.85 near-match; and a sub-ten-percent addendum inside the length allowance can be suppressed, the bound the security model now states.
+Review Findings: finishing security 2 Minors (echo sweep gap, snapshot-race fallback) fixed; final adversarial 1 Major (stale echo-option comment stating the reversed invariant) and 2 actionable Minors (stale test comment, security-model internal contradiction) fixed, 2 Minors accepted as residues above.
+Operator Verification pending: both items ride in docs/backlog.md under the check F entry: watch a long turn for the one-copy close (the turn's closing words appear once, under whichever attribution posted them first), and run Repair-Broker.ps1 on a host you suspect is stale (a green readiness line and a sane summary; my two SCOTT runs are the recorded precedent). A suppressed reply whose words appear nowhere, or a repair run that kills anything it could not prove, reopens this work.
+Stamps: adjudicated 0, none surfaced; memory written: powershell-51-collapses-collections-at-expression-seams (project tier)
+Next: none; archived
 Commit Model: Commit-and-Push

@@ -1239,9 +1239,9 @@ test("a mirror that is the answer plus a new closing sentence posts whole", asyn
 });
 
 test("without an echo memory, a mirror matching the reply tool's answer posts as it always did", async () => {
-  // The echo option is absent when interim mirroring is off, and the fail direction of this
-  // switch matters in both directions: with the memory the duplicate is suppressed, and without
-  // it reply and mirror behave exactly as before, two copies and no consultation.
+  // The echo option is absent only when mirroring is off entirely, and the fail direction of
+  // this switch matters in both directions: with the memory the duplicate is suppressed, and
+  // without it reply and mirror behave exactly as before, two copies and no consultation.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();

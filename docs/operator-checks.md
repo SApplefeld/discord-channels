@@ -4,8 +4,8 @@ Six checks that need a human at a terminal, a phone, or an Administrator prompt.
 proves, its result, the exact steps, and what the answer settled.
 
 **Five of the six have been run and passed**, A through D on 2026-08-06 and E on
-2026-08-07; check F, the live watch of a long turn's narration, has not yet been run and now
-covers the coalesced surface. The procedures are kept because they are
+2026-08-07; check F, the live watch of a long turn's narration, has not yet been run and covers the
+coalesced surface and the one-copy close of a turn. The procedures are kept because they are
 also how to re-check a new host: none of these results is inferable from the code, and two of them
 would change the design if a future host answered differently.
 
@@ -268,13 +268,16 @@ can change the design; the rest confirm the wiring.
 
 **Result: not yet run.**
 
-**Why it needs a human.** The tailer is pinned against real transcript files by tests, and the
-dedup against the Stop mirror is pinned in both orderings. What no test in this repository can reach
-is the claim the dedup rests on: that the Stop payload's `last_assistant_message` is byte-identical
-to the final text block the transcript holds. No assistant line in this project's transcripts
-carries more than one text block, so the two coincide; a turn ending in several of them would miss
-the digest. Only a real long turn on a real host settles it, and the answer is visible only from the
-phone, which is the surface this whole effort exists to serve.
+**Why it needs a human.** The tailer is pinned against real transcript files by tests, and both
+dedups (the tailer against the Stop mirror, and the reply tool's answer against the Stop mirror) are
+pinned in both orderings. What no test in this repository can reach is the claim the exact half
+rests on: that the Stop payload's `last_assistant_message` is byte-identical to the final text block
+the transcript holds. No assistant line in this project's transcripts carries more than one text
+block, so the two coincide; a turn ending in several of them would miss the digest. Nor can a test
+reach the near-match half on real prose, where the question is whether a real closing summary and a
+real final text land on the intended side of the 0.85 threshold. Only a real long turn on a real
+host settles either, and the answer is visible only from the phone, which is the surface this whole
+effort exists to serve.
 
 **What it proves.** That a turn running for many minutes stops being silence on the operator's
 phone, that mid-turn narration is distinguishable at a glance from the turn's actual answer, that
@@ -291,15 +294,24 @@ taking the mirror down with them.
    carrying the `(edited)` tag, so a single header over many paragraphs is the design rather than a
    symptom. **Fail:** nothing arrives until the turn ends, which means the tailer was never armed
    for this session, or arrives under the wrong attribution.
-3. When the turn ends, read the tail of the narration block as well as the messages under it: when
-   the dedup drops the Stop mirror's copy, the turn's final word is the last paragraph of the block
-   rather than a message of its own, or a fresh message when that chunk did not fit. **Pass:** the final reply appears once. **Fail
-   one way:** the same paragraph appears twice, once as narration and once as the reply, which means
-   the Stop payload and the transcript's last block are not byte-identical and the digests missed.
-   That is the failure this design accepts, so record it rather than treating it as a stop; the fix
-   is to compare on the transcript's last block rather than on the whole payload. **Fail the other
-   way:** the final reply appears nowhere at all, which is the failure the design does not accept
-   and is a defect to root-cause before anything else.
+3. When the turn ends, read the tail of the narration block as well as the messages under it. The
+   turn's closing words appear once, and which message holds them depends on how the turn closed.
+   On a turn that closed through the reply tool, the last message is the `📣 Claude · answer` one
+   and no `✨ Claude` copy follows it. On a turn that closed without the reply tool, the closing
+   words are the last paragraph of the narration block, or a fresh `✨ Claude` message when that
+   chunk did not fit or the mirror won the race. **Pass:** the final reply appears once, in one of
+   those shapes. **Fail one way:** the same words appear twice. Record which pair doubled: a
+   narration paragraph repeated as `✨ Claude` means the Stop payload and the transcript's last
+   block are not byte-identical and the digests missed, and the fix is to compare on the
+   transcript's last block rather than on the whole payload; a `📣 Claude · answer` repeated as
+   `✨ Claude` means a real rewording scored below the 0.85 threshold or grew past the 1.10 length
+   allowance, and the fix is those constants in `broker/similarity.ts` and `broker/tail.ts`. Both
+   are failures this design accepts, so record them rather than treating them as a stop. A third
+   accepted one is worth recording if you see it: a suppressed mirror that carried a short closing
+   addendum the `📣 Claude · answer` message did not, which is the near-match residual
+   [`security-model.md`](security-model.md) names. **Fail the other way:** the final reply appears
+   nowhere at all, which is the failure the design does not accept and is a defect to root-cause
+   before anything else.
 4. Launch a session with `Enter-ClaudeSession -NoMirror` and run the same kind of long turn.
    **Pass:** its thread carries no narration, no prompt, and no reply, and its status card keeps
    ticking. **Fail:** any narration at all, which is the privacy switch failing open in the one

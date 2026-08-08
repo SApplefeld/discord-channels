@@ -225,8 +225,8 @@ content off the machine: with `CHANNEL_MIRROR` on, every console prompt is poste
 session's thread in full, and every turn's final assistant reply is posted unless the thread
 already carries that text: a reply the transcript tailer posted as narration, or a reply-tool
 answer the final text matches exactly or nearly (the same words within a bounded similarity
-threshold, and never when the final text is materially longer than the answer, so text the answer
-did not carry always posts). The accepted residual of the near-match rule is that a final reply
+threshold, and never when the final text is materially longer than the answer, so a final text
+that grew past the length allowance always posts). The accepted residual of the near-match rule is that a final reply
 differing from the answer by a small fraction of its words can be suppressed with those words
 reaching the thread nowhere; the bound is the threshold and the length guard, both named
 constants. What the broker holds in memory to make these comparisons is never the text: a

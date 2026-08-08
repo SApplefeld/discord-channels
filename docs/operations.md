@@ -35,8 +35,8 @@ D:\sapplefeld-channels\install\Repair-Broker.ps1 -Pull  # update the checkout fi
 It stops the scheduled task, kills every process it can prove is this checkout's broker (the
 node name plus the broker entry path in the command line, or a node-named process holding the
 broker port with an unreadable command line, which is what an orphan left by a task stop looks
-like), verifies the setup without stopping (state root, env, token file, task registration,
-node, HEAD commit and whether origin is ahead), restarts the task, waits up to 30 seconds for
+like), verifies the setup without stopping (state root, env, host name, token file, task
+registration, node, HEAD commit and whether origin is ahead), restarts the task, waits up to 30 seconds for
 `/sessions` to answer, and prints a one-screen summary. It never kills by process name alone: a
 non-node process squatting on the broker port, or a node whose readable command line names some
 other program, is reported with its PID and left alive, and the summary's readiness line then
@@ -155,9 +155,11 @@ Two knobs govern it, both in `broker.env`:
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; refuses below 1 s or above 5 min |
 
 Turning `CHANNEL_INTERIM_MIRROR` off, or `CHANNEL_MIRROR` off, silences mid-turn narration while
-leaving the mirrored prompt and the mirrored final reply untouched: the two mirror the same content
-by different means and stop independently. A session launched with `-NoMirror` narrates nothing
-either, for the same reason its prompts and replies do not mirror.
+leaving the mirrored prompt and the mirrored final reply posting as before: the two mirror the same
+content by different means and stop independently. The one-copy close above survives an interim-off
+host, because the record the mirror compares against is written by the reply tool rather than by the
+tailer, and it exists whenever `CHANNEL_MIRROR` is on. A session launched with `-NoMirror` narrates
+nothing either, for the same reason its prompts and replies do not mirror.
 
 **The log carries `tail:` lines**, each naming a session ID, a count, or a byte offset and never any
 transcript text:
@@ -178,10 +180,13 @@ transcript text:
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
   aggregated into one summary line rather than logged once per poll.
 
-A related line from the routing layer, `routing: the mirrored reply from session <id> was dropped,
-the tailer already posted the same text as interim narration`, is not a lost reply: it is the
-deduplication between the tailer and the Stop mirror working as designed, and the text is already on
-the thread. Another, `routing: the narration append from session <id> was refused, the chunk posts
+Two of the routing layer's drop lines report a mirrored reply suppressed as a duplicate, and neither
+is a lost reply. `routing: the mirrored reply from session <id> was dropped, the tailer already posted the
+same text as interim narration` is the deduplication between the tailer and the Stop mirror, and
+the text is on the thread as narration. `routing: the mirrored reply from session <id> was dropped,
+it matches the answer the reply tool already posted` is the deduplication between the reply tool
+and the Stop mirror, and the text is on the thread as the `📣 Claude · answer` message. Another
+line, `routing: the narration append from session <id> was refused, the chunk posts
 fresh: <error>`, is not lost narration either: the edit was refused and the same chunk landed as its
 own message, so the thread shows more headers than usual rather than missing text, but the line
 repeating steadily means every edit is failing (the error class it carries says how) and coalescing

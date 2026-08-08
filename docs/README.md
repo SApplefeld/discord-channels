@@ -15,20 +15,17 @@ is built and installable.
 | [`install.md`](install.md) | Standing a host up: creating the Discord application, provisioning the host, registering the broker's scheduled task, and launching a session. |
 | [`operations.md`](operations.md) | Running a host: where state and logs live, how to read a thread, how to answer a permission prompt, the tunables, and what to do when something is wrong. |
 | [`security-model.md`](security-model.md) | The trust boundary: what the process token authenticates, what the sender gate is the only authority for, what the permission prompt and the mirror send off the machine, and which files must not be writable. |
-| [`operator-checks.md`](operator-checks.md) | Six checks that need a human at a terminal, a phone, or an Administrator prompt. Five have been run and passed, including E, which confirmed that Discord draws no mention pill or timestamp chip inside a code block and that the per-session mirror off switch holds on a real host. Check F, the live watch of a long turn's coalesced narration, is not yet run. The file records each result and keeps the procedure for re-running it on a new host. |
+| [`operator-checks.md`](operator-checks.md) | Six checks that need a human at a terminal, a phone, or an Administrator prompt. Five have been run and passed, including E, which confirmed that Discord draws no mention pill or timestamp chip inside a code block and that the per-session mirror off switch holds on a real host. Check F, the live watch of a long turn's coalesced narration and its one-copy close, is not yet run. The file records each result and keeps the procedure for re-running it on a new host. |
 
 ## Plans
 
-One plan is open.
-
-| Plan | Status | What it is |
-|---|---|---|
-| [`plans/channels_reply-dedup-and-repair_spec_v1.md`](plans/channels_reply-dedup-and-repair_spec_v1.md) | In Progress | A mirrored reply that repeats a reply-tool answer, exactly or nearly, is suppressed so the thread carries one copy, and `install/Repair-Broker.ps1` kills provably-ours broker processes, verifies the host, restarts the task, and waits on real readiness. |
+No plan is open.
 
 Archived plans, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`archive/plans/channels_reply-dedup-and-repair_spec_v1.md`](archive/plans/channels_reply-dedup-and-repair_spec_v1.md) | Complete | One copy of a turn's close: a mirrored reply repeating a reply-tool answer, exactly or nearly and no longer than it, is suppressed on bounded sketches rather than retained text, both orderings collapse to one copy, and the record lives one turn. Also `install/Repair-Broker.ps1`, the one command for a stale, doubled, or orphaned broker, killing only under a proof-based decision table, verified by two real runs on SCOTT. |
 | [`archive/plans/channels_narration-coalescing_spec_v1.md`](archive/plans/channels_narration-coalescing_spec_v1.md) | Complete | Mid-turn narration chunks edit-append into one growing thread message while it is the newest thing in its thread, instead of one headed message per chunk. Freshness comes from the gateway echo with snowflake ordering, a per-thread invalidation clock, and direct clears from the steering writer; every failure direction is a fresh post, never lost narration. Operator check F is the live gate still to run. |
 | [`archive/plans/channels_install-simplification_v1.md`](archive/plans/channels_install-simplification_v1.md) | Complete | One-command host provisioning: `Install-All.ps1` runs everything scriptable unelevated, launches a single UAC child for the scheduled task, managed settings, and the machine-wide `cchat` launcher, then waits on the broker's real readiness signal. Closed when its two operator gates passed: NEO verified live on the plugin route, and ASR provisioned by the installer's first real end-to-end run. |
 | [`archive/plans/interim-mirroring_spec_v1.md`](archive/plans/interim-mirroring_spec_v1.md) | Complete | Mid-turn visibility on long turns: the assistant text written between tool calls, recovered by tailing the session's own transcript file and deduplicated against the mirror's post of the turn's final reply, plus a bounded tool-input preview on the status card. Four Chapters, including the review round that inverted the mirror switch's fail direction for a stream the broker reads rather than receives. |

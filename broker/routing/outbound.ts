@@ -26,8 +26,10 @@ export type OutboundRouterOptions = {
    */
   mirrorWriter: ThreadWriter;
   /**
-   * The dedup memory shared with the transcript tailer, present only when interim mirroring is
-   * on. The tailer reads the turn's final reply off the transcript up to a poll interval after
+   * The dedup memory, present whenever the Stop mirror is on; the transcript tailer shares it
+   * and additionally requires interim mirroring to exist at all, so on a mirror-only host the
+   * memory serves the reply-tool dedup alone. The tailer reads the turn's final reply off the
+   * transcript up to a poll interval after
    * the Stop mirror posts it, so the two paths consult one memory: `mirror` with the reply kind
    * skips a post matching the tailer's last interim chunk, records its own digest once the text
    * is on the thread (by this post or by the tailer's), and the tailer skips a chunk matching

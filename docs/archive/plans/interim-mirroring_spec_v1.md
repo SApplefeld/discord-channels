@@ -8,7 +8,10 @@ Created: 2026-08-07
 Extended by
 [`channels_narration-coalescing_spec_v1.md`](channels_narration-coalescing_spec_v1.md),
 which changes how the chunks this plan delivers are posted: consecutive narration chunks
-edit-append into one thread message while it remains the thread's newest.
+edit-append into one thread message while it remains the thread's newest. Extended again by
+[`channels_reply-dedup-and-repair_spec_v1.md`](channels_reply-dedup-and-repair_spec_v1.md),
+which adds the reply-tool answer as the echo memory's third record so a mirrored reply repeating
+one is suppressed.
 
 ## Problem
 

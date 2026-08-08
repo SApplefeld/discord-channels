@@ -66,7 +66,9 @@ Four pieces per host, plus an installer.
   runs as a scheduled task at logon.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
-  and the scheduled task.
+  and the scheduled task. The same directory holds the operator's repair path, `Repair-Broker.ps1`,
+  which kills every process it can prove is this checkout's broker, reports the host's setup without
+  writing to it, restarts the task, and waits on `GET /sessions` before calling the host up.
 
 ## Data flow
 
@@ -138,13 +140,37 @@ call: the fail direction of coalescing is more messages, never lost narration.
 
 **How this relates to the mirror the tailer deduplicates against.** The turn's own final reply is
 read twice by design: once by the Stop mirror within milliseconds of turn end, and again by the
-tailer's own next pass over the same transcript line, up to one poll interval later. A shared digest
-memory, keyed per session, records which text each side already posted and drops whichever side's
-post is the second to arrive, so the operator sees the duplicate paragraph once rather than twice.
+tailer's own next pass over the same transcript line, up to one poll interval later. A shared echo
+memory, keyed per session, is what collapses that to one copy in the thread; it is described under
+"One copy of a turn's close" below, and it serves a second duplicate pair as well.
 
 Reading a session's transcript at all is gated on an explicit mirror-on verdict seen for that session
 under the current broker process; see [`security-model.md`](security-model.md) for what that gate
 covers and why it fails in the direction it does.
+
+## One copy of a turn's close
+
+Three streams can carry the same closing words into one thread, so a shared per-session echo memory
+(`broker/tail.ts`) decides which copy the operator sees. The reply tool posts a closing summary
+mid-turn as `📣 Claude · answer`, the Stop mirror posts the turn's final text as `✨ Claude`, and
+the tailer reads that same final text off the transcript up to one poll interval later as
+`✨ Claude · working`.
+
+The memory holds one record per session with three slots: the digest of the last interim chunk, the
+digest of the last mirrored reply, and the reply-tool answer record. The first two answer an exact
+repeat between the tailer and the Stop mirror, in whichever order the two arrive. The third answers
+a rewording, so it carries a normalized length and a bottom-k similarity sketch (word 3-gram
+shingles, 128 hashes, `broker/similarity.ts`) beside its digest: a candidate matches at an estimated
+Jaccard similarity of **0.85** or above, and only while its normalized length is within **1.10** of
+the answer's, so a final text that grew past the allowance always posts. The reply-tool message is
+never the suppressed one, because it posted first and its text is already in front of the operator;
+what the answer record suppresses is the Stop mirror, and a tailer poll landing between the two,
+which is what collapses both orderings to one copy.
+
+Every match consumes the record it matched, and the reply-kind mirror clears the answer record
+whether or not it matched, which bounds it to one turn. What is held is a digest, a number, and
+bounded derived hashes, never conversation text; the memory is created whenever `CHANNEL_MIRROR` is
+on, so turning mid-turn narration off does not disarm the reply-tool dedup.
 
 ## External integrations
 

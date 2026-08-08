@@ -237,6 +237,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       console.log(message);
       logger.info(message);
     }
+    // The echo memory holds one small record per session and clears them as sessions retire. The
+    // tailer sweeps it too on every poll, but on a mirror-only host there is no tailer, and
+    // without this line the map would hold an entry for every session the broker ever mirrored.
+    echo?.sweep(new Set(registry.list().map((record) => record.sessionId)));
   }, config.sweepIntervalMs);
 
   // The Discord surfaces are optional: with no token and no channel configured the broker is its

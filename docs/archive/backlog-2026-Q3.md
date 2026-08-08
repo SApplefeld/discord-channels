@@ -3,7 +3,7 @@
 Items completed and moved out of [`backlog.md`](../backlog.md). This file is append-only history;
 the live backlog carries active items only.
 
-## Completed 2026-08-08
+## Completed 2026-08-07
 
 - **Measure duplication across the three streams that land in one thread, then decide.** Measured
   by operation rather than instrumentation: the operator reported the reply-tool answer and the
@@ -14,8 +14,6 @@ the live backlog carries active items only.
   suppressed, and both orderings of the duplicate collapse to one copy. What remains watchable,
   whether narration plus a full mirrored reply is more than a thread wants on very long turns, is
   a new observation if it ever itches rather than a standing item.
-
-## Completed 2026-08-07
 
 - **Re-run the installer on this host and confirm it completes without the seven `Set-Acl` errors it
   printed before.** The one acceptance criterion of

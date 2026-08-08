@@ -280,10 +280,19 @@ function Stop-ChannelBrokerProcess {
         $holderCommandLine = if ($holder) { [string]$holder.CommandLine } else { '' }
         if (-not $holder) {
             # The CIM enumeration is one snapshot, and the listener list is another: a broker that
-            # started between the two is missing from the first. Asked for by PID, it is still
-            # nameable, and a name with no command line is the orphan row of the table.
-            $live = Get-Process -Id ([int]$key) -ErrorAction SilentlyContinue
-            if ($live) { $holderName = [string]$live.Name }
+            # started between the two is missing from the first. Asked for by PID it is usually
+            # still readable, and a readable command line must reach the table, because a name with
+            # no command line lands in the orphan row and would kill a node bystander that merely
+            # bound the port between the two queries.
+            $late = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $([int]$key)" `
+                -ErrorAction SilentlyContinue
+            if ($late) {
+                $holderName = [string]$late.Name
+                $holderCommandLine = [string]$late.CommandLine
+            } else {
+                $live = Get-Process -Id ([int]$key) -ErrorAction SilentlyContinue
+                if ($live) { $holderName = [string]$live.Name }
+            }
         }
         if (-not (Test-IsChannelBrokerPortHolder -Name $holderName -CommandLine $holderCommandLine `
                 -BrokerEntryPath $BrokerEntryPath)) {
