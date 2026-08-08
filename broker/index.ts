@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import path from "node:path";
 import { runDirectly } from "./entrypoint.ts";
-import { RELAY_READ_TIMEOUT_MS, loadConfig } from "./config.ts";
+import { RELAY_READ_TIMEOUT_MS, REPLY_HEARTBEAT_MS, loadConfig } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import { createHandler } from "./intake.ts";
 import { createLogger } from "./log.ts";
@@ -206,6 +206,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     permissions: { request: (processToken, request) => permissions.request(processToken, request) },
     maxBodyBytes: config.maxBodyBytes,
     streamIdleMs: RELAY_READ_TIMEOUT_MS,
+    replyHeartbeatMs: REPLY_HEARTBEAT_MS,
     log: note,
   });
 

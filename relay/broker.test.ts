@@ -6,16 +6,17 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { RELAY_REPLY_TIMEOUT_MS } from "../broker/config.ts";
+import { RELAY_REPLY_IDLE_MS, loadConfig } from "../broker/config.ts";
+import { renderAnswer } from "../broker/discord/render.ts";
 import { NO_RATE_INFO } from "../broker/discord/transport.ts";
 import type { ThreadMessenger } from "../broker/discord/transport.ts";
 import { createRegistry } from "../broker/registry.ts";
-import { createOutboundRouter } from "../broker/routing/outbound.ts";
+import { MAX_RUN_WAIT_MS, RUN_PACE_MS, createOutboundRouter } from "../broker/routing/outbound.ts";
 import { createThreadWriter } from "../broker/routing/writer.ts";
 import { createRelayRoutes } from "../broker/routing/http.ts";
 import { createRelayHub } from "../broker/routing/relays.ts";
 import type { PermissionRequest } from "../broker/security/permission.ts";
-import { createBrokerClient } from "./broker.ts";
+import { MCP_TOOL_IDLE_TIMEOUT_MS, createBrokerClient } from "./broker.ts";
 import type { BrokerClient } from "./broker.ts";
 import type { PermissionVerdict } from "./permission.ts";
 
@@ -26,7 +27,7 @@ const GRACE_MS = 50;
 // Cleanup is registered with the test rather than written at the end of each one: a failed
 // assertion would otherwise leave a listening server and a held-open socket behind, and the test
 // runner then never exits.
-async function broker(t: TestContext) {
+async function broker(t: TestContext, options: { replyHeartbeatMs?: number } = {}) {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   registry.apply({
     event: "SessionStart",
@@ -40,8 +41,13 @@ async function broker(t: TestContext) {
   });
   const relays = createRelayHub({ registry, graceMs: GRACE_MS });
   const posts: Array<{ threadId: string; text: string }> = [];
+  // What a run held open looks like from the router's side: the post is in flight and has not come
+  // back. Held here rather than by a clock, so a test drives how long a reply takes without waiting
+  // out a real one.
+  let held: Promise<void> | null = null;
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
+      if (held !== null) await held;
       posts.push(input);
       return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
@@ -64,6 +70,9 @@ async function broker(t: TestContext) {
     },
     maxBodyBytes: 64 * 1024,
     streamIdleMs: 60_000,
+    // Long enough by default that a test saying nothing about heartbeats never sees one, which is
+    // what makes a broker gone quiet the shape a test asks for rather than the shape it inherits.
+    replyHeartbeatMs: options.replyHeartbeatMs ?? 60_000,
   });
   const server = http.createServer((request, response) => {
     if ((request.url ?? "").startsWith("/relay/reply")) replyRequests += 1;
@@ -80,6 +89,14 @@ async function broker(t: TestContext) {
     // Destroys every socket without closing the listener, which is what a broker killed mid
     // exchange looks like from the relay's side.
     hangUp: () => server.closeAllConnections(),
+    /** Holds every post of every run until the returned release is called. */
+    holdPosts: (): (() => void) => {
+      let release = (): void => {};
+      held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
     replyRequests: () => replyRequests,
     port: (server.address() as AddressInfo).port,
     registry,
@@ -283,37 +300,186 @@ test("a relay holding no stream reports the reply locally instead of attempting 
   assert.equal(context.replyRequests(), 0, "no socket is opened for a reply that cannot be made");
 });
 
-test("a relay that names no reply timeout takes the one the broker derives", async () => {
-  // The wait that matters is the broker's: it sends no byte of a reply's response until the whole
-  // paced run has landed, and a relay that gave up first would report the reply failed while its
-  // messages were still going up, which invites the model to send the answer again over the top of
-  // the messages that landed. A literal chosen here would be ordered against that run by
-  // coincidence and nothing else, and no runtime signal would report the two as crossed, so what
-  // this pins is that the default is the broker's value rather than a number of the relay's own.
+test("a relay that names no idle window takes the one the broker heartbeats under", async () => {
+  // The window has to be ordered against the broker's heartbeat, and the two live in different
+  // processes: a literal chosen here would be ordered against that heartbeat by coincidence and
+  // nothing else, and no runtime signal would report the two as crossed. What this pins is that the
+  // default is the shared value rather than a number of the relay's own.
   const client = createBrokerClient({ port: 1, processToken: TOKEN, onMessage: () => {} });
-  assert.equal(client.replyTimeoutMs, RELAY_REPLY_TIMEOUT_MS);
+  assert.equal(client.replyIdleMs, RELAY_REPLY_IDLE_MS);
+  assert.ok(
+    client.replyCeilingMs > client.replyIdleMs,
+    "a broker gone quiet has to run out of silence before the reply runs out of ceiling, or every " +
+      "dead broker reports as one still posting",
+  );
 
   const named = createBrokerClient({
     port: 1,
     processToken: TOKEN,
     onMessage: () => {},
-    replyTimeoutMs: 200,
+    replyIdleMs: 200,
+    replyCeilingMs: 400,
   });
-  assert.equal(named.replyTimeoutMs, 200, "a caller that names its own wait still gets it");
+  assert.equal(named.replyIdleMs, 200, "a caller that names its own window still gets it");
+  assert.equal(named.replyCeilingMs, 400);
 });
 
-test("a permission prompt waits on its own wait, not on the one a reply run earns", async () => {
-  // The reply wait is derived from what a whole paced run of the longest reply the broker accepts
-  // costs, which runs to minutes. The permission route costs one alert post: the operator's verdict
-  // comes back down the stream rather than on this response, so a prompt held to the reply's wait
-  // parks a session for minutes against a broker that has stopped answering, and a parked session
-  // is exactly what the prompt exists to unpark.
+test("the ceiling on one reply settles inside the window Claude Code allows a tool call", async () => {
+  // A tool call is bounded from outside this repo by an idle window as well as by a wall clock, and
+  // the idle window is the tight one: thirty minutes for a stdio server, reset only by a progress
+  // notification. Nothing in this relay sends one, so a ceiling at or past that window would let
+  // Claude Code give up on the reply tool first, and what the model is handed then is a tool error,
+  // which is the invitation to send the whole answer again over the top of what landed. The window
+  // is another program's default and cannot be enforced from here, so what holds the relation is
+  // this client settling first. The default is what is under test, so nothing overrides it.
   const client = createBrokerClient({ port: 1, processToken: TOKEN, onMessage: () => {} });
 
   assert.ok(
-    client.permissionTimeoutMs < client.replyTimeoutMs,
-    `a prompt waits ${client.permissionTimeoutMs}ms against a reply's ${client.replyTimeoutMs}ms`,
+    client.replyCeilingMs < MCP_TOOL_IDLE_TIMEOUT_MS,
+    `a reply is waited on for ${client.replyCeilingMs}ms against a ${MCP_TOOL_IDLE_TIMEOUT_MS}ms ` +
+      `idle window`,
   );
+});
+
+test("the longest single run the reply route accepts finishes inside that ceiling", async () => {
+  // The ceiling is chosen rather than derived, so nothing else orders it against what a run costs.
+  // This is that ordering for the one part of the cost that can be computed: one reply at the
+  // largest body the route accepts, measured through the renderer the broker really posts with
+  // rather than recomputed here, so a pacing gap, a waiting cap, a body ceiling, or a splitter that
+  // packs less densely each move it on their own. It says nothing about the thread's ordering chain,
+  // which is unbounded and is what the ceiling exists for.
+  const cap = loadConfig({}).maxBodyBytes;
+  const longest = renderAnswer("a".repeat(cap));
+  const run = longest.length * RUN_PACE_MS + MAX_RUN_WAIT_MS;
+  const client = createBrokerClient({ port: 1, processToken: TOKEN, onMessage: () => {} });
+
+  assert.ok(
+    run < client.replyCeilingMs,
+    `a reply at the ${cap}-byte body cap renders into ${longest.length} messages, which pace at ` +
+      `${RUN_PACE_MS}ms and wait up to ${MAX_RUN_WAIT_MS}ms, for ${run}ms against a ` +
+      `${client.replyCeilingMs}ms ceiling`,
+  );
+});
+
+test("a permission prompt waits on its own wait, not on the one a reply is allowed", async () => {
+  // A reply is answered across a whole paced run and is allowed to take minutes. The permission
+  // route costs one alert post: the operator's verdict comes back down the stream rather than on
+  // that response, so a prompt held to the reply's ceiling parks a session for minutes against a
+  // broker that has stopped answering, and a parked session is exactly what the prompt exists to
+  // unpark.
+  const client = createBrokerClient({ port: 1, processToken: TOKEN, onMessage: () => {} });
+
+  assert.ok(
+    client.permissionTimeoutMs < client.replyCeilingMs,
+    `a prompt waits ${client.permissionTimeoutMs}ms against a reply's ${client.replyCeilingMs}ms`,
+  );
+});
+
+test("a reply whose run outlasts the idle window lands whole and reports as sent", async (t) => {
+  // The regression. A reply waits on its thread's ordering chain, so its response can be minutes
+  // away with nothing bounding it; a relay that gave up at a fixed wait would tell the model the
+  // reply failed while its messages were still going up, and a model told a reply failed sends the
+  // whole answer again over the top of what landed. The run is held at the messenger rather than by
+  // a clock, so what is measured here is the relay's tolerance rather than a real run's duration.
+  const IDLE_MS = 100;
+  const context = await broker(t, { replyHeartbeatMs: 20 });
+  let messages = 0;
+  const client = registered(
+    t,
+    createBrokerClient({
+      port: context.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        messages += 1;
+      },
+      replyIdleMs: IDLE_MS,
+    }),
+  );
+  client.start();
+  await readyToWrite(context, () => messages);
+
+  const release = context.holdPosts();
+  const answer = client.reply("a report worth waiting for");
+  const openedAt = Date.now();
+  await until(() => Date.now() - openedAt > IDLE_MS * 3);
+  release();
+
+  assert.deepEqual(await answer, { status: "sent", error: undefined });
+  assert.deepEqual(context.posts, [
+    { threadId: THREAD, text: "📣 Claude · answer\na report worth waiting for" },
+  ]);
+});
+
+test("a broker gone quiet reports failed while one still answering reports still posting", async (t) => {
+  // The two timeout shapes, discriminated by the one thing that differs between these brokers:
+  // whether the broker keeps writing while the run is in flight. Both hold their run open forever,
+  // so a relay reading elapsed time alone could not tell them apart, and the reports have to differ
+  // because the remedies do: a reply the broker never answered is safe to send again, and a reply
+  // the broker is still posting is exactly the one that must not be.
+  const CEILING_MS = 400;
+  const quiet = await broker(t);
+  const answering = await broker(t, { replyHeartbeatMs: 20 });
+  const seen = { quiet: 0, answering: 0 };
+  const quietClient = registered(
+    t,
+    createBrokerClient({
+      port: quiet.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        seen.quiet += 1;
+      },
+      replyIdleMs: 100,
+      replyCeilingMs: CEILING_MS,
+    }),
+  );
+  const answeringClient = registered(
+    t,
+    createBrokerClient({
+      port: answering.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        seen.answering += 1;
+      },
+      replyIdleMs: 100,
+      replyCeilingMs: CEILING_MS,
+    }),
+  );
+  quietClient.start();
+  answeringClient.start();
+  await readyToWrite(quiet, () => seen.quiet);
+  await readyToWrite(answering, () => seen.answering);
+
+  // Never released: a chain wedged rather than slow is what the ceiling exists for.
+  quiet.holdPosts();
+  answering.holdPosts();
+
+  assert.equal((await quietClient.reply("into a dead broker")).status, "failed");
+  assert.equal((await answeringClient.reply("into a wedged chain")).status, "still-posting");
+});
+
+test("a reply the broker refuses outright still reports the refusal to the model", async (t) => {
+  // The reply route commits its 200 before the run, so nothing about a reply's outcome can ride the
+  // status line any more. What still rides a status line is a request the route refuses before the
+  // run starts, and the relay reads the body on both, so this pins that a refusal is still reported
+  // rather than swallowed by a client that stopped looking at status codes.
+  const context = await broker(t);
+  let messages = 0;
+  const client = registered(
+    t,
+    createBrokerClient({
+      port: context.port,
+      processToken: TOKEN,
+      onMessage: () => {
+        messages += 1;
+      },
+    }),
+  );
+  client.start();
+  await readyToWrite(context, () => messages);
+
+  const result = await client.reply("x".repeat(70 * 1024));
+  assert.deepEqual(result, { status: "failed", error: "body too large" });
+  assert.deepEqual(context.posts, [], "nothing reached the thread");
 });
 
 test("a reply against a broker that accepts and then goes silent settles rather than hanging", async (t) => {
@@ -326,7 +492,7 @@ test("a reply against a broker that accepts and then goes silent settles rather 
       port: context.port,
       processToken: TOKEN,
       onMessage: () => {},
-      replyTimeoutMs: 200,
+      replyIdleMs: 200,
     }),
   );
   client.start();
@@ -455,7 +621,7 @@ test("a reply whose response is cut off mid-body settles instead of hanging", as
       onMessage: () => {
         ready = true;
       },
-      replyTimeoutMs: 2_000,
+      replyIdleMs: 2_000,
     }),
   );
   client.start();

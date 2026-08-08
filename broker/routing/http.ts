@@ -11,8 +11,15 @@
 //     X-Channel-Process-Token: the same token
 //     X-Channel-Reply-Key:     the key the stream's `hello` carried
 //     body: {"text": "..."}
-//     -> 200 {"status": "sent" | "no-session" | "no-thread" | "failed"}
+//     -> 200 {"status": "sent" | "no-session" | "no-thread" | "failed"}, with the head written
+//        before the run starts and a newline heartbeat every REPLY_HEARTBEAT_MS until it resolves.
+//        The outcome rides the body alone, because the status line is on the wire long before the
+//        outcome is known; the heartbeats are insignificant leading whitespace to the JSON parser
+//        at the other end, and they are what the relay's idle timer measures instead of run length.
+//        A caller that is already gone gets no head and no heartbeat: the run goes ahead and its
+//        outcome is logged, since nothing written to a closed connection reaches anyone.
 //     -> 403 when the key does not match the pipe currently held for that token
+//     -> 400 or 413 on a body that is unreadable or past the cap, both decided before the head
 //
 //   POST /relay/permission
 //     the same two headers
@@ -70,6 +77,13 @@ export type RelayRoutesOptions = {
    * socket from holding a process token against the relay trying to reconnect on it.
    */
   streamIdleMs: number;
+  /**
+   * How often a reply whose run is still in flight is fed a newline, so the relay's idle timer on
+   * that response measures whether the broker is still alive rather than how long the run takes.
+   * Derived from the relay's own idle window where that window is defined, since the two processes
+   * cannot see each other. Nothing on this side checks the value against that window.
+   */
+  replyHeartbeatMs: number;
   log?: (message: string) => void;
 };
 
@@ -244,23 +258,66 @@ export function createRelayRoutes(
         return;
       }
 
-      const result = await options.outbound.reply(processToken, text);
+      // The head goes out before the run does. A reply waits on its thread's ordering chain and
+      // nothing bounds what is queued ahead of it, so a route that wrote nothing until the run
+      // resolved would leave the relay's timer measuring that queue: the reply is reported failed
+      // while its messages are still going up, and a model told its reply failed sends the whole
+      // answer again over the top of what landed. What this costs is the status line, which is
+      // committed before the outcome is known, so every outcome from here on rides the body.
+      // Skipped whole when the caller is already gone. A destroyed response has emitted its `close`
+      // already, so there is nothing left for a head to reach and nothing the listener below could
+      // hear that would clear the interval. The run still goes ahead, because a reply the broker
+      // accepted is a reply the operator is owed, and its outcome is logged where it lands.
+      let heartbeat: NodeJS.Timeout | null = null;
+      if (!response.writableEnded && !response.destroyed) {
+        response.writeHead(200, { "content-type": "application/json" });
+        // Without this a one-byte heartbeat sits in the kernel's Nagle buffer and the relay's idle
+        // timer is what fires rather than the beat arriving.
+        request.socket.setNoDelay(true);
+        response.flushHeaders();
+        // Insignificant leading whitespace to the JSON parser reading this body, and traffic to the
+        // socket the relay times out on, which is the whole of what a heartbeat here has to be.
+        const beating = setInterval(() => {
+          if (response.writableEnded || response.destroyed) return;
+          response.write("\n");
+        }, options.replyHeartbeatMs);
+        heartbeat = beating;
+        // The relay destroys this socket when its own ceiling on one reply runs out, which happens
+        // while the run still has messages to post. Without this the interval outlives the response.
+        response.on("close", () => clearInterval(beating));
+      }
+
+      const result = await options.outbound.reply(processToken, text).finally(() => {
+        if (heartbeat !== null) clearInterval(heartbeat);
+      });
       // A run paces itself and can outlive the relay's wait for it, and the relay destroys the
       // socket when that wait runs out. Nothing written to a connection that is gone reaches
-      // anyone, so the answer is logged instead of sent: what the operator needs from this case is
-      // that the route did its work and the answer had nowhere left to go, which is a different
-      // thing from a route that failed.
+      // anyone, so the outcome is logged instead of sent. It is the outcome rather than a note that
+      // the run finished, because the relay's ceiling tells the model not to send the message
+      // again: this line is the only place a reply that failed after its caller left is ever
+      // reported, to anyone. The status and its cause are the whole of it, the way every line here
+      // carries cause and never the message.
       if (response.writableEnded || response.destroyed) {
-        log(`relay: the ${route} answer was ready after its caller had closed the connection`);
+        const cause = result.status === "failed" ? `: ${result.error}` : "";
+        log(
+          `relay: a ${route} run settled ${result.status} after its caller had closed the ` +
+            `connection${cause}`,
+        );
         return;
       }
-      send(response, 200, result);
+      response.end(JSON.stringify(result));
     })().catch((error: unknown) => {
-      // The same three conditions the answer path above reads, so the two agree on when there is
-      // still someone to answer: a connection already answered, already ended, or gone is not one
-      // this handler writes a status into.
-      if (!response.headersSent && !response.writableEnded && !response.destroyed) {
-        send(response, 500, { error: "the request failed" });
+      // Everything still open is answered, because a caller left holding a response nothing ends
+      // waits out its whole ceiling on a request that is already over. Which shape the answer takes
+      // depends on whether the head has gone: the reply route commits its 200 before the run, so
+      // its failures ride the body the way the run's own do, and a route that has written nothing
+      // yet still reports a 500.
+      if (!response.writableEnded && !response.destroyed) {
+        if (response.headersSent) {
+          response.end(JSON.stringify({ status: "failed", error: "the request failed" }));
+        } else {
+          send(response, 500, { error: "the request failed" });
+        }
       }
       log(`relay: the ${route} route failed: ${String(error)}`);
     });

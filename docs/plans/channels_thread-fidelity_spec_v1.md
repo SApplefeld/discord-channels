@@ -280,6 +280,7 @@ the next chunk posts fresh below the operator's words rather than appending abov
 ### 4. A split run paces itself and lands whole
 
 Model: opus
+Status: Complete
 
 `postRun` in `broker/routing/outbound.ts` stops truncating on rate limits. Two mechanisms, both
 inside the run's existing chained task, driven by an injectable `sleep` on
@@ -312,21 +313,29 @@ Broker shutdown mid-sleep drops the run's remainder as any shutdown mid-run does
 Pacing a run changes what the rest of the system was sized for, and three things still spoke the
 old fast-run contract.
 
-The relay's reply timeout is the worst of them, and it is UNRESOLVED: see the Open Question below.
-The broker sends no bytes on `/relay/reply` until the run resolves, and the relay destroys a
-pending request after a timeout, reporting the reply as failed to the model with no landed count.
-At `RUN_PACE_MS`, an 11-message answer passes the original hand-set 15 seconds from pacing alone,
-so the model is told its reply failed while the broker is still posting it, and a resend
-double-posts everything already landed. That is strictly worse than the truncation this section
-removes.
+The relay's reply timeout was the worst of them. The broker sent no bytes on `/relay/reply` until
+the run resolved, and the relay destroyed a pending request after a hand-set 15 seconds, reporting
+the reply as failed with no landed count. At `RUN_PACE_MS`, an 11-message answer passes that from
+pacing alone, so the model would be told its reply failed while the broker was still posting it,
+and a resend would double-post everything already landed: strictly worse than the truncation this
+section removes.
 
-Deriving the timeout from the run's worst case was tried and does not hold. `/relay/reply` does not
-wait on its own run alone: `deliver` puts every posting run on the thread's ordering chain, and the
-mirror path's chunks enter through the same doorway, so a reply queued behind an in-flight paced
-mirror run waits that run's full duration plus its own. Nothing bounds how much is ahead of it, so
-no per-run constant can bound the wait. The derived constant is in the tree and it raises the
-ceiling, but it is not a fix, and the operator's decision on the Open Question determines what
-replaces it.
+Deriving the timeout from the run's worst case does not hold, and the attempt is recorded because
+the reasoning generalizes. `/relay/reply` does not wait on its own run alone: `deliver` puts every
+posting run on the thread's ordering chain and the mirror path enters through the same doorway, so
+a reply queued behind an in-flight paced mirror run waits that run's full duration plus its own,
+and nothing bounds how much sits ahead of it. No per-run constant can bound a per-thread queue. The
+fix is the early acknowledgment the Open Question records: the relay's timer measures whether the
+broker is alive rather than how long the run takes, which removes the arithmetic entirely.
+
+One relation still crosses a boundary this repo does not own, so it is named and pinned rather than
+left to coincidence, which is the mistake this section already paid for twice. Claude Code bounds
+an MCP tool call with two timers: a wall clock that progress notifications do not extend, and an
+idle timer that they do reset, defaulting to 30 minutes for a stdio server and 5 for HTTP. The
+relay connects over stdio, so its own 15-minute ceiling settles well inside the 30-minute window
+and vastly inside the wall clock, which is why the relay needs to emit no progress notification at
+all. The window is recorded as a named constant beside the ceiling, marked as Claude Code's value
+rather than this project's, with a test holding the ceiling under it.
 
 A wait that is not a finite number, or merely an enormous one, never terminates and poisons what it
 touches. A `NaN` makes the cap test false forever, `sleep` fire immediately, and
@@ -454,17 +463,28 @@ thread, one long turn, which is operator check F in its extended form:
 
 ## Open Questions
 
-- **OPEN, blocking Section 4's close: how should the reply tool learn that a paced run is still
-  going?** Pacing makes a long reply outlive any fixed reply timeout, and the failure is a
-  double-post rather than a truncation, which is worse than the problem this section fixes. Timing
-  arithmetic cannot solve it, because the reply waits on a per-thread ordering chain whose backlog
-  nothing bounds. Three candidates, none yet built: the broker sends an early byte on the reply
-  response so the relay's idle timer measures broker liveness rather than run length, which makes
-  the timeout question disappear; or the relay distinguishes a timeout from a failure, so the model
-  is told the answer is already going up and must not be resent; or the reply route answers
-  immediately the way the mirror path's intake already does, trading the landed count for
-  certainty. The derived-constant approach in the tree is a stopgap that raises the ceiling without
-  closing the hole.
+- Answered 2026-08-08 by the operator: the broker acknowledges early, so the relay's timer measures
+  liveness rather than run length. The relay's timeout is an idle timer, firing on socket silence
+  rather than on elapsed time, so the broker writes its response head as soon as the request is
+  validated and then a newline every heartbeat period while the run is in flight. Whitespace is
+  insignificant leading JSON, so a parser at the other end ignores the heartbeat and reads the
+  outcome that follows. The relay stays patient exactly as long as the broker is demonstrably
+  working, which is what a timeout should measure, and no arithmetic about run length is involved.
+
+  Two consequences shaped the rest. HTTP cannot send bytes before a status, so acknowledging early
+  means committing to 200 before the outcome is known: the reply route now carries success or
+  failure in the body, which cost nothing because the relay already read the body and ignored the
+  status. Every refusal that fires before the run starts keeps its own status untouched. And an
+  idle timer alone would wait forever on a genuinely wedged ordering chain, so the relay also holds
+  an absolute ceiling whose expiry is reported distinguishably: a broker gone quiet still reports
+  failure, while the ceiling reports that the answer may already be going up and must not be
+  resent. That distinction is what keeps the backstop from reintroducing the double-post it exists
+  to bound.
+
+  This retires the derived constant and its holes: `broker/config.ts` no longer computes a reply
+  timeout from the body cap and the pacing constants, and no longer value-imports the router and
+  the renderer to do it. The operator-settable body cap can no longer cross a timeout it cannot
+  see.
 
 - Answered 2026-08-08, by measurement over this project's own 41 transcripts. The operator's own
   channel message is recorded as a `queued_command`, but under `origin.kind` `channel`, carrying
@@ -742,3 +762,59 @@ Commit Model: Commit-and-Push, deviated deliberately: this round is committed to
 `section-4-pacing` rather than to main, because main should not carry a pacing change whose known
 open defect is a double-posted reply. Merging is the operator's call once the Open Question is
 answered.
+
+### Chapter 5 - 2026-08-08
+Completed: 4. A split run paces itself and lands whole
+Implemented By: implementer-opus, two further rounds
+Metrics: 1 review round on this fix; 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The operator chose the early acknowledgment. The relay's timeout is an idle
+timer, so the broker writes its head as soon as the request validates and a newline every heartbeat
+while the run is in flight, and the relay stays patient exactly as long as the broker is
+demonstrably alive. Whitespace is insignificant leading JSON, so the heartbeat costs the parser
+nothing. The arithmetic is gone, and with it the derived constant, its 2x headroom guess, its hole
+where an operator-settable body cap crossed a timeout it could not see, and the value import that
+had pulled the router and the renderer into a config module nearly everything imports.
+
+HTTP cannot send bytes before a status, so the route commits to 200 and carries the outcome in the
+body. That cost nothing, and the reason is worth recording: the relay already ignored the status
+and read the body, so the relocated failure is byte-for-byte what it always was, and every refusal
+that fires before the run starts keeps its own status. The implementer refined the placement, acking
+after the body read and reply-key check rather than at the top of the route, so no pre-run failure
+mode moved at all.
+
+The reviewer's remaining Major was a third timeout nobody had measured: Claude Code's own MCP tool
+timeout, sitting above both of ours. Measured rather than assumed, and it resolves with margin. A
+tool call is bounded by two independent timers, a wall clock that progress notifications do not
+extend, defaulting to about 28 hours, and an idle timer that they do reset, defaulting to 30
+minutes for a stdio server and 5 for HTTP. This relay connects over `StdioServerTransport`, so the
+30-minute window applies and the 15-minute ceiling settles inside it, which is also why the relay
+needs no progress notifications at all. Neither variable is set in this environment. The window is
+now a named constant beside the ceiling, marked as Claude Code's value rather than this project's,
+with a test holding the ceiling under it, and the facts are banked in the operator memory tier
+where the next project meets the same question.
+
+Two claims were falsified by probe rather than accepted. A reviewer held that writing to a
+destroyed socket throws and risks an unhandled rejection; on Node 24.19.0 it does neither. And a
+reviewer held that a client disconnecting during the body read reaches the head write with the
+response already destroyed; it does not, because the body read itself throws and control leaves for
+the catch. The guard for that case ships anyway as forward defense and is recorded here as
+deliberately unpinned: no test can reach it without a production change, and it becomes live the
+moment anyone inserts an await between the body read and the head write, which this very session
+did twice elsewhere in the same function.
+Review Findings: No Criticals. Both lenses confirmed every pre-existing failure report still
+reaches the model despite the status change, that the heartbeat cannot leak or land after the body,
+and that the two give-up shapes stay distinguishable rather than collapsing. One Major fixed: a run
+resolving after its caller closed dropped its result and logged wording that asserted success, which
+made a late failure silent on the one path where the model has been told not to resend; the log now
+carries the outcome and reads neutrally. One Major resolved by measurement, above. Minors fixed: a
+comment claiming a clamp that does not exist, a ceiling comment claiming a run is "never" cut off
+when the record establishes an unbounded backlog, a test pointer naming the wrong file, and the
+missing arithmetic pin that the replaced test used to carry, now restored as the worst single run
+measured through the real renderer against the ceiling. The model-facing still-posting mapping was
+extracted to a testable seam and pinned in both directions, since a stray error flag there would
+invite the very resend the design prevents.
+Stamps: adjudicated 0, stamped 0; nothing new surfaced in the window, and this round's durable
+learning went to the operator tier as `claude-code-mcp-tool-timeouts` rather than to a stamp.
+Next: 5. The docs carry the fidelity surface
+Commit Model: Commit-and-Push, still on branch `section-4-pacing`. The blocking defect is closed, so
+this branch is ready to merge to main; the merge happens in finishing-work.

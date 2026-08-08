@@ -2,8 +2,6 @@
 // pointed at a different port or state file without editing source.
 import os from "node:os";
 import path from "node:path";
-import { MAX_MESSAGE_LENGTH } from "./discord/render.ts";
-import { MAX_RUN_WAIT_MS, RUN_PACE_MS } from "./routing/outbound.ts";
 
 export type BrokerConfig = {
   /** Bound on 127.0.0.1 only. The listener is never exposed off-box. */
@@ -104,40 +102,30 @@ const MAX_INTERIM_POLL_MS = 5 * 60 * 1000;
 export const RELAY_READ_TIMEOUT_MS = 60 * 1000;
 
 /**
- * How many messages the largest body `/relay/reply` accepts renders into, at one message per
- * message ceiling.
- *
- * The body cap is a byte count and the ceiling a code-point count, which makes this the count for
- * a body packed to the ceiling rather than an upper bound on every body: text the splitter packs
- * less densely, because its paragraphs or its lines fall awkwardly against the ceiling, renders
- * into more messages than this. The headroom below is what carries that.
- */
-const REPLY_RUN_CEILING_MESSAGES = Math.ceil(DEFAULT_MAX_BODY_BYTES / MAX_MESSAGE_LENGTH);
-
-/**
- * Twice the run this arithmetic models, which is what covers the parts it does not: a body the
- * splitter packs less densely than one message per ceiling, and the round trips of the posts
- * themselves, which cost the run time on top of every gap and every wait.
- */
-const REPLY_TIMEOUT_HEADROOM = 2;
-
-/**
- * How long the relay waits for an answer to one reply before it reports that reply as failed.
+ * How long the relay waits with no byte at all on a reply's response before it presumes the broker
+ * has stopped answering and reports the reply as failed.
  *
  * Exported for the reason the read timeout above is: the value is read in relay/broker.ts, in the
  * other process, and the two cannot see each other's constants.
  *
- * Derived rather than chosen, because the two numbers have to stay ordered and nothing at runtime
- * would report them as crossed. The broker sends no byte of the reply's response until the whole
- * run has landed, and a run paces itself to stay under the thread's create bucket, so a timeout
- * shorter than the run tells the model its answer failed while the messages are still going up.
- * What the model does with a bare failure is send the answer again, and every message that already
- * landed then posts a second time, which is the opposite of the pacing's whole purpose. The
- * derivation is the run's own cost: a pacing gap for each message the body renders into, plus the
- * whole of one run's reactive-wait cap, times the headroom above.
+ * It measures silence rather than elapsed time, which is what makes one number cover every reply.
+ * A reply waits on its thread's ordering chain and nothing bounds what is queued ahead of it, so no
+ * arithmetic over one run's own cost can bound the wait; what can be bounded is how long the broker
+ * may go without saying anything, and the reply route writes a heartbeat while a run is in flight
+ * precisely so this timer measures the broker's liveness.
  */
-export const RELAY_REPLY_TIMEOUT_MS =
-  (REPLY_RUN_CEILING_MESSAGES * RUN_PACE_MS + MAX_RUN_WAIT_MS) * REPLY_TIMEOUT_HEADROOM;
+export const RELAY_REPLY_IDLE_MS = 30 * 1000;
+
+/**
+ * How often the reply route writes a heartbeat byte into a response whose run is still going.
+ *
+ * Derived rather than chosen, because the two numbers live in different processes and nothing at
+ * runtime would report them as crossed: a heartbeat slower than the relay's idle window means every
+ * reply that outlasts one window is reported failed while its messages are still going up, and what
+ * a model does with a bare failure is send the answer again over the top of what landed. A third of
+ * the window leaves room for one heartbeat lost to scheduling before the reply pays for it.
+ */
+export const REPLY_HEARTBEAT_MS = Math.floor(RELAY_REPLY_IDLE_MS / 3);
 
 /** Room for two missed heartbeats inside the relay's read timeout before it gives up on the pipe. */
 const MAX_RELAY_HEARTBEAT_MS = Math.floor(RELAY_READ_TIMEOUT_MS / 3);
