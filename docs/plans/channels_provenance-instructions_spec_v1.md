@@ -163,3 +163,13 @@ Stamps: none surfaced (memq unstamped --since 3h returned 0; the two records ste
 Next: 2. The documentation sweep
 Commit Model: Commit-and-Push
 
+### Chapter 2 - 2026-08-08
+Completed: 2. The documentation sweep
+Implemented By: main session
+Metrics: 1 review round (adversarial only); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: The blind reviewer was skipped for this section with cause: its input contract excludes docs/ hunks and the section is entirely docs; the adversarial reviewer carries the prose-versus-code accuracy risk, and the finishing pass reviews the full changeset. Beyond the spec's three planned edits, the security-model changes absorbed two review-round requirements from Section 1: the accepted-risk list gained the forged-broker entry (a local process answering the loopback port feeds channel events at the raised standing; accepted on the stronger-primitive rationale, since verdict spoofing and hook rewriting were already conceded to that adversary), and the sender-gate account-compromise paragraph now names the keyboard standing its messages carry. The sweep found exactly one live old-posture site (the security model's channel-event paragraph); every other hit quotes the old posture as superseded (plan doc, test comment) or means something else (file-ownership "unverified owner"), and the Chapter 1 ruling on the carrier-contract comments was re-read and concurred with by the reviewer.
+Review Findings: 0 Critical, 0 Major; 2 Minor: an operator-facing sentence stated model behavior as a guarantee rather than as instruction text, fixed with the reviewer's wording (the honesty gate applies to promises on operator surfaces); the steering-deference paragraph's placement under the permission-prompt heading noted, kept beside the inbound-chat ceiling where inbound-message content already lives.
+Stamps: none surfaced (memq unstamped --since 1h returned 0)
+Next: finishing-work
+Commit Model: Commit-and-Push
+

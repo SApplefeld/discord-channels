@@ -126,6 +126,11 @@ rather than the oldest evicted, because the oldest is the session that has been 
 Inbound chat has its own ceiling: **20 messages a minute per session**. Past it a message is dropped
 with a log line and no in-thread notice.
 
+A message you type in a thread reaches the session as your own steering, at the same standing as
+the keyboard: the relay's instructions tell the model every delivered message has passed the sender
+gate. The same instructions keep the confirm-first discipline: the model is told to confirm before
+anything irreversible or outward-facing, exactly as at the console.
+
 ## Mid-turn narration and typed messages
 
 On a long turn the thread otherwise shows nothing between the prompt that opened it and the final

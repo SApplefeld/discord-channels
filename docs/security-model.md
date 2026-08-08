@@ -237,9 +237,10 @@ The gate runs before everything else on the inbound path, **including the verdic
 verdict-shaped message from anyone else is refused before it is read as one.
 
 **What it does not protect.** The allowlist is one Discord account. Whoever controls that account
-can steer every session on the host and approve any tool call it asks about, so that account's own
-password, second factor, and the device its notifications reach are part of this trust boundary. The
-gate says nothing about who is at the other end of it.
+can steer every session on the host and approve any tool call it asks about, and its messages reach
+the model at the keyboard's standing, so that account's own password, second factor, and the device
+its notifications reach are part of this trust boundary. The gate says nothing about who is at the
+other end of it.
 
 ## Tool approval over the channel
 
@@ -280,11 +281,16 @@ the per-attachment reply key. A process token is not enough. Without that, any o
 that inherit the token could ring the operator's phone with an approval request of its own devising,
 in the one message they are trained to answer quickly.
 
-**A channel event tells the model that its sender is unverified.** The relay's instructions say so
-explicitly and make no claim that a message came from the operator, because at that layer nothing
-establishes who wrote it. Text arriving over the channel carries less authority than what the
-operator typed at the keyboard, and the model is told that in the same breath as it is told the
-events exist.
+**A channel event reaches the model at the keyboard's standing.** The relay's instructions describe
+the sender gate rather than commanding trust: a message is delivered only after the broker has
+checked its author's Discord account against the allowlist, and a broker connected to Discord
+refuses to start without one, so the model treats channel steering as the operator's own. The
+residuals ride in the same text: the check establishes the account, not the person, and an action
+that is irreversible or outward-facing is confirmed first, a discipline about blast radius rather
+than identity, so it binds a keyboard instruction equally. What the description is not is
+verification by the relay: the relay cannot identify its peer, so the instructions state a
+structural property of the system, backed by the broker refusing to run ungated, and the forged
+peer this leaves open is carried in the accepted-risk list below.
 
 **The reply tool's allow rule is a machine-wide pre-approval.** One rule is merged into the
 user-level settings file: `mcp__plugin_relay_channel-relay__reply`, for the relay arriving as this
@@ -448,6 +454,14 @@ authenticated account or a non-administrative service account.
   same text, and whichever posts first is the one the operator sees. When the tailer wins the race,
   the turn's conclusion carries the `✨ Claude · working` attribution rather than `✨ Claude`. The
   text and the count are right; only the label reads as mid-turn.
+- **A forged broker forges the operator's steering.** The relay believes whatever answers the
+  broker's loopback port, so a local process that binds it while the broker is down can feed a
+  session channel events, and those events arrive at the keyboard's standing the instructions
+  grant. Accepted because the same position already holds a stronger primitive: permission verdicts
+  ride the same stream, so such a process can approve a session's real tool calls without composing
+  a single steering message, and a process running as the operator can rewrite the session-start
+  hooks outright. The instruction text changes what a forged message is worth, not who can forge
+  one or what they could already do.
 - **One allowlisted Discord user per host.** There is no multi-user model and no per-user
   permissions.
 - **A session cannot be started or restarted remotely.** A channel injects into a running session; it
