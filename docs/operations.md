@@ -127,9 +127,10 @@ Inbound chat has its own ceiling: **20 messages a minute per session**. Past it 
 with a log line and no in-thread notice.
 
 A message up to **4,000 characters**, Discord's own maximum, is delivered whole. Past that the text
-is cut at 4,000 and the thread says so, with a notice asking you to resend the tail as its own
-message; the cut is a backstop for a future Discord cap change, not something a message a client
-can send today will hit.
+is cut at 4,000 and, once the cut text has actually reached the session, the thread says so with a
+notice asking you to resend the tail as its own message; a cut message that reached no session is
+dropped for the reason its own ceiling names, with no notice about the cut. The cut is a backstop
+for a future Discord cap change, not something a message a client can send today will hit.
 
 A message you type in a thread reaches the session as your own steering, at the same standing as
 the keyboard: the relay's instructions tell the model every delivered message has passed the sender

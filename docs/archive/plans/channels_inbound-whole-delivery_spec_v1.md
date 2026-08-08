@@ -1,6 +1,6 @@
 # An inbound message lands whole, and a cut is loud
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: n/a (Fable-led session)
 Created: 2026-08-08
@@ -106,7 +106,7 @@ Acceptance: no doc states the 2,000 inbound bound; the backlog carries no comple
 
 ## Related
 
-- [`../archive/plans/channels_provenance-instructions_spec_v1.md`](../archive/plans/channels_provenance-instructions_spec_v1.md),
+- [`channels_provenance-instructions_spec_v1.md`](channels_provenance-instructions_spec_v1.md),
   the effort during whose close-out the operator hit the silent cut live.
 
 ## Open Questions
@@ -133,5 +133,15 @@ Decisions / Surprises: operations.md states the 4,000 bound, whole-message deliv
 Review Findings: none (deferred to the finishing pass)
 Stamps: none surfaced
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-08
+Completed: close-out
+Implemented By: main session
+Metrics: finishing pass (qa-verifier, adversarial-reviewer, security-reviewer, docs-curator, all at the session model on a Fable-led session); 0 escalations; advisor opus
+Decisions / Surprises: QA PASS with the suite at exactly baseline plus the seven new tests (696 tests, 695 pass, 0 fail, 1 pre-existing skip; lint exit 0) and every acceptance criterion verified against source. Finishing security review of the fix delta CLEAR with no findings: the unfloored announcement rides the neutralized, budget-paced, mention-suppressed post path and is bounded by the sender gate, the 20-per-minute inbound ceiling, and the post budget; the verdict guard cannot suppress a genuine verdict because nothing Discord delivers can set the truncated flag. Final adversarial APPROVED with two Minors: the writer's reply doc comment now names the unfloored property its second caller depends on (fixed in this delivery), and the announcement's delivered-branch nesting is tested on one representative undelivered path rather than all four (noted; the guarantee is structural). Chapter 1's grep-artifact dismissal was independently reproduced by the final reviewer against raw bytes, in relay/broker.ts as well as the originally named relay/index.ts, both clean. Curator DRIFT NONE with two precision edits: the operations paragraph scopes the notice to the delivered path, and the security model credits the verdict guard.
+Review Findings: finishing round 0 Critical, 0 Major; 2 Minor (1 fixed, 1 noted).
+Stamps: none surfaced (memq unstamped --since 2h returned 0)
+Next: none; effort complete, delivered in this changeset
 Commit Model: Commit-and-Push
 

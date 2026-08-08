@@ -24,7 +24,10 @@ const NOTICE_FLOOR_MS = 60_000;
 
 export type ThreadWriter = {
   /**
-   * Posts a reply from a session. Reports the outcome, because the model is told whether it
+   * Posts a reply from a session, and the one broker-authored write that must never be floored:
+   * the truncation announcement rides this route because a suppressed copy of it is a silent cut,
+   * so this is the unfloored post, budget-paced but never deduplicated, and it neither reads nor
+   * stamps the floor `notice` keeps. Reports the outcome, because the model is told whether it
    * landed, and the id it carries on success, when Discord's response yielded one, is the target
    * of a later `edit` on the same message.
    */

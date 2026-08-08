@@ -277,6 +277,13 @@ answering consumes the request, so a verdict cannot be replayed or applied to a 
 prompt. A verdict naming nothing open is answered in-thread rather than dropped in silence: from a
 phone, silence is indistinguishable from success.
 
+**A message the inbound ceiling cut is never read as a verdict.** The pattern tolerates interior
+whitespace, so a cut can land on an exact verdict match that the operator's full message never
+made, approving a real tool call on words nobody sent. Cut text is delivered to the session as chat
+instead. The ceiling matches Discord's own maximum message length, so nothing a client can send
+today is cut; the guard is what keeps a future ceiling below that maximum from turning a truncation
+into an approval.
+
 A prompt reaches the broker over the same loopback route a reply does and is held to the same bar,
 the per-attachment reply key. A process token is not enough. Without that, any of the subprocesses
 that inherit the token could ring the operator's phone with an approval request of its own devising,

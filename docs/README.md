@@ -19,14 +19,13 @@ is built and installable.
 
 ## Plans
 
-| Plan | Status | What it is |
-|---|---|---|
-| [`plans/channels_inbound-whole-delivery_spec_v1.md`](plans/channels_inbound-whole-delivery_spec_v1.md) | In Progress | The inbound ceiling rises to Discord's own 4,000-character maximum so every deliverable channel message lands in the session whole, as one event, and a message over the ceiling is cut with an in-thread notice instead of in silence. |
+No plan is in progress.
 
 Archived plans, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`archive/plans/channels_inbound-whole-delivery_spec_v1.md`](archive/plans/channels_inbound-whole-delivery_spec_v1.md) | Complete | The inbound ceiling rises to Discord's own 4,000-character maximum so every deliverable channel message lands in the session whole, as one event; a message over the ceiling is delivered cut with an unfloored in-thread notice instead of in silence, and a truncated message is never parsed as a permission verdict. |
 | [`archive/plans/channels_provenance-instructions_spec_v1.md`](archive/plans/channels_provenance-instructions_spec_v1.md) | Complete | The relay's MCP instructions describe the sender gate instead of calling channel messages unattributed: a delivered message has passed the broker's one-account allowlist, so the session treats channel steering as the operator's own, at the keyboard's standing, with the confirm-before-irreversible discipline kept explicit and the forged-broker residual recorded in the security model's accepted-risk list. |
 | [`archive/plans/channels_thread-fidelity_spec_v1.md`](archive/plans/channels_thread-fidelity_spec_v1.md) | Complete | The thread carries what the console carried. Narration coalescing judges freshness by snowflake order, so the broker's own gateway echo no longer forfeits the block it is echoing. The tailer takes its baseline at the mirror-on verdict rather than the next poll tick, guarded by a per-entry epoch, so a turn narrates from its opening chunk and a re-allow after a mirror-off cannot republish the suppressed window. A message typed at the console mid-turn, which fires no hook, is extracted from the transcript by an allowlist and posted with the same operator attribution and escaping a hook-mirrored prompt gets. And a run that renders into many messages paces itself and retries a rate-limited refusal under bounds instead of truncating, with the broker acknowledging a reply early and heartbeating so the relay's idle timer measures liveness rather than run length. Operator check F, the side-by-side fidelity watch, is the live gate still to run. |
 | [`archive/plans/channels_reply-dedup-and-repair_spec_v1.md`](archive/plans/channels_reply-dedup-and-repair_spec_v1.md) | Complete | One copy of a turn's close: a mirrored reply repeating a reply-tool answer, exactly or nearly and no longer than it, is suppressed on bounded sketches rather than retained text, both orderings collapse to one copy, and the record lives one turn. Also `install/Repair-Broker.ps1`, the one command for a stale, doubled, or orphaned broker, killing only under a proof-based decision table, verified by two real runs on SCOTT. |
