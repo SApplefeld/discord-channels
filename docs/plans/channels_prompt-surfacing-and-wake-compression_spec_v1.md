@@ -154,6 +154,18 @@ work (subagents cannot write under `docs/` in this harness).
 
 ## Section 4: deploy and live verify
 
+**Deploy status 2026-08-08: blocked on an elevated action.** Sections 1 through 3 are committed
+and pushed (f8afb7d); the SCOTT broker still serves pre-effort code. `Repair-Broker.ps1` could not
+kill the running broker, PID 4784: it is an elevated orphan (started at logon by the
+highest-runlevel scheduled task), the session driving the repair is unelevated (measured
+IsInRole = False; the elevation memory was corrected the same turn), and Stop-Process, taskkill,
+WMI terminate, one-shot `/RL HIGHEST` task creation, and `Stop-ScheduledTask` were each tried and
+denied or inert, while every fresh task start dies on EADDRINUSE against the held port. Unblock
+paths, decision with the operator: an elevated `Repair-Broker.ps1` run at the keyboard, or
+authorizing a port-clearing kill-by-proof step in `Start-Broker.ps1` so the elevated task clears
+its own port (also the durable fix for this orphan class). On unblock, resume at the deploy
+bullet below.
+
 - Baseline `npm run lint` / `npm test` counts are recorded before Section 1 and re-run after each
   section; deltas reported against the baseline.
 - Deploy: restart the SCOTT broker via the blessed path (consult `machine-launch-surfaces`
