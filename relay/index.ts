@@ -58,7 +58,10 @@ export function replyToolResult(status: ReplyStatus): CallToolResult {
       ],
     };
   }
-  const text = REPLY_FAILURES[status] ?? REPLY_FAILURES.failed;
+  // Own properties only. `status` is a string off the wire, so a plain lookup would resolve
+  // `constructor` or `toString` through the prototype chain and carry a function where the model
+  // expects one of the sentences above.
+  const text = Object.hasOwn(REPLY_FAILURES, status) ? REPLY_FAILURES[status] : REPLY_FAILURES.failed;
   return { content: [{ type: "text", text }], isError: true };
 }
 

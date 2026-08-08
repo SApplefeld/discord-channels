@@ -1,6 +1,6 @@
 # Thread fidelity: the thread carries what the console carried
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: S1 implementer and its reviewer pair; the S3 and S4 reviewer pairs (one tier above their opus writers); finishing reviews
 Created: 2026-08-07
@@ -426,15 +426,15 @@ trust argument.
 ## Related
 
 Amends the freshness contract of
-[`channels_narration-coalescing_spec_v1.md`](../archive/plans/channels_narration-coalescing_spec_v1.md)
+[`channels_narration-coalescing_spec_v1.md`](./channels_narration-coalescing_spec_v1.md)
 (Section 1 here replaces the clock-only remember refusal whose own-echo residue that plan's
 Chapter 3 accepted as rare and the first live run measured as dominant). Extends the tailer of
-[`interim-mirroring_spec_v1.md`](../archive/plans/interim-mirroring_spec_v1.md) (Sections 2 and 3)
+[`interim-mirroring_spec_v1.md`](./interim-mirroring_spec_v1.md) (Sections 2 and 3)
 and the split-run delivery of
-[`channel-mirroring_spec_v1.md`](../archive/plans/channel-mirroring_spec_v1.md) and
-[`channel-quality-and-plugin_spec_v1.md`](../archive/plans/channel-quality-and-plugin_spec_v1.md)
+[`channel-mirroring_spec_v1.md`](./channel-mirroring_spec_v1.md) and
+[`channel-quality-and-plugin_spec_v1.md`](./channel-quality-and-plugin_spec_v1.md)
 (Section 4). The EchoMemory dedup contract of
-[`channels_reply-dedup-and-repair_spec_v1.md`](../archive/plans/channels_reply-dedup-and-repair_spec_v1.md)
+[`channels_reply-dedup-and-repair_spec_v1.md`](./channels_reply-dedup-and-repair_spec_v1.md)
 is untouched.
 
 ## Out of Scope
@@ -849,3 +849,69 @@ Stamps: adjudicated 0, stamped 0; nothing surfaced in the window.
 Next: finishing-work
 Commit Model: Commit-and-Push, on branch `section-4-pacing`. Merging to main happens in
 finishing-work.
+
+### Chapter 7 - 2026-08-08 (close-out)
+Completed: the effort. All five sections Complete.
+Implemented By: implementer-fable (S1), implementer-sonnet (S2), implementer-opus (S3, S4), main
+session (S5)
+Metrics: 8 review rounds across the effort; 0 NEEDS_CONTEXT; 0 tier escalations; advisor opus
+Decisions / Surprises: The gate moved from 624 tests / 623 pass / 0 fail / 1 skipped at the base
+commit to 689 / 688 / 0 fail / 1 skipped, the single skip pre-existing and unchanged throughout.
+Lint clean. Measured directly rather than inherited: the base numbers came from a clean worktree at
+the base commit, which also served as the red state proving the sections' regression tests
+discriminate.
+
+The effort's own lesson, earned twice: pacing a run changed what the rest of the system had been
+sized for, and both times the defect lived in a relation between two constants in different
+components that nothing pinned. The relay's reply timeout was the first, and deriving a better
+constant failed too, because the reply waits on a per-thread queue whose backlog nothing bounds. The
+fix that held was structural rather than arithmetic, making the relay's timer measure whether the
+broker is alive instead of how long the run takes. Claude Code's own MCP idle window was the second,
+and it resolved by measurement with margin. Where a relation crosses a boundary this project does
+not own, it is now a named constant with its source stated and a test holding the relation.
+Review Findings: QA verification PASS, with every named regression test read and confirmed to assert
+what the spec claims. Final security review CLEAR: no Criticals, no Majors, and it independently
+traced the three properties that matter most across all five sections together, that no route reads
+a never-allowed transcript, that no suppressed-window content can reach a thread, and that
+operator-attributed text cannot escalate into the permission-verdict path. Final adversarial review
+APPROVED_WITH_CONCERNS.
+
+One Major accepted rather than fixed, with the reasoning recorded because it is a real inverted
+failure. The coalescing freshness map is bounded, and if 64 or more other threads narrate during one
+run, an evicted clock entry reads as "no arrival", so a run could be remembered above a foreign
+message: the exact failure Section 1 forbids, in the channel where approvals are answered. Section 4
+widened the window from one HTTP round trip to a paced run. It is accepted because reachability
+requires 64 concurrently narrating threads against a two-host installation, and because the clean
+fix, a global monotonic arrival counter, would make any ID-less arrival anywhere end every in-flight
+run's coalescing, trading an everyday behavior for an unreachable edge. It is carried in
+`docs/backlog.md` so a growing fleet reopens it rather than losing it.
+
+Two Minors fixed at the close: the relay's failure-text lookup resolved a wire-supplied status
+through the prototype chain, so it now matches own properties only, and the transport's
+`retryAfterMs` comment named only a 429 when the writer's own pre-flight refusal also populates it.
+
+Drift: one item, Class deviation, no mistakes. `docs/install.md`'s data-egress sentence omits
+mid-turn narration, which predates this effort; this effort narrowed the gap rather than widening
+it, since that sentence's claim about every prompt typed at the console was false for the mid-turn
+kind before Section 3 and is true now. The accurate egress enumeration lives in
+`docs/security-model.md`.
+Stamps: adjudicated across the effort, 5 stamped:
+`a-brokers-own-gateway-echo-races-ahead-of-its-rest-response` (S1),
+`a-switch-that-suppresses-a-post-fails-differently-from-one-that-gates-a-read`,
+`two-components-agreeing-is-not-two-checks`, `a-comment-that-names-a-property-is-a-claim-to-sweep`
+(S2), `claude-code-transcript-jsonl-shape` (S3), and
+`discord-edit-and-create-are-separate-rate-buckets` (S4). Memory written: the transcript-shape record
+gained the measured `queued_command` population, and the operator tier gained
+`claude-code-mcp-tool-timeouts`.
+
+Operator-pending, and the only thing between here and the goal being observably met: operator check
+F, the side-by-side fidelity watch, on both SCOTT and NEO restarted onto this code. Console beside
+thread, one long turn. The turn's first narration chunk must appear and narration must accumulate in
+one growing message; a message typed at the console mid-turn must appear as an operator-attributed
+quote in order, with the next chunk starting fresh below it; and a reply splitting into six or more
+messages must land whole, checked against the console copy section by section. Narration sitting
+above a typed message more than momentarily, a missing chunk, a missing queued prompt, or a report
+that still ends early reopens the work as a new round. Carried in `docs/backlog.md` so it survives
+the archive.
+Next: none; the effort is complete and archived.
+Commit Model: Commit-and-Push. The branch `section-4-pacing` merges to main in this close-out.

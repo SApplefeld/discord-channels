@@ -14,7 +14,11 @@ export type RateLimitObservation = {
   remaining: number | null;
   /** `X-RateLimit-Reset-After`: how long until the bucket refills. */
   resetAfterMs: number | null;
-  /** `retry_after` from a 429. Null unless the call was refused for rate limiting. */
+  /**
+   * How long to wait before trying again: `retry_after` from a 429, or the block the writer's own
+   * pre-flight budget refusal already holds, which names a wait without a 429 having happened.
+   * Null unless the call was refused for rate limiting.
+   */
   retryAfterMs: number | null;
 };
 

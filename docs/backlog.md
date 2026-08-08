@@ -9,15 +9,27 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 
 ## Active
 
-- Run operator check F (`operator-checks.md`), the live watch of a long turn's narration, which
-  covers the coalesced surface (one growing `(edited)` message under one header, and a typed message
-  breaking the block) and the one-copy close (the turn's closing words appearing once, under
-  whichever attribution posted them first). Its first successful append is also the evidence that closes the
-  open question of whether editing the bot's own message needs any permission beyond the six
-  `install.md` already grants (a refused-append log line carrying a permissions error reopens
-  that). A failed check reopens the narration-coalescing effort as a new round. SCOTT's broker
-  already runs the coalescing code; NEO and ASR pick it up at their next `git pull` plus broker
-  restart (or next logon, which restarts the task).
+- Run operator check F (`operator-checks.md`), now the side-by-side fidelity watch: console beside
+  thread, one long turn, on SCOTT and on NEO with both restarted onto this code. It covers the
+  coalesced surface (one growing `(edited)` message under one header, and a typed message breaking
+  the block), the one-copy close (the turn's closing words appearing once, under whichever
+  attribution posted them first), and the three fidelity legs: the turn's first narration chunk
+  reaching the thread, a message typed at the console mid-turn arriving as an operator-attributed
+  quote in order, and a reply splitting into six or more messages landing whole against the console
+  copy. Its first successful append is also the evidence that closes the open question of whether
+  editing the bot's own message needs any permission beyond the six `install.md` already grants (a
+  refused-append log line carrying a permissions error reopens that). Narration sitting above a
+  typed message more than momentarily, a missing chunk, a missing queued prompt, or a report that
+  still ends early reopens the thread-fidelity effort as a new round. NEO and ASR pick the code up
+  at their next `git pull` plus broker restart (or next logon, which restarts the task).
+- Revisit the coalescing freshness map's eviction race if this ever runs at fleet scale. The
+  per-thread invalidation clock is bounded, so with 64 or more other threads narrating during one
+  run, an evicted entry reads as "no arrival" and a run can be remembered above a foreign message,
+  which is narration above a permission prompt in the channel where approvals are answered. Accepted
+  at a two-host installation because reachability needs 64 concurrently narrating threads, and
+  because the clean fix, a single monotonic arrival counter that survives eviction, would make any
+  ID-less arrival anywhere end every in-flight run's coalescing. Growing the fleet is the trigger to
+  take that trade.
 - Remove the retired `mcp__channel-relay__reply` rule from `~/.claude/settings.json` on NEO and on
   ASR: both were provisioned while the fragment still shipped it, and `Install-Host.ps1` never
   removes a rule already there. SCOTT's copy is already done.
