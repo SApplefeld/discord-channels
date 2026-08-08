@@ -7,7 +7,8 @@ import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
 import type { Registry } from "../registry.ts";
-import { createEchoMemory } from "../tail.ts";
+import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "../similarity.ts";
+import { ANSWER_LENGTH_ALLOWANCE, createEchoMemory } from "../tail.ts";
 import { createOutboundRouter } from "./outbound.ts";
 import { createThreadWriter } from "./writer.ts";
 
@@ -1011,6 +1012,247 @@ test("a mirrored reply that failed to land is not remembered as mirrored", async
     echo.isEcho("session-a", reply),
     false,
     "a reply that never landed must not suppress the tailer's copy of the same text",
+  );
+});
+
+/** A close-out answer of the length and register the reply tool and the Stop mirror both carry. */
+const ANSWER = [
+  "Done: the channel quality pass is delivered. The broker now coalesces consecutive narration",
+  "chunks into one growing message, so a working stretch reads as a single block instead of a",
+  "header per sentence, and the status card names the tool a session is working in rather than",
+  "only saying one is running. The repair script landed too: it kills only processes it can",
+  "prove are this repo broker, by command line or by the configured port, and never a process",
+  "merely named node. All gates ran green, the docs carry the new surfaces, and the plan doc is",
+  "archived. The one thing left for you is a real phone-side check of the new card copy.",
+].join(" ");
+
+/** The same answer as the Stop mirror phrases it: two clauses lightly reworded. */
+const MIRRORED_ANSWER = ANSWER.replace("is delivered", "is done").replace(
+  "All gates ran green",
+  "Gates ran green",
+);
+
+/** New content on the same effort: a mirror the operator has not read in any form yet. */
+const DIFFERENT_REPLY = [
+  "The next effort is the reply dedup: a mirrored reply matching a reply-tool answer the session",
+  "just posted should be suppressed so the thread carries one copy. The sketch module is written",
+  "and reviewed; what remains is the wiring through the echo memory and the router, plus tests",
+  "locking both directions of the threshold on the mirror path.",
+].join(" ");
+
+/** The answer in the reply tool's shorter register: a summary must not suppress the full text. */
+const SUMMARY_ANSWER =
+  "Done: quality pass delivered, repair script landed, gates green. Card copy needs your phone-side check.";
+
+test("a mirrored reply matching the reply tool's answer is suppressed and reported sent", async () => {
+  // The reply tool posts mid-turn, so by the time the Stop mirror arrives the answer is already
+  // on the thread: the mirror is the suppressible copy, and sent is the honest status because
+  // the text is in front of the operator by the other path.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const lines: string[] = [];
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, ANSWER), { status: "sent" });
+  assert.equal(posts.length, 1);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", ANSWER, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1, "the operator reads one copy, the reply tool's");
+
+  const captured = lines.join("\n");
+  assert.ok(captured.includes("session-a"), captured);
+  assert.ok(captured.includes("answer"), captured);
+  assert.ok(!captured.includes("quality pass"), `answer content leaked into the routing log: ${captured}`);
+
+  // A prompt is never consulted against the answer record, and does not consume it either: the
+  // record posted below still stands for the reply that follows.
+  await router.reply(TOKEN, ANSWER);
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", ANSWER, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 3, "a prompt carrying the same words still mirrors");
+  await router.mirror(TOKEN, "reply", ANSWER, "session-a");
+  assert.equal(posts.length, 3, "the record survived the prompt and suppressed the reply");
+});
+
+test("a lightly reworded mirror of the answer is suppressed, and the tailer half still records", async () => {
+  // The reason the record carries a sketch beside the digest: the Stop mirror is frequently a
+  // light rewording of the closing summary, not a byte-identical copy. The suppressed mirror's
+  // own digest is still recorded, so the tailer reading that text off the transcript up to a
+  // poll interval later does not post it as narration.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.reply(TOKEN, ANSWER);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", MIRRORED_ANSWER, "session-a"), {
+    status: "sent",
+  });
+  assert.equal(posts.length, 1, "a light rewording is the same answer said twice");
+  assert.equal(
+    echo.isEcho("session-a", MIRRORED_ANSWER),
+    true,
+    "a suppressed mirror is still recorded for the tailer's half of the dedup",
+  );
+});
+
+test("a genuinely different mirror, and a full mirror after a summary reply, still post", async () => {
+  // The inverted failure is the expensive one: a real reply the operator never sees. A mirror
+  // carrying new content must post however recent the answer record is, and a short summary
+  // answer must not suppress the long final text it summarizes.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.reply(TOKEN, ANSWER);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", DIFFERENT_REPLY, "session-a"), {
+    status: "sent",
+  });
+  assert.equal(posts.length, 2, "new content posts whatever the record holds");
+
+  await router.reply(TOKEN, SUMMARY_ANSWER);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", ANSWER, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 4, "the summary was not the content; the full mirror must post");
+});
+
+test("one answer suppresses one mirror, not every later identical one", async () => {
+  // Consumed on match, the rule every record in the echo memory follows: a standing record
+  // would silence a later turn that genuinely ends with the same words.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.reply(TOKEN, ANSWER);
+  await router.mirror(TOKEN, "reply", ANSWER, "session-a");
+  assert.equal(posts.length, 1, "the first mirror is the duplicate and is suppressed");
+
+  await router.mirror(TOKEN, "reply", ANSWER, "session-a");
+  assert.equal(posts.length, 2, "a later identical mirror has no record left to match");
+});
+
+test("a reply run that failed partway records no answer", async () => {
+  // The same landed-whole rule the mirror's own record follows: an answer the transport refused
+  // partway is not reliably in front of the operator, and remembering it would suppress the Stop
+  // mirror carrying the turn's only whole copy.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  let calls = 0;
+  const messenger: ThreadMessenger = {
+    postToThread: async () => {
+      calls += 1;
+      if (calls === 3) return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+      return { status: "ok", value: { messageId: `msg-${calls}` }, rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    echo,
+  });
+
+  const answer = longReply(30);
+  assert.equal((await router.reply(TOKEN, answer)).status, "failed");
+  assert.equal(
+    echo.isAnswerEcho("session-a", answer),
+    false,
+    "an answer that never landed whole must not suppress the mirror carrying the same text",
+  );
+});
+
+test("the reply-kind mirror is the turn boundary: an unmatched record does not survive it", async () => {
+  // The record has no clock, so the Stop mirror is its bound: the reply tool always posts before
+  // the turn's mirror, and a record still standing when that mirror arrives belongs to a turn
+  // that is over. Left standing, turn N's answer could suppress a coincidentally near-matching
+  // reply turns later, which is a real reply the operator never sees.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.reply(TOKEN, ANSWER);
+  await router.mirror(TOKEN, "reply", DIFFERENT_REPLY, "session-a");
+  assert.equal(posts.length, 2, "the non-matching turn-N mirror posts");
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", MIRRORED_ANSWER, "session-a"), {
+    status: "sent",
+  });
+  assert.equal(posts.length, 3, "a later turn's coincidental near-match of a dead record must post");
+});
+
+test("a mirror suppressed as the tailer's echo still ends the turn for the answer record", async () => {
+  // The interim-echo branch returns before the answer consult, and it is still the turn's Stop
+  // mirror: the record must die there too, or it would stand into the next turn through exactly
+  // the ordering the tailer dedup handles.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.reply(TOKEN, ANSWER);
+  echo.noteInterim("session-a", "the closing text the tailer already narrated");
+  await router.mirror(TOKEN, "reply", "the closing text the tailer already narrated", "session-a");
+  assert.equal(posts.length, 1, "suppressed through the interim-echo path");
+
+  await router.mirror(TOKEN, "reply", MIRRORED_ANSWER, "session-a");
+  assert.equal(posts.length, 2, "the record died at that turn boundary all the same");
+});
+
+test("a mirror that is the answer plus a new closing sentence posts whole", async () => {
+  // The security direction of near-match dedup: suppressed, the added sentence would reach the
+  // operator nowhere. The preconditions pin that the length guard, not the similarity threshold,
+  // is what lets this mirror through, so the fixture cannot rot into testing the wrong gate.
+  const amended = `${ANSWER} One more thing: the gateway token expires tonight, so rotate it before you log off.`;
+  assert.ok(
+    similarity(sketchOf(ANSWER), sketchOf(amended)) >= NEAR_MATCH_THRESHOLD,
+    "precondition: the sketch alone would call the amended mirror a near-match",
+  );
+  assert.ok(
+    normalizeForSketch(amended).length > normalizeForSketch(ANSWER).length * ANSWER_LENGTH_ALLOWANCE,
+    "precondition: the amended mirror is materially longer than the answer",
+  );
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  await router.reply(TOKEN, ANSWER);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", amended, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 2, "the mirror carrying an addendum must post");
+  assert.equal(posts[1].text, renderMirror("reply", amended)[0]);
+});
+
+test("without an echo memory, a mirror matching the reply tool's answer posts as it always did", async () => {
+  // The echo option is absent when interim mirroring is off, and the fail direction of this
+  // switch matters in both directions: with the memory the duplicate is suppressed, and without
+  // it reply and mirror behave exactly as before, two copies and no consultation.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  assert.deepEqual(await router.reply(TOKEN, ANSWER), { status: "sent" });
+  assert.deepEqual(await router.mirror(TOKEN, "reply", ANSWER, "session-a"), { status: "sent" });
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    [renderAnswer(ANSWER)[0], renderMirror("reply", ANSWER)[0]],
+    "no memory means no suppression: both copies post, exactly the pre-dedup behavior",
   );
 });
 

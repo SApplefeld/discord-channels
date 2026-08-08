@@ -32,8 +32,10 @@ export type OutboundRouterOptions = {
    * skips a post matching the tailer's last interim chunk, records its own digest once the text
    * is on the thread (by this post or by the tailer's), and the tailer skips a chunk matching
    * either digest. A match consumes the digest it matched, so nothing here becomes a standing
-   * blocklist. Without the memory, replies mirror exactly as they did before interim mirroring
-   * existed.
+   * blocklist. The memory also carries the reply-tool dedup: `reply` records the answer it
+   * posted, and `mirror` with the reply kind skips a post matching it exactly or nearly, because
+   * a long turn's closing reply-tool summary and its Stop mirror are frequently the same words.
+   * Without the memory, replies mirror exactly as they did before interim mirroring existed.
    */
   echo?: EchoMemory;
   log?: (message: string) => void;
@@ -411,7 +413,16 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // answer must not be the block that drops the permission prompt a parked session is waiting
       // on. Alert paths hold their own writer and never come through this router.
       const run = await deliver(located.threadId, messages);
-      if (run.error === null) return { status: "sent" };
+      if (run.error === null) {
+        // The raw pre-render text, recorded only now that the run landed whole, the same rule
+        // the mirror's own record follows: an answer the transport refused is not in front of
+        // the operator, and remembering it would suppress the Stop mirror carrying the turn's
+        // only surviving copy. What this record buys is the mirror-side dedup below: a turn
+        // that closes with the reply tool often ends with the same words, and the mirror
+        // arriving seconds later says nothing the thread does not already show.
+        options.echo?.noteAnswer(located.sessionId, text);
+        return { status: "sent" };
+      }
 
       // The counts and the transport's error class only. The text is Claude's own words to the
       // operator, and conversation content never appears in the broker log at any level.
@@ -476,6 +487,9 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // in front of the operator.
       if (kind === "reply" && options.echo !== undefined) {
         if (options.echo.isInterimEcho(located.sessionId, text)) {
+          // This mirror is still the turn's end, so the answer record it did not need to
+          // consult is spent below all the same.
+          options.echo.clearAnswer(located.sessionId);
           options.echo.noteReply(located.sessionId, text);
           dropped(
             `the mirrored reply from session ${located.sessionId} was dropped, the tailer already ` +
@@ -483,6 +497,26 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           );
           return { status: "sent" };
         }
+        // The dedup against the reply tool, which posts mid-turn: by the time this mirror
+        // arrives, a matching answer is already on the thread as the reply-tool message, so the
+        // mirror is the suppressible copy. The match is exact or near (the mirror is frequently
+        // a light rewording of the closing summary), and reported as sent for the same reason
+        // the tailer's echo is: the text is in front of the operator, it just got there first
+        // by the other path. The digest is still recorded so the tailer does not later read the
+        // same text off the transcript and post it as narration.
+        if (options.echo.isAnswerEcho(located.sessionId, text)) {
+          options.echo.noteReply(located.sessionId, text);
+          dropped(
+            `the mirrored reply from session ${located.sessionId} was dropped, it matches the ` +
+              `answer the reply tool already posted`,
+          );
+          return { status: "sent" };
+        }
+        // The reply-kind mirror is the turn boundary for the answer record, matched or not: the
+        // reply tool always posts before the Stop mirror, so a record still standing here
+        // belongs to a turn that is over and could only suppress a coincidental near-match in
+        // some later turn.
+        options.echo.clearAnswer(located.sessionId);
       }
 
       // A message the operator posted in this very thread, handed to the session as a prompt and on

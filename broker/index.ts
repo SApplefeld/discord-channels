@@ -124,18 +124,17 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     now: Date.now,
     log: note,
   });
-  // The transcript tailer exists only while both mirror switches are on. Off means not
-  // constructed: no transcript is ever opened, no poll timer runs, and the intake gets no seam
-  // to learn a path through, so "off" is the absence of the machinery rather than a check
-  // inside it. The echo memory is created with it, because the memory's whole job is the dedup
-  // between the tailer and the Stop mirror.
-  const interim = config.mirror && config.interimMirror ? { echo: createEchoMemory() } : null;
+  // The echo memory exists whenever the Stop mirror does: it carries the dedup between the
+  // reply tool's answer and the mirrored reply, which needs no tailer, so switching interim
+  // narration off must not disarm it. The tailer half of the memory only ever fills under
+  // interim mirroring below, because only the tailer writes it.
+  const echo = config.mirror ? createEchoMemory() : null;
   const outbound = createOutboundRouter({
     registry,
     threadFor: (sessionId) => threadFor(sessionId),
     mirrorWriter,
     log: note,
-    ...(interim === null ? {} : { echo: interim.echo }),
+    ...(echo === null ? {} : { echo }),
   });
   // The steering writer's notices and permission alerts land in threads without passing the
   // outbound router, so a successful post tells the router directly that the thread's narration
@@ -160,7 +159,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let tail: TranscriptTailer | null = null;
   let tailTimer: NodeJS.Timeout | null = null;
   let tailInFlight: Promise<void> = Promise.resolve();
-  if (interim !== null) {
+  // The transcript tailer exists only while both mirror switches are on. Off means not
+  // constructed: no transcript is ever opened, no poll timer runs, and the intake gets no seam
+  // to learn a path through, so "off" is the absence of the machinery rather than a check
+  // inside it.
+  if (echo !== null && config.interimMirror) {
     const tailer = createTranscriptTailer({
       liveSessions: () =>
         registry
@@ -168,7 +171,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           .filter((record) => record.state === "live")
           .map((record) => record.sessionId),
       deliver: (sessionId, text) => outbound.interim(sessionId, text),
-      echo: interim.echo,
+      echo,
       log: note,
     });
     tail = tailer;

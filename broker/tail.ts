@@ -29,6 +29,8 @@ import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import type { ReplyResult } from "./routing/outbound.ts";
 import { withoutInvisible } from "./sanitize.ts";
+import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
+import type { Sketch } from "./similarity.ts";
 
 /**
  * Ceiling on what one pass reads from one session's transcript. Past it the offset jumps to the
@@ -50,6 +52,18 @@ export const MAX_TAIL_READ_BYTES = 256 * 1024;
  * answers for exactly one: left standing, the digest would be an indefinite blocklist, and a turn
  * ending "Done." would silence every later turn's own "Done." forever.
  *
+ * The answer record is the third digest, for the other duplicate pair: on a long turn the model
+ * often calls the reply tool with its closing summary and the turn's closing text arrives moments
+ * later as the Stop mirror, or off the transcript by a tailer poll that lands first, carrying the
+ * same words or a light rewording, so both of those paths consult what the reply tool just
+ * posted. "Nearly the same" needs more than an exact digest, so the answer record carries a
+ * bounded similarity sketch and a normalized length beside it: derived hashes and one number
+ * under a hard size bound, never text, so the no-retained-content rule survives. The same
+ * one-record, consumed-on-match discipline applies, and the record is bounded to its own turn:
+ * the reply-kind mirror clears it whether or not it matched, because the reply tool always posts
+ * before the Stop mirror, so a record standing past that boundary could only suppress a
+ * coincidental near-match in some later turn.
+ *
  * Comparison is on the normalized pre-render text, `withoutInvisible(text).trim()`, before any
  * escaping, exactly as the channel-envelope check in routing/outbound.ts compares: escaping must
  * be able to neither hide a match nor manufacture one.
@@ -59,26 +73,50 @@ export type EchoMemory = {
   noteInterim: (sessionId: string, text: string) => void;
   /** Records the last final reply the Stop mirror posted for this session; the mirror's half. */
   noteReply: (sessionId: string, text: string) => void;
+  /** Records the last reply-tool answer posted for this session, replacing the previous one. */
+  noteAnswer: (sessionId: string, text: string) => void;
   /** True when the text matches either remembered digest, consuming what it matched. */
   isEcho: (sessionId: string, text: string) => boolean;
   /** True when the text matches the last interim chunk, consuming it on a match. */
   isInterimEcho: (sessionId: string, text: string) => boolean;
+  /** True when the text matches the last answer, exactly or nearly, consuming it on a match. */
+  isAnswerEcho: (sessionId: string, text: string) => boolean;
+  /** Drops the session's answer record unread; the reply-kind mirror's turn boundary. */
+  clearAnswer: (sessionId: string) => void;
   forget: (sessionId: string) => void;
   /** Drops every session outside the live set, so the map holds the sessions still running. */
   sweep: (live: ReadonlySet<string>) => void;
 };
 
+/**
+ * How much longer than the recorded answer a candidate may be and still count as its echo, as a
+ * ratio of normalized text lengths. A true duplicate or a light rewording preserves length, while
+ * a candidate that grew past this carries an addendum the answer never showed the operator; the
+ * sketch alone would call "the answer plus one new closing sentence" a near-match, and the fail
+ * direction here must be a duplicate message, never lost words.
+ */
+export const ANSWER_LENGTH_ALLOWANCE = 1.1;
+
 export function createEchoMemory(): EchoMemory {
-  const state = new Map<string, { interim: string | null; reply: string | null }>();
+  type Entry = {
+    interim: string | null;
+    reply: string | null;
+    /**
+     * The digest answers an exact repeat; the sketch answers a light rewording of it; the
+     * normalized length is what refuses a candidate that grew past the allowance above.
+     */
+    answer: { digest: string; sketch: Sketch; length: number } | null;
+  };
+  const state = new Map<string, Entry>();
 
   function digest(text: string): string {
     return createHash("sha256").update(withoutInvisible(text).trim(), "utf8").digest("hex");
   }
 
-  function entry(sessionId: string): { interim: string | null; reply: string | null } {
+  function entry(sessionId: string): Entry {
     let held = state.get(sessionId);
     if (held === undefined) {
-      held = { interim: null, reply: null };
+      held = { interim: null, reply: null, answer: null };
       state.set(sessionId, held);
     }
     return held;
@@ -90,6 +128,13 @@ export function createEchoMemory(): EchoMemory {
     },
     noteReply(sessionId, text) {
       entry(sessionId).reply = digest(text);
+    },
+    noteAnswer(sessionId, text) {
+      entry(sessionId).answer = {
+        digest: digest(text),
+        sketch: sketchOf(text),
+        length: normalizeForSketch(text).length,
+      };
     },
     isEcho(sessionId, text) {
       const held = state.get(sessionId);
@@ -111,6 +156,29 @@ export function createEchoMemory(): EchoMemory {
       if (held === undefined || held.interim === null || digest(text) !== held.interim) return false;
       held.interim = null;
       return true;
+    },
+    isAnswerEcho(sessionId, text) {
+      const held = state.get(sessionId);
+      if (held === undefined || held.answer === null) return false;
+      // The length guard runs before any similarity: a candidate materially longer than the
+      // answer carries words the answer did not, whatever the sketches say, and those words
+      // must reach the operator.
+      if (normalizeForSketch(text).length > held.answer.length * ANSWER_LENGTH_ALLOWANCE) {
+        return false;
+      }
+      // The digest catches what the sketch cannot: a text short enough to sketch as a single
+      // hash of itself compares exactly there, but two empty-adjacent texts sketch to nothing
+      // and similarity refuses a pair of blanks by design, while their digests still agree.
+      const matched =
+        digest(text) === held.answer.digest ||
+        similarity(sketchOf(text), held.answer.sketch) >= NEAR_MATCH_THRESHOLD;
+      if (!matched) return false;
+      held.answer = null;
+      return true;
+    },
+    clearAnswer(sessionId) {
+      const held = state.get(sessionId);
+      if (held !== undefined) held.answer = null;
     },
     forget(sessionId) {
       state.delete(sessionId);
@@ -388,6 +456,15 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         // an earlier pass may have posted it as the last interim chunk. Either match is an echo,
         // skipped rather than shown to the operator twice.
         if (options.echo.isEcho(sessionId, text)) continue;
+        // A poll can also land between the reply tool's answer and the Stop mirror, where the
+        // turn's closing text is on the transcript but neither digest exists yet. The answer is
+        // already on the thread as the reply-tool message, so the chunk is skipped, and the skip
+        // records this side's digest so the Stop mirror that follows is suppressed through the
+        // interim-echo path: both orderings of the poll and the mirror collapse to one copy.
+        if (options.echo.isAnswerEcho(sessionId, text)) {
+          options.echo.noteInterim(sessionId, text);
+          continue;
+        }
         // One await per chunk, so a session's chunks post in transcript order. A chunk that
         // could not be posted is dropped and never retried, the rule the whole routing layer
         // follows, and its digest is not recorded: the Stop mirror carrying the same text must

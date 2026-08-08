@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { MAX_TAIL_READ_BYTES, createEchoMemory, createTranscriptTailer } from "./tail.ts";
 import type { TranscriptTailerOptions } from "./tail.ts";
-import { renderMirror } from "./discord/render.ts";
+import { renderAnswer, renderMirror } from "./discord/render.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { ThreadMessenger } from "./discord/transport.ts";
 import { createRegistry } from "./registry.ts";
@@ -363,6 +363,56 @@ test("interim text between the final reply and the turn's earlier narration stil
   assert.equal(edits.length, 1);
 });
 
+test("after a mirror suppressed as the answer's echo, the tailer does not re-post the text", async (t) => {
+  // The three-way interplay on a turn that closes with the reply tool: the answer posts, the
+  // Stop mirror carrying the same text is suppressed against it, and the suppression still
+  // records the reply digest so the tailer reading that text off the transcript skips it too.
+  // Without that record, the suppressed mirror's text would come back as narration a poll later.
+  const { file, tailer, outbound, posts } = integration(t);
+  await tailer.poll();
+
+  const final = "Done: the migration is green and pushed.";
+  appendFileSync(file, assistantText(final), "utf8");
+  assert.deepEqual(await outbound.reply(TOKEN, final), { status: "sent" });
+  assert.deepEqual(posts, [renderAnswer(final)[0]]);
+
+  assert.deepEqual(await outbound.mirror(TOKEN, "reply", final, SESSION), { status: "sent" });
+  assert.equal(posts.length, 1, "the mirror matching the answer is the suppressible copy");
+
+  await tailer.poll();
+  assert.equal(posts.length, 1, `the reply must post exactly once: ${posts.join("\n---\n")}`);
+});
+
+test("a poll landing between the answer and the Stop mirror still nets one copy", async (t) => {
+  // The tailer-first ordering: the turn's closing text reaches the transcript before the Stop
+  // mirror posts it, and a poll in that window finds neither the interim nor the reply digest.
+  // The answer record is what catches it: the chunk is skipped (the reply-tool message already
+  // carries the text), the skip records the interim digest, and the Stop mirror that follows is
+  // suppressed through the interim-echo path. Ordinary narration around it is untouched. The
+  // edits are watched beside the posts, because a chunk that slipped through here would land by
+  // append into the narration block rather than as a fresh message.
+  const { file, tailer, outbound, posts, edits } = integration(t);
+  await tailer.poll();
+
+  const final = "Done: the migration is green and pushed.";
+  assert.deepEqual(await outbound.reply(TOKEN, final), { status: "sent" });
+  assert.deepEqual(posts, [renderAnswer(final)[0]]);
+
+  // A non-matching mid-turn chunk still narrates: the record only answers for the closing text.
+  appendFileSync(file, assistantText("Running the last check now."), "utf8");
+  await tailer.poll();
+  assert.equal(posts.length, 2, posts.join("\n---\n"));
+
+  appendFileSync(file, assistantText(final), "utf8");
+  await tailer.poll();
+  assert.equal(posts.length, 2, "the closing text is already on the thread as the answer");
+  assert.deepEqual(edits, [], "the closing text must not grow the narration block either");
+
+  assert.deepEqual(await outbound.mirror(TOKEN, "reply", final, SESSION), { status: "sent" });
+  assert.equal(posts.length, 2, `one copy of the closing text in total: ${posts.join("\n---\n")}`);
+  assert.deepEqual(edits, []);
+});
+
 test("an echo match answers once: text a later turn repeats still posts", async (t) => {
   // A digest that matched without being consumed would be an indefinite blocklist: a turn ending
   // "Done." would silence every later turn's "Done." forever. A match spends the digest, which
@@ -392,6 +442,67 @@ test("an echo digest is consumed by the match, on both lookups", () => {
   echo.noteInterim(SESSION, "working on it");
   assert.equal(echo.isInterimEcho(SESSION, "working on it"), true);
   assert.equal(echo.isInterimEcho(SESSION, "working on it"), false, "the interim digest answers once");
+});
+
+/** A close-out message of the register a reply-tool answer carries; the answer record's fixture. */
+const CLOSEOUT = [
+  "Shipped: the dedup wiring is in, the echo memory carries the answer record beside its two",
+  "digests, and the mirror consults it after the tailer check. Both gates ran clean on the first",
+  "try, and the only surprise was the renderer escaping a fence marker mid-paragraph, which the",
+  "existing tests already pinned.",
+].join(" ");
+
+/** The same close-out with one word swapped: near enough that the sketch must call it a match. */
+const REWORDED_CLOSEOUT = CLOSEOUT.replace("Both gates ran clean", "The gates ran clean");
+
+test("the answer record matches exactly or nearly, consumes on match, and holds one answer", () => {
+  const echo = createEchoMemory();
+  echo.noteAnswer(SESSION, CLOSEOUT);
+  assert.equal(
+    echo.isAnswerEcho(SESSION, "a wholly different sentence about nothing shared"),
+    false,
+    "a miss answers false and must not consume the record",
+  );
+  assert.equal(echo.isAnswerEcho(SESSION, REWORDED_CLOSEOUT), true, "a light rewording matches");
+  assert.equal(echo.isAnswerEcho(SESSION, REWORDED_CLOSEOUT), false, "the answer record answers once");
+
+  // A text too short for word shingles compares exactly, by digest, and the next answer replaces
+  // the record rather than standing beside it: one record per session, never a blocklist.
+  echo.noteAnswer(SESSION, "first answer");
+  echo.noteAnswer(SESSION, "second answer");
+  assert.equal(echo.isAnswerEcho(SESSION, "first answer"), false, "a replaced answer is gone");
+  assert.equal(echo.isAnswerEcho(SESSION, "second answer"), true);
+});
+
+test("forget and sweep drop the answer record with the session", () => {
+  const echo = createEchoMemory();
+  echo.noteAnswer(SESSION, "the answer");
+  echo.forget(SESSION);
+  assert.equal(echo.isAnswerEcho(SESSION, "the answer"), false);
+
+  echo.noteAnswer(SESSION, "the answer");
+  echo.sweep(new Set());
+  assert.equal(echo.isAnswerEcho(SESSION, "the answer"), false);
+});
+
+test("an answer grown past the length allowance is refused without spending the record", () => {
+  // The close-out plus one new sentence: measured at similarity 0.862 against the answer, above
+  // the 0.85 threshold, and at 1.166 times its normalized length, past the 1.1 allowance. The
+  // sketch alone would call it a match; the length guard is the only thing refusing it, and the
+  // refusal must not consume the record, because no suppression happened.
+  const amended = `${CLOSEOUT} Also: the token file needs rotating before Friday.`;
+  const echo = createEchoMemory();
+  echo.noteAnswer(SESSION, CLOSEOUT);
+  assert.equal(echo.isAnswerEcho(SESSION, amended), false, "the added sentence must reach the operator");
+  assert.equal(echo.isAnswerEcho(SESSION, CLOSEOUT), true, "the refusal left the record standing");
+});
+
+test("clearAnswer drops the record unread, and clearing an absent one is a no-op", () => {
+  const echo = createEchoMemory();
+  echo.noteAnswer(SESSION, CLOSEOUT);
+  echo.clearAnswer(SESSION);
+  assert.equal(echo.isAnswerEcho(SESSION, CLOSEOUT), false);
+  echo.clearAnswer("never-seen-session");
 });
 
 test("a suppressed session's transcript is not even opened", async (t) => {
