@@ -9,11 +9,23 @@ import { createRegistry } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "../similarity.ts";
 import { ANSWER_LENGTH_ALLOWANCE, createEchoMemory } from "../tail.ts";
-import { createOutboundRouter } from "./outbound.ts";
+import { MAX_RUN_WAIT_MS, RUN_PACE_MS, createOutboundRouter } from "./outbound.ts";
+import type { OutboundRouter, OutboundRouterOptions } from "./outbound.ts";
 import { createThreadWriter } from "./writer.ts";
+import type { ThreadWriter } from "./writer.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
+
+/**
+ * A router whose waiting costs nothing, which is what every test not measuring the pacing itself
+ * wants: a split run spaces its posts by `RUN_PACE_MS`, so a real timer would spend seconds of
+ * suite time per multi-message run to prove something about the renderer or the routing. A test
+ * that is about the waiting passes its own `sleep` and overrides this one.
+ */
+function routerFor(options: OutboundRouterOptions): OutboundRouter {
+  return createOutboundRouter({ sleep: async (): Promise<void> => {}, ...options });
+}
 
 // The source matters to the registry: a startup arriving under a token a live session already
 // holds is a subprocess of that session and registers nothing, so a test that means to replace the
@@ -57,7 +69,7 @@ test("a reply is posted to the thread bound to the session holding the process t
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => (sessionId === "session-a" ? THREAD : null),
     mirrorWriter: writer,
@@ -75,7 +87,7 @@ test("a reply tool post says who wrote it, in a line of its own", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   await router.reply(TOKEN, "the migration is done");
 
@@ -94,7 +106,7 @@ test("a reply after a clear goes to the new session's thread, not the old one", 
   announce(registry, "session-a");
   announce(registry, "session-b", TOKEN, "clear");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => (sessionId === "session-a" ? "old-thread" : "new-thread"),
     mirrorWriter: writer,
@@ -107,7 +119,7 @@ test("a reply after a clear goes to the new session's thread, not the old one", 
 test("a reply from a process with no announced session is reported, not guessed at", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   assert.deepEqual(await router.reply(TOKEN, "hello"), { status: "no-session" });
   assert.deepEqual(posts, [], "no thread is written to on a guess");
@@ -117,7 +129,7 @@ test("a reply from a session with no thread yet is reported rather than queued",
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => null, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => null, mirrorWriter: writer });
 
   assert.deepEqual(await router.reply(TOKEN, "hello"), { status: "no-thread" });
   assert.deepEqual(posts, []);
@@ -132,7 +144,7 @@ test("a reply is neutralized before it is posted", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   await router.reply(TOKEN, `done${zeroWidth}: **two** files${rightToLeftOverride}`);
   assert.equal(posts.length, 1);
@@ -144,7 +156,7 @@ test("a mirrored prompt and reply post to the thread bound to the token's sessio
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => (sessionId === "session-a" ? THREAD : null),
     mirrorWriter: writer,
@@ -171,11 +183,11 @@ test("a mirror post with no session or no thread is dropped, not queued", async 
   // turn would be stale.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   const { writer, posts } = fakeWriter();
-  const orphan = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const orphan = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
   assert.deepEqual(await orphan.mirror(TOKEN, "prompt", "hello", null), { status: "no-session" });
 
   announce(registry, "session-a");
-  const unbound = createOutboundRouter({ registry, threadFor: () => null, mirrorWriter: writer });
+  const unbound = routerFor({ registry, threadFor: () => null, mirrorWriter: writer });
   assert.deepEqual(await unbound.mirror(TOKEN, "reply", "hello", null), { status: "no-thread" });
 
   assert.deepEqual(posts, []);
@@ -190,7 +202,7 @@ test("a straggler mirror post naming a replaced session is dropped, not re-credi
   announce(registry, "session-a");
   announce(registry, "session-b", TOKEN, "clear");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => "new-thread",
     mirrorWriter: writer,
@@ -218,7 +230,7 @@ test("a mirror post that names no session of its own is dropped, not delivered",
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -247,7 +259,7 @@ test("a mirror post from the parent still reaches its thread after a subprocess 
   registry.relaySeen(TOKEN);
   announce(registry, "session-subprocess");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => (sessionId === "session-parent" ? THREAD : "child-thread"),
     mirrorWriter: writer,
@@ -290,7 +302,7 @@ test("a rate-limit block earned by mirror volume does not drop an alert", async 
   // the block the router's conversation traffic earned does not reach the alert bucket.
   const writer = createThreadWriter({ messenger, now });
   const mirrorWriter = createThreadWriter({ messenger, now });
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter });
 
   assert.deepEqual(await router.mirror(TOKEN, "reply", "turn one", "session-a"), { status: "sent" });
   assert.equal(
@@ -315,7 +327,7 @@ test("a failed mirror post reports and logs its kind, never its text", async () 
   announce(registry, "session-a");
   const { writer } = fakeWriter({ status: "failed", error: "HTTP 403", rate: NO_RATE_INFO });
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -343,7 +355,7 @@ test("a mirrored reply too long for one message is posted whole, in order", asyn
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const reply = longReply(30);
   assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
@@ -366,7 +378,7 @@ test("every posted mirror message is the message the renderer measured", async (
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const room = MAX_MESSAGE_LENGTH - (renderMirror("reply", "x")[0].length - 1);
   const reply = `${"x".repeat(room)}\n\n${"y".repeat(room)}`;
@@ -397,11 +409,15 @@ test("a mirrored reply that fails part way through stops and says how far it got
   };
   const writer = createThreadWriter({ messenger, now: () => 1_000 });
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const sleeps: number[] = [];
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
     log: (message) => lines.push(message),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
   });
 
   const reply = `SECRET-marker\n\n${longReply(30)}`;
@@ -413,6 +429,9 @@ test("a mirrored reply that fails part way through stops and says how far it got
   const total = renderMirror("reply", reply).length;
   assert.equal(calls, 3, "the run stops at the refusal rather than posting the rest");
   assert.equal(posts.length, 2);
+  // The waits are the gaps ahead of the second and third posts and nothing else: a refusal that
+  // is not rate limiting earns no wait and no second attempt at the message it refused.
+  assert.deepEqual(sleeps, [RUN_PACE_MS, RUN_PACE_MS]);
   const captured = lines.join("\n");
   assert.ok(captured.includes(`2 of ${total} messages`), captured);
   assert.ok(!captured.includes("SECRET-marker"), `mirror content leaked into the routing log: ${captured}`);
@@ -446,7 +465,7 @@ test("mirror posts and a reply-tool post land in the order they were accepted", 
   announce(registry, "session-a");
   const { messenger, landed } = outOfOrderMessenger();
   const now = (): number => 1_000;
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now }),
@@ -471,7 +490,7 @@ test("nothing else lands between the messages of one mirrored reply", async () =
   announce(registry, "session-a");
   const { messenger, landed } = outOfOrderMessenger();
   const now = (): number => 1_000;
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now }),
@@ -493,7 +512,7 @@ test("nothing else lands between the messages of one reply tool post", async () 
   announce(registry, "session-a");
   const { messenger, landed } = outOfOrderMessenger();
   const now = (): number => 1_000;
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now }),
@@ -513,7 +532,7 @@ test("a reply tool post too long for one message is posted whole, in order", asy
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const answer = longReply(30);
   assert.deepEqual(await router.reply(TOKEN, answer), { status: "sent" });
@@ -536,7 +555,7 @@ test("a reply tool post with nothing visible in it is reported rather than poste
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   assert.deepEqual(await router.reply(TOKEN, "​  \n "), {
     status: "failed",
@@ -561,7 +580,7 @@ test("a reply tool post that fails part way through stops and says how far it go
   };
   const writer = createThreadWriter({ messenger, now: () => 1_000 });
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -601,7 +620,7 @@ test("a busy thread does not hold up another session's thread", async () => {
     editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const now = (): number => 1_000;
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => (sessionId === "session-a" ? THREAD : "other-thread"),
     mirrorWriter: createThreadWriter({ messenger, now }),
@@ -619,7 +638,7 @@ test("a mirror post with nothing visible in it is reported rather than posted", 
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   assert.deepEqual(await router.mirror(TOKEN, "reply", "​  \n ", "session-a"), {
     status: "failed",
@@ -632,7 +651,7 @@ test("a rejected post is reported to the caller rather than swallowed", async ()
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer } = fakeWriter({ status: "failed", error: "HTTP 403", rate: NO_RATE_INFO });
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   assert.deepEqual(await router.reply(TOKEN, "hello"), { status: "failed", error: "HTTP 403" });
 });
@@ -645,7 +664,7 @@ test("a reply tool post cannot draw the line that says who wrote a mirrored mess
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   // The operator-attributed block is the forgery that matters: a quoted block is what a reader takes
   // for the operator's own typing, and a reply is the path a prompt-injected model writes through.
@@ -668,7 +687,7 @@ test("a reply tool post cannot carry a mention pill or a timestamp chip", async 
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   await router.reply(TOKEN, "<@700000000000000002> **Permission needed** <t:1700000000:R>");
 
@@ -685,7 +704,7 @@ test("a reply tool post keeps its code readable", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const reply = "here:\n\n```ts\nconst f = (a: Array<string>) => a.length < 10;\n```";
   await router.reply(TOKEN, reply);
@@ -702,7 +721,7 @@ test("a mirror post dropped before it reaches a thread leaves a line saying so",
   const { writer } = fakeWriter();
   const lines: string[] = [];
   let now = 1_000;
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => null,
     mirrorWriter: writer,
@@ -733,7 +752,7 @@ test("a mirror post from an unannounced process leaves a line that names no sess
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   const { writer } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -755,7 +774,7 @@ test("a mirror post with nothing visible in it leaves a line naming its session"
   announce(registry, "session-a");
   const { writer } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -775,7 +794,7 @@ test("a message the operator posted in the thread does not mirror back into it",
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -804,7 +823,7 @@ test("an invisible character in front of the envelope does not sneak it past the
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const veiled = String.fromCharCode(0x200b) + '<channel source="channel-relay" chat_id="123">hello</channel>';
   assert.equal((await router.mirror(TOKEN, "prompt", veiled, "session-a")).status, "failed");
@@ -817,7 +836,7 @@ test("only a prompt that opens with the envelope is taken for a channel message"
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const quoting = 'the hook wraps it in <channel source="channel-relay"> before I see it';
   assert.deepEqual(await router.mirror(TOKEN, "prompt", "run the migration", "session-a"), {
@@ -847,7 +866,7 @@ test("one session's steady drops do not swallow the first drop of another's", as
   announce(registry, "session-b", other);
   const { writer } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => null,
     mirrorWriter: writer,
@@ -870,7 +889,7 @@ test("an interim chunk posts to the session's own thread under the working attri
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const asked: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => {
       asked.push(sessionId);
@@ -890,7 +909,7 @@ test("an interim chunk with no thread is dropped with a line that names no conte
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => null,
     mirrorWriter: writer,
@@ -911,7 +930,7 @@ test("an interim chunk cannot land between the messages of a split reply", async
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { messenger, landed } = outOfOrderMessenger();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
@@ -935,7 +954,7 @@ test("a queued prompt posts under the operator's attribution, indistinguishable 
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const asked: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: (sessionId) => {
       asked.push(sessionId);
@@ -961,7 +980,7 @@ test("a queued prompt that is the operator's own channel message does not echo b
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -997,7 +1016,7 @@ test("a queued prompt cannot forge the attribution or carry a live chip", async 
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   const attribution = renderMirror("prompt", "anything")[0].split("\n")[0];
   await router.interimPrompt(
@@ -1027,7 +1046,7 @@ test("a queued prompt with no thread, and one with nothing visible in it, are dr
   const { writer, posts } = fakeWriter();
   const lines: string[] = [];
   let threadId: string | null = null;
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => threadId,
     mirrorWriter: writer,
@@ -1062,7 +1081,7 @@ test("a mirrored reply matching the last interim chunk is skipped, and only that
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -1095,7 +1114,7 @@ test("a mirrored reply records its digest whether it posts or is skipped", async
   announce(registry, "session-a");
   const { writer } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.mirror(TOKEN, "reply", "posted normally", "session-a");
   assert.equal(echo.isEcho("session-a", "posted normally"), true);
@@ -1113,7 +1132,7 @@ test("an invisible character cannot hide a reply from the interim dedup", async 
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   echo.noteInterim("session-a", "the same text  ");
   await router.mirror(TOKEN, "reply", `​the same text`, "session-a");
@@ -1130,7 +1149,7 @@ test("a mirrored reply that failed to land is not remembered as mirrored", async
   announce(registry, "session-a");
   const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   const reply = "the reply the transport refused";
   assert.equal((await router.mirror(TOKEN, "reply", reply, "session-a")).status, "failed");
@@ -1179,7 +1198,7 @@ test("a mirrored reply matching the reply tool's answer is suppressed and report
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: writer,
@@ -1215,7 +1234,7 @@ test("a lightly reworded mirror of the answer is suppressed, and the tailer half
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.reply(TOKEN, ANSWER);
   assert.deepEqual(await router.mirror(TOKEN, "reply", MIRRORED_ANSWER, "session-a"), {
@@ -1237,7 +1256,7 @@ test("a genuinely different mirror, and a full mirror after a summary reply, sti
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.reply(TOKEN, ANSWER);
   assert.deepEqual(await router.mirror(TOKEN, "reply", DIFFERENT_REPLY, "session-a"), {
@@ -1257,7 +1276,7 @@ test("one answer suppresses one mirror, not every later identical one", async ()
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.reply(TOKEN, ANSWER);
   await router.mirror(TOKEN, "reply", ANSWER, "session-a");
@@ -1283,7 +1302,7 @@ test("a reply run that failed partway records no answer", async () => {
     editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const echo = createEchoMemory();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
@@ -1308,7 +1327,7 @@ test("the reply-kind mirror is the turn boundary: an unmatched record does not s
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.reply(TOKEN, ANSWER);
   await router.mirror(TOKEN, "reply", DIFFERENT_REPLY, "session-a");
@@ -1328,7 +1347,7 @@ test("a mirror suppressed as the tailer's echo still ends the turn for the answe
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.reply(TOKEN, ANSWER);
   echo.noteInterim("session-a", "the closing text the tailer already narrated");
@@ -1356,7 +1375,7 @@ test("a mirror that is the answer plus a new closing sentence posts whole", asyn
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
   const echo = createEchoMemory();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
 
   await router.reply(TOKEN, ANSWER);
   assert.deepEqual(await router.mirror(TOKEN, "reply", amended, "session-a"), { status: "sent" });
@@ -1371,7 +1390,7 @@ test("without an echo memory, a mirror matching the reply tool's answer posts as
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
-  const router = createOutboundRouter({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
 
   assert.deepEqual(await router.reply(TOKEN, ANSWER), { status: "sent" });
   assert.deepEqual(await router.mirror(TOKEN, "reply", ANSWER, "session-a"), { status: "sent" });
@@ -1398,7 +1417,7 @@ test("an interim run that stops part way logs its counts, never its text", async
     editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const lines: string[] = [];
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
@@ -1421,7 +1440,16 @@ test("an interim run that stops part way logs its counts, never its text", async
  * `1002`, ... in landing order) and records edits, plus the knobs the freshness tests turn.
  * `nextPostIdNull` makes the next post land as ok with no readable id, `editError` makes every
  * edit fail with that error, and the delay knobs hold a write on the wire so an invalidation can
- * arrive while it is out.
+ * arrive while it is out. `refuseAt` refuses the post of that call number for rate limiting and
+ * `refuseFrom` refuses every post from that call number on, both reporting `retryAfterMs`, which a
+ * refusal reporting no wait at all sets to null. `duringWait` runs at each wait the router takes,
+ * which is where a gateway arrival lands while a paced run is sitting one out, and `waitOverrunMs`
+ * is what each wait costs the clock beyond the time it asked for, which is a stalled event loop or
+ * a slow retry seen from the router's side.
+ *
+ * The writer's clock is the router's clock, and the fake waits advance it, so a refusal's block
+ * really does lift while the run waits it out rather than the retry meeting a bucket frozen at the
+ * moment it was emptied, and the run's own reactive waits cost the time they claim to.
  */
 function narrationHarness(threadFor: (sessionId: string) => string | null = () => THREAD) {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
@@ -1429,16 +1457,31 @@ function narrationHarness(threadFor: (sessionId: string) => string | null = () =
   const posts: Array<{ threadId: string; text: string }> = [];
   const edits: Array<{ threadId: string; messageId: string; text: string }> = [];
   const lines: string[] = [];
+  const sleeps: number[] = [];
+  let clock = 1_000;
+  let calls = 0;
   const control = {
     nextPostIdNull: false,
     editError: null as string | null,
     editDelayMs: 0,
     postDelayMs: 0,
+    refuseAt: null as number | null,
+    refuseFrom: null as number | null,
+    retryAfterMs: 4_000 as number | null,
+    waitOverrunMs: 0,
+    duringWait: null as ((ms: number) => void) | null,
   };
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       if (control.postDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, control.postDelayMs));
+      }
+      calls += 1;
+      if (calls === control.refuseAt || (control.refuseFrom !== null && calls >= control.refuseFrom)) {
+        return {
+          status: "rate-limited",
+          rate: { remaining: 0, resetAfterMs: null, retryAfterMs: control.retryAfterMs },
+        };
       }
       posts.push({ threadId: input.threadId, text: input.text });
       const messageId = control.nextPostIdNull ? null : String(1_000 + posts.length);
@@ -1457,14 +1500,20 @@ function narrationHarness(threadFor: (sessionId: string) => string | null = () =
     },
   };
   const echo = createEchoMemory();
-  const router = createOutboundRouter({
+  const router = routerFor({
     registry,
     threadFor,
-    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    mirrorWriter: createThreadWriter({ messenger, now: () => clock }),
     echo,
     log: (message) => lines.push(message),
+    now: () => clock,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      clock += ms + control.waitOverrunMs;
+      control.duringWait?.(ms);
+    },
   });
-  return { router, posts, edits, lines, control, echo };
+  return { router, posts, edits, lines, sleeps, control, echo };
 }
 
 test("consecutive interim chunks grow one narration message by edit", async () => {
@@ -1907,4 +1956,367 @@ test("a notice or alert posting outside the router ends the block without the ga
   await router.interim("session-a", "chunk four");
   assert.deepEqual(edits, [], "chunk four posts fresh below the prompt");
   assert.equal(posts.length, 4);
+});
+
+test("a run refused for rate limiting part way through waits it out and lands whole", async () => {
+  // The report the operator reads hours later on a phone. Half of it is strictly worse than all
+  // of it arriving a few seconds later, and rate limiting is the refusal class where nothing
+  // landed, so the same message goes again rather than the rest being dropped.
+  const { router, posts, sleeps, control } = narrationHarness();
+  control.refuseAt = 3;
+  control.retryAfterMs = 4_000;
+
+  const reply = longReply(30);
+  const messages = renderMirror("reply", reply);
+  assert.ok(messages.length >= 5, `${messages.length} message(s)`);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    messages,
+    "every message the renderer produced is on the thread, in order",
+  );
+  assert.deepEqual(
+    sleeps.filter((ms) => ms !== RUN_PACE_MS),
+    [4_000],
+    "one reactive wait, of exactly the length the refusal reported",
+  );
+  assert.equal(
+    sleeps.filter((ms) => ms === RUN_PACE_MS).length,
+    messages.length - 1,
+    "the pacing is unchanged by the refusal: one gap between each pair of posts",
+  );
+});
+
+test("consecutive posts of one run are spaced, and a run of one message waits for nothing", async () => {
+  const paced = narrationHarness();
+  const reply = longReply(30);
+  const messages = renderMirror("reply", reply);
+  assert.ok(messages.length >= 5, `${messages.length} message(s)`);
+  await paced.router.mirror(TOKEN, "reply", reply, "session-a");
+  assert.deepEqual(
+    paced.sleeps,
+    Array.from({ length: messages.length - 1 }, () => RUN_PACE_MS),
+    "a gap between consecutive posts and none before the first",
+  );
+
+  const single = narrationHarness();
+  assert.equal(renderMirror("prompt", "one short line").length, 1);
+  await single.router.mirror(TOKEN, "prompt", "one short line", "session-a");
+  assert.deepEqual(single.sleeps, [], "a run with nothing to pace against spends no time");
+});
+
+test("a run whose waiting would pass the cap stops and says how far it got", async () => {
+  // The bound on how long one report can hold its thread's chain. Past it the run answers the way
+  // it answers any refusal it cannot pass, which is the line the runbook sends an operator to.
+  const { router, posts, sleeps, lines, control } = narrationHarness();
+  control.refuseAt = 3;
+  control.retryAfterMs = MAX_RUN_WAIT_MS + 1;
+
+  const reply = longReply(30);
+  const total = renderMirror("reply", reply).length;
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), {
+    status: "failed",
+    error: "rate limited",
+  });
+
+  assert.equal(posts.length, 2, "the refused message is not posted and the rest are dropped");
+  assert.deepEqual(
+    sleeps,
+    [RUN_PACE_MS, RUN_PACE_MS],
+    "the gaps ahead of the second and third posts: a wait past the cap is not taken at all",
+  );
+  assert.ok(
+    lines.join("\n").includes(`stopped after 2 of ${total} messages: rate limited`),
+    lines.join("\n"),
+  );
+});
+
+test("a run whose waiting reaches the cap exactly still runs to the end", async () => {
+  // The boundary the cap is read at: the wait that would pass it stops the run, the wait that
+  // lands on it is spent.
+  const { router, posts, sleeps, control } = narrationHarness();
+  control.refuseAt = 3;
+  control.retryAfterMs = MAX_RUN_WAIT_MS;
+
+  const reply = longReply(30);
+  const messages = renderMirror("reply", reply);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+
+  assert.equal(posts.length, messages.length);
+  assert.deepEqual(
+    sleeps.filter((ms) => ms !== RUN_PACE_MS),
+    [MAX_RUN_WAIT_MS],
+  );
+});
+
+test("the pacing of a long run is not spent against the waiting cap", async () => {
+  // The two are different things: a pacing gap is what keeps the bucket full, not evidence that
+  // it is empty. A run this long spends more time pacing than the cap allows for waiting, so a
+  // cap that counted the gaps would amputate it around the middle.
+  const { router, posts, sleeps, control } = narrationHarness();
+  const reply = longReply(300);
+  const messages = renderMirror("reply", reply);
+  assert.ok(
+    (messages.length - 1) * RUN_PACE_MS > MAX_RUN_WAIT_MS,
+    `${messages.length} message(s) pace for ${(messages.length - 1) * RUN_PACE_MS}ms`,
+  );
+  control.refuseAt = messages.length;
+  control.retryAfterMs = 4_000;
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+  assert.equal(posts.length, messages.length, "the run lands whole, refusal and all");
+  assert.deepEqual(
+    sleeps.filter((ms) => ms !== RUN_PACE_MS),
+    [4_000],
+  );
+});
+
+test("a rate-limited refusal that reports no wait is sat out blind", async () => {
+  // A refusal whose headers named no reset at all. Waiting nothing would spend the run's retries
+  // against a bucket that has not moved.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const posts: string[] = [];
+  const sleeps: number[] = [];
+  let calls = 0;
+  const writer: ThreadWriter = {
+    reply: async (_threadId, text) => {
+      calls += 1;
+      if (calls === 2) return { status: "rate-limited", rate: NO_RATE_INFO };
+      posts.push(text);
+      return { status: "ok", value: { messageId: `msg-${calls}` }, rate: NO_RATE_INFO };
+    },
+    edit: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    notice: async () => true,
+    alert: async () => true,
+  };
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  const reply = longReply(30);
+  const messages = renderMirror("reply", reply);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+
+  assert.equal(posts.length, messages.length, "the blind wait is followed by the same message");
+  assert.deepEqual(
+    sleeps.filter((ms) => ms !== RUN_PACE_MS),
+    [5_000],
+  );
+});
+
+test("a reported wait of zero or less names nothing to wait and is sat out blind", async () => {
+  // The blind branch is the loop's termination guard, and it covers more than an absent wait:
+  // Discord sends zero and sub-second values, and a run that honored a reported zero literally
+  // would post as fast as the event loop allows while accruing nothing against the cap. A branch
+  // narrowed back to the absent case alone would leave the suite green and the hammer restored.
+  for (const reported of [null, 0, -5_000]) {
+    const { router, posts, sleeps, control } = narrationHarness();
+    control.refuseAt = 2;
+    control.retryAfterMs = reported;
+
+    const reply = longReply(30);
+    const messages = renderMirror("reply", reply);
+    assert.ok(messages.length >= 3, `${messages.length} message(s)`);
+    assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+
+    assert.equal(posts.length, messages.length, `the run landed whole after a ${String(reported)} wait`);
+    assert.deepEqual(
+      sleeps.filter((ms) => ms !== RUN_PACE_MS),
+      [5_000],
+      `a reported wait of ${String(reported)} is sat out blind`,
+    );
+  }
+});
+
+test("a refusal reporting a sliver of a millisecond is sat out for the floor", async () => {
+  // Such a wait passes every guard ahead of the floor: it is finite, it is positive, and it is a
+  // long way under the cap. Honored literally it is a request storm rather than a pause, because a
+  // timer floors at about a millisecond and the cap would need hundreds of millions of iterations
+  // to catch a run spending fractions of one.
+  const { router, posts, sleeps, control } = narrationHarness();
+  control.refuseAt = 2;
+  control.retryAfterMs = 0.0001;
+
+  const reply = longReply(30);
+  const messages = renderMirror("reply", reply);
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+
+  assert.equal(posts.length, messages.length);
+  assert.deepEqual(
+    sleeps.filter((ms) => ms !== RUN_PACE_MS),
+    [1_000],
+    "the reported sliver is raised to the floor rather than taken as written",
+  );
+});
+
+test("a wait that is not a finite number is sat out blind rather than acted on", async () => {
+  // The transport clamps what arrives off the wire, and this is the loop's own reading of the same
+  // value, held here because the two failures a non-finite wait causes are not proportionate: a
+  // `NaN` passes the "already elapsed" test, defeats the cap (every comparison against it is
+  // false), and sleeps for no time, which is an unbounded retry loop holding the thread's chain.
+  for (const reported of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const posts: string[] = [];
+    const sleeps: number[] = [];
+    let calls = 0;
+    // A plain writer rather than a real one over a budget: what is under test is the loop's own
+    // guard, and a real budget fed a non-finite wait blocks forever on its own, which would hide
+    // the loop's answer behind the bucket's.
+    const writer: ThreadWriter = {
+      reply: async (_threadId, text) => {
+        calls += 1;
+        if (calls === 2) {
+          return { status: "rate-limited", rate: { ...NO_RATE_INFO, retryAfterMs: reported } };
+        }
+        posts.push(text);
+        return { status: "ok", value: { messageId: `msg-${calls}` }, rate: NO_RATE_INFO };
+      },
+      edit: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+      notice: async () => true,
+      alert: async () => true,
+    };
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+
+    const reply = longReply(30);
+    const messages = renderMirror("reply", reply);
+    assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+
+    assert.equal(posts.length, messages.length, `the run landed whole after a ${String(reported)} wait`);
+    assert.deepEqual(
+      sleeps.filter((ms) => ms !== RUN_PACE_MS),
+      [5_000],
+      `a wait of ${String(reported)} names nothing this run can act on`,
+    );
+  }
+});
+
+test("the waiting cap counts what a wait cost, not what it asked for", async () => {
+  // The cap exists to bound how long a run holds its thread's ordering chain waiting, and a cap
+  // read against the request alone bounds the number of retries instead: a run whose waits overrun,
+  // because the event loop stalled or the retry itself was slow, would sit far past it. Here every
+  // wait costs thirty times what it asked for, so a cap counting requests would let this run wait
+  // for half an hour of the thread's chain and call it a minute.
+  const { router, sleeps, lines, control } = narrationHarness();
+  control.refuseFrom = 2;
+  control.retryAfterMs = 100;
+  control.waitOverrunMs = 29_000;
+
+  const reply = longReply(30);
+  const total = renderMirror("reply", reply).length;
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), {
+    status: "failed",
+    error: "rate limited",
+  });
+
+  const reactive = sleeps.filter((ms) => ms !== RUN_PACE_MS);
+  assert.deepEqual(reactive, [1_000, 1_000], "two waits of thirty seconds each fill the cap");
+  assert.ok(
+    reactive.length * (1_000 + control.waitOverrunMs) <= MAX_RUN_WAIT_MS,
+    `the run really waited ${reactive.length * (1_000 + control.waitOverrunMs)}ms against a ${MAX_RUN_WAIT_MS}ms cap`,
+  );
+  assert.ok(lines.join("\n").includes(`stopped after 1 of ${total} messages: rate limited`), lines.join("\n"));
+});
+
+test("a paced interim run remembers its block when nothing newer landed while it waited", async () => {
+  // The freshness gate reads what arrived over the whole of the run, and a reactive wait makes
+  // that window seconds long rather than one round trip. An echo of the run's own message is not
+  // something newer, so the next chunk still appends.
+  const { router, posts, edits, sleeps, control } = narrationHarness();
+  control.refuseAt = 2;
+  control.retryAfterMs = 4_000;
+  control.duringWait = (ms) => {
+    if (ms === 4_000) router.noteThreadMessage(THREAD, "1001");
+  };
+
+  const narration = longReply(30);
+  const messages = renderMirror("interim", narration);
+  assert.ok(messages.length >= 3, `${messages.length} message(s)`);
+  assert.deepEqual(await router.interim("session-a", narration), { status: "sent" });
+  assert.equal(posts.length, messages.length);
+  assert.ok(sleeps.includes(4_000), "the run did wait one refusal out");
+
+  await router.interim("session-a", "a small chunk after");
+  const merged = appendNarration(messages[messages.length - 1], "a small chunk after");
+  assert.ok(merged !== null);
+  assert.deepEqual(edits, [
+    { threadId: THREAD, messageId: String(1_000 + messages.length), text: merged },
+  ]);
+});
+
+test("a paced interim run refuses its block when something newer landed while it waited", async () => {
+  // The inverted failure is the one that matters: narration appending above a message that landed
+  // mid-run, in the channel permission approvals are answered in. The wait widens exactly that
+  // window, so what arrives inside it must still be honored.
+  //
+  // The injected id outranks every id this run posts, and a real message created during the wait
+  // could not: snowflakes carry creation time, so it would sit below the posts that follow the
+  // wait, and the gate would remember the run above it correctly, because the run's final message
+  // really is the thread's newest by then. The reachable shape of what is injected here is a
+  // foreign message created after the run's last post, whose gateway echo beats that post's own
+  // REST response back. The id is what the gate reads either way, so the fixture names it
+  // directly rather than staging the race.
+  const { router, posts, edits, control } = narrationHarness();
+  control.refuseAt = 2;
+  control.retryAfterMs = 4_000;
+  control.duringWait = (ms) => {
+    if (ms === 4_000) router.noteThreadMessage(THREAD, "9999");
+  };
+
+  const narration = longReply(30);
+  const messages = renderMirror("interim", narration);
+  assert.deepEqual(await router.interim("session-a", narration), { status: "sent" });
+  assert.equal(posts.length, messages.length);
+
+  await router.interim("session-a", "a small chunk after");
+  assert.deepEqual(edits, [], "nothing appends above the message that landed mid-run");
+  assert.equal(posts.length, messages.length + 1, "the next chunk posts fresh below it");
+});
+
+test("the cap's stop reads on every posting path as the count it reached", async () => {
+  // The three paths each build their own line out of the run's error, and the wording is the
+  // discriminator the runbook sends an operator to. The reply tool's is also what the model reads
+  // back: it carries the count, because a bare error invites resending an answer whose first
+  // messages are already on the thread.
+  const answered = narrationHarness();
+  answered.control.refuseAt = 3;
+  answered.control.retryAfterMs = MAX_RUN_WAIT_MS + 1;
+  const answer = longReply(30);
+  const answerTotal = renderAnswer(answer).length;
+  assert.deepEqual(await answered.router.reply(TOKEN, answer), {
+    status: "failed",
+    error: `stopped after 2 of ${answerTotal} messages: rate limited`,
+  });
+  assert.ok(
+    answered.lines.join("\n").includes(`stopped after 2 of ${answerTotal} messages: rate limited`),
+    answered.lines.join("\n"),
+  );
+
+  const narrated = narrationHarness();
+  narrated.control.refuseAt = 3;
+  narrated.control.retryAfterMs = MAX_RUN_WAIT_MS + 1;
+  const narration = longReply(30);
+  const narrationTotal = renderMirror("interim", narration).length;
+  assert.deepEqual(await narrated.router.interim("session-a", narration), {
+    status: "failed",
+    error: "rate limited",
+  });
+  assert.ok(
+    narrated.lines.join("\n").includes(`stopped after 2 of ${narrationTotal} messages: rate limited`),
+    narrated.lines.join("\n"),
+  );
 });

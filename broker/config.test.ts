@@ -1,7 +1,9 @@
 // Configuration bounds that nothing at runtime would report as wrong.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RELAY_READ_TIMEOUT_MS, loadConfig } from "./config.ts";
+import { RELAY_READ_TIMEOUT_MS, RELAY_REPLY_TIMEOUT_MS, loadConfig } from "./config.ts";
+import { renderAnswer } from "./discord/render.ts";
+import { MAX_RUN_WAIT_MS, RUN_PACE_MS } from "./routing/outbound.ts";
 
 test("the relay heartbeat is refused outside the window the relay can survive", () => {
   // The relay's read timeout lives in another process and cannot see this value. A heartbeat slower
@@ -22,6 +24,27 @@ test("the relay heartbeat is refused outside the window the relay can survive", 
   assert.ok(
     loadConfig({}).relayHeartbeatMs * 2 < RELAY_READ_TIMEOUT_MS,
     "the default must leave room for a missed heartbeat inside the relay's timeout",
+  );
+});
+
+test("the relay's wait for a reply outlasts the longest run the broker can answer it with", () => {
+  // The relay's timeout lives in another process and the broker sends no byte of a reply's
+  // response until the whole run has landed, so the two are ordered by nothing but this. A wait
+  // shorter than the run tells the model its answer failed while the messages are still going up,
+  // and what a model does with a bare failure is send the whole answer again, which posts every
+  // message that already landed a second time. Nothing at runtime reports the pair as crossed: the
+  // thread simply shows the answer twice.
+  //
+  // Measured through the renderer the broker actually posts with rather than recomputed from the
+  // timeout's own arithmetic, so a pacing gap, a waiting cap, a body ceiling, or a splitter that
+  // packs less densely each move this on their own.
+  const cap = loadConfig({}).maxBodyBytes;
+  const longest = renderAnswer("a".repeat(cap));
+  const run = longest.length * RUN_PACE_MS + MAX_RUN_WAIT_MS;
+  assert.ok(
+    run < RELAY_REPLY_TIMEOUT_MS,
+    `a reply at the ${cap}-byte body cap renders into ${longest.length} messages, which pace and ` +
+      `wait for up to ${run}ms against a ${RELAY_REPLY_TIMEOUT_MS}ms relay timeout`,
   );
 });
 

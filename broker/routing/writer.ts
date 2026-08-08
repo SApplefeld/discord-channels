@@ -10,6 +10,7 @@
 // Nothing is queued, for the same reason nothing is queued in the surfaces: a reply that lands
 // minutes late answers a question the operator has stopped asking, and a notice that lands late
 // says a session is dead long after the operator worked that out.
+import { usableWaitMs } from "../discord/adapter.ts";
 import { createBudget } from "../discord/budget.ts";
 import type { Budget } from "../discord/budget.ts";
 import { inertMessage } from "../discord/render.ts";
@@ -100,7 +101,24 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
     const at = options.now();
     if (!budget.affordable(at)) {
       log(`routing: ${verb} to thread ${threadId} was dropped, the bucket is empty`);
-      return { status: "rate-limited", rate: { remaining: 0, resetAfterMs: null, retryAfterMs: null } };
+      // The remaining block, reported as the wait a caller would have to sit out, so one field
+      // answers "how long" for a refusal this bucket made on its own and for a 429 Discord made,
+      // whose `retry_after` the transport forwards in the same place. Read off the bucket this
+      // verb spends and no other: a create POST and a message PATCH are separate Discord buckets,
+      // so the wait one route earned says nothing about the other's.
+      //
+      // Held to the same bound a wait read off the wire is held to, because this is a producer of
+      // the field in its own right and the transport's clamp never sees what it makes: the block it
+      // subtracts from was set by whatever the bucket last observed, so a refusal here can report a
+      // wait no caller could act on without any response being involved at all.
+      return {
+        status: "rate-limited",
+        rate: {
+          remaining: 0,
+          resetAfterMs: null,
+          retryAfterMs: usableWaitMs(budget.blockedUntil() - at),
+        },
+      };
     }
     const outcome = await send();
     // A failed call's headers are deliberately not observed, the same rule the surfaces follow: a

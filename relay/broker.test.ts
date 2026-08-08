@@ -6,6 +6,7 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { RELAY_REPLY_TIMEOUT_MS } from "../broker/config.ts";
 import { NO_RATE_INFO } from "../broker/discord/transport.ts";
 import type { ThreadMessenger } from "../broker/discord/transport.ts";
 import { createRegistry } from "../broker/registry.ts";
@@ -280,6 +281,39 @@ test("a relay holding no stream reports the reply locally instead of attempting 
   assert.equal(result.status, "failed");
   assert.deepEqual(context.posts, []);
   assert.equal(context.replyRequests(), 0, "no socket is opened for a reply that cannot be made");
+});
+
+test("a relay that names no reply timeout takes the one the broker derives", async () => {
+  // The wait that matters is the broker's: it sends no byte of a reply's response until the whole
+  // paced run has landed, and a relay that gave up first would report the reply failed while its
+  // messages were still going up, which invites the model to send the answer again over the top of
+  // the messages that landed. A literal chosen here would be ordered against that run by
+  // coincidence and nothing else, and no runtime signal would report the two as crossed, so what
+  // this pins is that the default is the broker's value rather than a number of the relay's own.
+  const client = createBrokerClient({ port: 1, processToken: TOKEN, onMessage: () => {} });
+  assert.equal(client.replyTimeoutMs, RELAY_REPLY_TIMEOUT_MS);
+
+  const named = createBrokerClient({
+    port: 1,
+    processToken: TOKEN,
+    onMessage: () => {},
+    replyTimeoutMs: 200,
+  });
+  assert.equal(named.replyTimeoutMs, 200, "a caller that names its own wait still gets it");
+});
+
+test("a permission prompt waits on its own wait, not on the one a reply run earns", async () => {
+  // The reply wait is derived from what a whole paced run of the longest reply the broker accepts
+  // costs, which runs to minutes. The permission route costs one alert post: the operator's verdict
+  // comes back down the stream rather than on this response, so a prompt held to the reply's wait
+  // parks a session for minutes against a broker that has stopped answering, and a parked session
+  // is exactly what the prompt exists to unpark.
+  const client = createBrokerClient({ port: 1, processToken: TOKEN, onMessage: () => {} });
+
+  assert.ok(
+    client.permissionTimeoutMs < client.replyTimeoutMs,
+    `a prompt waits ${client.permissionTimeoutMs}ms against a reply's ${client.replyTimeoutMs}ms`,
+  );
 });
 
 test("a reply against a broker that accepts and then goes silent settles rather than hanging", async (t) => {

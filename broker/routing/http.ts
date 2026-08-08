@@ -245,9 +245,23 @@ export function createRelayRoutes(
       }
 
       const result = await options.outbound.reply(processToken, text);
+      // A run paces itself and can outlive the relay's wait for it, and the relay destroys the
+      // socket when that wait runs out. Nothing written to a connection that is gone reaches
+      // anyone, so the answer is logged instead of sent: what the operator needs from this case is
+      // that the route did its work and the answer had nowhere left to go, which is a different
+      // thing from a route that failed.
+      if (response.writableEnded || response.destroyed) {
+        log(`relay: the ${route} answer was ready after its caller had closed the connection`);
+        return;
+      }
       send(response, 200, result);
     })().catch((error: unknown) => {
-      if (!response.headersSent) send(response, 500, { error: "the request failed" });
+      // The same three conditions the answer path above reads, so the two agree on when there is
+      // still someone to answer: a connection already answered, already ended, or gone is not one
+      // this handler writes a status into.
+      if (!response.headersSent && !response.writableEnded && !response.destroyed) {
+        send(response, 500, { error: "the request failed" });
+      }
       log(`relay: the ${route} route failed: ${String(error)}`);
     });
     return true;

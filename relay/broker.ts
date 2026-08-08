@@ -4,7 +4,7 @@
 // here knows what a channel notification is, and nothing in the server wiring knows what the broker
 // speaks.
 import http from "node:http";
-import { RELAY_READ_TIMEOUT_MS } from "../broker/config.ts";
+import { RELAY_READ_TIMEOUT_MS, RELAY_REPLY_TIMEOUT_MS } from "../broker/config.ts";
 import type { PermissionVerdict } from "./permission.ts";
 
 export type InboundHandler = (text: string, chatId: string) => void;
@@ -31,11 +31,37 @@ export type BrokerClientOptions = {
    * two run in different processes and cannot otherwise see each other.
    */
   readTimeoutMs?: number;
-  /** How long a reply may take before it is reported as failed rather than awaited forever. */
+  /**
+   * How long a reply may take before it is reported as failed rather than awaited forever. The
+   * default is shared with the broker, which derives it from what one paced run of the longest
+   * reply it accepts costs: the broker answers only once the whole run has landed, and a reply
+   * reported failed while its messages are still going up invites the model to send the answer
+   * again over the top of the messages that landed.
+   */
   replyTimeoutMs?: number;
 };
 
 export type BrokerClient = {
+  /**
+   * How long this client waits for one reply before it reports the reply as failed, as resolved
+   * from the option or from the default shared with the broker.
+   *
+   * Readable because the wait is the reply tool's own latency ceiling, and the value that has to
+   * hold is the broker's rather than any number chosen here: the broker answers a reply only once
+   * the whole paced run has landed, and a client waiting less tells the model an answer failed
+   * while its messages are still going up.
+   */
+  replyTimeoutMs: number;
+  /**
+   * How long this client waits for the broker to take one permission prompt before it reports the
+   * prompt as not taken.
+   *
+   * Its own wait rather than the reply's, and a far shorter one. The broker's work on this route is
+   * a single alert post, and the operator's verdict arrives later down the stream rather than on
+   * this response, so nothing here waits on a paced run. A session parked on a prompt is a session
+   * waiting on a person, and a broker that has stopped answering is worth reporting in seconds.
+   */
+  permissionTimeoutMs: number;
   start: () => void;
   stop: () => void;
   reply: (text: string) => Promise<{ status: ReplyStatus; error?: string }>;
@@ -54,7 +80,15 @@ export type BrokerClient = {
 
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
-const DEFAULT_REPLY_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a permission prompt's POST may go unanswered before the prompt is reported as not taken.
+ *
+ * What it covers is one alert post and a loopback round trip, so it is generous for the work and
+ * short enough that a session parked on a prompt hears "dropped" while the operator could still be
+ * reached another way.
+ */
+const PERMISSION_TIMEOUT_MS = 15_000;
 
 /** Bounded so a broker that never sends a newline cannot grow this without limit. */
 const MAX_LINE_BYTES = 64 * 1024;
@@ -63,7 +97,7 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
   const log = options.log ?? ((): void => {});
   const baseDelay = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
   const readTimeoutMs = options.readTimeoutMs ?? RELAY_READ_TIMEOUT_MS;
-  const replyTimeoutMs = options.replyTimeoutMs ?? DEFAULT_REPLY_TIMEOUT_MS;
+  const replyTimeoutMs = options.replyTimeoutMs ?? RELAY_REPLY_TIMEOUT_MS;
   let stopped = false;
   let delay = baseDelay;
   let request: http.ClientRequest | null = null;
@@ -179,11 +213,14 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
    * it, so a settle path proved on one is the settle path on the other.
    *
    * The bodies differ only in their fields. Neither carries a chat_id: the broker routes by
-   * session, and a field that does not exist on the wire cannot be honored by accident later.
+   * session, and a field that does not exist on the wire cannot be honored by accident later. The
+   * wait is the caller's, because the two routes cost different work on the broker's side: a reply
+   * is answered once a whole paced run has landed, a permission prompt once one alert has posted.
    */
   function post(
     path: string,
     body: Record<string, unknown>,
+    timeoutMs: number,
   ): Promise<{ status: string; error?: string }> {
     if (replyKey === null) {
       // No pipe, so no standing to write. Reported locally rather than attempted, because the
@@ -243,7 +280,7 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
       );
       // Covers the case none of the events above reach: a peer that accepted the connection and
       // then went silent forever without closing it.
-      pending.setTimeout(replyTimeoutMs, () => pending.destroy());
+      pending.setTimeout(timeoutMs, () => pending.destroy());
       pending.on("error", (error) => finish({ status: "failed", error: error.message }));
       pending.on("close", () => finish({ status: "failed", error: "the request was not answered" }));
       pending.end(payload);
@@ -251,6 +288,8 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
   }
 
   return {
+    replyTimeoutMs,
+    permissionTimeoutMs: PERMISSION_TIMEOUT_MS,
     start: connect,
 
     stop() {
@@ -263,17 +302,21 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
     },
 
     async reply(text) {
-      const answer = await post("/relay/reply", { text });
+      const answer = await post("/relay/reply", { text }, replyTimeoutMs);
       return { status: answer.status as ReplyStatus, error: answer.error };
     },
 
     async permissionRequest(request) {
-      const answer = await post("/relay/permission", {
-        request_id: request.requestId,
-        tool_name: request.toolName,
-        description: request.description,
-        input_preview: request.inputPreview,
-      });
+      const answer = await post(
+        "/relay/permission",
+        {
+          request_id: request.requestId,
+          tool_name: request.toolName,
+          description: request.description,
+          input_preview: request.inputPreview,
+        },
+        PERMISSION_TIMEOUT_MS,
+      );
       return answer.status === "received";
     },
   };
