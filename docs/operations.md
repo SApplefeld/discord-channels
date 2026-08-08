@@ -139,6 +139,46 @@ anything irreversible or outward-facing, exactly as at the console. A session re
 instructions once, when its channel connects at launch, so an edited instruction text reaches the
 next session to start rather than the ones already running.
 
+## When a session asks you a question
+
+A session can park itself on a multiple-choice question at the console (the `AskUserQuestion`
+picker), and no hook fires for that tool, so the question would otherwise be invisible from the
+thread. The transcript tailer recognizes the call in the session's transcript and posts one alert
+into the thread, mentioning you:
+
+```
+@you ❓ Waiting on you at the console · a question is open
+Q: Commit model: Commit model for this effort?
+Options: Commit-and-Push · Review-Only · Branch-and-PR
+```
+
+The alert cannot be answered from the thread: no extension point in Claude Code can answer the
+picker, so the alert's job is to tell you the session is parked and what it is asking, within one
+poll interval of the ask. Anything you type in the thread is delivered to the session as ordinary
+steering when its turn resumes, not as the picker's answer.
+
+The alert rides the same unfloored tier as a permission prompt, with its own per-thread window:
+**1 mention and 4 posts per thread per minute**. Past the mention ceiling the alert still posts
+but stops pinging; past the post ceiling it is dropped and the log says so. A real session asks
+questions minutes apart, so hitting either ceiling means a runaway or forged transcript rather
+than a session you are failing to hear.
+
+## Background-task wake notices
+
+When a background subagent finishes while its session sits idle, the harness wakes the session by
+injecting the subagent's entire final report as a prompt, and the mirror used to post that report
+into the thread whole, as a quoted block spanning many messages. By default the broker now
+compresses the wake to one line:
+
+```
+📨 background task finished · a4f567e05ff9c7b5f
+```
+
+The session's own next reply, which summarizes what the subagent found, mirrors normally moments
+later, so the thread keeps the readable account and loses only the raw report. The
+`CHANNEL_TASK_NOTIFICATION` knob restores the old behavior (`full`) or silences the wake
+entirely (`off`).
+
 ## Mid-turn narration and typed messages
 
 On a long turn the thread otherwise shows nothing between the prompt that opened it and the final
@@ -201,6 +241,9 @@ transcript text:
 - `tail: session <id>'s queued prompt delivery failed (...)`: the delivery of one mid-turn typed
   message threw, and it was dropped without holding up the rest of the pass. The thread carries no
   copy of that message; the console does.
+- `tail: session <id>'s question alert was refused (...)`: an open-question alert was not written,
+  because the per-thread window dropped it or Discord refused the write. The console still shows
+  the question; the thread does not.
 - `tail: session <id>'s transcript pass failed (...)`: the file could not be opened or read this
   pass; the next pass tries again.
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
@@ -266,7 +309,8 @@ the process that reads the bot token.
 | `CHANNEL_DISCORD_ARCHIVE_ON_END` | off | Whether an ended session's thread is archived |
 | `CHANNEL_MIRROR` | on | Whether console prompts and turn replies are mirrored into the thread |
 | `CHANNEL_MIRROR_MAX_BYTES` | 256 KB | Largest mirror post accepted; a larger one is dropped |
-| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration and mid-turn typed messages; also gated by `CHANNEL_MIRROR` |
+| `CHANNEL_TASK_NOTIFICATION` | brief | How a background task's wake prompt reaches the thread: `brief` posts the one-line 📨 notice, `full` mirrors the whole injected report, `off` posts nothing |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, and open-question alerts; also gated by `CHANNEL_MIRROR` |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to

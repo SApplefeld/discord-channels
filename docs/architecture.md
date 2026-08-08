@@ -91,7 +91,12 @@ listener.
    place. It takes a `UserPromptSubmit` or `Stop` payload under the same three identity headers plus
    `X-Channel-Mirror`, authenticates on the process token alone, and hands the payload's `prompt` or
    `last_assistant_message` to the routing layer for the session's bound thread. Every drop path
-   answers 202, and the content never reaches the broker log at any level. A post on this route also
+   answers 202, and the content never reaches the broker log at any level. A prompt that is the
+   harness's own wake-up injection for a finished background task, recognized by its whole-text
+   `<task-notification>` prefix, is compressed to a one-line notice by default rather than mirrored
+   whole: the injection carries the subagent's entire final report, which the console renders
+   compactly and the thread otherwise receives as a many-message quoted block. The
+   `CHANNEL_TASK_NOTIFICATION` knob selects `brief`, `full`, or `off`. A post on this route also
    arms or disarms the transcript tailer for the session it names: see "Mid-turn narration" below.
 3. **Messages, both directions.** `GET /relay/stream` is the held-open pipe: its first line carries
    a reply key, later lines carry inbound messages and permission verdicts, and its closing is the
@@ -125,10 +130,17 @@ session's transcript, JSONL appended beside the session and never authored for t
 The tailer polls, on `CHANNEL_INTERIM_POLL_MS` (20 seconds by default), every session the registry
 currently holds live. For each one it reads past the byte offset the previous pass left, up to a
 bounded ceiling per pass, and stops at the last complete line so a line still being flushed is left
-for the next pass. Two line shapes contribute anything, and both must be non-sidechain lines
+for the next pass. Three line shapes contribute anything, and all must be non-sidechain lines
 carrying the session ID the path was learned for: a `text` content block on an `assistant` line is
-one interim chunk, and a `queued_command` attachment recording a human-origin prompt is one mid-turn
-typed message, delivered in transcript order among the chunks around it. The file's position is
+one interim chunk, a `queued_command` attachment recording a human-origin prompt is one mid-turn
+typed message, delivered in transcript order among the chunks around it, and a `tool_use` block
+naming `AskUserQuestion` is one open-question alert, because no hook fires for that tool and the
+transcript is the only place outside the console the question exists. The question alert takes its
+own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
+way a permission prompt does, under its own per-thread ping/quiet/drop window (1 mention and 4
+posts per thread per minute, a window deliberately separate from the permission prompt's own), so
+a session parked on a picker reaches a phone without a long narration run ahead of it and without
+becoming a ping primitive for whatever can write transcript lines. The file's position is
 taken the moment a session is both allowed to be read and has a learned path, whichever of the two
 arrives second, by a probe that reads its size and no content: what the transcript already held is
 never republished into the thread, and the turn's opening chunk, written seconds after the mirror-on
@@ -226,8 +238,9 @@ green when it matched no test files).
 
 A host running this has a Discord channel whose thread list is a live dashboard of every session on
 that machine, a card in each thread carrying what that session is doing right now, the conversation
-itself mirrored into the thread turn by turn, mid-turn narration on a long turn, and a path for
-sending it a message or approving its tool calls from a phone. The status path, the message path,
+itself mirrored into the thread turn by turn, mid-turn narration on a long turn, an alert when a
+session parks itself on a console-only question, background-task wake-ups compressed to one line,
+and a path for sending it a message or approving its tool calls from a phone. The status path, the message path,
 and the mirror fail independently, which is what makes a dead message path visible instead of silent.
 
 Installing a host is [`install.md`](install.md). Running one is [`operations.md`](operations.md).

@@ -242,3 +242,23 @@ Carried to Section 3: security-model.md updates (the round-two surviving Minor).
 Stamps: none surfaced (the sweep window since Chapter 1 returned zero unstamped reads)
 Next: Section 3: docs
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-08
+Completed: Section 3: docs
+Implemented By: main session (docs are main-session work; the harness blocks implementer writes
+under docs/)
+Metrics: 0 review rounds (prose-only changeset, covered by finishing-work's pass); 0
+NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: operations.md gained two operator-facing sections ("When a session asks
+you a question", "Background-task wake notices") beside the knob-table row and the new tail: log
+line, because the spec's original list named only architecture.md and the knob table and the
+operator-visible behaviors deserved operator-facing prose. security-model.md's one-mention claim
+became a two-write claim, the tailer allowlist reads three shapes, the question alert's window
+(and why its stamps are separate from the prompt window's) is documented as a security property,
+and `full` task-notification mode rides the accepted-risk list, closing the security review's
+surviving Minor from Section 2.
+Review Findings: none this section; the security-model.md content was itself the fix for a
+carried finding.
+Stamps: none surfaced
+Next: Section 4: deploy and live verify
+Commit Model: Commit-and-Push

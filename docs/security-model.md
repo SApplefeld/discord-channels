@@ -158,9 +158,26 @@ holds the token can still supply that, which is what keeps this advisory rather 
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
-matching one of two named shapes whole: an assistant line's `text` content block, or an attachment
+matching one of three named shapes whole: an assistant line's `text` content block, an attachment
 whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
-prompt is a non-empty string. A deviation in any field yields silence. Two of those clauses carry
+prompt is a non-empty string, or an assistant line's `tool_use` block naming exactly
+`AskUserQuestion`, whose bounded reading (at most 4 questions and 4 option labels, each readable
+only as a non-empty string once invisibles are stripped) becomes the open-question alert. A
+deviation in any field yields silence.
+
+**The question alert is the second mention-bearing write, so its volume is bounded the way the
+permission prompt's is, by a window of its own.** Its trigger is a transcript line, which anything
+that can arm the tailer and append to the file can mint, so without a ceiling it would hand a
+token-holding local process an unbounded phone-ping primitive paced only by the poll interval.
+Each thread gets 1 mention and 4 posts per 60 seconds: past the first, the alert posts without
+mentioning; past the fourth, it is dropped and one rate-limited, content-free log line says so.
+The window's stamps are deliberately separate from the permission prompt's window, because shared
+stamps would let a forged run of questions spend the prompt window's slots and push a real
+permission prompt into drop, converting a ping nuisance into a parked session. The post ceiling is
+also what bounds this path's spend of the steering writer's budget, the bucket permission prompts
+ride, so a crafted transcript cannot starve the approval channel through it. The alert composes at
+most one Discord message, naming how many further questions wait at the console when the content
+would not fit, so the mention and the alert line always survive. Two of those clauses carry
 weight past format hygiene. The mode clause keeps out the machine-written background-task notices
 that make up the bulk of queued lines, which would otherwise fill the thread. And the origin clause
 is what stops a message the operator posted in the thread itself from being extracted and posted
@@ -331,11 +348,13 @@ and both apply it:
   name cannot render as a fake timestamp, mention, or emoji, and a card cannot spoof the heartbeat
   it exists to carry.
 
-  **The permission prompt is the one write that deliberately mentions someone**, because its whole
-  job is to reach a phone. It is not a widening: the empty `parse` list stays, and the prompt adds
-  `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated as a
-  snowflake at load. The only mention syntax in the message is composed by the renderer from that
-  ID. Content still cannot produce one.
+  **Two writes deliberately mention someone: the permission prompt and the open-question alert.**
+  Both exist to reach a phone, and neither is a widening: the empty `parse` list stays, and each
+  adds `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated
+  as a snowflake at load. The only mention syntax in either message is composed by the renderer
+  from that ID. Content still cannot produce one. The question alert additionally carries its own
+  per-thread ping/quiet/drop window, described under the transcript section below, because its
+  trigger is a transcript line rather than a relay request held to the reply key.
 - **The log file.** Untrusted fields pass through the same neutralization before they land, so a
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 
@@ -462,6 +481,14 @@ authenticated account or a non-administrative service account.
   same text, and whichever posts first is the one the operator sees. When the tailer wins the race,
   the turn's conclusion carries the `✨ Claude · working` attribution rather than `✨ Claude`. The
   text and the count are right; only the label reads as mid-turn.
+- **`CHANNEL_TASK_NOTIFICATION=full` re-accepts operator-attributed rendering of harness text.** A
+  background task's wake prompt is harness-injected and carries the subagent's whole report, which
+  anything that subagent read can influence, and under `full` it renders inside the
+  operator-attributed quoted block, in the channel where approvals are answered. Chips, mentions,
+  and the quote marker are still escaped, so it cannot render a working prompt or a second
+  attribution; what it carries is prose under an attribution the operator never typed. The default
+  `brief` removes the surface by composing the broker's own one-line notice, repeating only a
+  bounded, neutralized task id from the injection.
 - **A forged broker forges the operator's steering.** The relay believes whatever answers the
   broker's loopback port, so a local process that binds it while the broker is down can feed a
   session channel events, and those events arrive at the keyboard's standing the instructions
