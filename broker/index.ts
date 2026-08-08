@@ -14,11 +14,19 @@ import { loadSessions, saveSessions } from "./persistence.ts";
 import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
+import { renderQuestionNotice } from "./discord/render.ts";
+import type { AskedQuestion } from "./discord/render.ts";
 import { toView } from "./discord/state.ts";
 import { loadBindings, saveBindings } from "./discord/bindings.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { ThreadMessenger } from "./discord/transport.ts";
-import { createPermissionDesk } from "./security/permission.ts";
+import {
+  ALERT_WINDOW_MS,
+  MAX_QUESTION_ALERTS_PER_WINDOW,
+  MAX_QUESTION_PINGS_PER_WINDOW,
+  createAlertVolume,
+  createPermissionDesk,
+} from "./security/permission.ts";
 import type { PermissionDesk } from "./security/permission.ts";
 import { loadSenderGate } from "./security/senders.ts";
 import { createEchoMemory, createTranscriptTailer } from "./tail.ts";
@@ -26,6 +34,7 @@ import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
+import type { ReplyResult } from "./routing/outbound.ts";
 import { createRelayRoutes } from "./routing/http.ts";
 import { createThreadWriter } from "./routing/writer.ts";
 import type { ThreadWriter } from "./routing/writer.ts";
@@ -157,6 +166,15 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       return written;
     },
   };
+  // The question alert's doorway, mutable for the same reason `threadFor` is: the tailer is
+  // constructed here, before the Discord block below decides whether a channel exists, and the
+  // alert needs the sender gate's operator ID, which loads only inside that block. Until then the
+  // alert has no thread to land in and no one to mention, so it drops as the routing layer drops:
+  // a report of no thread, nothing queued, nothing retried.
+  let deliverQuestion: (
+    sessionId: string,
+    questions: readonly AskedQuestion[],
+  ) => Promise<ReplyResult> = async () => ({ status: "no-thread" });
   let tail: TranscriptTailer | null = null;
   let tailTimer: NodeJS.Timeout | null = null;
   let tailInFlight: Promise<void> = Promise.resolve();
@@ -173,6 +191,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           .map((record) => record.sessionId),
       deliver: (sessionId, text) => outbound.interim(sessionId, text),
       deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
+      deliverQuestion: (sessionId, questions) => deliverQuestion(sessionId, questions),
       echo,
       log: note,
     });
@@ -354,6 +373,40 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
+    // The question alert posts through the steering writer's alert tier, the unfloored,
+    // phone-reaching write permission prompts ride, rather than the mirror writer that paces
+    // conversation volume: the notice floor could swallow a question, the mirror writer's pacing
+    // could hold one behind a long narration run, and a question is exactly the parked-session
+    // class the alert tier exists for. `steeringWriter.alert` already ends the thread's narration
+    // block on a successful write.
+    //
+    // Its volume rides its own window instance, never the permission desk's: shared stamps would
+    // let a run of question alerts spend the prompt window's slots and push real permission
+    // prompts into drop, the starvation the damping exists to prevent. Past the ping ceiling the
+    // alert lands without a mention, composed and posted without one alike; past the post ceiling
+    // nothing is written, and the refusal is not logged here, because the tailer logs it once,
+    // rate-limited, off the result this closure reports.
+    const questionVolume = createAlertVolume({
+      now: Date.now,
+      pingCeiling: MAX_QUESTION_PINGS_PER_WINDOW,
+      postCeiling: MAX_QUESTION_ALERTS_PER_WINDOW,
+      windowMs: ALERT_WINDOW_MS,
+    });
+    deliverQuestion = async (sessionId, questions) => {
+      const threadId = surface.threadFor(sessionId);
+      if (threadId === null) return { status: "no-thread" };
+      const volume = questionVolume(threadId);
+      if (volume === "drop") {
+        return { status: "failed", error: "question alerts are over their window" };
+      }
+      const mention = volume === "ping" ? gate.operatorId : null;
+      const written = await steeringWriter.alert(
+        threadId,
+        renderQuestionNotice({ operatorId: mention, questions }),
+        mention,
+      );
+      return written ? { status: "sent" } : { status: "failed", error: "the alert was not written" };
+    };
     const inbound = createInboundRouter({
       registry,
       relays,

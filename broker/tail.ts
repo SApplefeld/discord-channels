@@ -29,6 +29,7 @@
 // it, which costs at most one poll interval of narration.
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
+import type { AskedQuestion } from "./discord/render.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
 import { withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
@@ -220,6 +221,14 @@ export type TranscriptTailerOptions = {
    * this text.
    */
   deliverPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
+  /**
+   * Posts one open-question alert to the session's own thread, from an `AskUserQuestion` call
+   * read off the transcript: no hook fires for that tool, so this is the one place the question
+   * exists outside the console. The status is read only to keep the shared result vocabulary;
+   * nothing here queues or retries, and no echo digest is recorded, because no other path posts
+   * this text.
+   */
+  deliverQuestion: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
@@ -312,19 +321,80 @@ function createRepeatLog(
 }
 
 /**
- * One thing a transcript line contributes: a block of assistant narration, or a mid-turn message
- * the operator typed at the console. Both carry untrusted text, and they differ in where they go,
- * `deliver` against `deliverPrompt`, and therefore in how the thread attributes them.
+ * One thing a transcript line contributes: a block of assistant narration, a mid-turn message the
+ * operator typed at the console, or the questions an `AskUserQuestion` call is holding the
+ * session on. All carry untrusted content, and they differ in where they go, `deliver` against
+ * `deliverPrompt` against `deliverQuestion`, and therefore in how the thread presents them.
  */
-type TailItem = { kind: "text" | "prompt"; text: string };
+type TailItem =
+  | { kind: "text" | "prompt"; text: string }
+  | { kind: "question"; questions: readonly AskedQuestion[] };
+
+/** The most questions one `AskUserQuestion` line contributes, the tool's own ceiling. */
+const MAX_QUESTIONS_PER_ASK = 4;
+
+/** The most option labels one question contributes, the tool's own ceiling. */
+const MAX_OPTIONS_PER_QUESTION = 4;
 
 /**
- * What one transcript line contributes, decided by an allowlist and never a denylist. Two line
- * shapes yield anything, and both must first not be a sidechain and must name in `sessionId` the
+ * The bounded questions an `AskUserQuestion` `tool_use` block's `input` holds; empty when nothing
+ * in it is readable.
+ *
+ * Parsed by the allowlist's own rule: the input is another program's tool-call format, so
+ * anything malformed contributes silence, never a guess and never a throw. At most the first four
+ * entries of `questions` are read, and per entry the `question` string carries the weight: an
+ * entry without one, or whose question is empty once the invisible class is stripped and the rest
+ * trimmed (the same reading the renderer neutralizes by, so an entry the notice would draw as a
+ * blank line never yields), is skipped whole. The `header` rides
+ * along only as a non-empty string, `multiSelect` is read strictly (anything but `true` reads
+ * false), and at most the first four option entries contribute their `label`, descriptions
+ * dropped: the notice this feeds is a glance that sends the operator to the console, not a copy
+ * of the picker.
+ */
+function askedQuestions(input: unknown): AskedQuestion[] {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
+  const questions = (input as Record<string, unknown>)["questions"];
+  if (!Array.isArray(questions)) return [];
+  const readable: AskedQuestion[] = [];
+  for (const entry of questions.slice(0, MAX_QUESTIONS_PER_ASK)) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+    const fields = entry as Record<string, unknown>;
+    const question = fields["question"];
+    if (typeof question !== "string" || withoutInvisible(question).trim() === "") continue;
+    const header = fields["header"];
+    const rawOptions = fields["options"];
+    const options: string[] = [];
+    if (Array.isArray(rawOptions)) {
+      for (const option of rawOptions.slice(0, MAX_OPTIONS_PER_QUESTION)) {
+        if (typeof option !== "object" || option === null || Array.isArray(option)) continue;
+        const label = (option as Record<string, unknown>)["label"];
+        if (typeof label === "string" && label.trim() !== "") options.push(label);
+      }
+    }
+    readable.push({
+      question,
+      header: typeof header === "string" && header.trim() !== "" ? header : null,
+      multiSelect: fields["multiSelect"] === true,
+      options,
+    });
+  }
+  return readable;
+}
+
+/**
+ * What one transcript line contributes, decided by an allowlist and never a denylist. Three line
+ * shapes yield anything, and all must first not be a sidechain and must name in `sessionId` the
  * session this transcript was learned for.
  *
  * A line yields assistant text when its `type` is `assistant`, its `message.content` is an array,
  * and a block in that array is a `text` block carrying a non-empty string.
+ *
+ * A line yields a question item when its `type` is `assistant` and a block in `message.content`
+ * is a `tool_use` block naming `AskUserQuestion`: the one tool call the console answers with a
+ * picker, which no hook observes, so its transcript line is the only place the question exists
+ * outside the console. What is yielded is the bounded structured reading `askedQuestions` above
+ * takes of the block's `input`, never the block itself, and a block yielding zero readable
+ * questions yields nothing.
  *
  * A line yields a queued prompt when its `type` is `attachment` and its `attachment` is an object
  * whose `type` is `queued_command`, whose `commandMode` is `prompt`, whose `origin.kind` is
@@ -371,6 +441,11 @@ function lineItems(line: string, sessionId: string): TailItem[] {
     for (const block of content) {
       if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
       const fields = block as Record<string, unknown>;
+      if (fields["type"] === "tool_use" && fields["name"] === "AskUserQuestion") {
+        const questions = askedQuestions(fields["input"]);
+        if (questions.length > 0) items.push({ kind: "question", questions });
+        continue;
+      }
       if (fields["type"] !== "text") continue;
       const text = fields["text"];
       if (typeof text === "string" && text !== "") items.push({ kind: "text", text });
@@ -674,6 +749,38 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     for (const line of consumed.split("\n")) {
       if (line === "") continue;
       for (const item of lineItems(line, sessionId)) {
+        if (item.kind === "question") {
+          // The questions the console is holding this session on, delivered on the same
+          // one-await-per-item rule the other kinds follow, so the alert lands where the
+          // transcript puts it. No echo digest is recorded: no other path posts this text, so
+          // there is no duplicate to answer for. An alert that could not be made is dropped and
+          // never retried, and the error is discarded unread, because it can quote the question.
+          try {
+            const outcome = await options.deliverQuestion(sessionId, item.questions);
+            // Every point past an await re-checks the epoch it started under, the rule the rest
+            // of this function follows: a suppress landing during this delivery stops the batch
+            // here rather than publishing the items behind it.
+            if (!stillValid()) return;
+            // A refusal is made visible by a bounded line, because this alert is the only signal
+            // a parked question sends anywhere: a volume ceiling or a failed write eating it in
+            // silence would leave the operator unpinged with nothing in the log saying so.
+            // `no-thread` is not logged; it is the steady state of a broker running without
+            // Discord.
+            if (outcome.status === "failed") {
+              repeats(
+                `session ${sessionId}'s question alert was refused`,
+                "the alert is dropped, not retried",
+              );
+            }
+          } catch {
+            repeats(
+              `session ${sessionId}'s question alert failed`,
+              "the alert is dropped; the error detail is withheld, it can carry content",
+            );
+            if (!stillValid()) return;
+          }
+          continue;
+        }
         if (item.kind === "prompt") {
           // The operator's own typed words, delivered on the same one-await-per-item rule the
           // chunks below follow, so a prompt sitting between two assistant lines reaches the

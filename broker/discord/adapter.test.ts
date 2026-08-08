@@ -76,7 +76,8 @@ test("every message this bot writes suppresses all mentions and every embed", as
 });
 
 test("a thread message resolves no mention unless one user is named, and then only that one", async () => {
-  // The permission prompt is the one message this broker writes that is meant to reach a phone.
+  // The permission prompt and the question alert are the messages this broker writes that are
+  // meant to reach a phone.
   // The empty parse list still stands, so no mention class is resolved from the content: the users
   // list is a whitelist of exactly one id, and the renderer has escaped Discord's mention syntax
   // out of every untrusted field, so the only mention in the message is the one the broker wrote.

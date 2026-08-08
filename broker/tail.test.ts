@@ -15,6 +15,7 @@ import path from "node:path";
 import { MAX_TAIL_READ_BYTES, createEchoMemory, createTranscriptTailer } from "./tail.ts";
 import type { TranscriptSlice, TranscriptTailerOptions } from "./tail.ts";
 import { renderAnswer, renderMirror } from "./discord/render.ts";
+import type { AskedQuestion } from "./discord/render.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { ThreadMessenger } from "./discord/transport.ts";
 import { createRegistry } from "./registry.ts";
@@ -106,10 +107,45 @@ function queuedPrompt(
   });
 }
 
+/**
+ * An `AskUserQuestion` call in the real shape: an assistant line whose content block is the
+ * `tool_use` the console answers with a picker. `input` is passed through whole, so a malformed
+ * shape is expressed as exactly the input that carries it; the well-formed case passes
+ * `{ questions: [...] }`. An `input` of `undefined` produces a block with no input key at all,
+ * because JSON.stringify drops the undefined field.
+ */
+function askUserQuestion(
+  input: unknown,
+  sessionId: string = SESSION,
+  extra: Record<string, unknown> = {},
+): string {
+  return line({
+    parentUuid: "00000000-0000-4000-8000-000000000000",
+    isSidechain: false,
+    message: {
+      model: "claude-fixture",
+      id: "msg_fixture",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "tool_use", id: "toolu_ask", name: "AskUserQuestion", input }],
+      stop_reason: null,
+    },
+    requestId: "req_fixture",
+    type: "assistant",
+    uuid: "00000000-0000-4000-8000-000000000003",
+    timestamp: "2026-08-08T00:00:00.000Z",
+    sessionId,
+    version: "fixture",
+    gitBranch: "main",
+    ...extra,
+  });
+}
+
 function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   const posts: string[] = [];
   const prompts: string[] = [];
-  /** Both kinds in the order the tailer delivered them, which is transcript order. */
+  const questions: (readonly AskedQuestion[])[] = [];
+  /** All kinds in the order the tailer delivered them, which is transcript order. */
   const delivered: string[] = [];
   const logs: string[] = [];
   const live = new Set<string>([SESSION]);
@@ -126,12 +162,17 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
       delivered.push(`prompt:${text}`);
       return { status: "sent" };
     },
+    deliverQuestion: async (_sessionId, asked) => {
+      questions.push(asked);
+      delivered.push(`question:${asked.map((entry) => entry.question).join("|")}`);
+      return { status: "sent" };
+    },
     echo,
     log: (message) => logs.push(message),
     now: () => 1_000,
     ...overrides,
   });
-  return { tailer, posts, prompts, delivered, logs, live, echo };
+  return { tailer, posts, prompts, questions, delivered, logs, live, echo };
 }
 
 test("what a transcript held before it was learned is never republished", async (t) => {
@@ -1140,6 +1181,433 @@ test("a trailing partial line waits for its newline and then posts exactly once"
   assert.equal(posts.length, 2, "the completed line posts exactly once");
 });
 
+test("an AskUserQuestion call yields its questions, bounded and parsed, descriptions dropped", async (t) => {
+  // The real measured shape: 1 to 4 questions, each with a header, a multiSelect flag, and 2 to 4
+  // options carrying a label and a description. The description never rides along, the header of
+  // the second entry is genuinely absent, and the parse is structured data rather than text.
+  const file = transcriptFile(t);
+  const { tailer, questions, posts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({
+      questions: [
+        {
+          question: "Ship the migration now or wait for the backup window?",
+          header: "Timing",
+          multiSelect: false,
+          options: [
+            { label: "Ship now (Recommended)", description: "SECRET-description-dropped" },
+            { label: "Wait for the window", description: "SECRET-description-dropped-too" },
+          ],
+        },
+        {
+          question: "Which hosts get the change?",
+          multiSelect: true,
+          options: [{ label: "NEO" }, { label: "TRINITY" }],
+        },
+      ],
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(questions, [
+    [
+      {
+        question: "Ship the migration now or wait for the backup window?",
+        header: "Timing",
+        multiSelect: false,
+        options: ["Ship now (Recommended)", "Wait for the window"],
+      },
+      {
+        question: "Which hosts get the change?",
+        header: null,
+        multiSelect: true,
+        options: ["NEO", "TRINITY"],
+      },
+    ],
+  ]);
+  assert.deepEqual(posts, [], "a question item is not narration");
+});
+
+test("a question line from a foreign session or a sidechain yields nothing", async (t) => {
+  // The same two gates every yield sits behind: the question item must not widen what the
+  // allowlist accepts.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({ questions: [{ question: "SECRET-foreign-question" }] }, OTHER_SESSION) +
+      askUserQuestion({ questions: [{ question: "SECRET-sidechain-question" }] }, SESSION, {
+        isSidechain: true,
+      }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(questions, []);
+
+  // The positive control: the pass over this same file is demonstrably live.
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "the real question" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 1);
+});
+
+test("a tool_use of any other name is silent, even one carrying a valid questions input", async (t) => {
+  // The sharpest near-miss is a name that contains the real one: an MCP-wrapped tool could call
+  // itself anything, and a substring or prefix match would alert on input this build has never
+  // modeled. The match is exact or it is nothing.
+  const file = transcriptFile(t);
+  const { tailer, questions, posts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    line({
+      isSidechain: false,
+      type: "assistant",
+      sessionId: SESSION,
+      message: {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "mcp__helper__AskUserQuestion",
+            input: { questions: [{ question: "SECRET-mcp-question" }] },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_2",
+            name: "Bash",
+            input: { questions: [{ question: "SECRET-bash-question" }] },
+          },
+        ],
+      },
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(questions, []);
+  assert.deepEqual(posts, []);
+});
+
+test("a malformed AskUserQuestion input yields silence, never a throw and never a guess", async (t) => {
+  // The input is another program's tool-call format, driven one deviation per line: the block
+  // with no input key at all, an input that is not an object, a missing and a non-array
+  // `questions`, entries that are not objects, and entries without a readable `question` string.
+  // Every one must be refused by the allowlist rather than thrown past it, which pollOne's own
+  // catch would report as a failed pass.
+  const file = transcriptFile(t);
+  const { tailer, questions, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion(undefined) +
+      askUserQuestion("SECRET-string-input") +
+      askUserQuestion({}) +
+      askUserQuestion({ questions: "SECRET-not-an-array" }) +
+      askUserQuestion({ questions: ["SECRET-entry", 42, null, ["SECRET-array-entry"]] }) +
+      askUserQuestion({
+        questions: [
+          { header: "a header with no question" },
+          { question: "" },
+          { question: "   " },
+          { question: 42 },
+          { question: null },
+        ],
+      }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(questions, [], "zero readable questions is allowlist silence");
+  assert.ok(
+    !logs.some((entry) => entry.includes("transcript pass failed")),
+    `the lines must be refused, not thrown past the allowlist: ${logs.join("\n")}`,
+  );
+  assert.ok(!logs.join("\n").includes("SECRET"), logs.join("\n"));
+
+  // The positive control: the pass over this same file is demonstrably live.
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "the real question" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 1);
+});
+
+test("questions past the first four are dropped, and a skipped entry spends its slot", async (t) => {
+  // The bound reads the first four entries and then validates each, matching the tool's own
+  // ceiling of four: a fifth entry is outside the read whether or not an earlier one was skipped,
+  // so a malformed second entry costs its own slot rather than promoting the fifth in.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({
+      questions: [
+        { question: "first" },
+        { header: "skipped: no question" },
+        { question: "third" },
+        { question: "fourth" },
+        { question: "fifth, past the bound" },
+        { question: "sixth, past the bound" },
+      ],
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(
+    questions.map((asked) => asked.map((entry) => entry.question)),
+    [["first", "third", "fourth"]],
+  );
+});
+
+test("option labels are bounded to the first four entries, unreadable ones skipped", async (t) => {
+  // The same first-four-then-validate rule the questions bound follows: an option without a
+  // readable label spends its slot, and a fifth option is outside the read either way.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({
+      questions: [
+        {
+          question: "with deviant options",
+          options: [
+            { label: "one" },
+            { label: "" },
+            { label: 42 },
+            { label: "two" },
+            { label: "past the bound" },
+          ],
+        },
+        {
+          question: "with five readable options",
+          options: [
+            { label: "a" },
+            { label: "b" },
+            { label: "c" },
+            { label: "d" },
+            { label: "e, past the bound" },
+          ],
+        },
+        { question: "with no options at all" },
+        { question: "with options that are not an array", options: "SECRET-not-an-array" },
+      ],
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(
+    questions.map((asked) => asked.map((entry) => entry.options)),
+    [[["one", "two"], ["a", "b", "c", "d"], [], []]],
+  );
+});
+
+test("a question of nothing but invisible characters is skipped, not delivered blank", async (t) => {
+  // The renderer neutralizes by the invisible-stripped reading, so an entry that trims to nothing
+  // under it would draw a blank Q line; the parse gates on the same reading, and a bare trim()
+  // cannot, because the zero-width class is not whitespace. The invisibles ride in by code point,
+  // never as raw bytes a reader cannot see in the source, and the readable entry beside them is
+  // the positive control on the same line.
+  const invisible = String.fromCharCode(0x200b, 0x202e, 0x200b);
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({
+      questions: [{ question: invisible }, { question: "the readable question" }],
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(
+    questions.map((asked) => asked.map((entry) => entry.question)),
+    [["the readable question"]],
+  );
+});
+
+test("a refused question alert logs one bounded line; a no-thread drop logs nothing", async (t) => {
+  // A `failed` result is the volume ceiling or a write Discord refused, and this alert is the
+  // only signal a parked question sends anywhere, so the refusal must reach the log, bounded and
+  // content-free. `no-thread` is the steady state of a broker running without Discord, and
+  // logging it would write a line per question forever.
+  const file = transcriptFile(t);
+  let outcome: ReplyResult = { status: "no-thread" };
+  let attempts = 0;
+  const { tailer, posts, logs } = harness({
+    deliverQuestion: async () => {
+      attempts += 1;
+      return outcome;
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({ questions: [{ question: "SECRET-unposted-question" }] }) +
+      assistantText("narration after the no-thread drop"),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.equal(attempts, 1);
+  assert.deepEqual(posts, ["narration after the no-thread drop"], "the batch continues past the drop");
+  assert.ok(
+    !logs.some((entry) => entry.includes("question")),
+    `a no-thread drop is not a log line: ${logs.join("\n")}`,
+  );
+
+  outcome = { status: "failed", error: "question alerts are over their window" };
+  appendFileSync(
+    file,
+    askUserQuestion({ questions: [{ question: "SECRET-refused-question" }] }) +
+      assistantText("narration after the refusal"),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.equal(attempts, 2);
+  assert.deepEqual(posts, [
+    "narration after the no-thread drop",
+    "narration after the refusal",
+  ]);
+  assert.ok(logs.some((entry) => entry.includes("question alert was refused")), logs.join("\n"));
+  assert.ok(!logs.join("\n").includes("SECRET"), logs.join("\n"));
+
+  await tailer.poll();
+  assert.equal(attempts, 2, "a refusal is dropped, never retried");
+});
+
+test("a question between two chunks is delivered between them, in transcript order", async (t) => {
+  // The one-await-per-item rule across all three kinds: the alert lands where the transcript puts
+  // it, between the narration that led to the question and whatever follows the answer.
+  const file = transcriptFile(t);
+  const { tailer, delivered } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantText("weighing the two options") +
+      askUserQuestion({ questions: [{ question: "Proceed with the riskier one?" }] }) +
+      assistantText("proceeding with the answer"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(delivered, [
+    "interim:weighing the two options",
+    "question:Proceed with the riskier one?",
+    "interim:proceeding with the answer",
+  ]);
+});
+
+test("a question alert that throws is dropped unretried, logged bounded, and the batch continues", async (t) => {
+  // The prompt branch's discipline: the failure is held to its own item, because the consumed
+  // bytes are already behind the offset and a throw that escaped the loop would lose every later
+  // item in the batch. The error is discarded unread; it can quote the question.
+  const file = transcriptFile(t);
+  let attempts = 0;
+  const { tailer, posts, logs } = harness({
+    deliverQuestion: async () => {
+      attempts += 1;
+      throw new Error("alert exploded while posting: SECRET-question-content");
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({ questions: [{ question: "SECRET-question-content" }] }) +
+      assistantText("narration after the failed alert"),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.equal(attempts, 1);
+  assert.deepEqual(posts, ["narration after the failed alert"], "the rest of the batch still delivers");
+  assert.ok(logs.some((entry) => entry.includes("question alert failed")), logs.join("\n"));
+  assert.ok(!logs.join("\n").includes("SECRET"), logs.join("\n"));
+
+  await tailer.poll();
+  assert.equal(attempts, 1, "nothing is queued and nothing is retried");
+});
+
+test("a suppress landing during a question alert's delivery stops the batch behind it", async () => {
+  // The mirror-off switch reaches every kind the batch carries, the question item included.
+  // Driven through the injected `readFile` seam so the suppress lands inside the alert's own
+  // gated delivery rather than merely near it.
+  let content = "";
+  const delivered: string[] = [];
+  let releaseQuestion: () => void = () => {};
+  const questionGate = new Promise<void>((resolve) => {
+    releaseQuestion = resolve;
+  });
+  const { tailer } = harness({
+    readFile: async (_path, offset, maxBytes) => {
+      const bytes = Buffer.from(content, "utf8");
+      const length = Math.max(Math.min(bytes.length - offset, maxBytes), 0);
+      return { size: bytes.length, bytes: bytes.subarray(offset, offset + length) };
+    },
+    deliver: async (_sessionId, text) => {
+      delivered.push(`interim:${text}`);
+      return { status: "sent" };
+    },
+    deliverQuestion: async (_sessionId, asked) => {
+      await questionGate;
+      delivered.push(`question:${asked.map((entry) => entry.question).join("|")}`);
+      return { status: "sent" };
+    },
+  });
+
+  tailer.learn(SESSION, "fixture-path");
+  tailer.allow(SESSION);
+  await tailer.poll(); // baselines against the still-empty content
+
+  content =
+    askUserQuestion({ questions: [{ question: "the open question" }] }) +
+    assistantText("narration after it");
+  const pass = tailer.poll(); // starts delivering the alert, gated by questionGate
+
+  await new Promise((resolve) => setImmediate(resolve)); // lets the pass reach the gated call
+  tailer.suppress(SESSION); // lands while the alert's own delivery is still in flight
+
+  releaseQuestion();
+  await pass;
+
+  assert.deepEqual(
+    delivered,
+    ["question:the open question"],
+    "a suppress landing mid-delivery must stop the batch after the item already in flight",
+  );
+});
+
 /**
  * The tailer wired to the real outbound router, the way index.ts wires them, so the dedup is
  * proved across the seam the two halves actually share rather than against a hand-built stub.
@@ -1180,6 +1648,9 @@ function integration(t: TestContext) {
     liveSessions: () => [SESSION],
     deliver: (sessionId, text) => outbound.interim(sessionId, text),
     deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
+    // The router carries no question path; index.ts wires this seam to the steering writer
+    // instead, so a stub keeps this helper about the dedup seam the two halves really share.
+    deliverQuestion: async () => ({ status: "sent" }),
     echo,
     now: () => 1_000,
   });
@@ -1927,6 +2398,10 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
       if (explode) throw new Error(`prompt delivery exploded while posting: ${text}`);
       return { status: "sent" };
     },
+    deliverQuestion: async (_sessionId, asked) => {
+      if (explode) throw new Error(`question alert exploded while posting: ${asked[0]?.question}`);
+      return { status: "sent" };
+    },
     echo,
     log: (message) => logs.push(message),
     now: () => 1_000,
@@ -1942,7 +2417,9 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
   explode = true;
   appendFileSync(
     file,
-    assistantText("SECRET-exploding-chunk") + queuedPrompt("SECRET-exploding-prompt"),
+    assistantText("SECRET-exploding-chunk") +
+      queuedPrompt("SECRET-exploding-prompt") +
+      askUserQuestion({ questions: [{ question: "SECRET-exploding-question" }] }),
     "utf8",
   );
   await tailer.poll();

@@ -120,6 +120,16 @@ spelling refuses startup. `npm run lint` and `npm test` green.
   question, and a swallowed question is a parked session). Before Discord is configured the
   closure reports `no-thread` and drops. `endNarration` is already handled inside
   `steeringWriter.alert`.
+- Volume damping (added on security review): the alert is the system's second mention-bearing
+  write, so it carries its own per-thread ping/quiet/drop window, a separate instance of the
+  permission desk's own mechanism, extracted as `createAlertVolume` in
+  `broker/security/permission.ts`. Question ceilings: 1 ping and 4 posts per thread per 60
+  seconds; `quiet` posts without the mention (`renderQuestionNotice` takes `operatorId: string |
+  null`), `drop` writes nothing. Separate stamps from the prompt window on purpose: shared stamps
+  would let a forged question flood push real permission prompts into drop. The renderer bounds
+  the whole notice under one Discord message, ending `(+N more questions at the console)` when
+  questions were cut, and the tailer logs one bounded static line when an alert reports `failed`
+  (never on `no-thread`).
 
 **Acceptance:** appending a real-shape `AskUserQuestion` `tool_use` line to a tailed transcript
 produces exactly one alert in the session's thread, mentioning the operator, showing each
@@ -133,9 +143,14 @@ mirror run is pacing in the same thread (it rides the steering writer, not the m
 `docs/architecture.md`: the mirror path's description gains the wake-prompt compression (data
 flow item 2 and the external-integrations hook paragraph), and the mid-turn narration section
 gains the question alert as the tailer's third yield. `docs/operations.md` gains the
-`CHANNEL_TASK_NOTIFICATION` knob if it carries the knob table (check at execution). Present-state
-prose only; the journey stays in this spec and the commits. Docs are main-session work
-(subagents cannot write under `docs/` in this harness).
+`CHANNEL_TASK_NOTIFICATION` knob if it carries the knob table (check at execution).
+`docs/security-model.md` (review-driven, both reviews' surviving findings): the "one write that
+deliberately mentions someone" claim becomes two writes; the question alert is described with its
+arming path (mirror-on verdict gates the transcript read) and its ceilings (1 ping / 4 posts per
+thread per 60s, a window separate from the prompt window and why); and `full` task-notification
+mode is named as re-accepting the operator-attributed rendering of harness-injected wake text.
+Present-state prose only; the journey stays in this spec and the commits. Docs are main-session
+work (subagents cannot write under `docs/` in this harness).
 
 ## Section 4: deploy and live verify
 
@@ -191,4 +206,39 @@ name `full` mode as re-accepting the operator-attributed rendering of harness-in
 Stamps: adjudicated 3, stamped 3 (claude-code-transcript-jsonl-shape,
 claude-code-channel-and-hook-facts, an-idle-sessions-task-notification-arrives-as-a-real-prompt)
 Next: Section 2: open-question alert from the tailer
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-08
+Completed: Section 2: open-question alert from the tailer
+Implemented By: implementer-fable (two rounds: initial build, then the review-fix round on the
+same agent's context)
+Metrics: 2 review rounds (round one: adversarial + blind + security at fable; round two: targeted
+security re-verification); 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the security review surfaced two Majors the spec had missed: the question
+alert was the system's second mention-bearing write with no per-thread ceiling (a token-holding
+local process could turn one 256KB tailer pass into hundreds of phone pings), and it spent the
+steering writer's post budget, the bucket permission prompts ride, handing that actor a
+starvation lever on the approval channel. Fixed by extracting the permission desk's
+ping/quiet/drop window into `createAlertVolume` and giving questions their own instance (1 ping /
+4 posts per thread per 60s), deliberately not sharing stamps with the prompt window, because
+shared stamps would let a question flood push real prompts into drop. The spec's Section 2 text
+was updated to carry the damper; this strengthens the operator's ask rather than changing it, so
+it was not raised as a design fork. Ratified readings: the Q line's header cap (100) rides beside
+the question cap (500), so a maximal Q line is ~615 code points, a deliberate per-field reading of
+the spec's "fit at 500"; the questions/options bounds are slice-then-validate (a malformed entry
+spends its slot). The renderer now bounds the whole notice under one message with a
+`(+N more questions at the console)` tail, after two reviewers independently showed the
+per-field caps compose to ~4,200 characters at the tool's own ceilings. The mention-exclusivity
+comment sweep (memory: a-comment-that-names-a-property-is-a-claim-to-sweep) turned up five stale
+claims beyond the two the review named, across render.ts, permission.ts, adapter.test.ts,
+http.ts, and permission.test.ts, all updated.
+Review Findings: round one 0 Critical, 2 Major (security), 7 Minor; both Majors fixed and
+re-verified closed by the raising reviewer, with tests (window tiers, no-mention quiet render,
+message bound, refused-alert logging, invisible-only question gate). Minors fixed: extraction
+symmetry, message bound, failed-alert observability, comment sweep. Minors noted, not fixed:
+no index.test.ts smoke for the closure glue (Section 4's live verify covers it);
+`createAlertVolume`'s stamps map holds threads-ever-seen (pre-existing desk behavior, bounded).
+Carried to Section 3: security-model.md updates (the round-two surviving Minor).
+Stamps: none surfaced (the sweep window since Chapter 1 returned zero unstamped reads)
+Next: Section 3: docs
 Commit Model: Commit-and-Push

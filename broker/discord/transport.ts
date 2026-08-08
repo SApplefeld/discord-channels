@@ -93,8 +93,8 @@ export type ThreadMessenger = {
     text: string;
     /**
      * The single Discord user this one message may resolve as a mention. Left unset on every
-     * write but the permission prompt, which is the only message in this system meant to reach a
-     * phone before the operator next looks at it.
+     * write but the permission prompt and the question alert, the two messages in this system
+     * meant to reach a phone before the operator next looks at it.
      */
     mentionUserId?: string;
   }) => Promise<CallOutcome<{ messageId: string | null }>>;

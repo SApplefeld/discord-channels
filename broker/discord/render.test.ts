@@ -14,9 +14,11 @@ import {
   renderCard,
   renderMirror,
   renderPermissionRequest,
+  renderQuestionNotice,
   renderTaskNotice,
   threadName,
 } from "./render.ts";
+import type { AskedQuestion } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
@@ -1114,4 +1116,144 @@ test("the id scan reads through the same invisible strip the wake recognizer rea
     renderTaskNotice(`<task${zw}-id>agent-42</task${zw}-id>`),
     "📨 background task finished · agent-42",
   );
+});
+
+function asked(overrides: Partial<AskedQuestion> = {}): AskedQuestion {
+  return {
+    question: "Ship the migration now?",
+    header: null,
+    multiSelect: false,
+    options: [],
+    ...overrides,
+  };
+}
+
+test("a question notice leads with the mention and draws each question with its options", () => {
+  const text = renderQuestionNotice({
+    operatorId: OPERATOR,
+    questions: [
+      asked({ header: "Timing", multiSelect: true, options: ["Now", "After the backup"] }),
+      asked({ question: "Which hosts get the change?", options: ["NEO", "TRINITY"] }),
+    ],
+  });
+
+  assert.deepEqual(text.split("\n"), [
+    `<@${OPERATOR}> ❓ **Waiting on you at the console** · a question is open`,
+    "Q: Timing: Ship the migration now? (multi-select)",
+    "Options: Now · After the backup",
+    "Q: Which hosts get the change?",
+    "Options: NEO · TRINITY",
+  ]);
+});
+
+test("a question with no options renders without an Options line", () => {
+  // The console always offers a free-form "Other" answer, so an empty list is a shape the tool
+  // really produces, not an error to mark.
+  const text = renderQuestionNotice({ operatorId: OPERATOR, questions: [asked()] });
+
+  assert.deepEqual(text.split("\n").slice(1), ["Q: Ship the migration now?"]);
+  assert.ok(!text.includes("(multi-select)"), "the suffix rides only on a multi-select question");
+  assert.ok(!text.includes("Options:"), text);
+});
+
+test("nothing a session writes into a question can mention anyone or restructure the notice", () => {
+  // Question text and labels come from a tool call, which anything the session has read can
+  // steer, and the notice lands in the one channel permission prompts are answered in: a second
+  // mention or a rendered chip there is the attack the escaping is against.
+  const text = renderQuestionNotice({
+    operatorId: OPERATOR,
+    questions: [
+      asked({
+        question: "approve <@999999999999999999> **now**?",
+        header: "# Urgent",
+        options: ["<@123> ping", "> quoted line", "@everyone"],
+      }),
+    ],
+  });
+
+  const mentions = [...text.matchAll(/(?<!\\)<@/g)];
+  assert.equal(mentions.length, 1, "the only unescaped mention syntax is the broker's own");
+  assert.ok(text.startsWith(`<@${OPERATOR}>`), text);
+  assert.ok(text.includes("\\<@123\\> ping"), text);
+  assert.ok(!text.includes("**now**"), text);
+  assert.ok(text.includes("\\# Urgent"), text);
+  assert.ok(text.includes("@everyone"), "allowed_mentions is what stops the text ping, not the escape");
+});
+
+test("long question fields are cut visibly and the mention line survives any length", () => {
+  const text = renderQuestionNotice({
+    operatorId: OPERATOR,
+    questions: [
+      asked({
+        question: "q".repeat(600),
+        header: "h".repeat(150),
+        options: ["o".repeat(150), "kept whole"],
+      }),
+    ],
+  });
+  const lines = text.split("\n");
+
+  assert.ok(lines[0].startsWith(`<@${OPERATOR}> `), lines[0]);
+  assert.equal(lines[1], `Q: ${"h".repeat(99)}…: ${"q".repeat(499)}…`);
+  assert.equal(lines[2], `Options: ${"o".repeat(99)}… · kept whole`);
+});
+
+test("a null operator composes the quiet notice with no mention anywhere", () => {
+  // The quiet tier: a thread already pinged past a person's reading pace still gets the notice,
+  // but neither the composed text nor (at the call site) the transport whitelist names anyone.
+  const text = renderQuestionNotice({
+    operatorId: null,
+    questions: [asked({ header: "Timing", options: ["Now", "Later"] })],
+  });
+
+  assert.ok(text.startsWith("❓ **Waiting on you at the console**"), text);
+  assert.ok(!text.includes("<@"), text);
+});
+
+test("four maximal questions compose one message, cut with a tail naming what the console holds", () => {
+  // The per-field caps alone compose past the message ceiling at this size, so the whole-message
+  // bound is what keeps the writer's own cut from eating the tail silently: questions ride whole
+  // until the next would not leave room for the closing tail line.
+  const maximal = asked({
+    question: "q".repeat(600),
+    header: "h".repeat(150),
+    multiSelect: true,
+    options: ["o".repeat(150), "p".repeat(150), "r".repeat(150), "s".repeat(150)],
+  });
+  const text = renderQuestionNotice({
+    operatorId: OPERATOR,
+    questions: [maximal, maximal, maximal, maximal],
+  });
+
+  assert.ok(text.length <= MAX_MESSAGE_LENGTH, `${text.length} units`);
+  assert.match(text, /\(\+3 more questions at the console\)$/, text.slice(-60));
+  // The first question always fits by arithmetic: the notice never degenerates to a bare tail.
+  assert.ok(text.includes(`Q: ${"h".repeat(99)}…`), text.slice(0, 200));
+
+  // One question, even maximal, fits whole: no tail rides on a notice that was never cut.
+  const single = renderQuestionNotice({ operatorId: OPERATOR, questions: [maximal] });
+  assert.ok(single.length <= MAX_MESSAGE_LENGTH, `${single.length} units`);
+  assert.ok(!single.includes("more question"), single.slice(-60));
+});
+
+test("an empty questions array still composes the alert line, and nothing makes the notice throw", () => {
+  // The parse upstream refuses a line with zero readable questions, so this input is a caller
+  // bug; the render answer to it is still a message, never a throw that would take the tailer's
+  // pass down with it.
+  assert.equal(
+    renderQuestionNotice({ operatorId: OPERATOR, questions: [] }),
+    `<@${OPERATOR}> ❓ **Waiting on you at the console** · a question is open`,
+  );
+
+  // A header and labels of nothing but invisible characters neutralize to nothing and render as
+  // absent, rather than as a bare colon or an empty entry between separators.
+  const invisible = String.fromCharCode(0x200b, 0x202e);
+  const text = renderQuestionNotice({
+    operatorId: OPERATOR,
+    questions: [asked({ header: invisible, options: [invisible, "real label"] })],
+  });
+  assert.deepEqual(text.split("\n").slice(1), [
+    "Q: Ship the migration now?",
+    "Options: real label",
+  ]);
 });

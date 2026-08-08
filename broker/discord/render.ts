@@ -79,9 +79,9 @@ export const MAX_MESSAGE_LENGTH = 1_900;
  * or a message a caller has already neutralized.
  *
  * Unlike a card, this keeps markdown, and it keeps the chip syntax too. Both are load-bearing on
- * this path: the permission prompt is the one message here that deliberately mentions someone, and
- * escaping its `<@id>` would render the mention as characters and drop the ping a parked session is
- * waiting to be answered through. That is safe only because every string arriving here is either
+ * this path: the permission prompt and the question alert deliberately mention someone, and
+ * escaping their `<@id>` would render the mention as characters and drop the ping a parked session
+ * is waiting to be answered through. That is safe only because every string arriving here is either
  * composed by this renderer, with each untrusted field already through `inertText`, or neutralized
  * by its caller. Text a model or a session authored reaches Discord through `renderAnswer` or
  * `renderMirror` instead, and both of those neutralize the chip and quote syntax before it gets
@@ -252,7 +252,8 @@ function promptField(label: string, value: string, limit: number): string {
 }
 
 /**
- * The permission prompt: the one message this broker writes that deliberately mentions someone.
+ * The permission prompt: one of the two messages this broker writes that deliberately mention
+ * someone, the question alert below being the other.
  *
  * The mention is composed here from the operator's own ID, and every untrusted field goes through
  * `inertText`, which escapes the angle brackets Discord's mention syntax lives inside. So the only
@@ -319,6 +320,102 @@ export function renderTaskNotice(text: string): string {
   if (id === "" || [...id].length > MAX_TASK_ID_LENGTH) return line;
   const shown = inertText(id);
   return shown === "" ? line : `${line} ${SEPARATOR} ${shown}`;
+}
+
+/**
+ * Room for the untrusted parts of a question notice: the question itself, its header, and each
+ * option label. Cut here, before the message is assembled, for `renderPermissionRequest`'s
+ * reason: no single field may crowd out the mention and the line saying a question is open. The
+ * per-field cuts alone do not hold the whole notice inside one message (four capped questions
+ * compose past the ceiling); `renderQuestionNotice`'s own whole-message bound below owns that.
+ * The cut is left to `fit`'s ellipsis rather than labelled, because nothing here is approved from
+ * a partial view: the notice only sends the operator to the console, where the whole question is.
+ */
+const MAX_QUESTION_LENGTH = 500;
+const MAX_QUESTION_HEADER_LENGTH = 100;
+const MAX_OPTION_LABEL_LENGTH = 100;
+
+/**
+ * One question an `AskUserQuestion` call is holding a session on: bounded structured data the
+ * transcript tailer reads off the session's own transcript, because no hook fires for that tool
+ * and the console's picker is otherwise invisible from the thread. Defined here rather than in the
+ * tailer, the `MirrorKind` pattern: this renderer owns the vocabulary it knows how to draw, and
+ * the tailer imports the type alone. Every string in it is untrusted conversation content.
+ */
+export type AskedQuestion = {
+  question: string;
+  /** The tool's short topic label for the question; null when the call carried none. */
+  header: string | null;
+  multiSelect: boolean;
+  /** The option labels, in the tool's order; descriptions never ride along. */
+  options: readonly string[];
+};
+
+/** What a cut notice ends with, naming how many questions the console holds beyond the cut. */
+function moreQuestionsTail(count: number): string {
+  return `(+${count} more question${count === 1 ? "" : "s"} at the console)`;
+}
+
+/**
+ * The open-question alert: the second message this broker writes that deliberately mentions
+ * someone, beside the permission prompt, and safe for the same reason: the mention is composed
+ * here from the operator's own ID, and every untrusted field goes through `inertText`, which
+ * escapes the angle brackets Discord's mention syntax lives inside. A null `operatorId` composes
+ * the same notice with no mention at all: the quiet tier for a thread already pinged past a
+ * person's reading pace.
+ *
+ * Unlike the permission prompt, this message asks for nothing in the thread: no remote answer
+ * path exists for a question, so it says a session is parked on a console-only picker and carries
+ * enough of the question for the operator to decide whether it is worth the walk.
+ *
+ * The whole notice is bound to one message, because the per-field cuts alone cannot do that: four
+ * questions at their caps compose past four thousand units, and leaving the overflow to the
+ * writer's own whole-message cut would eat the tail silently. Questions are appended whole, each
+ * with its lines, and the first that would not leave room for the closing tail ends the message
+ * with a line naming how many the console still holds. The first question always fits by
+ * arithmetic: the alert line is at most about 80 units, a Q line at most 620 (3 + a 100-unit
+ * header + 2 + a 500-unit question + a 15-unit suffix), an Options line at most 418 (9 + four
+ * 100-unit labels + three separators), and the tail at most 34, about 1,160 in all against the
+ * 1,900 ceiling, so the notice never degenerates to a bare tail. Measured in UTF-16 units, the
+ * larger of the two counts a length could mean, so holding it holds the code point count too.
+ *
+ * A question with no options renders without an Options line rather than as an error: the console
+ * always offers a free-form "Other" answer, so an empty list is a shape this tool really
+ * produces. A header or a label that neutralizes to nothing renders as absent, and an empty
+ * questions array still composes the alert line: whatever the call carried, the notice composes,
+ * never a throw.
+ */
+export function renderQuestionNotice(input: {
+  operatorId: string | null;
+  questions: readonly AskedQuestion[];
+}): string {
+  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+  const lines = [
+    `${mention}❓ **Waiting on you at the console** ${SEPARATOR} a question is open`,
+  ];
+  let used = lines[0].length;
+  for (const [index, asked] of input.questions.entries()) {
+    const header = asked.header === null ? "" : fit(inertText(asked.header), MAX_QUESTION_HEADER_LENGTH);
+    const prefix = header === "" ? "" : `${header}: `;
+    const suffix = asked.multiSelect ? " (multi-select)" : "";
+    const held = [`Q: ${prefix}${fit(inertText(asked.question), MAX_QUESTION_LENGTH)}${suffix}`];
+    const labels = asked.options
+      .map((label) => fit(inertText(label), MAX_OPTION_LABEL_LENGTH))
+      .filter((label) => label !== "");
+    if (labels.length > 0) held.push(`Options: ${labels.join(` ${SEPARATOR} `)}`);
+    // Each line costs its own length plus the newline that joins it. The tail's room is reserved
+    // on every question, the last included: one rule with no branch to get wrong, at the price of
+    // at most one tail's width of unused room on a notice that fills to the brim.
+    const cost = held.reduce((sum, line) => sum + 1 + line.length, 0);
+    const remaining = input.questions.length - index;
+    if (used + cost + 1 + moreQuestionsTail(remaining).length > MAX_MESSAGE_LENGTH) {
+      lines.push(moreQuestionsTail(remaining));
+      return lines.join("\n");
+    }
+    lines.push(...held);
+    used += cost;
+  }
+  return lines.join("\n");
 }
 
 /** The label a session is known by. A session launched without the wrapper carries no name. */

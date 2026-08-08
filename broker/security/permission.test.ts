@@ -13,6 +13,9 @@ import {
   MAX_ALERTS_PER_WINDOW,
   MAX_OPEN_REQUESTS,
   MAX_PROMPTS_PER_WINDOW,
+  MAX_QUESTION_ALERTS_PER_WINDOW,
+  MAX_QUESTION_PINGS_PER_WINDOW,
+  createAlertVolume,
   createPermissionDesk,
   parseVerdict,
 } from "./permission.ts";
@@ -125,7 +128,7 @@ test("a request is posted into its session's thread, mentioning the operator", a
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].threadId, THREAD_A);
-  assert.equal(posts[0].mentionUserId, OPERATOR, "the prompt is the one message that pings");
+  assert.equal(posts[0].mentionUserId, OPERATOR, "the prompt names the operator as its one mention");
   assert.match(posts[0].text, /^<@700000000000000002> /, "the mention leads the message");
   assert.match(posts[0].text, /`abcde`/, "the request id is what a verdict has to name");
   assert.match(posts[0].text, /Bash/);
@@ -418,4 +421,40 @@ test("a prompt that never reached the operator does not leave a session looking 
   await desk.request(TOKEN_A, request());
 
   assert.deepEqual([...desk.waiting()], []);
+});
+
+test("an alert volume window pings, then quiets, then drops, per thread, and reopens", () => {
+  let at = 1_000;
+  const volume = createAlertVolume({ now: () => at, pingCeiling: 2, postCeiling: 4, windowMs: 60_000 });
+
+  assert.equal(volume(THREAD_A), "ping");
+  assert.equal(volume(THREAD_A), "ping");
+  assert.equal(volume(THREAD_A), "quiet", "past the ping ceiling the write goes quiet");
+  assert.equal(volume(THREAD_A), "quiet");
+  assert.equal(volume(THREAD_A), "drop", "past the post ceiling nothing is written");
+  assert.equal(volume(THREAD_A), "drop", "a drop spends no slot, so the window cannot re-arm itself");
+
+  // Another thread holds its own window: a flood in one must not quiet or drop the other.
+  assert.equal(volume(THREAD_B), "ping");
+
+  // The stamps age out rather than accumulate, so a closed window restores the loud tier.
+  at += 60_000;
+  assert.equal(volume(THREAD_A), "ping");
+});
+
+test("the question alert's own ceilings ring once a window and stop writing at four", () => {
+  // The live pair index.ts wires: one ping a window, because a question is not answerable from
+  // the thread and one ping a minute is a person's reading pace for a go-to-the-console notice;
+  // three quiet posts behind it; then nothing, because past that the only thing left to protect
+  // is the channel and the post budget the permission prompts share. Its own instance, so this
+  // run spends none of a permission window's slots.
+  const volume = createAlertVolume({
+    now: () => 1_000,
+    pingCeiling: MAX_QUESTION_PINGS_PER_WINDOW,
+    postCeiling: MAX_QUESTION_ALERTS_PER_WINDOW,
+    windowMs: 60_000,
+  });
+
+  const levels = Array.from({ length: 6 }, () => volume(THREAD_A));
+  assert.deepEqual(levels, ["ping", "quiet", "quiet", "quiet", "drop", "drop"]);
 });

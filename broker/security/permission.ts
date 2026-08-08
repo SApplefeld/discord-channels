@@ -67,12 +67,12 @@ export const MAX_OPEN_REQUESTS = 64;
 /**
  * Distinct prompts one thread may ping with in a window, and the window.
  *
- * A permission prompt is the one message in this system that deliberately reaches a phone, and the
- * operator is trained to answer it quickly. A run of them is either a session in a loop or a local
- * process that won the pipe race authoring its own, and either way it wakes the operator
- * repeatedly for something they cannot keep up with. Past this the prompt is still posted and is
- * still answerable; it simply stops ringing. Three a minute is about what a person answering from a
- * phone can actually act on.
+ * A permission prompt deliberately reaches a phone (the question alert is the only other write
+ * that does), and the operator is trained to answer it quickly. A run of them is either a session
+ * in a loop or a local process that won the pipe race authoring its own, and either way it wakes
+ * the operator repeatedly for something they cannot keep up with. Past this the prompt is still
+ * posted and is still answerable; it simply stops ringing. Three a minute is about what a person
+ * answering from a phone can actually act on.
  */
 export const MAX_ALERTS_PER_WINDOW = 3;
 
@@ -87,7 +87,68 @@ export const MAX_ALERTS_PER_WINDOW = 3;
  * and not the first.
  */
 export const MAX_PROMPTS_PER_WINDOW = 12;
-const ALERT_WINDOW_MS = 60_000;
+
+/** The window every pair of ceilings here is measured in. */
+export const ALERT_WINDOW_MS = 60_000;
+
+/**
+ * Distinct question alerts one thread may ping with in a window.
+ *
+ * One, because a question is not answerable from the thread: the ping only sends the operator to
+ * the console, a real session asks questions minutes apart and parks on each, and one ping a
+ * minute is a person's reading pace for a notice they cannot act on remotely. Past it the alert
+ * still lands; it stops ringing.
+ */
+export const MAX_QUESTION_PINGS_PER_WINDOW = 1;
+
+/**
+ * Question alerts one thread may post at all in a window, ping or not.
+ *
+ * Past this the volume is past anything a person could walk to a console for, and the only thing
+ * left to protect is the channel and the post budget the permission prompts share, so the alert
+ * is dropped. A dropped alert costs less than a dropped prompt: the question is still whole on
+ * the console, which is the only place it can be answered anyway.
+ */
+export const MAX_QUESTION_ALERTS_PER_WINDOW = 4;
+
+/**
+ * Per-thread volume damping for a mention-bearing write: each call spends a slot in the thread's
+ * window and answers how loudly the next message may land.
+ *
+ * Three outcomes rather than two, because the two hazards a run creates are different and want
+ * different answers. Waking the operator for more than they can keep up with is fixed by going
+ * quiet, which costs nothing: the message still lands. Filling the channel, and the post budget
+ * every phone-reaching write shares, is only fixed by not writing at all, so past the post
+ * ceiling the write is dropped and no slot is spent.
+ *
+ * A factory with an instance per caller, never shared stamps: the permission desk and the
+ * question alert each hold their own window, so a flood of one class cannot spend the other's
+ * slots and push it into drop, which would recreate the starvation the damping exists to prevent.
+ * Stamps outside the window are re-filtered on every call, so a thread's entry holds only what
+ * still counts against it.
+ */
+export function createAlertVolume(options: {
+  now: () => number;
+  /** Distinct messages a thread may ping with in a window; past it a write goes quiet. */
+  pingCeiling: number;
+  /** Messages a thread may post at all in a window; past it a write is dropped. */
+  postCeiling: number;
+  windowMs: number;
+}): (threadId: string) => "ping" | "quiet" | "drop" {
+  const stamps = new Map<string, number[]>();
+  return (threadId) => {
+    const at = options.now();
+    const held = (stamps.get(threadId) ?? []).filter((when) => at - when < options.windowMs);
+    if (held.length >= options.postCeiling) {
+      stamps.set(threadId, held);
+      return "drop";
+    }
+    const level = held.length >= options.pingCeiling ? "quiet" : "ping";
+    held.push(at);
+    stamps.set(threadId, held);
+    return level;
+  };
+}
 
 /** What the operator sees when a prompt could not be put in front of them. */
 export const PROMPT_UNDELIVERED_NOTICE =
@@ -155,29 +216,18 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
   const now = options.now ?? Date.now;
   /** Prompts the operator has been shown and has not answered, oldest first. */
   const open = new Map<string, OpenRequest>();
-  /** When each thread last pinged, so a run of prompts cannot become a run of notifications. */
-  const alerts = new Map<string, number[]>();
 
   /**
    * How loudly this thread may carry its next prompt, spending a slot in the window to say so.
-   *
-   * Three outcomes rather than two, because the two hazards a run of prompts creates are different
-   * and want different answers. Waking the operator for more than they can act on is fixed by going
-   * quiet, which costs nothing: the prompt is still there and still answerable. Filling the channel
-   * is only fixed by not writing, and that costs the session its answer.
+   * This desk's own window instance, never shared with the question alert's: shared stamps would
+   * let a run of one class spend the other's slots and push it into drop.
    */
-  function volumeFor(threadId: string): "ping" | "quiet" | "drop" {
-    const at = now();
-    const stamps = (alerts.get(threadId) ?? []).filter((when) => at - when < ALERT_WINDOW_MS);
-    if (stamps.length >= MAX_PROMPTS_PER_WINDOW) {
-      alerts.set(threadId, stamps);
-      return "drop";
-    }
-    const level = stamps.length >= MAX_ALERTS_PER_WINDOW ? "quiet" : "ping";
-    stamps.push(at);
-    alerts.set(threadId, stamps);
-    return level;
-  }
+  const volumeFor = createAlertVolume({
+    now,
+    pingCeiling: MAX_ALERTS_PER_WINDOW,
+    postCeiling: MAX_PROMPTS_PER_WINDOW,
+    windowMs: ALERT_WINDOW_MS,
+  });
 
   async function notice(threadId: string, text: string): Promise<void> {
     try {

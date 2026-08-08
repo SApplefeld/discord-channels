@@ -38,8 +38,7 @@
 // shell subprocess a session spawns inherits it, so without the key any of them could post into the
 // operator's thread as Claude. The key is issued per attachment and only ever written down the
 // pipe, so presenting it means holding the pipe. A permission request is held to the same bar for
-// a sharper reason: it is the one message the broker writes that rings the operator's phone and
-// asks for a yes.
+// a sharper reason: it rings the operator's phone and asks for a yes.
 //
 // Both guards the hook intake applies are applied here too, before anything is read: the socket
 // peer must be loopback, and the Host header must name a loopback name, which is what closes DNS
