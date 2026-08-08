@@ -20,16 +20,6 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 - Remove the retired `mcp__channel-relay__reply` rule from `~/.claude/settings.json` on NEO and on
   ASR: both were provisioned while the fragment still shipped it, and `Install-Host.ps1` never
   removes a rule already there. SCOTT's copy is already done.
-- Measure duplication across the three streams that land in one thread in real use: the mirrored
-  reply, the reply tool's answer, and mid-turn narration from the transcript tailer. Decide whether
-  to suppress duplicates or coach the reply tool into a quick-summary role on top of the mirrored
-  reply. The tailer already deduplicates itself against the Stop mirror, so what is left to measure
-  is the reply tool against both of the others, and whether narration plus a full mirrored reply is
-  more than one thread wants to carry. A working stretch is one growing message rather than one
-  message per chunk, so what is left to measure there is duplicated text and not header volume.
-  Deliberately excluded from
-  [`archive/plans/channel-mirroring_spec_v1.md`](archive/plans/channel-mirroring_spec_v1.md);
-  measure first.
 
 ## Snapshots
 

@@ -23,6 +23,31 @@ Get-Content $env:LOCALAPPDATA\sapplefeld-channels\broker.log -Tail 50 -Wait
 curl.exe -s http://127.0.0.1:8787/sessions
 ```
 
+## When a broker looks stale, doubled, or wrong
+
+One command kills, verifies, and restarts:
+
+```powershell
+D:\sapplefeld-channels\install\Repair-Broker.ps1        # health pass + restart
+D:\sapplefeld-channels\install\Repair-Broker.ps1 -Pull  # update the checkout first (ff-only)
+```
+
+It stops the scheduled task, kills every process it can prove is this checkout's broker (the
+node name plus the broker entry path in the command line, or a node-named process holding the
+broker port with an unreadable command line, which is what an orphan left by a task stop looks
+like), verifies the setup without stopping (state root, env, token file, task registration,
+node, HEAD commit and whether origin is ahead), restarts the task, waits up to 30 seconds for
+`/sessions` to answer, and prints a one-screen summary. It never kills by process name alone: a
+non-node process squatting on the broker port, or a node whose readable command line names some
+other program, is reported with its PID and left alive, and the summary's readiness line then
+says the port is still contested. It never touches settings, hooks, or ACLs; a broken install is
+the installers' job.
+
+The recurring failure it exists for: a task stop can orphan the broker process, which keeps
+running stale code and holds the port so the replacement exits immediately with EADDRINUSE. The
+tell is a log line pair of `gateway: connected` followed by `broker: failed to bind ...
+EADDRINUSE`, over a broker that still answers `/sessions` with old behavior.
+
 ## The failure this design exists to make visible
 
 `channelsEnabled` is a managed setting, and when it is off the channel server still connects and its
@@ -114,6 +139,13 @@ In the thread, a working stretch reads as one growing message: consecutive chunk
 newest narration message by editing it in place (the `(edited)` tag on it is normal), and a new
 message starts when the block is full or when anything else lands in the thread, your own message
 included. Anything you type breaks the block, and the next chunk starts fresh below it.
+
+A turn's close lands once. When the model sends its closing summary through the reply tool
+(`📣 Claude · answer`) and the turn's final text says the same thing, exactly or nearly, the
+mirrored `✨ Claude` copy is suppressed and the thread keeps the reply-tool message. A final
+reply that carries materially more than the answer still posts in full, and a short summary
+never suppresses a long reply: the comparison requires both near-identical wording and
+near-identical length, so the fail direction is a duplicate message, never lost words.
 
 Two knobs govern it, both in `broker.env`:
 

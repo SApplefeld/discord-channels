@@ -257,3 +257,13 @@ Review Findings: 1 Major fixed (readable-foreign node holder killed by port proo
 Stamps: none surfaced in the window
 Next: 4. The docs carry both changes
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-08
+Completed: 4. The docs carry both changes
+Implemented By: main session (docs/ writes; Locus: inline as planned)
+Metrics: 0 review rounds (prose-only section; the finishing pass covers it); 0 NEEDS_CONTEXT; 0 escalations; advisor opus
+Decisions / Surprises: security-model.md's "every turn's final reply is posted in full" claim was the standing sentence the dedup falsified; it now states the two suppression cases (tailer narration, reply-tool answer), the length guard, the accepted residual (a small addendum inside the threshold can be suppressed), what is actually held in memory (digest, length, bounded sketch, one record, one turn), and the never-serialized precondition the sketch's non-preimage-resistant hashes rest on. operations.md gained the one-copy account beside the coalescing description and a "When a broker looks stale, doubled, or wrong" section documenting Repair-Broker.ps1, its decision table in operator terms, and the orphan tell (gateway connected followed by EADDRINUSE). The backlog's measure-duplication item retired to the Q3 snapshot as measured-by-operation and acted on, with the residual watchable named as an observation rather than a standing item.
+Review Findings: none (see Metrics)
+Stamps: none surfaced in the window
+Next: finishing-work
+Commit Model: Commit-and-Push
