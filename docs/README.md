@@ -19,7 +19,9 @@ is built and installable.
 
 ## Plans
 
-No plan is open.
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_thread-fidelity_spec_v1.md`](plans/channels_thread-fidelity_spec_v1.md) | In Progress | The thread carries what the console carried: narration coalescing survives the broker's own gateway echo (freshness judged by snowflake high-water), the tailer baselines at the mirror-on verdict so a first turn narrates from its opening chunk, mid-turn queued prompts mirror through the tailer with the same attribution and envelope check as hook-mirrored prompts, and split replies pace themselves against the rate-limit budget instead of truncating. |
 
 Archived plans, most recent first.
 
