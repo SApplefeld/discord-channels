@@ -387,6 +387,7 @@ refuses when something did.
 
 Model: session
 Locus: inline
+Status: Complete
 
 `docs/architecture.md` describes narration coalescing's freshness by snowflake high-water, the
 allow-time baseline, queued-prompt mirroring as the second prompt path, and paced delivery.
@@ -818,3 +819,33 @@ learning went to the operator tier as `claude-code-mcp-tool-timeouts` rather tha
 Next: 5. The docs carry the fidelity surface
 Commit Model: Commit-and-Push, still on branch `section-4-pacing`. The blocking defect is closed, so
 this branch is ready to merge to main; the merge happens in finishing-work.
+
+### Chapter 6 - 2026-08-08
+Completed: 5. The docs carry the fidelity surface
+Implemented By: main session, with implementer-opus drafting the prose and returning it for
+placement, since a subagent cannot write under `docs/` in this harness
+Metrics: 0 review rounds at the section (finishing-work covers the changeset); 0 NEEDS_CONTEXT; 0
+escalations; advisor opus
+Decisions / Surprises: The drafter found two things wrong with its own brief, and both changed the
+edits. Queued-prompt mirroring is gated by `CHANNEL_INTERIM_MIRROR`, because the tailer is
+constructed only when interim mirroring is on and `deliverPrompt` is one of its options, so three
+`operations.md` claims were stale rather than the one the security review had named: the switch
+governs both halves of what the tailer carries, and the sentence telling the operator it leaves
+"the mirrored prompt" posting as before was actively wrong for the mid-turn kind. And pacing is not
+confined to split replies: `interim` reaches `postRun` directly while `mirror`, `reply`, and
+`interimPrompt` reach it through `deliver`, so the spacing and the bounded retry apply to every
+posting path, which widened the drop-never-queue correction from the security model into
+`architecture.md` as well.
+
+The edits were applied through a verifying applier rather than by hand: 30 replacements, each
+required to match exactly once, with nothing written unless every one matched. That converts the
+usual risk of a bulk doc edit, a near-miss string silently skipped, into a reported failure. All 30
+matched on the first run.
+Review Findings: None at the section. Swept the result directly instead: no em dash in any of the
+five files, no change-narrative phrasing introduced, and the section's own acceptance criteria
+checked by grep, so no doc still claims a run truncates at the first refusal or that nothing is ever
+retried.
+Stamps: adjudicated 0, stamped 0; nothing surfaced in the window.
+Next: finishing-work
+Commit Model: Commit-and-Push, on branch `section-4-pacing`. Merging to main happens in
+finishing-work.

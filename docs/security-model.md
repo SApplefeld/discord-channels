@@ -65,8 +65,8 @@ The switch governs the transcript tailer too, and there it is advisory in exactl
 for the same reason: the verdict is poster-supplied, so a process holding the token can post one
 that arms narration. What differs is the default. The tailer reads nothing until a verdict says to,
 where the mirror posts unless a verdict says not to, because the broker reads transcript content
-itself and an absent signal there cannot be allowed to mean publish. See "Mid-turn narration is
-read, not posted" below.
+itself and an absent signal there cannot be allowed to mean publish. See "The transcript is read,
+not posted" below.
 
 What neither switch reaches is the bounded tool-input preview on the status card. It rides the
 identity-and-activity path rather than the mirror, so a `-NoMirror` session still shows what its
@@ -128,13 +128,15 @@ mentioning the operator, and only past **12 a minute** is a prompt dropped. The 
 session does not park. The split is deliberate, because a single ceiling that drops prompts would let
 a local process park every session on the host by spending it first, turning phishing into denial.
 
-## Mid-turn narration is read, not posted
+## The transcript is read, not posted
 
-Everything above describes content that reaches Discord because a session posted it. Mid-turn
-narration is the one stream that reaches Discord because the broker went and read it: the text a
-model writes between tool calls is carried by no hook payload, so `broker/tail.ts` polls the
-session's own transcript file, the JSONL Claude Code appends beside every session, and posts the
-assistant text blocks it finds.
+Everything above describes content that reaches Discord because a session posted it. The transcript
+tailer is the one stream that reaches Discord because the broker went and read it. Two things the
+console shows are carried by no hook payload: the text a model writes between tool calls, and a
+message the operator types while the model is mid-turn, which the harness queues and injects without
+firing the hook the mirror rides. So `broker/tail.ts` polls the session's own transcript file, the
+JSONL Claude Code appends beside every session, and publishes both, the assistant text blocks it
+finds and the queued lines carrying a message a human typed.
 
 That inverts the direction a mirror switch has to fail in, and the design accounts for it.
 Everywhere else, suppression means the hooks post nothing, so an absent signal means absent content.
@@ -152,6 +154,19 @@ The two halves of the verdict take deliberately different evidence. Suppression 
 process token alone, before the request body is read, because failing closed on weak evidence costs
 some narration. Permission requires the payload to name the session the token holds. A process that
 holds the token can still supply that, which is what keeps this advisory rather than enforced.
+
+**What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
+to another program and can grow line shapes without notice, so a line yields something only by
+matching one of two named shapes whole: an assistant line's `text` content block, or an attachment
+whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
+prompt is a non-empty string. A deviation in any field yields silence. Two of those clauses carry
+weight past format hygiene. The mode clause keeps out the machine-written background-task notices
+that make up the bulk of queued lines, which would otherwise fill the thread. And the origin clause
+is what stops a message the operator posted in the thread itself from being extracted and posted
+back into it, because the harness records that one under a channel origin rather than a human one.
+The envelope check is the belt beside that brace: one reading of the harness's injection marker,
+shared by the hook-carried prompt and the extracted one, so the two cannot answer differently about
+the same message.
 
 **What a token holder gains is a second door to a capability it already had, not a new one.** The
 broker's scheduled task runs as the operator at limited integrity, the same account a token-holding
@@ -185,9 +200,13 @@ gateway ever becomes an edit target, gateway IDs are only compared against the r
 decide freshness. Its `✨ Claude · working` attribution is forgeable by content in the same way the
 mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it is a Claude-authored
 line opening a Claude-authored message, claiming nothing the message does not already claim. The
-operator-attributed quoted block remains the one attribution that content cannot draw. What an
-unauthorized channel member's messages can do to coalescing is end a block early (their gateway
-events clear the freshness state), which costs one attribution header and nothing else.
+operator-attributed quoted block is the one attribution content cannot draw: no text passing through
+the renderer can compose it, whichever path that text arrived on. What the renderer cannot establish
+is who authored the words handed to it, and on the queued-prompt path the broker awards the operator
+attribution to a line it read off a file, so what holds there is that the attribution belongs to
+whatever wrote that line into the transcript. The accepted-risk list below carries what that rests
+on. What an unauthorized channel member's messages can do to coalescing is end a block early (their
+gateway events clear the freshness state), which costs one attribution header and nothing else.
 
 **Transcript content never reaches the broker log at any level.** Every line the tailer writes
 carries a static reason, a session ID, a byte count, or an offset. A `JSON.parse` failure and a
@@ -196,9 +215,14 @@ that produced it and the filesystem error carries the path.
 
 **Reads are bounded** to a ceiling per session per pass, measured against the file's size before
 anything is parsed, so a transcript that grew faster than the poll is skipped to its current end
-rather than read out as a backlog. Only whole lines are consumed. Nothing is queued and nothing is
-retried: a chunk that cannot be posted now is dropped, which is what keeps a refusal from becoming a
-retry storm against the operator's channel.
+rather than read out as a backlog. Only whole lines are consumed. A read is never retried and
+nothing is queued for a later pass: a chunk or a prompt that could not be posted is dropped where it
+stands. What one in-flight posting run does do is sit out a rate-limited refusal and send that same
+message again, bounded on three sides so it cannot become a retry storm against the operator's
+channel. Only a refusal saying the bucket is empty is retried at all, and that is the one class
+where nothing landed. Every wait is floored at a second, so a refusal reporting a sliver of a
+millisecond is a pause rather than a thousand posts. And a run stops for good once its waits total a
+minute, whatever it is still holding.
 
 ## The sender gate
 
@@ -302,12 +326,12 @@ and both apply it:
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 
 **Conversation text is neutralized on a narrower rule than a name is.** A mirrored prompt, a
-mirrored reply, a mid-turn narration chunk, and a `reply` tool call are prose with code in them, so
-escaping the whole of markdown would trade the readability of the surface away. All four go through
-one fence-aware escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote
-marker and leaves the rest alone. `renderMirror` applies it to mirrored and narration text,
-`renderAnswer` to the reply tool's, and `appendNarration` to a chunk entering an existing message by
-edit, all before the text reaches the message path. That is what stops any of them from drawing a
+mid-turn typed message, a mirrored reply, a mid-turn narration chunk, and a `reply` tool call are
+prose with code in them, so escaping the whole of markdown would trade the readability of the
+surface away. All five go through one fence-aware escape that neutralizes Discord's angle-bracket
+chip syntax and a line-leading quote marker and leaves the rest alone. `renderMirror` applies it to
+mirrored, typed, and narration text, `renderAnswer` to the reply tool's, and `appendNarration` to a
+chunk entering an existing message by edit, all before the text reaches the message path. That is what stops any of them from drawing a
 mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one channel
 the operator answers permission prompts in.
 
@@ -400,7 +424,8 @@ authenticated account or a non-administrative service account.
   `Host` check are what this rests on.
 - **A session ID nothing has registered can be claimed.** An unwrapped session on the host holds no
   registry record, so its session ID is unclaimed, and a token holder that registers that ID can arm
-  the tailer against that session's transcript and read its mid-turn prose into a thread of its own.
+  the tailer against that session's transcript and read its mid-turn prose, and the messages typed
+  at its console, into a thread of its own.
   This is the same-user file read plus arbitrary Discord post the mirror route already grants, by a
   different door; the session-ID match in the line filter is what keeps a *registered* session's
   transcript out of another session's thread.
@@ -410,6 +435,15 @@ authenticated account or a non-administrative service account.
   hooks report, mid-turn narration stops entirely and nothing distinguishes that from a model that
   wrote nothing between tool calls. The feature goes inert rather than publishing wrongly, which is
   the direction to fail in, but it fails quietly.
+- **The operator attribution on a mid-turn typed message rests on the transcript file.** Such a
+  message reaches the thread in the operator's own quoted block because a line in the session's
+  transcript records that a human typed it. The escape makes that block undrawable by content, and
+  nothing beyond the file's own contents establishes whose words are in it: anything running as the
+  operator that can append a `queued_command` line with a human origin to a live session's
+  transcript puts words in the operator's mouth, in the channel where tool approvals are answered.
+  That is the wall a process holding the process token already stands behind, and this is a third
+  door through it rather than a capability the door did not already open. Unforgeable is therefore a
+  property of the renderer, not a claim about where the words came from.
 - **A turn's final reply can arrive labelled as mid-turn.** The Stop mirror and the tailer read the
   same text, and whichever posts first is the one the operator sees. When the tailer wins the race,
   the turn's conclusion carries the `✨ Claude · working` attribution rather than `✨ Claude`. The

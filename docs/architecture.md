@@ -29,14 +29,16 @@ under it, and the relay running in the same process connects to the broker with 
 The conversation leaves the machine on hooks rather than on the channel, and that is a correctness
 choice rather than a convenience. The channel's outbound path is the model choosing to call the
 relay's `reply` tool, so a session that never calls it leaves a silent thread while the pipe sits
-healthy. A `UserPromptSubmit` hook fires on every prompt and a `Stop` hook fires at every turn end
+healthy. A `UserPromptSubmit` hook fires on every prompt that opens a turn and a `Stop` hook fires
+at every turn end
 whether or not the model cooperates, and the `Stop` payload already carries
 `last_assistant_message`, the turn's final assistant text whole with thinking excluded. The mirror
 is therefore structural, and the `reply` tool remains for what the model wants to say on its own
 initiative.
 
-What the model writes *between* tool calls, mid-turn, reaches no hook payload at all; the transcript
-tailer below is what recovers it.
+Two things the console shows reach no hook payload at all: what the model writes *between* tool
+calls, and a message the operator types while the model is mid-turn, which the harness queues and
+injects without a `UserPromptSubmit` ever firing. The transcript tailer below is what recovers both.
 
 ## Components
 
@@ -102,7 +104,13 @@ listener.
    written. Mirror posts spend their own rate-limit budget rather than the one permission prompts
    spend, so a reply arriving as twenty messages cannot starve the alert a parked session waits on.
    Posts are ordered per thread, so a turn's reply, the prompt after it, a mid-turn narration chunk,
-   and a reply-tool call reach the thread in the order the broker received or read them.
+   a mid-turn typed message, and a reply-tool call reach the thread in the order the broker received
+   or read them. A body that renders into many messages is paced: consecutive posts of one run are
+   spaced so the run's send rate stays under the thread's create bucket, and a post the bucket
+   refuses anyway is waited out and sent again, under a per-run ceiling on how long that waiting may
+   total. A long report therefore arrives over seconds and lands whole, and the thread's turn to
+   post is held for all of it, so whatever that session posts next lands below the report it
+   follows.
 
 The registry persists to a JSON file on every mutation, and the thread bindings persist beside it,
 so a restart at logon rebinds existing threads rather than opening duplicates.
@@ -117,11 +125,19 @@ session's transcript, JSONL appended beside the session and never authored for t
 The tailer polls, on `CHANNEL_INTERIM_POLL_MS` (20 seconds by default), every session the registry
 currently holds live. For each one it reads past the byte offset the previous pass left, up to a
 bounded ceiling per pass, and stops at the last complete line so a line still being flushed is left
-for the next pass. A line contributes text only when it is an `assistant` line, not a sidechain, and
-carries the session ID the path was learned for; a `text` content block from such a line is one
-interim chunk. On learning a path for the first time, the tailer takes the file's current end without
-reading anything, so what a transcript already held before this broker process learned about the
-session is never republished into the thread.
+for the next pass. Two line shapes contribute anything, and both must be non-sidechain lines
+carrying the session ID the path was learned for: a `text` content block on an `assistant` line is
+one interim chunk, and a `queued_command` attachment recording a human-origin prompt is one mid-turn
+typed message, delivered in transcript order among the chunks around it. The file's position is
+taken the moment a session is both allowed to be read and has a learned path, whichever of the two
+arrives second, by a probe that reads its size and no content: what the transcript already held is
+never republished into the thread, and the turn's opening chunk, written seconds after the mirror-on
+verdict rather than a poll tick later, falls inside the window rather than behind it.
+
+A queued mid-turn message takes the other rendering: the operator's own words in the
+operator-attributed quoted block a hook-mirrored prompt draws, through the same escape and the same
+check that keeps a message posted in the thread itself from echoing back into it. Posting it ends
+the narration block above it, so the next chunk starts fresh below the operator's words.
 
 Each surviving chunk reaches the thread through the same routing and rendering path a mirrored
 reply uses, under a `✨ Claude · working` attribution that marks it as mid-turn rather than final,
@@ -131,12 +147,17 @@ working stretch reads as one growing block under a single attribution rather tha
 sentence. A full block, or anything else landing in the thread (the operator's message, a
 permission prompt, a notice, the turn's final reply), starts the next chunk on a fresh message.
 The router knows its message is still newest because every message in its threads comes back over
-the gateway: an arriving ID strictly newer than the remembered message ends the block, notices and
-permission prompts end it directly on posting, and a message landing during a fresh post's round
-trip keeps that post from being remembered as a block at all. A chunk that cannot be posted (the
-thread is not open yet, Discord refuses it) is dropped rather than queued, the rule the whole
-routing layer follows, and a refused edit falls back to a fresh post of the same chunk in the same
-call: the fail direction of coalescing is more messages, never lost narration.
+the gateway, and it judges what arrives by snowflake order rather than by the bare fact of an
+arrival. Snowflakes carry their creation time, so an ID strictly newer than the remembered message
+ends the block, while the run's own echo, which Discord routinely delivers before the REST response
+resolves, announces nothing newer and leaves the block standing. Notices and permission prompts end
+it directly on posting, and a message that outranks a fresh post's own final message during its
+round trip, or one whose ID the comparison cannot place, keeps that post from being remembered as a
+block at all. A chunk that cannot be posted (the thread is not open yet, Discord refuses it for a
+reason waiting cannot pass) is dropped rather than queued, the rule the whole routing layer follows
+outside one in-flight run's own pacing and rate-limit waits, and a refused edit falls back to a
+fresh post of the same chunk in the same call: the fail direction of coalescing is more messages,
+never lost narration.
 
 **How this relates to the mirror the tailer deduplicates against.** The turn's own final reply is
 read twice by design: once by the Stop mirror within milliseconds of turn end, and again by the
