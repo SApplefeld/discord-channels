@@ -180,29 +180,39 @@ hook-driven liveness calls it idle at the moment it is most heavily worked. The 
 that as nothing happening and waits for an update that is hours away. The roster is both the
 missing content and the correction to a state the card currently gets wrong.
 
-**The reading** (measured; see the `a-sessions-subagent-roster-is-readable-from-its-transcript`
-memory). The tailer's line reader gains a fifth allowlisted yield: an assistant `tool_use` named
-`Agent` carries `description` and `subagent_type`; its matching `tool_result` (paired by
-`tool_use_id`) carries `agentId`, which is the roster key; a later line containing
-`<task-notification>` with that id in `<task-id>` ends the run. Outstanding is launched minus
-notified. Pairing a dispatch with its own `tool_result` must not be used as completion: a
-backgrounded dispatch answers at launch, so that reading reports every agent finished instantly.
-Descriptions are operator-authored prose from this session and are rendered inert like every other
-transcript-sourced field.
+**The reading is the harness's own task table** (captured live; see the
+`a-sessions-subagent-roster-arrives-in-its-stop-payload` memory). A `Stop` payload carries
+`background_tasks`, an array of records with `id`, `type` (`subagent` or `shell`), `status`,
+`description`, plus `agent_type` on a subagent and `command` on a shell task. The broker already
+receives `Stop` for the conversation mirror, so the roster costs one more field read on a route it
+serves today: no transcript reconstruction, no instance scoping, no age bound, and no ghosts,
+because the harness reports what it is actually running rather than what was once dispatched.
 
-**Concurrency is the normal case, and the roster is an inference rather than a fact.** Measured
-against a real fan-out session: 50 dispatches, peak 12 concurrent, and a naive launched-minus-
-notified reading claiming 14 outstanding hours after the fact. Two corrections, both measured:
+It arrives at turn end, which is precisely when a session stops producing other signals and starts
+looking idle, so the timing matches the need. A record's shell entries are carried too: a
+long-running background command is the same class of invisible work.
 
-- **Scope to the session instance.** A transcript spans instances (the `session_id` field on each
-  line, distinct from the conversation's `sessionId`), and a restart strands every agent the
-  previous instance launched: their completions never arrive, so they haunt the roster forever.
-  Instance scoping cut the same reading from 14 to 7.
-- **Bound by age, and say what is known.** Even inside one instance an agent can be outstanding
-  because it died, was stopped, or its notification never landed. Past a bound the entry is
-  rendered as unconfirmed rather than dropped or asserted, because both silent alternatives lie in
-  a different direction. The roster line therefore reads as dispatched-and-not-reported-back, which
-  is what the transcript actually establishes.
+The roster is stored on the session record and replaced wholesale by each `Stop` (never merged, so
+a finished agent cannot survive its own disappearance from the table). Descriptions are
+model-authored prose and are rendered inert like every other session-sourced field. A payload with
+no `background_tasks` clears the roster, which is what a session that finished its agents reports.
+
+**Concurrency is the normal case.** Measured against a real fan-out session: 50 dispatches over its
+life, peak 12 concurrent. The card is sized for a dozen entries rather than patched for them later.
+
+**Ruled out by measurement, recorded so neither is re-litigated.** The process list cannot answer
+this: a session is exactly one `claude.exe`, and one with seven outstanding agents shows no
+children beyond its own relay pair, because subagents are concurrent loops inside the single
+process. The per-agent `<agentId>.output` file under the harness temp path is equally useless as a
+liveness signal: it existed from dispatch but stayed 0 bytes for every agent measured, finished and
+running alike, with an mtime recording the dispatch rather than any activity. And reconstructing
+the roster from transcript dispatch-and-notification events, the approach this section carried
+before the `background_tasks` capture, overcounts twice: a restart strands agents whose completions
+can never arrive (a real session read 14 outstanding, 7 of them ghosts of a previous instance), and
+what remains still cannot distinguish a live agent from a dead one. The transcript reading survives
+only as the restart-time fallback, and if it is ever built it needs instance scoping, an age bound,
+and the knowledge that pairing a dispatch with its own `tool_result` reports every backgrounded
+agent as finished at launch.
 
 **The card** carries a roster line per session while anything is outstanding: the count, then the
 newest few entries with description, type, and age, then an overflow count (`⚙ 7 agents ·
@@ -210,13 +220,6 @@ Grooming S6 implementation (implementer-fable) 35m · PR ladder fix round three 
 62m · +5 more`). A full roster rendered in full runs past 700 characters at twelve entries, which
 would crowd every other thing the card carries, so the bound is structural rather than cosmetic.
 Nothing is rendered when the roster is empty.
-
-**One unverified candidate worth a probe before building:** a `Stop` hook payload carries a
-`background_tasks` field, which may or may not enumerate live subagents (it is documented in the
-project memory as present, never as containing agents). If it does, it is an authoritative live
-roster from the harness itself, arriving on a route the broker already receives, and it would
-replace the age-bound inference for the timely case. Probe it first; the transcript reading stays
-as the fallback either way, since it is the only source that survives a broker restart.
 
 **The state vocabulary gains the case.** `working`, `needs you`, `idle`, `exited` cannot express
 waiting on agents, which is why the card is wrong today rather than merely thin. A session with an
@@ -229,12 +232,17 @@ unaffected because the title already changes on state transitions.
 look, not an event stream; a post per dispatch would be the loudest surface in the thread on a
 fan-out round. A completion that matters already reports itself in the session's own narration.
 
-Files: `broker/tail.ts` (the yield), `broker/registry.ts` (the roster slot and the state
-derivation), `broker/discord/render.ts` (the card line and the title), plus tests. Tests lock the
-launch-versus-completion pairing including the backgrounded-dispatch trap in both directions, the
-instance-scoping rule (an agent launched by a previous instance never appears), the age bound's
-unconfirmed rendering, the empty-roster inertness, the idle-versus-waiting state both ways, and
-the overflow bound at a twelve-agent fan-out.
+Files: `broker/intake.ts` (reading `background_tasks` off the credited `Stop` payload by allowlist,
+beside the mirror's own read of that payload), `broker/registry.ts` (the roster slot and the state
+derivation), `broker/discord/render.ts` (the card line and the title), plus tests. The field is
+parsed by the bounded-allowlist discipline every other payload field takes: a malformed or
+oversized entry contributes nothing, the entry count is capped, and no roster content reaches a
+log line.
+
+Tests lock the wholesale replacement (a roster shrinking to empty clears rather than lingers), the
+subagent-versus-shell rendering, the empty and absent cases as inertness, the idle-versus-waiting
+state both ways, the overflow bound at a twelve-agent fan-out, and a malformed `background_tasks`
+leaving the previous roster untouched rather than throwing.
 
 ### 5. Docs, deploy, and live verify
 
