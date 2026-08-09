@@ -78,8 +78,14 @@ function keeperWith(pins: ChannelPins, logged: string[] = [], now = () => START)
   return createPinKeeper({ pins, now, log: (message) => logged.push(message) });
 }
 
-function intended(permanent: string | null, live: string[]): IntendedPins {
-  return { permanent, live };
+/**
+ * An intended set. What is live is a card this broker knows by definition, so the recognized set is
+ * that plus the permanent card and whatever stale cards a case names: the sweep reaches only what is
+ * in it, which is what leaves a pin the operator made by hand alone.
+ */
+function intended(permanent: string | null, live: string[], stale: string[] = []): IntendedPins {
+  const known = [...live, ...stale, ...(permanent === null ? [] : [permanent])];
+  return { permanent, live, known: [...new Set(known)] };
 }
 
 test("a divergent pin list converges: what is missing is pinned, what is stale is unpinned", async () => {
@@ -89,18 +95,32 @@ test("a divergent pin list converges: what is missing is pinned, what is stale i
   const room = channel(["4000", "4001", "4009"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4001", "4002"]));
+  await keeper.reconcile(intended("4000", ["4001", "4002"], ["4009"]));
 
   assert.deepEqual(room.unpinned, ["4009"], "a pin whose session is gone is dropped");
   assert.deepEqual(room.pinned, ["4002"], "a live session missing from the list is pinned");
   assert.deepEqual([...room.list].sort(), ["4000", "4001", "4002"]);
 });
 
+test("a pin the broker did not make is left alone, and its own stale card is still swept", async () => {
+  // The sweep reaches only the messages this broker recognizes as its own cards: the fleet card and
+  // every card a thread binding names, live or not. A pin the operator added by hand is in the
+  // channel's list and in neither of those, so it stays where they put it, while an exited session's
+  // card is swept exactly as before, because its binding is still there.
+  const room = channel(["4000", "4009", "9999"]);
+  const keeper = keeperWith(room.pins);
+
+  await keeper.reconcile(intended("4000", [], ["4009"]));
+
+  assert.deepEqual(room.unpinned, ["4009"], "the exited session's own card is still swept");
+  assert.ok(room.list.includes("9999"), "and the operator's own pin is left where they put it");
+});
+
 test("the fleet card stays pinned across a pass that changes every session pin", async () => {
   const room = channel(["4000", "4005"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4007"]));
+  await keeper.reconcile(intended("4000", ["4007"], ["4005"]));
 
   assert.deepEqual(room.unpinned, ["4005"]);
   assert.deepEqual(room.pinned, ["4007"]);
@@ -115,7 +135,7 @@ test("a session that exits drops out of the pin list on the next pass", async ()
   assert.deepEqual(room.pinned, ["4001", "4002"]);
 
   // The exit: the surface stops reporting that card as live, which is the whole input this reads.
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended(null, ["4001"], ["4002"]));
   assert.deepEqual(room.unpinned, ["4002"]);
   assert.deepEqual(room.list, ["4001"]);
 });
@@ -145,7 +165,7 @@ test("a session that exits and comes back costs one call per transition and noth
   const keeper = keeperWith(room.pins);
 
   await keeper.reconcile(intended(null, ["4001"]));
-  await keeper.reconcile(intended(null, []));
+  await keeper.reconcile(intended(null, [], ["4001"]));
   await keeper.reconcile(intended(null, ["4001"]));
   assert.deepEqual(room.pinned, ["4001", "4001"], "one pin per pass that asked for it");
   assert.deepEqual(room.unpinned, ["4001"], "and one unpin for the pass that did not");
@@ -190,7 +210,7 @@ test("without the permission every write is refused, one line names it, and noth
   const keeper = keeperWith(room.pins, logged);
 
   for (let pass = 0; pass < 6; pass += 1) {
-    await keeper.reconcile(intended("4000", ["4001"]));
+    await keeper.reconcile(intended("4000", ["4001"], ["4009"]));
   }
 
   assert.deepEqual(room.list, ["4009"], "the channel's pins are exactly what they were");
@@ -204,7 +224,7 @@ test("without the permission every write is refused, one line names it, and noth
 
   // And a route that has given up is not read for either: a stopped keeper costs no calls at all.
   const spent = room.calls();
-  await keeper.reconcile(intended("4000", ["4001", "4002"]));
+  await keeper.reconcile(intended("4000", ["4001", "4002"], ["4009"]));
   assert.equal(room.reads, spent - refusals + 1, "one more read, and no further writes");
   assert.equal(room.pinned.length + room.unpinned.length, refusals);
 });
@@ -215,7 +235,7 @@ test("with the permission granted the same intended set pins, from the same star
   const room = channel(["4009"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4001"]));
+  await keeper.reconcile(intended("4000", ["4001"], ["4009"]));
 
   assert.deepEqual(room.unpinned, ["4009"]);
   assert.deepEqual(room.pinned, ["4000", "4001"]);
@@ -230,7 +250,7 @@ test("a fleet card rebuilt under a new id takes the pin with it", async () => {
   await keeper.reconcile(intended("4000", []));
   assert.deepEqual(room.pinned, ["4000"]);
 
-  await keeper.reconcile(intended("4100", []));
+  await keeper.reconcile(intended("4100", [], ["4000"]));
   assert.deepEqual(room.unpinned, ["4000"]);
   assert.deepEqual(room.pinned, ["4000", "4100"]);
 });
@@ -244,13 +264,13 @@ test("a partial page holds the pins back and is retried, while its unpins still 
   room.hasMore = true;
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended(null, ["4001"], ["4009"]));
   assert.deepEqual(room.unpinned, ["4009"]);
   assert.deepEqual(room.pinned, [], "nothing is pinned against a list that was not read whole");
 
   // The next pass sees a whole page, and the unchanged intended set is retried rather than skipped.
   room.hasMore = false;
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended(null, ["4001"], ["4009"]));
   assert.deepEqual(room.pinned, ["4001"]);
 });
 

@@ -889,7 +889,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
         // spends no Discord call here at all.
-        .then(() => pinKeeper.reconcile({ permanent: fleetCard(), live: surface.livePins() }))
+        .then(() =>
+          pinKeeper.reconcile({
+            permanent: fleetCard(),
+            live: surface.livePins(),
+            known: surface.knownPins(),
+          }),
+        )
         .catch((error: unknown) => {
         // describe() rather than String(error): a discord.js error can carry the request object,
         // and the Authorization header along with it, and this string lands in the log file.

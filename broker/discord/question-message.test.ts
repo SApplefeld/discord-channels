@@ -487,6 +487,69 @@ test("every terminal state rewrites the message, and the answered one carries wh
   );
 });
 
+test("a multi-select answer is bounded as the list it is, not as one label", () => {
+  // The desk submits a multi-select answer as its labels joined with a comma and a space, which is
+  // the text the console's own picker produces. That makes one string out of what used to be
+  // several, so the room it is drawn in is the list's room: every option the ask offered at the
+  // per-label ceiling, with the separators between them. Three realistic labels is where the
+  // single-label ceiling bites.
+  const labels = [
+    "Jalapeños on the left half only",
+    "Mushrooms across the whole pie",
+    "Pepperoni, but only under the cheese please",
+  ];
+  const questions = [
+    asked({ header: "Toppings", multiSelect: true, options: options(...labels) }),
+  ];
+
+  const text = renderQuestionOutcome({
+    state: "answered",
+    questions,
+    answers: { "Ship the migration now?": labels.join(", ") },
+    response: null,
+  });
+
+  assert.ok(text.includes(labels.join(", ")), text);
+  assert.ok(!text.includes("…"), `nothing realistic is ellipsized: ${text}`);
+});
+
+test("a close-out message stays inside one message, whatever the ask offered", () => {
+  // The close-out goes straight to an edit rather than through the writer's own cut, and Discord
+  // refuses a message over its limit whole, which would leave the components live on a hold that
+  // has already ended. So the answers are appended whole and the first that will not fit ends the
+  // message with a count of the rest.
+  const labels = Array.from({ length: 25 }, (_unused, at) => `option ${String(at)} `.repeat(12));
+  const questions = Array.from({ length: 4 }, (_unused, at) =>
+    asked({
+      question: `Question ${String(at)}`,
+      header: `Header ${String(at)}`,
+      multiSelect: true,
+      options: options(...labels),
+    }),
+  );
+  const answers = Object.fromEntries(
+    questions.map((question) => [question.question, labels.join(", ")]),
+  );
+
+  const text = renderQuestionOutcome({ state: "answered", questions, answers, response: null });
+
+  assert.ok(text.length <= MAX_MESSAGE_LENGTH, `${String(text.length)} units`);
+  assert.match(text, /\(\+\d+ more answered\)$/);
+
+  // The bound is tested before the first answer is drawn, not only between them: a list's room
+  // grows with the options the ask offered, so one question alone can ask for more than a message
+  // carries, and a close-out that drew it whole would be refused rather than shortened. Past what
+  // the transcript reader admits (four questions, four options each), so this is the module holding
+  // its own bound rather than the reader's cap holding it for them.
+  const alone = renderQuestionOutcome({
+    state: "answered",
+    questions: [questions[0]],
+    answers: { [questions[0].question]: labels.join(", ") },
+    response: null,
+  });
+  assert.equal(alone, "✅ **Answered from the thread**\n(+1 more answered)");
+});
+
 test("a question named like a prototype key renders its answer and never the prototype", () => {
   // Question text is untrusted conversation content and the answers map is keyed by it, so a
   // question asked as `__proto__` reaches the lookup below as a key every plain object already

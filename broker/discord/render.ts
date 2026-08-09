@@ -286,9 +286,9 @@ const NOTHING = "(none)";
  * The card's room for a tool-input preview, in code points.
  *
  * Small on purpose. The preview answers one question, what the running tool is working on, and it
- * shares a line with the tool's name on a surface read at a glance on a phone. A budget large
- * enough to carry a whole command would let one tool call push the turn count and the heartbeat,
- * which is what the card exists to carry, off the bottom of a glance.
+ * is drawn in a block of its own on a surface read at a glance on a phone. A budget large enough to
+ * carry a whole command would spend several lines of the card on one tool call, where a real path,
+ * which is what the preview usually is, fits inside this.
  */
 export const MAX_TOOL_INPUT_PREVIEW = 100;
 
@@ -333,8 +333,8 @@ function isBelowModel(model: string, openingModel: string): boolean {
  * A context size in thousands, which is the figure at the width the card has for it: `348k`.
  *
  * Rounded rather than exact because nothing a reader decides from this line turns on the last three
- * digits, and the line shares a fixed-width block with the model's own name. A size below a thousand
- * is drawn as itself, since there is nothing to round it to.
+ * digits, and it is drawn in a fixed-width row. A size below a thousand is drawn as itself, since
+ * there is nothing to round it to.
  */
 function compactTokens(value: number): string {
   const whole = Math.max(Math.trunc(value), 0);
@@ -1064,21 +1064,32 @@ export function heartbeat(ageMs: number): string {
  * reads at a glance as a different card.
  */
 const CARD_LABELS = {
-  session: "Session",
   host: "Host",
+  session: "Session",
   state: "State",
   model: "Model",
+  context: "Context",
   from: "Down from",
-  tool: "Last tool",
-  turns: "Turns",
   heartbeat: "Heartbeat",
-  waiting: "Waiting",
 } as const;
 
 const CARD_COLUMN = columnWidth(
   Object.values(CARD_LABELS).map((label) => ({ label, value: "" })),
 );
-const CARD_ROOM = valueRoom(CARD_COLUMN);
+
+/**
+ * The headers over the card's second and third blocks.
+ *
+ * Outside their fences, where Discord still renders their bold, exactly as the card's title line
+ * sits outside the first one. What they head is a block rather than a labelled row, because both
+ * carry values a label column leaves no room for: a fan-out's tasks take two rows each, and a real
+ * tool path is longer than a row of this width.
+ */
+const TASKS_HEADER = "**Tasks**";
+const TOOL_HEADER = "**Tool**";
+
+/** What a block with nothing in it draws, so an empty one and a broken renderer read differently. */
+const NO_VALUE = "None";
 
 /**
  * How much of a session ID the card draws, in code points.
@@ -1093,47 +1104,57 @@ const SHOWN_SESSION_ID = 8;
 const CUT_MARKER = " (cut)";
 
 /**
- * The least of the row's room a preview keeps beside the tool's name. Both halves of the row are
- * attacker-influenceable, and without this floor a name at its cap squeezes the preview's budget
- * to zero: a session could then hide what its tools are called with from the operator's glance
- * surface by naming the tool long. Wide enough to carry the cut marker and a readable head of the
- * input beside it.
+ * A value broken into lines that fill the block's width.
+ *
+ * Filled rather than broken on spaces, unlike `wrapped`, because what the tool block carries is a
+ * name and a path: a path holds no space to break on, so a word-wrapper would hard-break it anyway
+ * after leaving `Read ·` alone on the line above it.
+ *
+ * A break never lands straight after a backslash, which is `cutSafely`'s rule for the same hazard
+ * at a message boundary: the escape and the character it makes inert stay on one line. Backing off
+ * one always leaves the line most of its width, so the value still advances.
  */
-const MIN_TOOL_INPUT_PREVIEW = 12;
+function filled(value: string): string[] {
+  const lines: string[] = [];
+  let rest = [...value];
+  while (rest.length > MAX_BLOCK_WIDTH) {
+    const kept = rest[MAX_BLOCK_WIDTH - 1] === "\\" ? MAX_BLOCK_WIDTH - 1 : MAX_BLOCK_WIDTH;
+    lines.push(rest.slice(0, kept).join(""));
+    rest = rest.slice(kept);
+  }
+  if (rest.length > 0) lines.push(rest.join(""));
+  return lines;
+}
 
 /**
- * The card's tool row: the last tool's name, and what it was called with when the input carried
- * anything previewable.
+ * The card's tool block: the last tool's name, and what it was called with when the input carried
+ * anything previewable, across as many lines as the two take.
  *
- * The name comes first and the preview after the separator, because a narrow phone view truncates
- * from the right, and the name is the part that has to survive that. The cut is named rather than
- * left to the ellipsis, on `promptField`'s reasoning: a tool input is attacker-influenced text, so
- * it can front-load the harmless part, and a reader has to be able to tell a whole preview from a
- * partial one. The marker's own room is taken out of the budget before the preview is cut, and the
- * name is capped against the row's own room, its preview floor included, so the composed value
- * always fits the row: the width bound never cuts it and can never eat the mark off a partial
- * preview. Whether the preview was cut is measured on the escaped text, which is what the reader
- * sees.
+ * A block of its own rather than a row of the field block, because what the operator opens the card
+ * to read is what the session is working on: a real path is longer than a row of this width leaves
+ * after a label, so in a row it was cut essentially always. Here the value wraps instead, and every
+ * line of it is inside the same width bound the rest of the card holds.
  *
- * A preview that neutralizes to nothing renders as no preview at all, rather than as a separator
- * with nothing after it, and a session that has run no tool keeps the value it has always had.
+ * Both halves are attacker-influenceable and each is bounded on its own, so a session cannot hide
+ * what its tools are called with by naming the tool long: the name is held to a line and the
+ * preview keeps its own budget whatever the name spends. The cut is named rather than left to the
+ * ellipsis, on `promptField`'s reasoning: a tool input can front-load the harmless part, and a
+ * reader has to be able to tell a whole preview from a partial one. Whether the preview was cut is
+ * measured on the escaped text, which is what the reader sees.
+ *
+ * A preview that neutralizes to nothing draws no separator with nothing after it, and a session
+ * that has run no tool, or one whose tool name neutralizes to nothing, draws the empty block's own
+ * value.
  */
-function toolRow(view: SessionView): BlockRow {
-  const label = CARD_LABELS.tool;
-  if (view.lastTool === null) return { label, value: "none yet" };
+function toolLines(view: SessionView): string[] {
+  const name = view.lastTool === null ? "" : inertBlockField(view.lastTool, MAX_BLOCK_WIDTH);
+  if (name === "") return [NO_VALUE];
   const whole = view.lastToolInput === null ? "" : inertBlock(view.lastToolInput);
-  // The name gives way to the preview, never the other way around: cut with its own ellipsis to
-  // what the row leaves after the separator and the preview's floor, so a long name loses its own
-  // tail rather than the preview.
-  const nameRoom = whole === "" ? CARD_ROOM : CARD_ROOM - 3 - MIN_TOOL_INPUT_PREVIEW;
-  const name = fit(inertBlock(view.lastTool), nameRoom);
-  if (whole === "") return { label, value: name };
-  const room = Math.max(CARD_ROOM - [...name].length - 3, 0);
-  const budget = Math.min(MAX_TOOL_INPUT_PREVIEW, room);
-  const shown = fit(whole, budget);
-  if (shown === whole) return { label, value: `${name} ${SEPARATOR} ${shown}` };
-  const marked = fit(whole, Math.max(budget - CUT_MARKER.length, 0));
-  return { label, value: `${name} ${SEPARATOR} ${marked}${CUT_MARKER}` };
+  if (whole === "") return filled(name);
+  const shown = fit(whole, MAX_TOOL_INPUT_PREVIEW);
+  if (shown === whole) return filled(`${name} ${SEPARATOR} ${shown}`);
+  const marked = fit(whole, Math.max(MAX_TOOL_INPUT_PREVIEW - CUT_MARKER.length, 0));
+  return filled(`${name} ${SEPARATOR} ${marked}${CUT_MARKER}`);
 }
 
 /**
@@ -1153,15 +1174,15 @@ export function span(ms: number): string {
 }
 
 /**
- * How many roster entries the card names before it falls back to a count.
+ * How many roster entries one card names before the rest are counted.
  *
- * Small, and structurally rather than cosmetically so: a measured fan-out session peaked at twelve
- * concurrent agents, and twelve entries rendered in full run past seven hundred characters, which
- * would push the turn count and the heartbeat the card exists to carry off the bottom of a glance.
- * The count of what is not named ends the row, so nothing about the size of the fan-out is lost to
- * the bound.
+ * Pathological rather than cosmetic: the operator reads every task a session is waiting on, and a
+ * measured fan-out session peaked at twelve concurrent agents, so twice that is a fan-out nothing
+ * here has produced. It is a backstop rather than the working bound, since the message ceiling
+ * reaches a card first at every width; what it holds on its own is the work `renderCard` spends
+ * fitting a card to one message, whatever count another program reports.
  */
-const MAX_ROSTER_ENTRIES = 2;
+const MAX_ROSTER_ENTRIES = 24;
 
 /** The most of a task's own prose the card carries, on `MAX_TOOL_INPUT_PREVIEW`'s reasoning. */
 const MAX_TASK_DESCRIPTION_LENGTH = 60;
@@ -1170,94 +1191,67 @@ const MAX_TASK_DESCRIPTION_LENGTH = 60;
 const MAX_AGENT_TYPE_LENGTH = 32;
 
 /**
- * One roster entry: what the task is, what kind of thing is running it, and how long it has been
- * outstanding.
+ * One roster entry, as the two rows it takes: how long the task has been outstanding beside what is
+ * running it, and the task's own description under that, indented to start where the type does.
  *
- * The parenthetical is the agent type where the harness reported one, because that is what tells a
- * reader which of a fan-out's agents this is, and the kind itself otherwise. A shell task renders
- * exactly like a subagent: a long-running background command is the same class of invisible work,
- * and the kind is what distinguishes them. The description is model-authored prose from another
- * program and is neutralized here like every other session-sourced field; a task whose description
- * neutralizes to nothing is named by its kind alone rather than by an empty phrase.
- *
- * The description is what gives way to `room`, the entry's share of the row, because the kind and
- * the age are the two parts a reader cannot reconstruct: an entry cut from the right would leave a
- * task described at length with no way to tell what is running it or how long it has been out.
+ * Two rows rather than one because at this width one row makes the age, the type and the
+ * description compete for it, and a cut reaches the description first, which is the only field that
+ * says what the work is. The type is the agent type where the harness reported one, since that is
+ * what tells a reader which of a fan-out's agents this is, and the kind itself otherwise; a shell
+ * task draws exactly like a subagent, because a long-running background command is the same class
+ * of invisible work. The description is model-authored prose from another program and is
+ * neutralized here like every other session-sourced field; a task whose description neutralizes to
+ * nothing draws its first row alone rather than an empty second one.
  */
-function rosterEntry(task: BackgroundTask, now: number, room: number): string {
-  const kind =
-    task.agentType === null ? task.kind : inertBlockField(task.agentType, MAX_AGENT_TYPE_LENGTH);
-  const suffix = ` (${kind === "" ? task.kind : kind}) ${span(now - task.since)}`;
-  const limit = Math.min(MAX_TASK_DESCRIPTION_LENGTH, Math.max(room - [...suffix].length, 0));
-  const described = task.description === null ? "" : inertBlockField(task.description, limit);
-  return `${described === "" ? task.kind : described}${suffix}`;
+function rosterEntry(task: BackgroundTask, now: number): string[] {
+  const age = span(now - task.since);
+  const named =
+    task.agentType === null ? "" : inertBlockField(task.agentType, MAX_AGENT_TYPE_LENGTH);
+  const lead = `${age} ${SEPARATOR} `;
+  const room = Math.max(MAX_BLOCK_WIDTH - [...lead].length, 0);
+  const rows = [`${lead}${fit(named === "" ? task.kind : named, room)}`];
+  const described =
+    task.description === null
+      ? ""
+      : inertBlockField(task.description, Math.min(MAX_TASK_DESCRIPTION_LENGTH, room));
+  if (described === "") return rows;
+  // The same width the type is drawn at, so the description reads as the entry's second line rather
+  // than as an entry of its own.
+  rows.push(`${" ".repeat([...age].length)} ${SEPARATOR} ${described}`);
+  return rows;
 }
 
 /**
- * The card's roster line: how much work is outstanding, the newest few entries, and a count of the
- * rest. Null for a session waiting on nothing, which is every session between fan-outs.
+ * The card's tasks block: every task the session is waiting on, and a count of any the cap left
+ * out. The empty block's own value for a session waiting on nothing, which is every session between
+ * fan-outs.
  *
- * Newest first, because the entries that fit are the ones a reader has not seen on a previous look;
- * an old agent's line is unchanged from the last time they read the card. The overflow count is what
- * keeps the bound honest, so a reader can tell a two-agent roster from a twelve-agent one that only
- * had room to name two. It is composed to fit rather than cut to fit: entries are dropped until the
- * row is inside the block's width and the count grows by what was dropped, so the size of a fan-out
- * survives a width that cannot name it. The last entry standing gives its description away to the
- * width rather than being dropped, so a roster says what one of its tasks is whenever the kind and
- * the age fit at all; one whose fixed parts alone overflow the row is counted, never cut. How many
- * are outstanding in total is on the state row, which carries that count wherever a state is drawn.
+ * Oldest first, which is the order the tasks were dispatched in, so an entry keeps its place as the
+ * fan-out grows around it. Nothing is dropped at any size an operator will see: the whole reason
+ * the roster has a block is that the operator reads what the fan-out is doing, and a count instead
+ * of an entry says nothing about the work. The count is for the pathological fan-out alone, and it
+ * counts from the newest end, which is the same policy the channel's pin ceiling holds: the older
+ * work is what a reader has already been watching. How many are outstanding in total is on the
+ * state row, which carries that count wherever a state is drawn.
  */
-function rosterRow(view: SessionView, now: number): BlockRow | null {
-  const waiting = view.backgroundTasks.length;
-  if (waiting === 0) return null;
-  const newest = [...view.backgroundTasks].sort((a, b) => b.since - a.since);
-  const joiner = ` ${SEPARATOR} `;
-  const marker = (count: number): string => (waiting === count ? "" : `${joiner}+${waiting - count}`);
-  const share = (count: number): number =>
-    Math.max(
-      Math.floor((CARD_ROOM - [...marker(count)].length - joiner.length * (count - 1)) / count),
-      0,
-    );
-  const entries = (count: number): string[] =>
-    newest.slice(0, count).map((task) => rosterEntry(task, now, share(count)));
-  // The count is composed after the entries are cut to what it leaves, never cut alongside them: a
-  // row that lost its own overflow count to the width would read as a fan-out of one.
-  const composed = (count: number): string => {
-    const tail = marker(count);
-    const room = Math.max(CARD_ROOM - [...tail].length, 0);
-    return `${fit(entries(count).join(joiner), room)}${tail}`;
-  };
-  // A second entry is drawn only when every named entry fits whole beside it. Two entries sharing a
-  // row this narrow are two descriptions cut to a few characters each, which names more tasks than
-  // it says anything about; one whole entry and a count of the rest says more.
-  const uncut = (count: number): boolean =>
-    entries(count).every(
-      // Against the same entry drawn with no width to give way to, which leaves the description at
-      // its own field cap.
-      (entry, index) => entry === rosterEntry(newest[index], now, Number.MAX_SAFE_INTEGER),
-    );
-  // Every part of an entry is held to its share, the kind and the age suffix included: only the
-  // description gives way to the width, so an entry whose fixed parts alone overflow the share
-  // passes `uncut` while overflowing the row.
-  const withinShare = (count: number): boolean =>
-    entries(count).every((entry) => [...entry].length <= share(count));
-  let count = Math.min(MAX_ROSTER_ENTRIES, waiting);
-  while (count > 1 && ([...composed(count)].length > CARD_ROOM || !withinShare(count) || !uncut(count)))
-    count -= 1;
-  // An entry that cannot be drawn whole is counted rather than cut: an ellipsis through the
-  // parenthetical would drop the kind and the age, the two parts a reader cannot reconstruct,
-  // without saying anything was dropped.
-  if (!withinShare(count)) return { label: CARD_LABELS.waiting, value: `+${waiting}` };
-  return { label: CARD_LABELS.waiting, value: composed(count) };
+function rosterLines(tasks: readonly BackgroundTask[], now: number, count: number): string[] {
+  if (tasks.length === 0) return [NO_VALUE];
+  const named = tasks.slice(0, Math.max(count, 0));
+  const lines = named.flatMap((task) => rosterEntry(task, now));
+  const left = tasks.length - named.length;
+  if (left > 0) lines.push(`+${String(left)} more`);
+  return lines;
 }
 
 /**
- * The card's model rows: what the session is running now with its context size, and, while that is
- * below what it opened with, a second row naming what it came down from.
+ * The card's model rows: what the session is running now, the context size under it, and, while the
+ * model is below what the session opened with, a row naming what it came down from.
  *
- * Empty for a session no transcript line has reported a model for, which is every session on a host
- * whose tailer is off and every session before its first reading: the card then carries exactly the
- * fields it always has.
+ * The context size has a row rather than riding the model's, because it is the figure that says how
+ * much of a session is left and it is read on its own. It is drawn for any session that has
+ * reported one, model or not: a session no transcript line has reported a model for, which is every
+ * session on a host whose tailer is off and every session before its first reading, draws neither
+ * of the other two rows.
  *
  * The marker stands for as long as the session is below its opening model rather than firing once
  * at the change, because the cost of a downgrade is duration: a thread that drops model at hour one
@@ -1269,22 +1263,24 @@ function rosterRow(view: SessionView, now: number): BlockRow | null {
  * is degraded.
  */
 function modelRows(view: SessionView): BlockRow[] {
-  if (view.model === null) return [];
-  const model = inertBlockField(view.model, MAX_MODEL_NAME_LENGTH);
-  if (model === "") return [];
+  const model = view.model === null ? "" : inertBlockField(view.model, MAX_MODEL_NAME_LENGTH);
   const opening =
     view.openingModel === null ? "" : inertBlockField(view.openingModel, MAX_MODEL_NAME_LENGTH);
   const below =
-    view.openingModel !== null && opening !== "" && isBelowModel(view.model, view.openingModel);
+    model !== "" &&
+    view.model !== null &&
+    view.openingModel !== null &&
+    opening !== "" &&
+    isBelowModel(view.model, view.openingModel);
   const category =
     view.downgrade === null || view.downgrade.category === null
       ? ""
       : inertBlockField(view.downgrade.category, MAX_MODEL_DETAIL_LENGTH);
-  const context =
-    view.contextTokens === null ? "" : ` ${SEPARATOR} ctx ${compactTokens(view.contextTokens)}`;
-  const rows: BlockRow[] = [
-    { label: CARD_LABELS.model, value: `${below ? "⚠ " : ""}${model}${context}` },
-  ];
+  const rows: BlockRow[] = [];
+  if (model !== "") rows.push({ label: CARD_LABELS.model, value: `${below ? "⚠ " : ""}${model}` });
+  if (view.contextTokens !== null) {
+    rows.push({ label: CARD_LABELS.context, value: compactTokens(view.contextTokens) });
+  }
   if (below) {
     const flagged = category === "" ? "" : ` ${SEPARATOR} flagged ${category}`;
     rows.push({ label: CARD_LABELS.from, value: `${opening}${flagged}` });
@@ -1346,28 +1342,36 @@ export function renderModelChange(input: {
  * The starter message: the thread's detail card, edited in place forever after. Each field named,
  * and no session field that is not one of them.
  *
- * The title stays outside the fence and the body goes inside one. That split is what the two
- * surfaces need: the title is the line the channel's thread list shows, where the glyph, the bold
- * name, and the state are what a reader picks a thread out by, and Discord draws none of that
- * inside a block; the body is a table, and a block is the only shape Discord gives that keeps a
- * column of values under each other.
+ * A title line and three blocks: the session's fields, the tasks it is waiting on, and the tool it
+ * is running. The title and the two block headers stay outside a fence and everything else goes
+ * inside one. That split is what the surfaces need: the title is the line the channel's thread list
+ * shows, where the glyph, the bold name, and the state are what a reader picks a thread out by, and
+ * Discord draws no bold at all inside a block; the fields are a table, and a block is the only
+ * shape Discord gives that keeps a column of values under each other. The tasks and the tool have
+ * blocks of their own because a label column leaves neither of them the room they are read for.
  *
- * The title is also where the card gives way when it runs long, since every line of the body is
- * already inside the width bound: the name is the one field a session sizes for itself.
+ * The title is where the card gives way when it runs long, since every line of every block is
+ * already inside the width bound: the name is the one field a session sizes for itself. Past that,
+ * the roster gives way, entry by entry from the newest end, until the whole message is inside the
+ * ceiling: at two rows an entry a card carries a fan-out and its fields, but a card whose every
+ * field is at its cap and whose fan-out is at the roster cap is longer than one message, and a
+ * message Discord refuses is a card frozen at whatever it last said.
  */
 export function renderCard(view: SessionView, state: SurfaceState, now: number): string {
   const since = view.endedAt ?? view.lastHookAt;
   const label = stateLabel(view, state);
   // No roster on an exited card: the record's last report outlives the session, and a session
-  // that has exited is running nothing, so drawing it would put a waiting-on row with growing
+  // that has exited is running nothing, so drawing it would put a waiting-on entry with growing
   // ages under a header that says exited. Guarded here rather than cleared on the ended
   // transitions because the death backstop's exited is derived, never written to the record, so a
   // registry-side clear could not reach it, and a presumed-dead session that wakes gets its
-  // roster row back unchanged.
-  const roster = state === "exited" ? null : rosterRow(view, now);
-  const block = fenced(
+  // roster back unchanged.
+  const tasks =
+    state === "exited" ? [] : [...view.backgroundTasks].sort((left, right) => left.since - right.since);
+  const fields = fenced(
     alignedRows(
       [
+        { label: CARD_LABELS.host, value: inertBlock(view.host) },
         {
           label: CARD_LABELS.session,
           // Sliced on the visible raw id, then neutralized: sliced after the escape, every escaped
@@ -1375,20 +1379,29 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
           // would draw one prefix on the surface the operator tells threads apart by.
           value: inertBlock(sliceCodePoints(inertName(view.sessionId), SHOWN_SESSION_ID)),
         },
-        { label: CARD_LABELS.host, value: inertBlock(view.host) },
         { label: CARD_LABELS.state, value: label },
         ...modelRows(view),
-        toolRow(view),
-        { label: CARD_LABELS.turns, value: String(view.turnCount) },
         { label: CARD_LABELS.heartbeat, value: heartbeat(Math.max(now - since, 0)) },
-        // Last, because the roster is the one row sized by another program's fan-out, and the
-        // rows above it are what the card exists to carry.
-        ...(roster === null ? [] : [roster]),
       ],
       CARD_COLUMN,
     ),
   );
+  const tool = fenced(toolLines(view));
   const title = (name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
-  const room = MAX_CARD_LENGTH - block.length - 1 - title("").length;
-  return `${title(fit(inertText(displayName(view)), Math.max(room, 0)))}\n${block}`;
+  const compose = (count: number): string => {
+    const body = [fields, TASKS_HEADER, fenced(rosterLines(tasks, now, count)), TOOL_HEADER, tool].join(
+      "\n",
+    );
+    const room = MAX_CARD_LENGTH - body.length - 1 - title("").length;
+    return `${title(fit(inertText(displayName(view)), Math.max(room, 0)))}\n${body}`;
+  };
+  // Measured in UTF-16 units, the larger of the two counts a length could mean, so holding it holds
+  // the code point count too.
+  let count = Math.min(tasks.length, MAX_ROSTER_ENTRIES);
+  let card = compose(count);
+  while (count > 0 && card.length > MAX_CARD_LENGTH) {
+    count -= 1;
+    card = compose(count);
+  }
+  return card;
 }

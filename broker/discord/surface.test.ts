@@ -424,8 +424,7 @@ test("the card is edited in place, and only when its text changed", async () => 
 
   assert.equal(calls.posts.length, 1, "the starter message is never re-posted");
   assert.equal(calls.cards.length, 1);
-  assert.match(calls.cards[0], /^Last tool Read$/m);
-  assert.match(calls.cards[0], /^Turns {5}2$/m);
+  assert.match(calls.cards[0], /^\*\*Tool\*\*\n```\nRead\n```$/m, calls.cards[0]);
 });
 
 test("an in-flight pass is not overtaken by the next tick", async () => {
@@ -949,6 +948,17 @@ test("the pin list reads the cards of the sessions that are running, and only af
   time.advance(EXITED_AFTER_MS + 1);
   await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
   assert.deepEqual(surface.livePins(), [], "an exited session's card drops out of the roster");
+
+  // The sweep's own set is wider than the roster, and this is the difference the pin narrowing
+  // rests on: the exited session's card is out of the roster and still in the sweep's reach, which
+  // is the one case the sweep exists for. What is not in it is the binding this surface has already
+  // let go of, which is exactly what the narrowing costs: a pin left over from a pruned binding is
+  // the operator's to remove by hand.
+  assert.deepEqual(
+    [...surface.knownPins()].sort(),
+    ["message-1"],
+    "the exited session's own card, and no card whose binding is gone",
+  );
 });
 
 test("a card is kept current even while its thread cannot be opened", async () => {
@@ -974,7 +984,7 @@ test("a card is kept current even while its thread cannot be opened", async () =
 
   assert.equal(calls.posts.length, 1);
   assert.equal(calls.cards.length, 1, "the posted message does not freeze at its first text");
-  assert.match(calls.cards[0], /^Turns {5}4$/m);
+  assert.match(calls.cards[0], /^Read$/m, calls.cards[0]);
 });
 
 test("a failed call is not evidence about the bucket it failed in", async () => {

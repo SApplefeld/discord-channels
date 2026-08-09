@@ -3300,7 +3300,8 @@ test("an entitlement downgrade carries the marker onto the card, category or no 
   const card = renderCard(toView(record), "working", 1_000);
   // The decoration reaches the card as its own characters: the row is inside the fence, where
   // Discord renders no markdown, so the brackets need no escape and get none.
-  assert.match(card, /^Model {5}⚠ claude-opus-5\[1m\] · ctx 61k$/m);
+  assert.match(card, /^Model {5}⚠ claude-opus-5\[1m\]$/m);
+  assert.match(card, /^Context {3}61k$/m, "the context size is a row of its own");
   assert.match(card, /^Down from claude-fable-5$/m, "and what it came down from is its own row");
 });
 

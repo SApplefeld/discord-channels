@@ -6,6 +6,9 @@
 // by hand, and a card rebuilt under a new message id after a 404: a flag saying "this one is
 // pinned" survives none of those, because none of them pass through this process.
 //
+// The sweep reaches only the messages this broker recognizes as its own cards, so the channel is a
+// place the operator can still pin something of their own.
+//
 // A pass is spent only when the intended set has changed or the last pass left something undone.
 // Pinning writes a system message into the channel, one per pin, so a keeper that pinned and
 // unpinned the same message across successive passes would write a line into the operator's channel
@@ -47,6 +50,16 @@ export type IntendedPins = {
   permanent: string | null;
   /** The cards of the sessions that are running. Order here is not read; age decides. */
   live: readonly string[];
+  /**
+   * Every message this broker recognizes as one of its own cards: the fleet card and every card a
+   * thread binding names, live or not. The sweep reaches exactly this set, so a pin the operator
+   * added by hand stays where they put it while an exited session's card is still dropped, because
+   * its binding is still there.
+   *
+   * What the narrowing costs is named rather than hidden: a card whose binding has been pruned
+   * entirely is no longer recognized, so a pin left over from one can only be removed by hand.
+   */
+  known: readonly string[];
 };
 
 export type PinKeeper = {
@@ -126,9 +139,19 @@ function olderFirst(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** The intended set as one string, so an unchanged one is recognized without a Discord call. */
+/**
+ * The intended set as one string, so an unchanged one is recognized without a Discord call.
+ *
+ * The recognized set is part of it, because it decides what a pass may unpin: the first pass after a
+ * restart loads bindings naming cards that are pinned and not live, and a signature blind to them
+ * would call a channel converged that this keeper has not yet swept.
+ */
 function signature(intended: IntendedPins): string {
-  return `${intended.permanent ?? ""}|${[...intended.live].sort(olderFirst).join(",")}`;
+  return [
+    intended.permanent ?? "",
+    [...intended.live].sort(olderFirst).join(","),
+    [...intended.known].sort(olderFirst).join(","),
+  ].join("|");
 }
 
 export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
@@ -232,10 +255,13 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
       );
     }
     const intendedSet = new Set(kept);
+    // The sweep's whole reach: this broker's own cards, and nothing else in the channel. A pin the
+    // operator made by hand is in neither set and is left exactly where they put it.
+    const ourCards = new Set([...intended.known, ...(intended.permanent === null ? [] : [intended.permanent])]);
 
     // Unpins first, so a channel at the ceiling has room for the pins below before they are tried.
     for (const messageId of pinned) {
-      if (intendedSet.has(messageId) || unpins.stopped) continue;
+      if (intendedSet.has(messageId) || !ourCards.has(messageId) || unpins.stopped) continue;
       if (halted) return false;
       if (!unpins.budget.affordable(now())) {
         complete = false;

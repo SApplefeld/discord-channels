@@ -14,7 +14,13 @@
 // opaque desk reference: an entry id the desk minted plus positions in the ask it holds, never
 // content and never a session id, so a forged id names nothing this process will act on and a real
 // one resolves entirely server-side.
-import { inertField, inertLabel, MAX_OPTION_DESCRIPTION_LENGTH, MAX_OPTION_LABEL_LENGTH } from "./render.ts";
+import {
+  inertField,
+  inertLabel,
+  MAX_MESSAGE_LENGTH,
+  MAX_OPTION_DESCRIPTION_LENGTH,
+  MAX_OPTION_LABEL_LENGTH,
+} from "./render.ts";
 import type { AskedQuestion } from "./render.ts";
 
 /** Discord's ceiling on the action rows one message carries. */
@@ -372,6 +378,25 @@ export function incompleteNotice(questionNumber: number): string {
 /** What a component press against an entry the desk no longer holds is told. */
 export const CLOSED_NOTICE = "That question is no longer open.";
 
+/** What a bound close-out ends with, naming how many answers it had no room to draw. */
+function moreAnswersTail(count: number): string {
+  return `(+${String(count)} more answered)`;
+}
+
+/**
+ * The room one question's answer is drawn in.
+ *
+ * A multi-select answer arrives as one string, its labels joined the way the console's own picker
+ * joins them, so what is bounded here is a list rather than a label: every option the ask offered at
+ * the per-label ceiling, plus the separators between them. Bounded at one label, three realistic
+ * labels would ellipsize. A single-select answer is one label and spends a list's room on it, which
+ * costs nothing: the whole message is bound below whatever this leaves.
+ */
+function answerRoom(asked: AskedQuestion): number {
+  const count = Math.max(asked.options.length, 1);
+  return count * MAX_OPTION_LABEL_LENGTH + (count - 1) * ", ".length;
+}
+
 /**
  * The message a resolved hold is edited to, one line per terminal state.
  *
@@ -421,23 +446,38 @@ export function renderQuestionOutcome(input: {
     lines.push(inertField(input.response, MAX_PROMPT_QUESTION_LENGTH));
     return lines.join("\n");
   }
-  for (const asked of input.questions) {
+  let used = lines[0].length;
+  for (const [at, asked] of input.questions.entries()) {
     // Read as an own property, never through the prototype: question text is untrusted
     // conversation content and this map is keyed by it, so a question asked as `__proto__` names a
     // key every plain object already answers with an object where a label belongs.
     const answers = input.answers;
     if (answers === null || !Object.hasOwn(answers, asked.question)) continue;
     const given = answers[asked.question];
-    const labels = typeof given === "string" ? [given] : given;
-    const shown = labels
-      .map((label) => inertField(label, MAX_OPTION_LABEL_LENGTH))
-      .filter((label) => label !== "")
-      .join(", ");
+    const shown =
+      typeof given === "string"
+        ? inertField(given, answerRoom(asked))
+        : given
+            .map((label) => inertField(label, MAX_OPTION_LABEL_LENGTH))
+            .filter((label) => label !== "")
+            .join(", ");
     const header =
       asked.header === null
         ? inertField(asked.question, MAX_PROMPT_HEADER_LENGTH)
         : inertField(asked.header, MAX_PROMPT_HEADER_LENGTH);
-    lines.push(`**${header}** ${SEPARATOR} ${shown}`);
+    const line = `**${header}** ${SEPARATOR} ${shown}`;
+    // The whole message is bound here, `renderQuestionNotice`'s pattern: the answers go on whole,
+    // and the first that would not leave room for the tail ends the message with a count of the
+    // rest. This edit goes straight to Discord rather than through the writer's own cut, and a
+    // message over the limit is refused whole, which would leave the components live on a hold that
+    // has already ended.
+    const remaining = input.questions.length - at;
+    if (used + 1 + line.length + 1 + moreAnswersTail(remaining).length > MAX_MESSAGE_LENGTH) {
+      lines.push(moreAnswersTail(remaining));
+      return lines.join("\n");
+    }
+    lines.push(line);
+    used += 1 + line.length;
   }
   return lines.join("\n");
 }

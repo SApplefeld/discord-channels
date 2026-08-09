@@ -18,6 +18,7 @@ import {
   renderPermissionRequest,
   renderQuestionNotice,
   renderTaskNotice,
+  span,
   threadName,
 } from "./render.ts";
 import type { AskedOption, AskedQuestion } from "./render.ts";
@@ -50,19 +51,43 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
 }
 
 /**
- * A card's body: the lines inside the fence. The title is outside one and everything else inside,
- * so a card that stopped fencing its body fails here rather than in whichever assertion noticed.
+ * Every line a card draws inside a fence, across all three of its blocks. The title and the two
+ * block headers are the only lines outside one, so a card that stopped fencing a block fails here
+ * rather than in whichever assertion noticed.
  */
 function bodyOf(card: string): string[] {
   const lines = card.split("\n");
   assert.equal(lines[1], "```", card);
   assert.equal(lines.at(-1), "```", card);
-  return lines.slice(2, -1);
+  const blocks = blocksOf(card);
+  return [...blocks.fields, ...blocks.tasks, ...blocks.tool];
 }
 
-/** The value drawn beside a label, without the padding that aligns it. */
+/**
+ * A card's three blocks: the labelled fields, the tasks, and the tool. Each header sits outside its
+ * own fence, where Discord still renders its bold, so a card that folded the blocks back together
+ * or lost a header fails here rather than in whichever assertion noticed.
+ */
+function blocksOf(card: string): { fields: string[]; tasks: string[]; tool: string[] } {
+  const parts = card.split("```");
+  assert.equal(parts.length, 7, card);
+  assert.equal(parts[2].trim(), "**Tasks**", card);
+  assert.equal(parts[4].trim(), "**Tool**", card);
+  const body = (part: string): string[] => part.split("\n").filter((line) => line !== "");
+  return { fields: body(parts[1]), tasks: body(parts[3]), tool: body(parts[5]) };
+}
+
+/**
+ * The tool block read back as the one value it draws. The block fills its lines to the width rather
+ * than breaking on spaces, so the lines rejoin with nothing between them.
+ */
+function toolValue(card: string): string {
+  return blocksOf(card).tool.join("");
+}
+
+/** The value drawn beside a label in the field block, without the padding that aligns it. */
 function value(card: string, label: string): string {
-  const line = bodyOf(card).find((text) => text.startsWith(`${label} `)) ?? "";
+  const line = blocksOf(card).fields.find((text) => text.startsWith(`${label} `)) ?? "";
   return line.slice(label.length).trimStart();
 }
 
@@ -102,7 +127,8 @@ test("the downgrade marker stands on every render, not only the one the change l
     "working",
     NOW,
   );
-  assert.equal(value(restored, "Model"), "claude-fable-5 · ctx 61k");
+  assert.equal(value(restored, "Model"), "claude-fable-5");
+  assert.equal(value(restored, "Context"), "61k", "the context size has a row of its own");
   assert.ok(!restored.includes("Down from"), restored);
 });
 
@@ -177,7 +203,7 @@ test("Discord's chip syntax cannot render anywhere on the card", () => {
   );
 
   assert.ok(!/<t:\d+:R>/.test(card.split("\n")[0]), card);
-  assert.equal(value(card, "Last tool"), "<@123456789012345678>", "characters inside the fence");
+  assert.deepEqual(blocksOf(card).tool, ["<@123456789012345678>"], "characters inside the fence");
   assert.equal(inertText("<#123>"), "\\<\\#123\\>");
 });
 
@@ -187,10 +213,10 @@ test("a card is held below Discord's message limit", () => {
   assert.ok([...card].length <= MAX_CARD_LENGTH, `${[...card].length} characters`);
 });
 
-test("a long tool name cannot push the turn count and the heartbeat off the card", () => {
-  // The whole-card cap cuts the tail, and the tail is where the two fields the card exists to carry
-  // live. So holding the card under the ceiling is not enough on its own: the untrusted fields
-  // above them have to be bounded individually, or a session announcing a tool name of maximum
+test("a long tool name cannot push the heartbeat off the card", () => {
+  // The whole-card cap cuts the tail, and the tail is where the field the card exists to carry
+  // lives. So holding the card under the ceiling is not enough on its own: the untrusted fields
+  // above it have to be bounded individually, or a session announcing a tool name of maximum
   // length spends the whole card on it and the operator's glance answers nothing. Driven at the
   // real wire cap, MAX_FIELD_LENGTH, which is what `clean` holds every payload string to, and in
   // backticks, the character the block escape doubles, which is the widest a field of that length
@@ -209,8 +235,10 @@ test("a long tool name cannot push the turn count and the heartbeat off the card
   );
 
   assert.ok([...card].length <= MAX_CARD_LENGTH, `${[...card].length} characters`);
-  assert.equal(value(card, "Turns"), "14");
   assert.equal(value(card, "Heartbeat"), "14m ago");
+  // The tool has a block of its own now, and it is bounded there rather than by the row it used to
+  // share: the name is held to a line and the preview keeps its own budget beside it.
+  assert.ok(blocksOf(card).tool.length <= 4, blocksOf(card).tool.join("\n"));
 });
 
 test("a name is cut on code points, never mid-character", () => {
@@ -223,27 +251,30 @@ test("a name is cut on code points, never mid-character", () => {
   assert.ok(name.endsWith(" · working"));
 });
 
-test("the card carries the six named fields and the state", () => {
-  const card = renderCard(view({ lastHookAt: NOW - 840_000 }), "working", NOW);
+test("the card carries the named fields, the state, and its two blocks", () => {
+  const card = renderCard(view({ lastHookAt: NOW - 840_000, contextTokens: 737_000 }), "working", NOW);
 
-  // The title is the one line outside the fence, since it is what the channel's thread list shows
-  // and Discord draws no bold inside a block; every field below it is a row of the block.
+  // The title and the two block headers are the lines outside a fence, since a title is what the
+  // channel's thread list shows and Discord draws no bold inside a block; every field is a row of
+  // the first block. The host leads, because it is the first thing to orient on.
   assert.equal(card.split("\n")[0], "⚙ **neo-intake** · working");
-  assert.equal(value(card, "Session"), "0f3c9d21", "the head a session is known by everywhere here");
-  assert.equal(value(card, "Host"), "NEO");
-  assert.equal(value(card, "State"), "working");
-  assert.equal(value(card, "Last tool"), "Bash");
-  assert.equal(value(card, "Turns"), "14");
-  assert.equal(value(card, "Heartbeat"), "14m ago");
+  assert.deepEqual(blocksOf(card).fields, [
+    "Host      NEO",
+    "Session   0f3c9d21",
+    "State     working",
+    "Context   737k",
+    "Heartbeat 14m ago",
+  ]);
+  assert.deepEqual(blocksOf(card).tool, ["Bash"], "the tool is a block of its own");
   // Every value starts in the same column, which is the whole reason the body is fenced: a phone
   // draws the block in a monospace font, so a padded label column is what makes the fields scannable.
   const columns = new Set(
-    ["Session", "Host", "State", "Last tool", "Turns", "Heartbeat"].map((label) => {
-      const line = bodyOf(card).find((text) => text.startsWith(`${label} `)) ?? "";
+    ["Session", "Host", "State", "Context", "Heartbeat"].map((label) => {
+      const line = blocksOf(card).fields.find((text) => text.startsWith(`${label} `)) ?? "";
       return line.length - value(card, label).length;
     }),
   );
-  assert.equal(columns.size, 1, bodyOf(card).join("\n"));
+  assert.equal(columns.size, 1, blocksOf(card).fields.join("\n"));
 });
 
 test("the card's body stays inside the width bound at its widest fields", () => {
@@ -296,7 +327,7 @@ test("a field inside the fence shows its own characters, with no escape a fence 
     NOW,
   );
 
-  assert.equal(value(card, "Last tool"), "mcp__plugin_relay_channel-relay");
+  assert.deepEqual(blocksOf(card).tool, ["mcp__plugin_relay_channel-relay"]);
   assert.equal(value(card, "Host"), "**host**", "the fence shows the asterisks as characters");
   assert.ok(card.split("\n")[0].includes(String.raw`\*\*loud\*\*`), "the title still escapes");
 });
@@ -318,11 +349,22 @@ test("no crafted field can break out of the fence or compose a body line of its 
   );
 
   const delimiters = card.split("\n").filter((line) => line.includes("``"));
-  assert.deepEqual(delimiters, ["```", "```"], "exactly the two fence delimiters, nothing else");
+  assert.deepEqual(
+    delimiters,
+    ["```", "```", "```", "```", "```", "```"],
+    "exactly the six delimiters the three blocks take, nothing else",
+  );
   for (const line of bodyOf(card)) {
     assert.doesNotMatch(line, /``/, `no adjacent backticks inside the body: ${line}`);
   }
   assert.equal(value(card, "Host"), "beforeafter", "the newline is stripped, never a line break");
+  // The tool block fills its lines to the width, so a break can land between an escape and the
+  // character it makes inert. A backslash left at the end of a line inside a fence is drawn as a
+  // backslash, and no break can put two backticks together, but a line ending in one is the shape
+  // to know about, so it is pinned rather than reasoned about.
+  for (const line of blocksOf(card).tool) {
+    assert.doesNotMatch(line, /\\$/, `no line ends stranded from what it escapes: ${line}`);
+  }
 });
 
 test("the tool line carries what the tool was called with, from the record through the view", () => {
@@ -351,65 +393,59 @@ test("the tool line carries what the tool was called with, from the record throu
     backgroundTasks: [],
   };
 
-  assert.equal(value(renderCard(toView(record), "working", NOW), "Last tool"), "Bash · npm test");
+  assert.equal(toolValue(renderCard(toView(record), "working", NOW)), "Bash · npm test");
 });
 
-test("a tool that supplied nothing previewable renders the line it always has", () => {
-  assert.equal(value(renderCard(view({ lastToolInput: null }), "working", NOW), "Last tool"), "Bash");
+test("a tool that supplied nothing previewable renders the name alone, and no tool renders None", () => {
+  assert.equal(toolValue(renderCard(view({ lastToolInput: null }), "working", NOW)), "Bash");
   assert.equal(
-    value(renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW), "Last tool"),
-    "none yet",
+    toolValue(renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW)),
+    "None",
+    "an empty block and a renderer that stopped drawing one have to read differently",
   );
   // A preview of nothing but invisible characters neutralizes to an empty string, which renders as
   // no preview rather than as a separator with nothing after it.
-  assert.equal(value(renderCard(view({ lastToolInput: "​‮" }), "working", NOW), "Last tool"), "Bash");
+  assert.equal(toolValue(renderCard(view({ lastToolInput: "​‮" }), "working", NOW)), "Bash");
 });
 
-test("a preview past the card's room is cut and says so", () => {
+test("a preview past the block's budget is cut and says so", () => {
   const long = renderCard(view({ lastToolInput: "a".repeat(MAX_TOOL_INPUT_PREVIEW + 1) }), "working", NOW);
-  const line = bodyOf(long).find((text) => text.startsWith("Last tool ")) ?? "";
   // The marker names the cut rather than leaving it to the ellipsis: a tool input is
   // attacker-influenced text, so it can front-load the harmless part. Its own room comes out of the
-  // row before the preview is cut, so the width bound can never eat the mark off a partial preview
-  // and leave it reading as whole.
-  assert.ok(line.endsWith(" (cut)"), line);
-  assert.equal([...line].length, MAX_BLOCK_WIDTH, line);
-  assert.ok(value(long, "Last tool").startsWith("Bash · aaaa"), line);
+  // budget before the preview is cut, so a partial preview can never read as a whole one.
+  assert.ok(toolValue(long).endsWith(" (cut)"), toolValue(long));
+  assert.ok(toolValue(long).startsWith("Bash · aaaa"), toolValue(long));
 
-  // The row's own budget beside this fixture's name: the block width, less the label column and
-  // its space, less the name and its separator. A preview exactly at it renders whole and
-  // unmarked, filling the row to the bound; one character more takes the cut and its marker.
-  const budget = MAX_BLOCK_WIDTH - "Heartbeat ".length - "Bash · ".length;
-  const exact = renderCard(view({ lastToolInput: "p".repeat(budget) }), "working", NOW);
-  assert.equal(value(exact, "Last tool"), `Bash · ${"p".repeat(budget)}`);
-  const exactLine = bodyOf(exact).find((text) => text.startsWith("Last tool ")) ?? "";
-  assert.equal([...exactLine].length, MAX_BLOCK_WIDTH, exactLine);
-  const over = renderCard(view({ lastToolInput: "p".repeat(budget + 1) }), "working", NOW);
-  assert.ok(value(over, "Last tool").endsWith(" (cut)"), value(over, "Last tool"));
+  // A preview exactly at its budget renders whole and unmarked; one character more takes the cut
+  // and its marker. The budget is the preview's own, not what a row leaves after a label: the value
+  // wraps across the block's lines rather than being cut to one of them, which is what a real path
+  // needs and what the label column could not give it.
+  const exact = renderCard(view({ lastToolInput: "p".repeat(MAX_TOOL_INPUT_PREVIEW) }), "working", NOW);
+  assert.equal(toolValue(exact), `Bash · ${"p".repeat(MAX_TOOL_INPUT_PREVIEW)}`);
+  assert.ok(blocksOf(exact).tool.length > 1, "a preview that long is drawn over several lines");
 
-  // A short preview renders whole, with no marker at all.
+  // A short preview renders whole, with no marker at all, and on one line.
   const short = renderCard(view({ lastToolInput: "npm test" }), "working", NOW);
-  assert.equal(value(short, "Last tool"), "Bash · npm test");
+  assert.deepEqual(blocksOf(short).tool, ["Bash · npm test"]);
 });
 
-test("a long tool name is cut before the preview is, never the other way around", () => {
-  // Both halves of the row are attacker-influenceable, so a name allowed to fill the row would let
-  // a session hide what its tools are called with from the operator's glance surface by naming the
-  // tool long. The preview keeps a floor of the row instead, and the name gives way to it with its
-  // own ellipsis, so the outer width bound never cuts the row and never eats the cut marker.
+test("a long tool name cannot squeeze the preview out of the block", () => {
+  // Both halves are attacker-influenceable, so a name allowed to fill the block would let a session
+  // hide what its tools are called with from the surface the operator glances at. The name is held
+  // to a line and the preview keeps its own budget whatever the name spends.
   const card = renderCard(
     view({ lastTool: "t".repeat(120), lastToolInput: "rm -rf / --no-preserve-root" }),
     "working",
     NOW,
   );
 
-  const row = value(card, "Last tool");
-  assert.ok(row.includes(" · rm -"), `the preview survives the name: ${row}`);
-  assert.ok(row.startsWith("ttttt"), row);
-  assert.ok(/t…/.test(row), `the name carries its own cut: ${row}`);
-  assert.ok(row.endsWith(" (cut)"), `the preview's cut is marked, not eaten: ${row}`);
-  const line = bodyOf(card).find((text) => text.startsWith("Last tool ")) ?? "";
-  assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+  const drawn = toolValue(card);
+  assert.ok(drawn.includes(" · rm -rf / --no-preserve-root"), `the preview survives the name: ${drawn}`);
+  assert.ok(drawn.startsWith("ttttt"), drawn);
+  assert.ok(/t…/.test(drawn), `the name carries its own cut: ${drawn}`);
+  for (const line of blocksOf(card).tool) {
+    assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+  }
 });
 
 test("Discord's chip syntax in a tool-input preview reads as its characters", () => {
@@ -423,7 +459,7 @@ test("Discord's chip syntax in a tool-input preview reads as its characters", ()
     NOW,
   );
 
-  assert.equal(value(card, "Last tool"), "Bash · <@123456> at <t:99:R>");
+  assert.equal(toolValue(card), "Bash · <@123456> at <t:99:R>");
 });
 
 test("eight characters of the session id are eight, however many need escaping", () => {
@@ -1480,7 +1516,11 @@ test("a session no transcript line has reported a model for renders exactly as i
   const plain = renderCard(view(), "working", NOW);
 
   assert.ok(!plain.includes("Model"), plain);
-  assert.deepEqual(plain.split("\n").length, 9, "a title, two fence lines, and the six rows");
+  assert.deepEqual(blocksOf(plain).fields.length, 4, "the four rows a session always carries");
+
+  // The context size is not the model's to carry: a session that has reported one and no model
+  // draws it anyway, which is what the row being its own is for.
+  assert.equal(value(renderCard(view({ contextTokens: 61_380 }), "working", NOW), "Context"), "61k");
 
   // A model with no context figure beside it, which is what a restart reads until the next line
   // reports one, renders the model alone rather than an empty clause.
@@ -1525,7 +1565,7 @@ test("an untrusted model string cannot close the fence or crowd the card", () =>
   );
 
   const delimiters = card.split("\n").filter((line) => line.includes("``"));
-  assert.deepEqual(delimiters, ["```", "```"], card);
+  assert.deepEqual(delimiters, ["```", "```", "```", "```", "```", "```"], card);
   assert.ok(!/<@\d+>/.test(card.split("\n")[0]), "no chip syntax outside the fence");
   assert.ok(value(card, "Heartbeat") !== "", "the rows below the model line survive it");
 });
@@ -1612,6 +1652,48 @@ function agent(id: string, overrides: Partial<BackgroundTask> = {}): BackgroundT
   };
 }
 
+test("every task a session is waiting on is named, two rows to an entry", () => {
+  // The operator reads the card to find out what a fan-out is doing, so nothing is dropped and
+  // nothing is counted at a realistic size: a measured session peaked at twelve concurrent agents.
+  // Two rows an entry because at this width one row makes the age, the agent type and the
+  // description compete, and truncation reaches the description first, which is the only field that
+  // says what the work is.
+  const fleet = Array.from({ length: 12 }, (_unused, index) =>
+    agent(`task-${index}`, {
+      description: `Section ${String(index)} of the ladder`,
+      agentType: "implementer-opus",
+      since: NOW - (index + 1) * 60_000,
+    }),
+  );
+
+  const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
+  const tasks = blocksOf(card).tasks;
+
+  assert.equal(tasks.length, 24, tasks.join("\n"));
+  assert.ok(
+    !tasks.some((line) => line.startsWith("+")),
+    `no entry is counted rather than named: ${tasks.join("\n")}`,
+  );
+  // Oldest first, which is the order they were dispatched in, so an entry keeps its place as the
+  // fan-out grows around it.
+  assert.equal(tasks[0], "12m · implementer-opus");
+  assert.equal(tasks[1], "    · Section 11 of the ladder", "the description aligns under the type");
+  assert.equal(tasks[22], "1m · implementer-opus");
+  assert.equal(tasks[23], "   · Section 0 of the ladder");
+  assert.equal(value(card, "State"), "working · 12 tasks", "the size of the fan-out is on the state");
+  assert.ok(card.length <= MAX_CARD_LENGTH, card);
+});
+
+test("an empty roster and a session that has run no tool say so rather than going blank", () => {
+  // A quiet session and a renderer that stopped drawing a block have to look different, so both
+  // blocks stand with a value in them rather than being left out.
+  const card = renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW);
+  const blocks = blocksOf(card);
+
+  assert.deepEqual(blocks.tasks, ["None"]);
+  assert.deepEqual(blocks.tool, ["None"]);
+});
+
 test("a session waiting on agents says so on the card and in the title", () => {
   const waiting = view({
     backgroundTasks: [
@@ -1625,20 +1707,22 @@ test("a session waiting on agents says so on the card and in the title", () => {
   });
 
   const card = renderCard(waiting, "working", NOW);
-  const roster = value(card, "Waiting");
-  // The newest task is the one named, since an older one's entry is unchanged from the last look,
-  // and what it is running under and how long it has been out survive the width ahead of its prose.
-  assert.ok(roster.startsWith("Groomi"), roster);
-  assert.ok(roster.includes("(implementer-fable) 35m"), roster);
-  assert.ok(roster.endsWith(" · +1"), "the task there was no room to name is counted, not dropped");
+  // Both tasks whole, oldest first, and neither of them counted: what it is running under and how
+  // long it has been out lead the entry, and its description has a row to itself under them.
+  assert.deepEqual(blocksOf(card).tasks, [
+    "1h 2m · implementer-opus",
+    "      · PR ladder fix round three",
+    "35m · implementer-fable",
+    "    · Grooming S6 implementation",
+  ]);
   // The count rides the state on both surfaces, since the four states cannot say waiting on agents
   // and the title is what survives the thread list's truncation on a phone. The word is "tasks"
   // because the count covers shell tasks too.
   assert.equal(value(card, "State"), "working · 2 tasks");
   assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 2 tasks");
-  // The roster sits below the turn count and the heartbeat, because those are the rows the card
-  // exists to carry and the roster is the one sized by another program's fan-out.
-  assert.ok(card.indexOf("Waiting") > card.indexOf("Heartbeat"), card);
+  // The tasks sit below the fields the card always carries, because the roster is the one part
+  // sized by another program's fan-out.
+  assert.ok(card.indexOf("**Tasks**") > card.indexOf("Heartbeat"), card);
 });
 
 test("a shell task renders beside a subagent, since both are invisible work", () => {
@@ -1654,9 +1738,11 @@ test("a shell task renders beside a subagent, since both are invisible work", ()
   });
 
   const card = renderCard(waiting, "working", NOW);
-  const roster = value(card, "Waiting");
-  assert.ok(roster.startsWith("npm test on the integrat"), roster);
-  assert.ok(roster.endsWith("(shell) 4m"), "the kind is what tells a shell task from a subagent");
+  assert.deepEqual(
+    blocksOf(card).tasks,
+    ["4m · shell", "   · npm test on the integration suite"],
+    "the kind is what tells a shell task from a subagent",
+  );
   assert.equal(value(card, "State"), "working · 1 task");
   assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 1 task");
 });
@@ -1682,42 +1768,71 @@ test("an exited session's card carries no roster line", () => {
   assert.equal(threadName(view({ backgroundTasks: [agent("S6")] }), "exited"), "⚠ neo-intake · exited");
 });
 
-test("a twelve-agent fan-out names a few and counts the rest", () => {
-  // Measured against a real fan-out session: 50 dispatches over its life, peak 12 concurrent. A
-  // roster rendered in full at that width runs past 700 characters and crowds out everything else
-  // the card carries.
-  const fleet = Array.from({ length: 12 }, (_, index) =>
-    agent(`task-${index}`, { since: NOW - (index + 1) * 60_000 }),
-  );
-
-  const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
-  const roster = value(card, "Waiting");
-
-  assert.equal(value(card, "State"), "working · 12 tasks", "the size of the fan-out is on the state");
-  assert.ok(roster.endsWith("· +11"), roster);
-  assert.ok(roster.includes(" 1m"), "the newest entry is the one named");
-  assert.ok(!roster.includes("12m"), "and the oldest are left to the count");
-  assert.ok([...roster].length <= MAX_BLOCK_WIDTH, `the roster stays inside the block: ${roster}`);
-  assert.equal(value(card, "Turns"), "14", "the rest of the card survives a full fan-out");
-  assert.ok(value(card, "Heartbeat") !== "", card);
-  assert.ok(card.length <= MAX_CARD_LENGTH, card);
-});
-
-test("the roster's overflow count survives the width, whatever it is counting", () => {
-  // The count is what keeps the bound honest, so it is composed after the entries are cut to what it
-  // leaves. Cut alongside them, a twelve-agent fan-out would read as one task and a stub.
-  for (const size of [2, 3, 11, 12, 40]) {
+test("a fan-out past the card's cap is counted rather than dropped, and the card still fits", () => {
+  // The cap is pathological rather than cosmetic: a measured fan-out session peaked at twelve
+  // concurrent agents, so nothing an operator sees is counted. What the count is for is a fan-out
+  // no session here has produced, and the card carrying one still has to be a message Discord will
+  // take, since one it refuses freezes the card at whatever it last said.
+  for (const size of [25, 40, 200]) {
     const fleet = Array.from({ length: size }, (_unused, index) =>
       agent(`task-${index}`, {
         description: "a description long enough to fill the whole row by itself",
+        agentType: "implementer-fable",
         since: NOW - (index + 1) * 60_000,
       }),
     );
-    const roster = value(renderCard(view({ backgroundTasks: fleet }), "working", NOW), "Waiting");
+    const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
+    const tasks = blocksOf(card).tasks;
 
-    assert.ok(roster.endsWith(` · +${size - 1}`), roster);
-    assert.ok([...roster].length <= MAX_BLOCK_WIDTH, roster);
+    assert.equal(
+      value(card, "State"),
+      `working · ${String(size)} tasks`,
+      "the size of the fan-out is on the state, whatever the block had room for",
+    );
+    const counted = tasks.at(-1) ?? "";
+    assert.match(counted, /^\+\d+ more$/, tasks.join("\n"));
+    // The oldest are the ones kept, since the newest arrivals are the ones a reader has not been
+    // watching, and what is counted is exactly what was not drawn.
+    assert.equal(tasks[0], `${span(size * 60_000)} · implementer-fable`);
+    const named = (tasks.length - 1) / 2;
+    assert.equal(counted, `+${String(size - named)} more`);
+    assert.ok(card.length <= MAX_CARD_LENGTH, `${String(card.length)} units`);
+    for (const line of bodyOf(card)) {
+      assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+    }
   }
+});
+
+test("a card whose every field is at its cap still fits one message, roster included", () => {
+  // The whole message is the binding constraint the block-per-section split does not relax: three
+  // fences cost more delimiters than one, and a full roster at two rows an entry is a tall card.
+  const fleet = Array.from({ length: 40 }, (_unused, index) =>
+    agent(`task-${index}`, {
+      description: "`".repeat(MAX_FIELD_LENGTH),
+      agentType: "`".repeat(MAX_FIELD_LENGTH),
+      since: NOW - (index + 1) * 60_000,
+    }),
+  );
+  const card = renderCard(
+    view({
+      sessionId: "`".repeat(MAX_FIELD_LENGTH),
+      name: "`".repeat(MAX_FIELD_LENGTH),
+      host: "`".repeat(MAX_FIELD_LENGTH),
+      lastTool: "`".repeat(MAX_FIELD_LENGTH),
+      lastToolInput: "`".repeat(MAX_FIELD_LENGTH),
+      model: "`".repeat(MAX_FIELD_LENGTH),
+      openingModel: "claude-fable-5",
+      contextTokens: 999_000,
+      backgroundTasks: fleet,
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(card.length <= MAX_CARD_LENGTH, `${String(card.length)} units`);
+  assert.ok([...card].length <= MAX_CARD_LENGTH, `${String([...card].length)} characters`);
+  assert.equal(value(card, "Heartbeat"), "just now", "the rows the card exists to carry survive it");
+  assert.match(blocksOf(card).tasks.at(-1) ?? "", /^\+\d+ more$/);
 });
 
 test("a hostile task description is drawn as text, and cannot draw a chip or close the fence", () => {
@@ -1738,9 +1853,9 @@ test("a hostile task description is drawn as text, and cannot draw a chip or clo
   );
 
   const delimiters = card.split("\n").filter((line) => line.includes("``"));
-  assert.deepEqual(delimiters, ["```", "```"], card);
+  assert.deepEqual(delimiters, ["```", "```", "```", "```", "```", "```"], card);
   assert.ok(card.includes("<t:20:R>"), "the chip syntax is characters inside the fence");
-  assert.ok(card.includes("(#h)"), "and so is the heading marker");
+  assert.ok(card.includes("· #h"), "and so is the heading marker");
   assert.ok(card.length <= MAX_CARD_LENGTH, card);
 });
 
@@ -1758,12 +1873,12 @@ test("a task with nothing to say about itself is named by its kind", () => {
     NOW,
   );
 
-  assert.equal(value(blank, "Waiting"), "subagent (subagent) 0m");
-  assert.equal(value(absent, "Waiting"), "subagent (subagent) 1m");
+  // One row, not two: an entry with nothing to say about itself draws no empty second line.
+  assert.deepEqual(blocksOf(blank).tasks, ["0m · subagent"]);
+  assert.deepEqual(blocksOf(absent).tasks, ["1m · subagent"]);
 
-  // Two of them on one card. A kind-named entry has no description to give way to the width, so
-  // the pair cannot share the row whole: the second is counted rather than the joined pair being
-  // ellipsis-cut mid-parenthesis, and the entry that is drawn keeps its kind and its age.
+  // Two of them on one card, both drawn: neither has a description to crowd the other's row,
+  // because an entry no longer shares a row with anything.
   const both = renderCard(
     view({
       backgroundTasks: [
@@ -1774,22 +1889,29 @@ test("a task with nothing to say about itself is named by its kind", () => {
     "working",
     NOW,
   );
-  assert.equal(value(both, "Waiting"), "subagent (subagent) 0m · +1");
+  assert.deepEqual(blocksOf(both).tasks, ["1m · subagent", "0m · subagent"]);
 });
 
-test("an entry whose fixed parts overflow its share is counted, never cut mid-parenthesis", () => {
-  // The kind and the age are the two parts a reader cannot reconstruct, so an entry that cannot
-  // carry them whole inside its share is not drawn at all: the roster falls back to the count
-  // rather than to a cut that drops the kind and the age without saying anything was dropped.
+test("an entry's age and type are drawn whole, whatever the type is called", () => {
+  // The age and the type are the two parts a reader cannot reconstruct, and the row they share
+  // carries nothing else, so an agent type at its own cap is drawn whole rather than cut and the
+  // description keeps a row of its own under it.
   const card = renderCard(
     view({
       backgroundTasks: [
-        agent("wide", { description: null, agentType: "a".repeat(32), since: NOW - 60_000 }),
+        agent("wide", {
+          description: "a description long enough to fill the whole row by itself",
+          agentType: "a".repeat(32),
+          since: NOW - 60_000,
+        }),
       ],
     }),
     "working",
     NOW,
   );
 
-  assert.equal(value(card, "Waiting"), "+1");
+  const tasks = blocksOf(card).tasks;
+  assert.equal(tasks[0], `1m · ${"a".repeat(32)}`);
+  assert.ok(tasks[1].startsWith("   · a description long enough"), tasks[1]);
+  for (const line of tasks) assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
 });

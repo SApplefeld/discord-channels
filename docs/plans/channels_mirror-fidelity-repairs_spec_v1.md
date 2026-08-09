@@ -366,3 +366,47 @@ Stamps: none surfaced at this boundary
 Next: the card's own redesign, which the operator specified against a live screenshot, then
 Section 4
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-09
+Completed: the session card's redesign, specified by the operator against a live screenshot, plus
+two corrections the previous round surfaced
+Implemented By: implementer-opus
+Metrics: 0 review rounds so far (red-first evidence carried in-round; the finishing pass covers the
+changeset); 0 NEEDS_CONTEXT; 0 escalations; advisor consulted by the implementer, and its one
+flagged concern checked and found not to hold, which is recorded below
+Decisions / Surprises: the operator reviewed the first fenced card against a real session and every
+item they raised was a real defect rather than a preference. The roster line was spending its room
+on the least informative field, rendering a fully truncated description beside a partially
+truncated agent type, so it named neither the work nor the worker. The tool row was structurally
+doomed in a label column, since a real path needs more room than the row has after the label, which
+made the row read `(cut)` essentially always and therefore carry nothing. Both are now their own
+fenced blocks under their own headers, which is the right fix rather than a workaround: the card is
+a fixed label column, the roster is a repeating two-row entry, and the tool is one long string that
+should wrap, and those three want different layouts.
+The operator's two-row roster beats the single row for a reason worth keeping: at this width one
+row forces the age, the type and the description to compete, and truncation reaches the description
+first, which is the only field that says what the work is. Two rows remove the competition instead
+of tuning who loses it, and vertical space is cheap on a surface already being scrolled.
+Both optional blocks render `None` rather than being omitted, on the operator's own reasoning: an
+omitted section cannot be told apart from a broken renderer.
+Tokens were asked for and are not available. The harness's task table carries no usage figures, and
+the per-agent output files that might have held them measured zero bytes for every agent a live
+session was running, so nothing writes them down; the console shows them because it is the process
+running the agents. Recorded so the question is not reopened.
+Two corrections from the previous round landed here: the close-out message's answer bound, which
+Section 2's join had quietly turned from a per-label ceiling into a whole-list ceiling, is now
+derived from the per-label bound and the ask's own option count; and the pin sweep is narrowed to
+messages the broker recognizes as its own cards, so an operator's hand-made pin survives, at the
+stated cost that a card whose binding has been pruned can no longer be swept automatically.
+Review Findings: none yet; the finishing pass covers this changeset. The implementer's own advisor
+raised an unbounded-answer concern which it checked and refuted with a test rather than acting on,
+and it found and fixed a real defect while writing that pin (the wrapping helper could split an
+escape pair at a line end).
+Open with the operator: the tool block still draws a Windows path with doubled backslashes, because
+the fence-aware neutralizer keeps the backslash escape. Whether that escape is load-bearing inside
+a fence depends on whether Discord processes escapes there at all, which is unobservable from the
+server side; a probe message is posted in the operator's own thread and their reading of it decides
+whether the escape can be dropped for paths.
+Stamps: none surfaced at this boundary
+Next: Section 4: An exited session's thread archives itself, by default
+Commit Model: Commit-and-Push

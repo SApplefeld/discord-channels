@@ -73,6 +73,14 @@ export type Surface = {
    * same pass. A card whose surface has been given up on is left out, since nothing maintains it.
    */
   livePins: () => readonly string[];
+  /**
+   * Every card this surface holds a binding for, live or not, which is what the pin sweep is
+   * allowed to reach: a pinned message outside this set was pinned by someone else.
+   *
+   * A card whose binding this surface has let go of is not in it, so a pin left over from one is the
+   * operator's to remove. That is the price of leaving their own pins alone.
+   */
+  knownPins: () => readonly string[];
 };
 
 type ThreadState = {
@@ -539,6 +547,16 @@ export function createSurface(options: SurfaceOptions): Surface {
         live.push(entry.messageId);
       }
       return live;
+    },
+
+    knownPins: () => {
+      const known: string[] = [];
+      for (const entry of threads.values()) {
+        // Abandoned and exited alike: the card is still on Discord and this broker still posted it,
+        // which is the whole question the sweep asks.
+        if (entry.messageId !== null) known.push(entry.messageId);
+      }
+      return known;
     },
   };
 }
