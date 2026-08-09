@@ -812,9 +812,14 @@ export function createHandler(
       // verdict rides prompts and turn ends, a session sitting on an open picker produces
       // neither, so this post is the only thing that can re-arm a fresh tailer before the alert
       // it carries. The questions then go to the tailer's question seam, which owns the verdict
-      // gate and the dedupe; a parse that yielded nothing hands over nothing. The response below
-      // is not held for any of this: the seam returns before delivery, so the session's hook
-      // never waits on Discord.
+      // gate and the dedupe; a parse that yielded nothing hands over nothing, and the seam call
+      // sits behind the same payload-names-the-credited-session gate as the allow: the CLI
+      // retries a refused post for hours, a retry can outlive the session that emitted it, and
+      // one credited by process token alone would otherwise post a predecessor session's
+      // question into the thread of whatever session holds the token now. The suppress half
+      // stays on token evidence alone, its parity with /mirror. The response below is not held
+      // for any of this: the seam returns before delivery, so the session's hook never waits on
+      // Discord.
       if (parsed.intake.event === "PreToolUse" && options.tail !== undefined) {
         const sessionMirror = header(request, "x-channel-mirror");
         if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
@@ -822,9 +827,9 @@ export function createHandler(
         } else {
           if (parsed.intake.sessionId !== null && parsed.intake.sessionId === record.sessionId) {
             options.tail.allow(record.sessionId);
-          }
-          if (parsed.questions !== null && parsed.questions.length > 0) {
-            options.tail.question(record.sessionId, parsed.questions);
+            if (parsed.questions !== null && parsed.questions.length > 0) {
+              options.tail.question(record.sessionId, parsed.questions);
+            }
           }
         }
       }

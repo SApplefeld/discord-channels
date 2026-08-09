@@ -739,6 +739,11 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     held.path = path;
     held.offset = null;
     held.probe = null;
+    // The outstanding question digests drop with the offset: the resolution lines they were
+    // waiting for belong to the file being left behind, and a digest that outlives its own line
+    // would mis-consume a later identical question's only alert, the same direction suppress()
+    // takes.
+    held.askedDigests = [];
     startProbe(sessionId, held);
   }
 
@@ -781,8 +786,13 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
           // digest recorded for a delivery that then fails consumes the resolution-time fallback
           // and the question alerts nowhere. The fail direction here is one duplicate ping,
           // never a lost question.
-          held.askedDigests.push(digest);
-          if (held.askedDigests.length > MAX_OUTSTANDING_QUESTION_DIGESTS) held.askedDigests.shift();
+          // The record itself is guarded: two identical asks racing inside one delivery flight
+          // both pass the pre-dispatch skip above, and a second copy here would survive the one
+          // resolution-time consume to swallow a later identical question's only alert.
+          if (!held.askedDigests.includes(digest)) {
+            held.askedDigests.push(digest);
+            if (held.askedDigests.length > MAX_OUTSTANDING_QUESTION_DIGESTS) held.askedDigests.shift();
+          }
         }
         if (outcome.status === "failed") {
           repeats(

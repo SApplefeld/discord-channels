@@ -1755,6 +1755,33 @@ test("a PreToolUse post re-arms the verdict after a restart: on and absent alert
   assert.equal(delivered.length, 2, "the off form arms nothing and alerts nothing");
 });
 
+test("a credited post that does not name the credited session never reaches the question seam", async () => {
+  // The straggler gate: the CLI retries a refused post for hours, and a retry can outlive the
+  // session that emitted it. A payload carrying no session_id is credited by process token alone,
+  // to whatever session holds the token now, and posting its question there would put a
+  // predecessor session's question in the successor's thread. The seam call rides the same
+  // payload-names-the-credited-session condition the allow half rides; a post naming its own
+  // session is the positive control.
+  const { handle, asked } = questionHarness();
+
+  const { status } = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse"),
+      body: preToolUseBody({ session_id: undefined }),
+    }),
+  );
+  assert.equal(status, 200, "a payload without session_id is still a credited liveness post");
+  assert.equal(asked.length, 0, "a post not naming the credited session must not reach the seam");
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+  );
+  assert.equal(asked.length, 1, "the same post naming its own session reaches the seam");
+  assert.equal(asked[0]?.sessionId, "session-a");
+});
+
 test("a transcript path is refused rather than truncated, and never a UNC path", () => {
   // A truncated path would never open, and the only witness would be a rate-limited pass-failed
   // line forever; a UNC path opened on Windows initiates an outbound SMB connection carrying the

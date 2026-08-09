@@ -1774,6 +1774,45 @@ test("a re-posted identical question is not alerted twice by the hook path", asy
   assert.equal(questions.length, 2);
 });
 
+test("two identical asks racing inside one delivery flight record one digest, not two", async (t) => {
+  // The pre-dispatch skip reads the set before the awaited delivery writes it, so two identical
+  // question() calls landing while the first alert is still in flight both pass it and both
+  // deliver: that duplicate ping is the accepted window. What must not happen is a duplicate
+  // record: the resolution line consumes exactly one copy, and a stale survivor would silence a
+  // later identical question's only alert, a lost question rather than a duplicate ping.
+  const file = transcriptFile(t);
+  const alerts: string[] = [];
+  let release: () => void = () => {};
+  const inFlight = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { tailer } = harness({
+    deliverQuestion: async (_sessionId, asked) => {
+      await inFlight;
+      alerts.push(asked.map((entry) => entry.question).join("|"));
+      return { status: "sent" };
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  const asked: AskedQuestion[] = [{ question: "Race?", header: null, multiSelect: false, options: [] }];
+  tailer.question(SESSION, asked);
+  tailer.question(SESSION, asked); // lands before the first delivery resolves: no digest exists yet
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(alerts.length, 2, "the in-flight race is the accepted duplicate-ping window");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Race?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(alerts.length, 2, "the resolution line is consumed against the one recorded digest");
+
+  tailer.question(SESSION, asked); // a genuinely new identical ask, after the resolution consumed
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(alerts.length, 3, "no stale second copy survives to swallow the new ask's alert");
+});
+
 test("suppress drops the outstanding digests with the offset: no stale digest outlives its window", async (t) => {
   // A suppressed window swallows the resolution lines the digests were waiting for, so a digest
   // kept across it would mis-consume a later identical question's only alert: the same
@@ -1795,6 +1834,30 @@ test("suppress drops the outstanding digests with the offset: no stale digest ou
   appendFileSync(file, askUserQuestion({ questions: [{ question: "Again?" }] }), "utf8");
   await tailer.poll();
   assert.equal(questions.length, 2, "the later identical ask is a new question, not the old one's echo");
+});
+
+test("a path change through learn drops the outstanding digests with the offset", async (t) => {
+  // A new path is a new transcript, and the resolution lines the outstanding digests were
+  // waiting for belong to the file being left behind: a digest kept across the change would
+  // mis-consume a later identical question's only alert, the direction suppress() documents.
+  // Both paths carry the session's own stem, so the stem-pin accepts the change.
+  const fileA = transcriptFile(t);
+  const fileB = transcriptFile(t); // its own temp directory, same <session-id>.jsonl filename
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, fileA);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "Moved?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 1);
+
+  tailer.learn(SESSION, fileB); // the path change: the old file's resolution lines are unreachable now
+  await tailer.poll(); // rebaselines against the new file
+
+  tailer.question(SESSION, [{ question: "Moved?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 2, "the identical ask after the change is a new question, not the old one's echo");
 });
 
 test("the outstanding set is bounded: past the cap the oldest is evicted, costing a duplicate, never a lost question", async (t) => {
