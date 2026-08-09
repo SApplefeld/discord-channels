@@ -22,6 +22,7 @@ line rather than its whole report. All of it is built and installable.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md) | Open | An `AskUserQuestion` parked at a console becomes answerable from the session's thread: the broker holds the question's `PreToolUse` hook request open and posts the questions as an interactive message (option pickers with descriptions, buttons for the single-question fast path, a typed reply as the free-form answer), then answers the hook with the operator's choices; every failure of the hold releases cleanly to the console picker, and whichever surface answers, the other cleans up. Ratified by live measurements: a held hook blinds the console picker, `updatedInput` answering works end to end, and a 6-minute hold is honored. |
 | [`plans/channels_tailer-blackout_spec_v1.md`](plans/channels_tailer-blackout_spec_v1.md) | Open | The reopened round from the prompt-surfacing effort's live check: the transcript tailer went silently dark for a subagent-heavy session (no narration, a question alert 7.5 hours late, zero log lines). Starts with an instrumented reproduction to name the mechanism, then the fix plus two evidence-backed hardenings (a session's learned transcript path must have the session's own filename stem; a pass watchdog so a wedged tailer is visible), then a live re-verify under subagent load. |
 
 Archived plans, most recent first.

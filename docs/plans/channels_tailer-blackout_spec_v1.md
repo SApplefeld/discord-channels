@@ -10,6 +10,9 @@ Fable Spend: standing (Fable-led session)
   the effort whose live verification surfaced this. Its question alert shipped correct at the unit
   level and delivered 7.5 hours late in the live check that closes it, which reopens the work as
   this round.
+- [channels_question-answering_spec_v1.md](channels_question-answering_spec_v1.md): builds on this
+  round's `PreToolUse` hook entry and its ratifying probe, turning the alert path into an answer
+  path (the held hook response carries the operator's choices back).
 
 ## The mechanism, as Section 1's forensics confirmed it
 

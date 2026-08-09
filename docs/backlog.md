@@ -30,14 +30,18 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   because the clean fix, a single monotonic arrival counter that survives eviction, would make any
   ID-less arrival anywhere end every in-flight run's coalescing. Growing the fleet is the trigger to
   take that trade.
-- Answering a console question from the thread. The upstream extension point exists: since Claude
-  Code 2.1.85, `PreToolUse` runs for `AskUserQuestion`, and a hook can answer the question outright
-  by returning `updatedInput` alongside `permissionDecision: "allow"` (upstream changelog; firing
-  on a live interactive session on this host is pending the tailer-blackout round's probe). The
-  shape wanted is "whatever the operator types in the thread becomes the picker's answer": the
-  broker holds the hook request open, alerts the thread, and answers with the operator's reply,
-  with the console picker as the timeout fallback. Needs its own design round once the probe
-  confirms; the channel permission protocol's `allow | deny` vocabulary is unaffected either way.
+- Answering a console question from the thread: graduated to its own plan,
+  [`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md),
+  which carries the ratifying live measurements and the agreed design.
+- A usage and fleet-health card in the channel. From Discord the operator has no view of account
+  limits or agent health: claude-swap reports per-account 5h / 7d / Fable percentages with reset
+  times at the console, and away from the keyboard there is no way to see remaining bandwidth or
+  that an agent is stuck or failing. Wanted shape: one stable card message the broker owns and
+  edits on a cadence (a pinned message or the channel's own status surface, so it is always one
+  scroll away), carrying the same per-account bars claude-swap prints plus a per-session liveness
+  line. Needs its own design round: where claude-swap's report comes from on each host, how the
+  broker reads it without holding credentials it should not hold, and the edit cadence against
+  the card's own rate bucket.
 - Spoiler-collapsed background-task reports, behind `CHANNEL_TASK_NOTIFICATION=full`. The default
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without
