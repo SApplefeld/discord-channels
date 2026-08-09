@@ -38,6 +38,7 @@ async function broker(t: TestContext, options: { replyHeartbeatMs?: number } = {
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
   const relays = createRelayHub({ registry, graceMs: GRACE_MS });
   const posts: Array<{ threadId: string; text: string }> = [];
