@@ -96,7 +96,7 @@ listener.
 1. **Identity and activity, session to broker.** `POST /hook` takes a `SessionStart`, `PostToolUse`,
    or `Stop` payload with the event name, the process token, and the session name in headers. The
    registry turns those into a session record: session ID, name, host, source, last tool, a bounded
-   preview of that tool's input (the card's `Last tool: Bash · npm test` line), tool count, turn
+   preview of that tool's input (the card's `Last tool` row), tool count, turn
    count, and last-seen timestamp. Every credited post also teaches the transcript tailer where that
    session's transcript file lives, without adding the path to the record itself. A `SessionStart`
    with `source: "clear"` supersedes the prior record for that token rather than mutating it. `GET

@@ -43,9 +43,11 @@ opened with, its live context size, and the detail of a forced downgrade when on
 named individually rather than spread from the record's own object. It publishes the session's
 background-task roster the same way, entry by entry: the harness's own table of the subagents and
 background commands a session is waiting on, each carrying an id, a kind, and a description the
-model wrote. The card cuts a description to sixty characters where this route carries the bounded
-two hundred and fifty six the intake kept, which is the same asymmetry the tool-input preview
-already has. Those are model ids, a token
+model wrote. What the card draws of a description is whatever fits its own block width, which is
+far less than the bounded two hundred and fifty six the intake kept and which this route carries;
+the tool-input preview has the same asymmetry, and both cuts are derived from the card's width
+rather than fixed at a character count, so the card discloses less than the route rather than more.
+Those are model ids, a token
 count, and upstream's own refusal category and consent answer, the same class as the tool-input
 preview this route already carries and holding no conversation text.
 
