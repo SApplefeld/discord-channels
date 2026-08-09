@@ -158,10 +158,15 @@ never armed by its own traffic under any ordering, a broker restarted mid-turn n
 the remainder of that turn, and a transcript path learned without an accompanying verdict is a path
 that is never read.
 
-The two halves of the verdict take deliberately different evidence. Suppression is recorded on the
-process token alone, before the request body is read, because failing closed on weak evidence costs
-some narration. Permission requires the payload to name the session the token holds. A process that
-holds the token can still supply that, which is what keeps this advisory rather than enforced.
+The two halves of the verdict take deliberately different evidence, and both routes that carry a
+verdict hold the same split. Suppression is recorded on the process token alone, before the
+request body is read, because failing closed on weak evidence costs some narration. Permission
+requires the payload to name the session the token holds, and on the `PreToolUse` route the
+question itself sits behind that same gate rather than behind the token alone: the CLI retries a
+refused hook post for hours, so a retry can outlive the session that emitted it, and a post
+credited by token alone would otherwise put a predecessor session's question into the thread of
+whatever session holds the token now. A process that holds the token can still supply the naming,
+which is what keeps this advisory rather than enforced.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
@@ -187,6 +192,10 @@ hand a token-holding local process an unbounded phone-ping primitive. Both trigg
 one delivery closure and the one window, deduplicated by a bounded per-session set of outstanding
 question digests, so the double path cannot double-spend the ceilings, and a digest is recorded
 only for an alert that landed, so a dropped emission alert leaves the resolution fallback armed.
+The set holds at most 8 digests, one copy per question, and drops whole whenever the tailer's byte
+offset does, so a digest can never outlive the resolution line it waits for and swallow a later
+identical question's only alert. Every branch of the dedupe fails the same way: at most one
+duplicate ping, never a silent question.
 Each thread gets 1 mention and 4 posts per 60 seconds: past the first, the alert posts without
 mentioning; past the fourth, it is dropped and one rate-limited, content-free log line says so.
 The window's stamps are deliberately separate from the permission prompt's window, because shared
@@ -202,7 +211,8 @@ broker's scheduled task runs as the operator at limited integrity, the same acco
 subprocess runs as, so making the broker perform the read confers no privilege. Such a process can
 already read any of the operator's files and post arbitrary text to the thread through the mirror
 route. A forged `PreToolUse` question post is the same class: it is credited only against the
-session its token holds, alerts only into that session's own thread, and spends that thread's own
+session its token holds, it must name that session in its own payload to reach the question seam
+at all, it alerts only into that session's own thread, and it spends that thread's own
 question window first. Through the tailer it costs one additional forged `/mirror` post to arm the session, and what
 it can aim at is bounded twice over: the path must pass validation below, and a line yields text only
 when its own recorded session ID matches the session the path was learned for, so another registered

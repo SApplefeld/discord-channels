@@ -1,16 +1,16 @@
 # Channels: the tailer blackout
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: standing (Fable-led session)
 
 ## Related
 
-- [channels_prompt-surfacing-and-wake-compression_spec_v1.md](../archive/plans/channels_prompt-surfacing-and-wake-compression_spec_v1.md):
+- [channels_prompt-surfacing-and-wake-compression_spec_v1.md](channels_prompt-surfacing-and-wake-compression_spec_v1.md):
   the effort whose live verification surfaced this. Its question alert shipped correct at the unit
   level and delivered 7.5 hours late in the live check that closes it, which reopens the work as
   this round.
-- [channels_question-answering_spec_v1.md](channels_question-answering_spec_v1.md): builds on this
+- [channels_question-answering_spec_v1.md](../../plans/channels_question-answering_spec_v1.md): builds on this
   round's `PreToolUse` hook entry and its ratifying probe, turning the alert path into an answer
   path (the held hook response carries the operator's choices back).
 
@@ -245,16 +245,58 @@ exactly one question alert (11:13:55Z, posted the same second the picker opened 
 the operator's phone while the picker was still open), and zero further alerts after the picker
 resolved, so the emission-digest dedupe held against the resolution-time transcript yield. The
 resolution observed was a dismissal rather than an answer, which is a stricter case than the
-acceptance asked for (the withheld line lands either way). Convergent bonus evidence from the
+acceptance asked for, and the withheld line landing on dismissal is confirmed by direct
+transcript read, not assumed: the session's own transcript carries the dismissed call's
+`tool_use` line (line 188, all four question headers, stamped 11:13:57Z), the thread carries
+narration mirrored from after that line's write moment (so a poll read through it), and the
+thread still shows exactly one alert, which is the digest match working end to end. The literal
+answered-picker case rides the question-answering round's live checks, where every check answers
+a picker remotely. Convergent bonus evidence from the
 same morning's probe work: a session launched without the wrapper fired the new PreToolUse hook
 and the intake dropped it tokenless with one log line, the no-watch fail direction working as
 designed. The alert's readability and the absence of any remote answer path were reported by the
 operator as the next round's work; that round is specced and open as
 channels_question-answering_spec_v1.md.
 Review Findings: the two named checks riding from Chapter 2 closed: the security model and
-operations docs landed at b07b839, and the post-answer transcript line's input digest-matching
-the emission payload is confirmed by the live thread showing no duplicate alert.
+operations docs landed at b07b839, and the resolution-time transcript line's input
+digest-matching the emission payload is confirmed by the receipts chain above (the transcript's
+own `tool_use` line, a poll that read past it, one alert in the thread).
 Stamps: none this section
 Next: the whole-effort finishing pass (QA verification, finishing reviews, docs curation,
 archive)
+Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-09
+Completed: the whole-effort finishing pass; the plan is Complete and archived in this changeset
+Implemented By: main session orchestrating qa-verifier, security-reviewer, adversarial-reviewer,
+docs-curator, and one implementer-fable fix round
+Metrics: 1 finishing review round plus 1 fix round; 0 NEEDS_CONTEXT; 0 escalations; tree-state
+bracket clean across all three review rounds
+Decisions / Surprises: QA passed at 749/748/0/1 against the recorded 728/727/0/1 baseline with
+the delta verified as real new tests. The finishing reviews then earned their keep: security
+(CLEAR, 1 Minor) traced a real inversion of the module's own promised fail direction, a digest
+record straddling the awaited delivery so a racing identical question could strand a stale copy
+that would swallow a later identical ask's only alert, and adversarial (APPROVED_WITH_CONCERNS)
+found the question seam missing the straggler gate its sibling allow half holds. Both were
+confirmed against the code before dispatch and fixed red-first in one round (4fd6af7), with a
+third guard from the same trace: learn()'s path-change branch now drops outstanding digests
+beside the offset, suppress()'s own direction. Gates after the fix round, re-run by the main
+session: lint exit 0, 752/751/0/1. Adversarial's second Major was this plan's own Chapter 3
+overclaiming its verification; it is restated above with transcript receipts (the dismissed
+call's tool_use line read directly at line 188), which upgraded the evidence rather than
+weakening the claim. QA's one UNVERIFIABLE item (re-running red proofs would mutate the tree
+inside the bracket) stands on Chapter 2's build-time record plus the fix round's fresh red-first
+evidence. Accepted without change: the end-to-end log assertion's single-macrotask window
+(adversarial Minor, low), covered tightly by the unit-level content-never-logged pins.
+Review Findings: security CLEAR (1 Minor, fixed); adversarial APPROVED_WITH_CONCERNS (2 Major:
+one fixed in code, one resolved by restating Chapter 3 on receipts; 2 Minor: both README rows
+fixed in this close-out's docs work; 1 Minor accepted with justification). Drift Report: 4
+deviations, 0 mistakes: the remote-answering pointer moved from backlog to the open plan (fixed
+both sites), the straggler gate and the learn() digest drop are as-built guards stronger than
+the Section 2 text (this Chapter is their record), and the live resolution was a dismissal
+rather than an answer (receipts in Chapter 3; the answered case rides the question-answering
+round's live checks).
+Stamps: adjudicated at close-out; the sweep and recap ride the close-out status
+Operator-pending: none; the live re-verify closed on receipts
+Next: none; the follow-on work is its own open plan, channels_question-answering_spec_v1.md
 Commit Model: Commit-and-Push

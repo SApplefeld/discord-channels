@@ -7,7 +7,7 @@ Created: 2026-08-09
 
 ## Related
 
-- [channels_tailer-blackout_spec_v1.md](channels_tailer-blackout_spec_v1.md): shipped the
+- [channels_tailer-blackout_spec_v1.md](../archive/plans/channels_tailer-blackout_spec_v1.md): shipped the
   ask-time question alert and the `PreToolUse` hook entry this design turns into an answer
   channel. This plan begins where that one's backlog entry ("Answering a console question from
   the thread") left off; the entry is absorbed here.

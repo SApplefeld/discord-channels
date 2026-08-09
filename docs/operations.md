@@ -156,10 +156,18 @@ Options: Commit-and-Push · Review-Only · Branch-and-PR
 ```
 
 The alert cannot be answered from the thread: the broker does not yet answer the picker (Claude
-Code's `PreToolUse` hook can carry an answer back, and the backlog holds that round), so the
+Code's `PreToolUse` hook can carry an answer back, and
+[`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md) is
+the open plan for that round), so the
 alert's job is to tell you the session is parked and what it is asking. Anything you type in the
 thread is delivered to the session as ordinary steering when its turn resumes, not as the
 picker's answer.
+
+One question raises one alert: the ask-time post records a digest that the answer-time transcript
+read recognizes and skips. That memory is deliberately short-lived, so a mirror toggled off and
+back on, or a session taught a new transcript path, while a picker sits open can let the same
+question alert a second time when it resolves. A duplicate ping is the designed direction on
+every branch of that dedupe, chosen over the alternative of a question that alerts nowhere.
 
 Both alert sources ride the tailer's question seam and its mirror-verdict gate, so alerts land
 only where mid-turn narration does: a host with `CHANNEL_INTERIM_MIRROR` or `CHANNEL_MIRROR` off,

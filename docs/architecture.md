@@ -143,7 +143,11 @@ picker is answered, so this yield is the fallback behind the `PreToolUse` hook p
 the same question at emission; a bounded per-session set of outstanding digests lets the yield
 recognize and skip a question the hook path already alerted, and a session whose installed hooks
 predate the `PreToolUse` entry still alerts here, at answer time, which is that host's
-compatibility story. The question alert takes its own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
+compatibility story. A digest lives exactly as long as the byte offset it was recorded against,
+at one copy per question: the set holds at most 8 and drops whole whenever the offset does (a
+newly taught path, a mirror-off suppression), because a digest outliving the resolution line it
+waits for would consume a later identical question's only alert. The preserved fail direction is
+at most one duplicate ping, never a silent question. The question alert takes its own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
 way a permission prompt does, under its own per-thread ping/quiet/drop window (1 mention and 4
 posts per thread per minute, a window deliberately separate from the permission prompt's own), so
 a session parked on a picker reaches a phone without a long narration run ahead of it and without
