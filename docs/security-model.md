@@ -355,6 +355,17 @@ cannot inherit and to the request id it names, while a question's answer is text
 whoever asked, which is why the forged-question residual above is recorded as elicitation and not
 as approval. A forged question cannot approve anything, and a forged verdict cannot be sent.
 
+**The fleet card sends account identity.** Its per-account label is the account's own email
+address, falling back to its organization name, read from claude-swap's `sequence.json` beside the
+usage cache and rendered inert like every other untrusted field. Two of the three hosts are
+organization-owned, so those labels are corporate identities, and they cross to Discord under
+Discord's retention the way every other surface's content does. What the card does not carry is
+anything from the credentials directory that sits beside the files it reads: the reader opens
+exactly `cache/usage.json` and `sequence.json`, no field of either file is ever used as a path,
+and `lastError`'s content is deliberately left unread, because an authentication failure string is
+where a token or a token-bearing URL would appear. What it takes from that field is that one
+exists.
+
 **A channel event reaches the model at the keyboard's standing.** The relay's instructions describe
 the sender gate rather than commanding trust: a message is delivered only after the broker has
 checked its author's Discord account against the allowlist, and a broker connected to Discord

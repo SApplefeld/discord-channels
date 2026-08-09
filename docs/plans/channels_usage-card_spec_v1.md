@@ -46,7 +46,18 @@ invisible from Discord until a walk back to the console.
 **Mirror, never poll.** The broker reads the two local files on its own timer and renders; it
 never invokes claude-swap and never touches the network for usage. Freshness is displayed, not
 manufactured: the card carries "as of <age>" per account from `fetchedAt`, and a `lastError` /
-`backoffUntil` state renders as a warning line. When every other claude-swap consumer is off and
+`backoffUntil` state renders as a warning line.
+
+One transform is applied rather than mirrored, and it serves that same rule (decided 2026-08-09,
+where the two rules below collided): a weekly or per-model window whose reset instant has passed
+is rolled forward to its current period, the way claude-swap's own console does, rather than
+rendering the last-written percentage against a boundary that is gone. The reset instant is a fact
+the cache itself wrote, so applying it reads what the data says rather than inventing anything,
+and the alternative fails in the expensive direction, telling the operator they are out of
+headroom against a window that has actually reset. A rolled window is showing its new period, not
+the last write, which is why the card says so in its own prose: a reader comparing the card to the
+cache file would otherwise find numbers that are not in it. A reading whose fetch time is not
+believable rolls nothing. When every other claude-swap consumer is off and
 the cache goes stale, the card says so; active polling is a later round if staleness proves
 common (decided 2026-08-09: passive-first risks nothing).
 
