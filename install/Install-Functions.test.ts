@@ -104,7 +104,7 @@ test("Get-SubstitutedFragment rewrites only the SessionStart path", (t) => {
   assert.deepEqual(urls(fragment), urls(onDisk));
 });
 
-test("Merge-ChannelSettingsFile creates a fresh settings file with all four events", (t) => {
+test("Merge-ChannelSettingsFile creates a fresh settings file with all five events", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const settingsPath = path.join(dir, "settings.json");
@@ -121,6 +121,7 @@ test("Merge-ChannelSettingsFile creates a fresh settings file with all four even
 
   assert.equal(merged.hooks.SessionStart.length, 1);
   assert.equal(merged.hooks.UserPromptSubmit.length, 1);
+  assert.equal(merged.hooks.PreToolUse.length, 1, "PreToolUse carries the question alert");
   assert.equal(merged.hooks.PostToolUse.length, 1);
   assert.equal(merged.hooks.Stop.length, 2, "Stop carries the liveness tick and the mirror post");
   assert.ok(existsSync(settingsPath), "the settings file itself must be written to disk");
@@ -160,7 +161,13 @@ test("Merge-ChannelSettingsFile preserves unrelated hooks and settings", (t) => 
   );
 
   assert.equal(merged.someOtherSetting, true, "an unrelated top-level setting must survive the merge");
-  assert.equal(merged.hooks.PreToolUse.length, 1, "an unrelated hook event must survive the merge");
+  // The fragment now declares PreToolUse itself, so the operator's own command hook under that
+  // event is exactly the survive-the-merge case: the project's entry lands beside it, never over it.
+  assert.equal(
+    merged.hooks.PreToolUse.length,
+    2,
+    "an unrelated hook under an event the fragment owns must survive beside the project's own",
+  );
   assert.equal(merged.hooks.SessionStart.length, 1);
 
   const backups = readdirSync(dir).filter((name) => name.startsWith("settings.json.bak-"));
@@ -178,6 +185,7 @@ test("running the merge twice does not duplicate the project's own hook entries"
     hooks: {
       SessionStart: unknown[];
       UserPromptSubmit: unknown[];
+      PreToolUse: unknown[];
       PostToolUse: unknown[];
       Stop: Array<{ hooks: Array<{ url: string }> }>;
     };
@@ -198,6 +206,7 @@ test("running the merge twice does not duplicate the project's own hook entries"
     1,
     "a second identical install must not duplicate UserPromptSubmit",
   );
+  assert.equal(merged.hooks.PreToolUse.length, 1, "a second identical install must not duplicate PreToolUse");
   assert.equal(merged.hooks.PostToolUse.length, 1, "a second identical install must not duplicate PostToolUse");
 
   // Stop is the event that carries more than one entry, so it is where an identity match that
@@ -293,7 +302,7 @@ test("Merge-ChannelSettingsFile refuses a fragment with an event outside the all
   const { status, stderr } = runFunctionsExpectingFailure(
     [
       `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
-      `$fragment['hooks']['PreToolUse'] = @(@{ hooks = @(@{ type = 'command'; command = 'calc.exe' }) })`,
+      `$fragment['hooks']['Notification'] = @(@{ hooks = @(@{ type = 'command'; command = 'calc.exe' }) })`,
       `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
     ].join("\n"),
     dir,
@@ -403,7 +412,7 @@ test("Merge-ChannelSettingsFile refuses a fragment declaring an unrecognized hoo
   assert.ok(!existsSync(settingsPath));
 });
 
-for (const event of ["UserPromptSubmit", "PostToolUse", "Stop"] as const) {
+for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"] as const) {
   test(`Merge-ChannelSettingsFile refuses a command hook declared under ${event}`, (t) => {
     // The path pattern the SessionStart command is held to constrains the script's filename, not the
     // directory it sits in, and Get-SubstitutedFragment rewrites only the SessionStart entry. A
@@ -499,11 +508,11 @@ test("Merge-ChannelSettingsFile refuses an http hook authorizing an environment 
 });
 
 test("Merge-ChannelSettingsFile admits the mirror switch header and env var on a mirror-route hook", (t) => {
-  // X-Channel-Mirror and CHANNEL_SESSION_MIRROR are the pair Section 4 adds, legitimate only on a
-  // hook posting to /mirror. Driven against UserPromptSubmit (already a mirror-route hook in the
-  // shipped fragment) with the header and env var set again explicitly, so this exercises the
-  // allowlists' own admission logic rather than only the fact that the fragment on disk agrees
-  // with them.
+  // X-Channel-Mirror and CHANNEL_SESSION_MIRROR are legitimate only on a hook posting to /mirror
+  // and on the PreToolUse question hook, the entries whose payloads carry conversation text.
+  // Driven against UserPromptSubmit (already a mirror-route hook in the shipped fragment) with the
+  // header and env var set again explicitly, so this exercises the allowlists' own admission
+  // logic rather than only the fact that the fragment on disk agrees with them.
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const settingsPath = path.join(dir, "settings.json");
@@ -524,12 +533,13 @@ test("Merge-ChannelSettingsFile admits the mirror switch header and env var on a
 });
 
 test("Merge-ChannelSettingsFile refuses the mirror switch header on a liveness hook", (t) => {
-  // X-Channel-Mirror is legitimate on a /mirror hook and forbidden on /hook: the fix ties the
-  // header and its env var to the route rather than admitting them everywhere. A flat allowlist
-  // would accept this fragment, the exact shape settings-fragment.test.ts's liveness/mirror split
-  // forbids, so this is the discriminating negative half of the route-tying fix: the positive test
-  // above passes identically whether or not the route tie exists, and only this one distinguishes
-  // "widened for /mirror" from "widened everywhere."
+  // X-Channel-Mirror is legitimate on a /mirror hook and on the PreToolUse question hook, and
+  // forbidden on the liveness hooks: the header and its env var are tied to the entries whose
+  // payloads carry conversation text rather than admitted everywhere. A flat allowlist would
+  // accept this fragment, the exact shape settings-fragment.test.ts's split forbids, so this is
+  // the discriminating negative half: the positive test above passes identically whether or not
+  // the tie exists, and only this one distinguishes "widened for the content-bearing entries"
+  // from "widened everywhere."
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const settingsPath = path.join(dir, "settings.json");
@@ -547,6 +557,42 @@ test("Merge-ChannelSettingsFile refuses the mirror switch header on a liveness h
   assert.notEqual(status, 0, "the switch header must be refused on a liveness hook, not merged");
   assert.match(stderr, /header/i);
   assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
+});
+
+test("Merge-ChannelSettingsFile refuses a PreToolUse entry whose matcher is not exactly AskUserQuestion", (t) => {
+  // This validator is the one that runs where the fragment can be tampered; the repo-side pin in
+  // settings-fragment.test.ts never runs on the installed host. PreToolUse fires before a tool
+  // runs and its payload carries the tool's whole input, so a widened matcher would post every
+  // matched tool call's input on the machine to the broker at emission, and it would do so on a
+  // hook the installer admits the mirror switch header for on the strength of the exact matcher.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const settingsPath = path.join(dir, "settings.json");
+
+  const widened = runFunctionsExpectingFailure(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['hooks']['PreToolUse'][0]['matcher'] = '*'`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    ].join("\n"),
+    dir,
+  );
+  assert.notEqual(widened.status, 0, "a wildcard PreToolUse matcher must be refused, not merged");
+  assert.match(widened.stderr, /matcher/i);
+  assert.match(widened.stderr, /PreToolUse/);
+  assert.ok(!existsSync(settingsPath), "a refused fragment must not reach the settings file at all");
+
+  const missing = runFunctionsExpectingFailure(
+    [
+      `$fragment = Get-SubstitutedFragment -FragmentPath "${FRAGMENT_PATH}" -SessionStartScriptPath "C:\\repo\\hooks\\session-start.ps1"`,
+      `$fragment['hooks']['PreToolUse'][0].Remove('matcher')`,
+      `Merge-ChannelSettingsFile -SettingsPath "${settingsPath}" -Fragment $fragment`,
+    ].join("\n"),
+    dir,
+  );
+  assert.notEqual(missing.status, 0, "a matcherless PreToolUse entry matches everything and must be refused");
+  assert.match(missing.stderr, /matcher/i);
+  assert.ok(!existsSync(settingsPath));
 });
 
 test("Merge-ChannelSettingsFile refuses a mirror switch header that does not interpolate the variable", (t) => {

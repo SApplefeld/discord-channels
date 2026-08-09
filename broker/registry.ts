@@ -46,7 +46,7 @@ export type SessionRecord = {
   endedAt: number | null;
 };
 
-export type HookEvent = "SessionStart" | "PostToolUse" | "Stop";
+export type HookEvent = "SessionStart" | "PreToolUse" | "PostToolUse" | "Stop";
 
 /** A validated hook post, reduced to the fields the registry keeps. */
 export type HookIntake = {
@@ -319,9 +319,14 @@ export function createRegistry(options: RegistryOptions): Registry {
         record.lastTool = intake.toolName;
         record.lastToolInput = intake.toolInput;
       }
-    } else {
+    } else if (intake.event === "Stop") {
       record.turnCount += 1;
     }
+    // PreToolUse moves neither counter: it fires at the moment AskUserQuestion opens its picker,
+    // and the same call's completion still arrives as a PostToolUse that does the tool
+    // accounting, so counting the emission too would count every question twice, and an emission
+    // is not a turn. What it still is, like every credited event, is proof of life, which the
+    // shared stamping below records.
     if (intake.sessionName !== null) record.name = intake.sessionName;
     // An event that arrives after its session ended still counts, but it cannot revive the record
     // or hold it out of a staleness sweep it has already left.

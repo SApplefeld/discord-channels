@@ -135,12 +135,17 @@ headers, and allowedEnvVars are otherwise merged verbatim, so a url pointing off
 every console prompt and every assistant reply on the machine, plus the process token riding in a
 header, to whatever address the fragment names, on the next routine re-install. The url must
 therefore name loopback and one of this project's own routes; a header name must be one of the three
-core headers every http hook carries, or, on a hook posting to /mirror only, the fourth,
-X-Channel-Mirror; and an allowedEnvVars entry must be one of the two variables the core headers
-interpolate, or, again only on a /mirror hook, CHANNEL_SESSION_MIRROR, since that list is what
-authorizes an environment variable to be read into a request at all. Tying the switch header and its
-variable to the route rather than admitting them everywhere keeps a liveness hook from carrying a
-header settings-fragment.test.ts's own liveness/mirror split forbids it from carrying.
+core headers every http hook carries, or, on a hook posting to /mirror or on the PreToolUse question
+hook, the fourth, X-Channel-Mirror; and an allowedEnvVars entry must be one of the two variables the
+core headers interpolate, or, again only on those same content-bearing hooks,
+CHANNEL_SESSION_MIRROR, since that list is what authorizes an environment variable to be read into a
+request at all. The switch header and its variable are tied to the entries whose payloads carry
+conversation text (the mirror route's, and PreToolUse, whose AskUserQuestion payload carries the
+open question's text to /hook) rather than admitted everywhere, which keeps a liveness hook from
+carrying a header settings-fragment.test.ts's own split forbids it from carrying. A PreToolUse
+entry's matcher is pinned to exactly AskUserQuestion for the same reason: PreToolUse posts a tool
+call's whole input at emission, so a widened or missing matcher would send every matched call's
+input on the machine to the broker, on the very entry the switch header is admitted for.
 settings-fragment.test.ts pins the same shapes, but it runs in this repository, not on the host at
 install time, which is where the fragment is read.
 
@@ -172,7 +177,7 @@ $script:AllowedChannelPermissionRules = @(
 function Assert-ValidChannelFragment {
     param([Parameter(Mandatory)][hashtable]$Fragment)
 
-    $allowedEvents = @('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
+    $allowedEvents = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
     $allowedTypes = @('command', 'http')
     $allowedUrl = '^http://127\.0\.0\.1:(\d+)/(hook|mirror)\z'
     $coreHeaders = @('X-Channel-Hook-Event', 'X-Channel-Process-Token', 'X-Channel-Session-Name')
@@ -214,9 +219,21 @@ function Assert-ValidChannelFragment {
     foreach ($eventName in $Fragment['hooks'].Keys) {
         if ($allowedEvents -notcontains $eventName) {
             throw "Assert-ValidChannelFragment: the fragment declares an unrecognized hook event " +
-                "'$eventName'. Only SessionStart, UserPromptSubmit, PostToolUse, and Stop are merged."
+                "'$eventName'. Only SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and " +
+                "Stop are merged."
         }
         foreach ($entry in @($Fragment['hooks'][$eventName])) {
+            if ($eventName -eq 'PreToolUse' -and ([string]$entry['matcher']) -cne 'AskUserQuestion') {
+                # PreToolUse fires before a tool runs and its payload carries the tool's whole
+                # input, so a widened or missing matcher posts every matched tool call's input on
+                # the machine to the broker at emission. This pin is also what the mirror switch
+                # admission below leans on: X-Channel-Mirror is admitted on PreToolUse on the
+                # strength of the entry being exactly the AskUserQuestion question alert.
+                throw "Assert-ValidChannelFragment: the fragment's PreToolUse entry carries matcher " +
+                    "'$($entry['matcher'])' rather than 'AskUserQuestion'. PreToolUse posts a tool " +
+                    "call's whole input at emission, so only the question alert's exact matcher is " +
+                    "merged; anything wider would send every matched tool call's input to the broker."
+            }
             foreach ($hook in @($entry['hooks'])) {
                 $type = [string]$hook['type']
                 if ($allowedTypes -notcontains $type) {
@@ -263,13 +280,17 @@ function Assert-ValidChannelFragment {
                             "console prompts, assistant replies, and process token, and nothing about " +
                             "a healthy broker on the real port would show it."
                     }
-                    # The switch header and its env var are legitimate only on a hook posting to
-                    # /mirror: a liveness hook posting to /hook carries no content for a per-session
-                    # mirror switch to govern, and settings-fragment.test.ts holds that split as a
-                    # pinned property of the shipped fragment.
-                    $isMirrorRoute = $url -match '/mirror$'
-                    $allowedHeadersHere = if ($isMirrorRoute) { $coreHeaders + $mirrorOnlyHeaders } else { $coreHeaders }
-                    $allowedEnvVarsHere = if ($isMirrorRoute) { $coreEnvVars + $mirrorOnlyEnvVars } else { $coreEnvVars }
+                    # The switch header and its env var are legitimate only on the entries whose
+                    # payloads carry conversation text: a hook posting to /mirror, and the
+                    # PreToolUse question hook, whose AskUserQuestion payload carries the open
+                    # question's text to /hook. The PreToolUse arm rides the matcher pin at the
+                    # top of the entry loop: by the time headers are checked here, any PreToolUse
+                    # entry is exactly the AskUserQuestion one. A liveness hook carries no content
+                    # for a per-session mirror switch to govern, and settings-fragment.test.ts
+                    # holds that split as a pinned property of the shipped fragment.
+                    $carriesMirrorSwitch = ($url -match '/mirror$') -or ($eventName -eq 'PreToolUse')
+                    $allowedHeadersHere = if ($carriesMirrorSwitch) { $coreHeaders + $mirrorOnlyHeaders } else { $coreHeaders }
+                    $allowedEnvVarsHere = if ($carriesMirrorSwitch) { $coreEnvVars + $mirrorOnlyEnvVars } else { $coreEnvVars }
 
                     if ($null -ne $hook['headers']) {
                         foreach ($headerName in @($hook['headers'].Keys)) {

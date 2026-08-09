@@ -128,6 +128,62 @@ test("the tailer polls only when both mirror switches are on", async (t) => {
   );
 });
 
+test("a PreToolUse question post rides the /hook route end to end, and its text stays out of the log", async (t) => {
+  // The emission-time question path over a really-bound broker: announced session, mirror-on
+  // verdict, then the captured PreToolUse shape. Without Discord the alert lands nowhere, which
+  // is the routing layer's quiet no-thread outcome; what this pins is that the event is accepted
+  // on the wire as a credited liveness post and that no fragment of the question reaches the log.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-pretooluse-"));
+  const logFile = path.join(dir, "broker.log");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const broker = await startBroker(config({ stateFile: path.join(dir, "state.json"), logFile }));
+  t.after(() => broker.stop());
+
+  const headers = {
+    "content-type": "application/json",
+    "x-channel-process-token": "5f0c2e4a-0000-4000-8000-000000000003",
+  };
+  const announced = await fetch(`http://127.0.0.1:${broker.port}/hook`, {
+    method: "POST",
+    headers: { ...headers, "x-channel-hook-event": "SessionStart" },
+    body: JSON.stringify({ session_id: "session-ptu", source: "startup" }),
+  });
+  assert.equal(announced.status, 200);
+  await fetch(`http://127.0.0.1:${broker.port}/mirror`, {
+    method: "POST",
+    headers: { ...headers, "x-channel-hook-event": "UserPromptSubmit" },
+    body: JSON.stringify({ session_id: "session-ptu", prompt: "start of a turn" }),
+  });
+
+  const asked = await fetch(`http://127.0.0.1:${broker.port}/hook`, {
+    method: "POST",
+    headers: { ...headers, "x-channel-hook-event": "PreToolUse" },
+    body: JSON.stringify({
+      session_id: "session-ptu",
+      hook_event_name: "PreToolUse",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "SECRET-live-question: which beverage?",
+            header: "Beverage",
+            options: [{ label: "SECRET-option-coffee", description: "SECRET-description" }],
+            multiSelect: false,
+          },
+        ],
+      },
+      tool_use_id: "toolu_fixture",
+    }),
+  });
+  assert.equal(asked.status, 200, "PreToolUse must be a credited liveness event on /hook");
+
+  // The alert's delivery is asynchronous; one settled macrotask is enough for the no-thread drop.
+  await new Promise((resolve) => setImmediate(resolve));
+  const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  assert.ok(!logged.includes("SECRET"), `question content must never reach the broker log: ${logged}`);
+});
+
 test("startBroker exposes the logger it started with", async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-bind-logger-"));
   const logFile = path.join(dir, "broker.log");

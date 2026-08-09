@@ -67,39 +67,88 @@ captured rather than inferred:
 Acceptance met: the mechanism is named with captured observations (byte order, a captured payload,
 the log, and the thread), and Chapter 1 records the discriminating evidence.
 
-### 2. The fix the mechanism earns, plus the two hardenings already justified
+### 2. The emission-time question alert over PreToolUse, plus the two hardenings
 
 Model: fable
 
-> **Pending redesign.** Section 1's findings invalidate this section's premise: there is no tailer
-> mechanism to fix, and the fix the confirmed mechanism earns is a `PreToolUse` hook path for
-> `AskUserQuestion`, gated on a live interactive probe. The redesign is in front of the operator
-> now (Chapter 1 records the findings); this section's text is rewritten once ratified.
+Ratified 2026-08-09 after two gating measurements: `PreToolUse` fires for `AskUserQuestion` on a
+live interactive session, at emission, carrying the full `tool_input.questions` (receive-stamped
+capture, 50 seconds before the answer's `PostToolUse`), and the `PreToolUse` event delivers over
+an `http` hook (the live broker logged the probe's post; the rejection was the intake's own
+header allowlist, exactly as designed for an unheadered post).
 
-- Fix the confirmed mechanism from Section 1.
-- Regardless of mechanism, two hardenings are already evidence-backed: `learn()` refuses a taught
-  path whose filename stem is not the session id it is taught for (every real transcript's stem
-  equals its session id, per the `claude-code-transcript-jsonl-shape` memory; a subagent file can
-  then never become a session's learned path, and the refusal logs one bounded line), and the
-  pass watchdog from Section 1 stays, as the permanent visibility line. Both carry tests; the
-  stem-pin's test drives `learn` with an `agent-*.jsonl` path and asserts refusal plus the log
-  line, and a red-probe proves each test discriminates.
-- The full gates (`npm run lint`, `npm test`) green, with counts against the current baseline
-  (728 tests / 727 pass / 0 fail / 1 skipped at commit 7c64797).
+**Files:** `install/Install-Functions.ps1`, `broker/intake.ts`, `broker/tail.ts`,
+`broker/index.ts`, plus their tests. `broker/discord/render.ts` is reused unchanged
+(`renderQuestionNotice` already takes the bounded question shape).
 
-### 3. Deploy and live re-verify
+- **Install:** the installed hook set gains a `PreToolUse` entry with matcher `AskUserQuestion`,
+  an `http` hook to the same `/hook` route, carrying `X-Channel-Hook-Event: PreToolUse` and every
+  header its sibling entries carry, the mirror switch header included: the payload carries
+  conversation text, so it rides the same mirror consent the narration surfaces ride. Whatever
+  pin test guards the installed fragment's shape extends to the new entry.
+- **Intake (`broker/intake.ts`):** the `/hook` route's event allowlist gains `PreToolUse`, with
+  the same liveness and path-teaching semantics as `PostToolUse` (`lastHookAt`, `learn`). When the
+  payload's `tool_name` is `AskUserQuestion` and the session's mirror verdict is on, the bounded
+  question reader (exported from `broker/tail.ts` rather than duplicated; single-source per the
+  two-surfaces rule) parses `tool_input`, and the alert posts through the same wired
+  `deliverQuestion` closure the tailer uses: same `renderQuestionNotice`, same steering-writer
+  alert tier, same `createAlertVolume` window instance, so the two paths share one set of
+  per-thread ceilings and a double path can never double-ping. A mirror-off session's question
+  never alerts from this path (fail toward silence, the tailer's own arming rule); malformed
+  `input` contributes silence; content never reaches a log line.
+- **Dedupe:** the hook path records a per-session bounded set of outstanding question digests
+  (cap 8, oldest evicted; one slot proved insufficient in review when two asks land inside one
+  poll interval); the tailer's question yield consumes exactly the digest it matches, skipping
+  the resolution-time duplicate for a question the hook already alerted. `question()` also skips
+  delivery for a digest already outstanding (the CLI re-posts hooks on its retry cadence), a
+  digest is recorded only for an alert that landed (fail direction: one duplicate ping, never a
+  lost question), and `suppress()` drops the set beside the offset. A session whose hook set
+  predates this round (no digest recorded) keeps the tailer alert as its fallback, which is the
+  compatibility story for unupgraded hosts.
+- **Verdict re-arm:** the PreToolUse post's mirror header is read exactly as `/mirror` reads it,
+  both halves: recognized off vocabulary suppresses, and a non-off value (absent included) records
+  the allow verdict under `/mirror`'s evidence bar, so a broker restarted while a session sits
+  parked on a question can still alert at the next emission or retry rather than staying silent
+  until the next mirror post. The installer's fragment validator pins any `PreToolUse` entry's
+  matcher to exactly `AskUserQuestion` (review finding, three reviewers independently): the
+  validator runs where a fragment can be tampered, and a widened matcher would post every tool
+  call's input to the broker at emission.
+- **The two hardenings, unchanged from the original round:** `learn()` refuses a taught path
+  whose filename stem is not the session id (measured invariant; one bounded refusal log line),
+  and the poll-pass watchdog logs when a pass runs longer than several intervals (the visibility
+  line this round's forensics had to reconstruct from Discord instead of reading off the log).
+  Both carry tests; the stem-pin test drives `learn` with an `agent-*.jsonl` path and asserts
+  refusal plus the log line, and a red probe proves each new test discriminates.
+- The full gates (`npm run lint`, `npm test`) green, with counts against the baseline
+  (728 tests / 727 pass / 0 fail / 1 skipped, re-confirmed at f77b52d).
+
+**Acceptance:** a `/hook` post shaped as the captured probe payload (PreToolUse, AskUserQuestion,
+mirror-on session) produces exactly one thread alert identical in rendering to the tailer's, and
+a subsequent tailer read of the same question yields no second alert; the same post for a
+mirror-off session, or with malformed `input`, produces silence and no content in any log; a
+tailer-only question (no hook digest) still alerts exactly as today; the stem-pin and watchdog
+behave as specified with red-proven tests.
+
+### 3. Docs, deploy, and live re-verify
 
 Model: fable
-Locus: inline
+Locus: inline (docs are main-session work; the deploy and live checks need operator coordination)
 
-- Restart the SCOTT broker. The restart needs an elevated hand: the running broker was started
-  from an elevated prompt, and the `claude-sessions-on-scott-run-elevated` memory carries why an
-  unelevated session cannot bounce it. Coordinate with the operator, or land the backlog's
-  `Start-Broker.ps1` port-clearing hardening first so the scheduled task clears its own port.
-- Re-run the prior effort's two live checks under subagent load: a session that dispatches
-  subagents must narrate through the stretch, and an `AskUserQuestion` asked during or after such
-  a stretch must alert within one poll interval, not at resolution. The operator confirms the
-  alert reached the phone.
+- **Docs:** `docs/architecture.md` and `docs/security-model.md` gain the hook-path question alert
+  (primary source at emission) with the tailer yield as the resolution-time fallback, and the
+  shared alert window as a security property; `docs/operations.md`'s "When a session asks you a
+  question" section states the real timing story (ask-time alerts for sessions started after the
+  install update, answer-time for older ones). Sweep the tree for the now-false "no hook fires
+  for that tool / nothing observes it" comment claims (`broker/tail.ts` carries at least two),
+  per the `a-comment-that-names-a-property-is-a-claim-to-sweep` memory.
+- **Deploy:** run the install update so the hook fragment lands in user settings, then restart
+  the SCOTT broker. The restart needs an elevated hand (`claude-sessions-on-scott-run-elevated`
+  memory); coordinate with the operator.
+- **Live re-verify:** in a console session started after the install update, ask an
+  `AskUserQuestion` and let it park unanswered: the alert must reach the thread and phone within
+  seconds of the ask, while the picker is still open. Answer it and confirm no second alert
+  arrives from the tailer's resolution-time read. The operator confirms the ping reached the
+  phone with the picker open, which is the exact check the original defect failed.
 
 ## Chapters
 
@@ -138,4 +187,44 @@ corrected and superseded rather than stamped; three operator-tier reads
 azure-cli-under-armed-sp-on-windows) skipped as not applied to this work
 Next: Section 2, pending the operator's ratification of the redesign (PreToolUse alert path gated
 on the interactive probe, plus which hardenings survive)
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-09
+Completed: Section 2: The emission-time question alert over PreToolUse, plus the two hardenings
+Implemented By: implementer-fable (two rounds: initial build, then the review-fix round on the
+same agent's context)
+Metrics: 1 full review round (adversarial + blind + security, all at the session tier) plus the
+fix round's own red-first evidence; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the operator's interactive probe confirmed both design gates in one
+morning: PreToolUse fires for AskUserQuestion at emission with the full question payload
+(receive-stamped capture, 50 seconds before the answer's PostToolUse, which itself carries an
+`answers` map keyed by question text), and the event delivers over http (the live broker logged
+the unheadered probe post's refusal, which is the header allowlist working, not a transport
+failure). Implementer deviations accepted: registry.ts joined the file list because the HookEvent
+union lives there, and its turn-counter refactor was verified by the adversarial reviewer as a
+no-op for the old vocabulary and a required exemption for the new (SessionStart never counted
+turns at base; the else-branch only ever received Stop). The intake reads the PreToolUse post's
+mirror header both halves, exactly as /mirror does; the allow half was a review finding whose fix
+closes the restart-while-parked gap, the original defect's own scenario. The one-slot dedupe
+digest was the blind reviewer's Major (two asks inside one poll interval produce a duplicate
+alert): fixed as a bounded outstanding set, cap 8, oldest evicted, consume-exactly-the-match,
+with question() skipping already-outstanding digests (the CLI's documented retry cadence).
+Risk acceptances encoded as comments rather than code: the digest records only on a landed alert
+(recording at dispatch would invert the fail direction from one duplicate ping to a lost
+question), and the in-flight identical-race stays open for the same reason. The stem-pin's
+dependency on the filename-stem-equals-session-id invariant is accepted with the refusal log line
+as its witness; if upstream ever ships a legitimate divergence, the pin fails toward silence for
+that session and the log line is the tell. A host running CHANNEL_INTERIM_MIRROR=off has no
+tailer and therefore no emission-time alert (the seam is a no-op); the live host runs it on, and
+Section 3's operations text names the coupling.
+Review Findings: adversarial APPROVED_WITH_CONCERNS (4 Minor), security CLEAR (2 Minor), blind
+APPROVED_WITH_CONCERNS (1 Major, 4 Minor). Fixed: the one-slot digest Major; question()
+idempotency; suppress() digest clearing; the installer's PreToolUse matcher pin (flagged
+independently by all three reviewers); the missing allow half. Accepted with justification:
+record-on-sent timing (comment names the window); stem-pin invariant risk. Riding Section 3 as
+named checks: the security model and operations doc updates (security reviewer: the effort
+cannot close without them), and a live confirmation that the post-answer transcript line's
+`input` still digest-matches the emission payload (adversarial, low confidence).
+Stamps: adjudicated 1, stamped 1 (claude-code-channel-and-hook-facts)
+Next: Section 3: docs, deploy, and live re-verify
 Commit Model: Commit-and-Push

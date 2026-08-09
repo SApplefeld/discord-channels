@@ -222,24 +222,49 @@ export type TranscriptTailerOptions = {
    */
   deliverPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
   /**
-   * Posts one open-question alert to the session's own thread, from an `AskUserQuestion` call
-   * read off the transcript: no hook fires for that tool, so this is the one place the question
-   * exists outside the console. The status is read only to keep the shared result vocabulary;
-   * nothing here queues or retries, and no echo digest is recorded, because no other path posts
-   * this text.
+   * Posts one open-question alert to the session's own thread. Both question paths ride this one
+   * closure: `question()`, fed by the `AskUserQuestion` PreToolUse hook at emission, and the
+   * poll's own read of the call's transcript line, which Claude Code withholds until the picker
+   * is answered and which therefore serves as the resolution-time fallback. The status is read
+   * only to keep the shared result vocabulary and to decide whether the emission-time alert
+   * records its dedupe digest; nothing here queues or retries.
    */
   deliverQuestion: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
   now?: () => number;
+  /**
+   * How long one poll pass may run before the next `poll()` reports it as still running. The
+   * poll interval is the caller's, not this module's, so the caller scales this to several
+   * intervals; a pass legitimately outlasts one interval when Discord is slow, and the watchdog
+   * exists for the pass that outlasts them all.
+   */
+  passWatchdogMs?: number;
   /** The one read this module performs. Injected so a test can count reads or fail them. */
   readFile?: (path: string, offset: number, maxBytes: number) => Promise<TranscriptSlice>;
 };
 
 export type TranscriptTailer = {
-  /** Teaches the tailer where a session's transcript lives, from a credited hook post. */
+  /**
+   * Teaches the tailer where a session's transcript lives, from a credited hook post. A path
+   * whose filename stem is not the session id it is taught for is refused whole: every real
+   * transcript is `<session-id>.jsonl`, so a path that breaks that invariant is an upstream
+   * shape change or a forged payload, and either must not re-aim what this module reads.
+   */
   learn: (sessionId: string, path: string) => void;
+  /**
+   * Posts one emission-time question alert for a session whose mirror verdict is on, through the
+   * same `deliverQuestion` seam the poll's transcript yield uses. Fed by the `AskUserQuestion`
+   * PreToolUse hook, which fires while the console's picker is open, long before the transcript
+   * line exists. Fails toward silence on every gate: a session with no verdict seen, a
+   * suppressed one, or an empty parse contributes nothing, and a question whose digest is
+   * already outstanding (the CLI re-posting an identical payload) is skipped rather than pinged
+   * twice. An alert that lands records a one-shot digest in the entry's bounded outstanding set
+   * so the resolution-time transcript yield skips its own copy of the same question; an alert
+   * that does not land records nothing, leaving that yield armed as the fallback.
+   */
+  question: (sessionId: string, questions: readonly AskedQuestion[]) => void;
   /**
    * Permits a session's transcript to be read, on the session's mirror-on verdict. When the
    * session already has a learned path and no held offset, this is also the moment the baseline
@@ -277,6 +302,21 @@ export type TranscriptTailer = {
 
 /** How long a run of the same log reason is aggregated before its next flush. */
 const REPEAT_WINDOW_MS = 60_000;
+
+/**
+ * The pass watchdog's default threshold when the caller supplies none: three of the default poll
+ * intervals, the same "several intervals" scaling index.ts applies to the configured one.
+ */
+const DEFAULT_PASS_WATCHDOG_MS = 60_000;
+
+/**
+ * The most emission-time question digests one session holds outstanding at once. A session parks
+ * on one question at a time in practice, but a resolution line is consumed only by a later poll,
+ * so a fast ask-answer-ask run holds a few unconsumed together; the bound is what keeps a
+ * session that asks forever from growing the entry without limit. Past it the oldest digest is
+ * evicted, whose cost if its line still arrives is one duplicate alert, never a lost question.
+ */
+const MAX_OUTSTANDING_QUESTION_DIGESTS = 8;
 
 /**
  * How many log reasons are held before the closed ones are swept. A reason carries a session ID,
@@ -338,7 +378,9 @@ const MAX_OPTIONS_PER_QUESTION = 4;
 
 /**
  * The bounded questions an `AskUserQuestion` `tool_use` block's `input` holds; empty when nothing
- * in it is readable.
+ * in it is readable. Exported because the hook intake reads the PreToolUse payload's `tool_input`
+ * through this same reader: one reading on both paths, so the emission-time alert and the
+ * resolution-time fallback cannot drift apart in what they admit or render.
  *
  * Parsed by the allowlist's own rule: the input is another program's tool-call format, so
  * anything malformed contributes silence, never a guess and never a throw. At most the first four
@@ -351,7 +393,7 @@ const MAX_OPTIONS_PER_QUESTION = 4;
  * option entries contribute their `label`, descriptions dropped: the notice this feeds is a
  * glance that sends the operator to the console, not a copy of the picker.
  */
-function askedQuestions(input: unknown): AskedQuestion[] {
+export function askedQuestions(input: unknown): AskedQuestion[] {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
   const questions = (input as Record<string, unknown>)["questions"];
   if (!Array.isArray(questions)) return [];
@@ -392,10 +434,12 @@ function askedQuestions(input: unknown): AskedQuestion[] {
  *
  * A line yields a question item when its `type` is `assistant` and a block in `message.content`
  * is a `tool_use` block naming `AskUserQuestion`: the one tool call the console answers with a
- * picker, which no hook observes, so its transcript line is the only place the question exists
- * outside the console. What is yielded is the bounded structured reading `askedQuestions` above
- * takes of the block's `input`, never the block itself, and a block yielding zero readable
- * questions yields nothing.
+ * picker. Claude Code withholds this line from the transcript while the picker is open and
+ * writes it at answer time, so what this yield carries is the resolution-time reading; the
+ * emission-time alert rides the tool's PreToolUse hook through `question()`, and the digest
+ * recorded there is what keeps this yield from alerting the same question twice. What is yielded
+ * is the bounded structured reading `askedQuestions` above takes of the block's `input`, never
+ * the block itself, and a block yielding zero readable questions yields nothing.
  *
  * A line yields a queued prompt when its `type` is `attachment` and its `attachment` is an object
  * whose `type` is `queued_command`, whose `commandMode` is `prompt`, whose `origin.kind` is
@@ -472,6 +516,27 @@ function lineItems(line: string, sessionId: string): TailItem[] {
 }
 
 /**
+ * One digest over a parsed question set, for the emission-versus-resolution dedupe. Computed
+ * over the bounded structured reading, never the raw input, and both paths parse through
+ * `askedQuestions`, so the same call digests identically however it arrived. A digest rather
+ * than the questions themselves, the echo memory's own rule: no conversation text is held in
+ * broker memory past the moment it is posted.
+ */
+function questionDigest(questions: readonly AskedQuestion[]): string {
+  return createHash("sha256").update(JSON.stringify(questions), "utf8").digest("hex");
+}
+
+/**
+ * The filename stem of a taught path: the basename with a `.jsonl` extension removed. Every real
+ * transcript is named `<session-id>.jsonl`, the measured invariant `learn()` pins taught paths
+ * to.
+ */
+function taughtStem(path: string): string {
+  const base = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+  return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
+}
+
+/**
  * The real read: one open per session per pass, closed whatever happens. The size comes back
  * beside the bytes so the caller can decide what the bytes mean (a shrink, an overrun) from the
  * same observation it read them under, rather than from a second stat the file may have outgrown.
@@ -537,6 +602,20 @@ type TailEntry = {
    */
   allowed: boolean;
   /**
+   * Digests of the questions the hook path has alerted whose resolution lines the transcript has
+   * not yet yielded, oldest first, bounded by MAX_OUTSTANDING_QUESTION_DIGESTS. Written by
+   * `question()` on a delivered alert; the poll's transcript yield consults the set and consumes
+   * exactly the digest it matched, skipping the resolution-time duplicate of a question already
+   * alerted at emission. A set rather than one slot, because the lines land at answer time: Q1
+   * answered and Q2 asked before the next poll leaves both outstanding at once, and a slot would
+   * let Q2 evict Q1's digest and re-alert Q1. Each digest stays one-shot on the echo memory's
+   * discipline (the double path produces exactly one duplicate per question, and a digest left
+   * standing would silence a later turn genuinely asking the same question again), and the set
+   * doubles as `question()`'s idempotency guard against the CLI re-posting an identical hook
+   * payload. Dropped whole by `suppress` and with the entry by `forget`.
+   */
+  askedDigests: string[];
+  /**
    * Bumped by `suppress`, by `forget`, and by `learn` on a path change, never by `allow`. Every
    * in-flight probe and every `pollOne` pass captures this value the moment it starts, and every
    * point where either would write back to the entry checks the capture against the live value
@@ -550,13 +629,18 @@ type TailEntry = {
 
 export function createTranscriptTailer(options: TranscriptTailerOptions): TranscriptTailer {
   const log = options.log ?? ((): void => {});
-  const repeats = createRepeatLog(log, options.now ?? Date.now);
+  const now = options.now ?? Date.now;
+  const repeats = createRepeatLog(log, now);
   const read = options.readFile ?? readSlice;
+  const passWatchdogMs = options.passWatchdogMs ?? DEFAULT_PASS_WATCHDOG_MS;
   const sessions = new Map<string, TailEntry>();
   // One pass at a time: a pass can outlast the poll interval when Discord is slow, and a second
   // pass over the same offsets would read and post the same chunks twice. The pass itself is
   // held, not a flag, because the promise a busy poll answers with is what shutdown awaits.
   let running: Promise<void> | null = null;
+  // When the running pass began, read only while `running` is held: the watchdog compares it
+  // against the clock on every poll that finds the previous pass still going.
+  let passStartedAt = 0;
   // Every baseline probe outstanding right now, across every session, independent of whether the
   // entry it targets still references it. A pass only awaits the probe of a session whose own
   // per-session closure read `allowed` as true when the closure ran; a probe that `allow` or
@@ -568,7 +652,7 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
   function entry(sessionId: string): TailEntry {
     let held = sessions.get(sessionId);
     if (held === undefined) {
-      held = { path: null, offset: null, probe: null, allowed: false, epoch: 0 };
+      held = { path: null, offset: null, probe: null, askedDigests: [], allowed: false, epoch: 0 };
       sessions.set(sessionId, held);
     }
     return held;
@@ -626,6 +710,20 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
   }
 
   function learn(sessionId: string, path: string): void {
+    // The stem-pin: a real transcript is named <session-id>.jsonl, and every credited hook
+    // payload carries the parent session's own path (a subagent's identity rides in separate
+    // fields, never in this path). A taught path whose stem disagrees is therefore an upstream
+    // shape change or a forged payload, and accepting it would reset the offset and aim every
+    // later read at a file this session does not own. Refused whole, before the entry is even
+    // created: the entry keeps its prior path, and the refusal is one bounded line naming the
+    // session and never the path, which is content-adjacent and stays out of the log.
+    if (taughtStem(path) !== sessionId) {
+      repeats(
+        `session ${sessionId} was taught a transcript path whose filename is not its own session id`,
+        "the path is refused; the entry keeps its prior path",
+      );
+      return;
+    }
     const held = entry(sessionId);
     // Every credited hook post re-teaches the same path, and the held offset must survive that:
     // resetting it here would skip to the file's end on every PostToolUse and drop the narration
@@ -650,6 +748,57 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     startProbe(sessionId, held);
   }
 
+  function question(sessionId: string, questions: readonly AskedQuestion[]): void {
+    // Every gate fails toward silence, the module's own arming rule: an empty parse, a session
+    // this tailer has never seen a verdict for, and a suppressed session all contribute nothing.
+    // `sessions.get` rather than `entry`, so an unseen session is not given an entry by the act
+    // of asking about it.
+    if (questions.length === 0) return;
+    const held = sessions.get(sessionId);
+    if (held === undefined || !held.allowed) return;
+    const digest = questionDigest(questions);
+    // The CLI retries a hook post it could not land, for hours when it comes to that, so an
+    // identical PreToolUse can arrive again while its first alert's digest is still outstanding.
+    // A digest already in the set means this exact question already reached the operator, and
+    // the repeat is skipped whole rather than pinged twice.
+    if (held.askedDigests.includes(digest)) return;
+    const epoch = held.epoch;
+    // Fire-and-forget from the caller's point of view: the hook intake answers its request
+    // without waiting on Discord, and a failed alert is dropped, never retried, exactly as the
+    // transcript yield drops one. The digest is recorded only for an alert that landed, so a
+    // refused or failed emission-time alert leaves the resolution-time yield armed as the
+    // fallback, and the write-back is checked against the epoch captured here, the rule every
+    // async write in this module follows.
+    void (async () => {
+      try {
+        const outcome = await options.deliverQuestion(sessionId, questions);
+        if (sessions.get(sessionId) !== held || held.epoch !== epoch || !held.allowed) return;
+        if (outcome.status === "sent") {
+          // Recorded only after the delivery resolved as sent, which leaves a narrow window: an
+          // answer landing while a slow Discord write is still in flight can put the resolution
+          // line on a poll that runs before this digest exists, and that poll posts a duplicate.
+          // Deliberate: recording at dispatch would invert the failure direction, because a
+          // digest recorded for a delivery that then fails consumes the resolution-time fallback
+          // and the question alerts nowhere. The fail direction here is one duplicate ping,
+          // never a lost question.
+          held.askedDigests.push(digest);
+          if (held.askedDigests.length > MAX_OUTSTANDING_QUESTION_DIGESTS) held.askedDigests.shift();
+        }
+        if (outcome.status === "failed") {
+          repeats(
+            `session ${sessionId}'s question alert was refused`,
+            "the alert is dropped, not retried",
+          );
+        }
+      } catch {
+        repeats(
+          `session ${sessionId}'s question alert failed`,
+          "the alert is dropped; the error detail is withheld, it can carry content",
+        );
+      }
+    })();
+  }
+
   function suppress(sessionId: string): void {
     const held = entry(sessionId);
     held.allowed = false;
@@ -669,6 +818,12 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     held.epoch += 1;
     held.offset = null;
     held.probe = null;
+    // The outstanding question digests drop with the offset, on the same silence-over-stale-state
+    // direction: the suppressed window swallows the resolution lines they were waiting for, and a
+    // digest that outlives its own line would mis-consume a later identical question's only
+    // alert. The cost of dropping one whose line does still arrive is one duplicate ping, the
+    // fail direction every branch of this dedupe takes.
+    held.askedDigests = [];
   }
 
   function forget(sessionId: string): void {
@@ -751,11 +906,19 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
       if (line === "") continue;
       for (const item of lineItems(line, sessionId)) {
         if (item.kind === "question") {
-          // The questions the console is holding this session on, delivered on the same
-          // one-await-per-item rule the other kinds follow, so the alert lands where the
-          // transcript puts it. No echo digest is recorded: no other path posts this text, so
-          // there is no duplicate to answer for. An alert that could not be made is dropped and
-          // never retried, and the error is discarded unread, because it can quote the question.
+          // The questions the console held this session on, landing here at answer time because
+          // Claude Code writes the line when the picker closes. The hook path usually alerted
+          // this same question at emission and recorded its digest, so a match here is that one
+          // duplicate, consumed as it is skipped; no digest means an unupgraded hook set or a
+          // hook alert that never landed, and then this yield is the question's only signal,
+          // delivered on the same one-await-per-item rule the other kinds follow. An alert that
+          // could not be made is dropped and never retried, and the error is discarded unread,
+          // because it can quote the question.
+          const outstanding = held.askedDigests.indexOf(questionDigest(item.questions));
+          if (outstanding !== -1) {
+            held.askedDigests.splice(outstanding, 1);
+            continue;
+          }
           try {
             const outcome = await options.deliverQuestion(sessionId, item.questions);
             // Every point past an await re-checks the epoch it started under, the rule the rest
@@ -851,7 +1014,22 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     // A call while a pass is running answers with that pass rather than starting a second one: a
     // second pass over the same offsets would post the same chunks twice, and the promise handed
     // back is what shutdown awaits, so it has to be the pass actually holding file handles.
-    if (running !== null) return running;
+    if (running !== null) {
+      // The pass watchdog. A pass legitimately outlasts one poll interval when Discord is slow;
+      // one that outlasts the threshold, several intervals, is wedged on something, and without
+      // this line the only symptom is narration quietly stopping. Rate-limited by the repeat
+      // limiter, so a long wedge is one line a window rather than a line a tick, and the line
+      // carries a duration and nothing content-adjacent.
+      const elapsed = now() - passStartedAt;
+      if (elapsed >= passWatchdogMs) {
+        repeats(
+          "a poll pass is still running past the watchdog threshold",
+          `${elapsed}ms since the pass began`,
+        );
+      }
+      return running;
+    }
+    passStartedAt = now();
     running = (async () => {
       try {
         await pass();
@@ -913,5 +1091,5 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     );
   }
 
-  return { learn, allow, suppress, poll, forget };
+  return { learn, allow, suppress, question, poll, forget };
 }

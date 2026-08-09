@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { MAX_TAIL_READ_BYTES, createEchoMemory, createTranscriptTailer } from "./tail.ts";
+import { MAX_TAIL_READ_BYTES, askedQuestions, createEchoMemory, createTranscriptTailer } from "./tail.ts";
 import type { TranscriptSlice, TranscriptTailerOptions } from "./tail.ts";
 import { renderAnswer, renderMirror } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
@@ -27,6 +27,12 @@ const SESSION = "aaaaaaaa-1111-4111-8111-111111111111";
 const OTHER_SESSION = "bbbbbbbb-2222-4222-8222-222222222222";
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
+
+// Synthetic taught paths for the tests that drive the injected readFile seam and never open a
+// real file. The filename stem is the session id, the measured invariant learn()'s stem-pin
+// holds every taught path to, so these paths are accepted exactly as a real hook-taught one is.
+const FIXTURE_PATH = `${SESSION}.jsonl`;
+const OTHER_FIXTURE_PATH = `${OTHER_SESSION}.jsonl`;
 
 function transcriptDir(t: TestContext): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-tail-"));
@@ -208,7 +214,7 @@ test("text written after the allow verdict but before the first poll still posts
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   // A macrotask boundary drains every microtask the probe's promise chain needs, so it observes
   // the file's empty state deterministically, before content changes, without depending on real
@@ -235,7 +241,7 @@ test("an allow arriving before the matching learn still baselines once the path 
   });
 
   tailer.allow(SESSION); // the mirror-on verdict, with no learned path yet: starts nothing
-  tailer.learn(SESSION, "fixture-path"); // the hook post that teaches it, moments later
+  tailer.learn(SESSION, FIXTURE_PATH); // the hook post that teaches it, moments later
   await new Promise((resolve) => setImmediate(resolve)); // lets the probe learn() starts settle
   content = assistantText(openingText);
   await tailer.poll();
@@ -256,7 +262,7 @@ test("an allow after the baseline is already set starts no new probe and does no
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines against the still-empty file
 
@@ -279,7 +285,7 @@ test("a session that is learned but never allowed gets no reads at all, probe in
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   await tailer.poll();
   await tailer.poll();
 
@@ -308,20 +314,21 @@ test("a path relearned while a probe is pending discards the stale probe's size"
     },
   });
 
-  tailer.learn(SESSION, "path-one");
-  tailer.allow(SESSION); // fires the probe against path-one, held pending by staleGate
+  tailer.learn(SESSION, `one/${FIXTURE_PATH}`);
+  tailer.allow(SESSION); // fires the probe against the first path, held pending by staleGate
   // A macrotask boundary drains the microtask that actually dispatches the read, so the relearn
   // below lands while the probe is genuinely in flight, matching the real gap a hook post's own
   // round trip leaves.
   await new Promise((resolve) => setImmediate(resolve));
 
-  tailer.learn(SESSION, "path-two"); // relearns before the probe answers; offset resets to null,
-  // and this itself starts path-two's own fresh probe, since the session is already allowed.
+  tailer.learn(SESSION, `two/${FIXTURE_PATH}`); // relearns before the probe answers; offset resets
+  // to null, and this itself starts the second path's own fresh probe, since the session is
+  // already allowed.
 
-  // The stale probe for path-one answers now, with a size that would, if adopted for path-two,
-  // move the baseline into a range path-two never actually had at that size.
+  // The stale probe for the first path answers now, with a size that would, if adopted for the
+  // second path, move the baseline into a range the second path never actually had at that size.
   releaseStale({ size: 999_999, bytes: Buffer.alloc(0) });
-  await tailer.poll(); // settles path-two's own fresh probe; the stale one must not win the write
+  await tailer.poll(); // settles the second path's own fresh probe; the stale one must not win
   assert.deepEqual(posts, [], "the fresh baseline itself consumes nothing");
 
   content = assistantText("narration after path-two was correctly baselined");
@@ -346,7 +353,7 @@ test("a probe rejection falls back to the poll-time baseline, republishing nothi
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // the probe rejects; swallowed
 
   content = assistantText("already there before the fallback baseline runs");
@@ -372,7 +379,7 @@ test("a second allow while a probe is pending does not start a second probe", as
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   tailer.allow(SESSION); // a probe is already pending; must not fire a second read
   // Asserted before any poll(): pollOne's own fallback baseline read is also a zero-byte read, so
@@ -401,7 +408,7 @@ test("a probe resolving after forget dropped its session writes nothing, and a r
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // fires the probe, held pending by staleGate
   // A macrotask boundary drains the microtask that actually dispatches the read, so the forget
   // below lands while the probe is genuinely in flight.
@@ -413,7 +420,7 @@ test("a probe resolving after forget dropped its session writes nothing, and a r
   releaseStale({ size: 999_999, bytes: Buffer.alloc(0) });
 
   // The session is re-created under the same ID, as a fresh SessionStart and hook post would.
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // fires this entry's own, fresh probe
 
   await tailer.poll(); // lets the fresh probe settle, against still-empty content
@@ -441,7 +448,7 @@ test("content written while suppressed is never published by the re-allow that f
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines against the empty file
 
@@ -498,7 +505,7 @@ test("a probe resolving after suppress arrived mid-flight writes no offset for t
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // dispatches the probe; its read is now genuinely in flight
   await new Promise((resolve) => setImmediate(resolve)); // lets the dispatch actually fire
 
@@ -546,7 +553,7 @@ test("a probe resolving after suppress and an immediate re-allow, with no macrot
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // dispatches the stale probe; its read is now genuinely in flight
   await new Promise((resolve) => setImmediate(resolve)); // lets the dispatch actually fire
 
@@ -586,7 +593,7 @@ test("a poll-time fallback baseline does not clobber a probe that raced it to a 
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // the initial probe
   // Lets the initial probe fully dispatch and reject before anything else happens, so what
   // pollOne finds pending on the entry, below, is genuinely nothing.
@@ -640,7 +647,7 @@ test("suppress landing during pollOne's own content read must not leave a slice-
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines against the empty file
 
@@ -684,8 +691,8 @@ test("a learn onto a new path landing during pollOne's await of a stale probe mu
   // Both probes are gated here, and released in a controlled order, so the old probe's resolution
   // (and whatever pollOne's own fallback does with it) is forced to land before the new path's own
   // probe gets a chance to establish the correct baseline first and mask the bug by winning a race.
-  const oldPath = "old-path";
-  const newPath = "new-path";
+  const oldPath = `old/${FIXTURE_PATH}`;
+  const newPath = `new/${FIXTURE_PATH}`;
   let releaseOldProbe: (slice: TranscriptSlice) => void = () => {};
   const oldProbeGate = new Promise<TranscriptSlice>((resolve) => {
     releaseOldProbe = resolve;
@@ -1586,7 +1593,7 @@ test("a suppress landing during a question alert's delivery stops the batch behi
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines against the still-empty content
 
@@ -1606,6 +1613,244 @@ test("a suppress landing during a question alert's delivery stops the batch behi
     ["question:the open question"],
     "a suppress landing mid-delivery must stop the batch after the item already in flight",
   );
+});
+
+test("question() posts through the same delivery seam, gated on the session's mirror verdict", async () => {
+  // The hook intake hands an emission-time question here rather than wiring a delivery of its
+  // own: the tailer holds the mirror verdict and the deliverQuestion seam, so the hook path rides
+  // both, and a session with no verdict seen, or a suppressed one, contributes silence.
+  const { tailer, questions } = harness();
+  const asked: AskedQuestion[] = [
+    { question: "Which beverage?", header: "Beverage", multiSelect: false, options: ["Coffee", "Tea"] },
+  ];
+
+  tailer.question(SESSION, asked); // no verdict seen at all
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(questions, [], "a verdict-unseen session alerts nothing from the hook path");
+
+  tailer.allow(SESSION);
+  tailer.suppress(SESSION);
+  tailer.question(SESSION, asked); // an explicit mirror-off
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(questions, [], "a suppressed session alerts nothing from the hook path");
+
+  tailer.allow(SESSION);
+  tailer.question(SESSION, []); // malformed input parses to nothing, and nothing is delivered
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(questions, []);
+
+  tailer.question(SESSION, asked); // the positive control: mirror-on, readable questions
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(questions, [asked]);
+});
+
+test("a question the hook path already alerted is skipped exactly once by the transcript yield", async (t) => {
+  // The double path: the hook alerts at emission, and the same question lands on the transcript
+  // at answer time, up to hours later. The digest the hook path records answers for exactly that
+  // one duplicate, on the echo memory's consume-on-match rule: left standing it would silence a
+  // later turn genuinely asking the same question again.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "Ship it?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 1, "the emission-time alert posts once");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Ship it?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 1, "the resolution-time duplicate is consumed, not re-alerted");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Ship it?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 2, "the digest is one-shot: a later identical ask still alerts");
+});
+
+test("a non-matching transcript question neither consumes the digest nor goes silent", async (t) => {
+  // Consume-on-match only: a different question delivered while a hook digest stands must post,
+  // and must leave the digest in place for the duplicate it actually answers for.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "First?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 1);
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "A different one?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 2, "a tailer-only question still alerts exactly as before");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "First?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 2, "the standing digest still answers for its own duplicate");
+});
+
+test("a hook alert that did not land records no digest, leaving the transcript yield armed", async (t) => {
+  // Drop-not-retry on the hook path must not also disarm the fallback: a refused or thrown alert
+  // never reached the operator, so the resolution-time yield is still the question's one signal.
+  const file = transcriptFile(t);
+  let outcome: ReplyResult = { status: "failed", error: "question alerts are over their window" };
+  let attempts = 0;
+  const { tailer, logs } = harness({
+    deliverQuestion: async () => {
+      attempts += 1;
+      return outcome;
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "Parked?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 1);
+  assert.ok(logs.some((entry) => entry.includes("question alert was refused")), logs.join("\n"));
+
+  outcome = { status: "sent" };
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Parked?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(attempts, 2, "the failed hook alert must not have consumed the tailer's fallback");
+});
+
+test("each outstanding question dedupes independently: a second ask does not evict the first", async (t) => {
+  // The reachable duplicate a one-slot digest produces: Q1 alerts at emission, the operator
+  // answers it, and before the next poll consumes Q1's resolution line the model asks Q2. Both
+  // resolution lines must find their own digests waiting, and each match consumes exactly the
+  // digest it matched.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "First?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  tailer.question(SESSION, [{ question: "Second?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 2, "two distinct questions alert once each at emission");
+
+  appendFileSync(
+    file,
+    askUserQuestion({ questions: [{ question: "First?" }] }) +
+      askUserQuestion({ questions: [{ question: "Second?" }] }),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.equal(questions.length, 2, "both resolution lines are duplicates of their own emission alerts");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "First?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 3, "each digest is one-shot: a later identical ask still alerts");
+});
+
+test("a re-posted identical question is not alerted twice by the hook path", async (t) => {
+  // The CLI retries a hook post it could not land, for hours when it comes to that, so the same
+  // PreToolUse payload can arrive again while its first alert's digest is still outstanding. A
+  // digest already in the set means this exact question already reached the operator.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  const asked: AskedQuestion[] = [{ question: "Still there?", header: null, multiSelect: false, options: [] }];
+  tailer.question(SESSION, asked);
+  await new Promise((resolve) => setImmediate(resolve));
+  tailer.question(SESSION, asked); // the retry of the same post
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 1, "a re-posted identical question is the same question, not a new alert");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Still there?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 1, "the resolution line is still the one duplicate the digest answers for");
+
+  tailer.question(SESSION, asked); // a genuinely new identical ask, after the digest was consumed
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 2);
+});
+
+test("suppress drops the outstanding digests with the offset: no stale digest outlives its window", async (t) => {
+  // A suppressed window swallows the resolution lines the digests were waiting for, so a digest
+  // kept across it would mis-consume a later identical question's only alert: the same
+  // silence-over-stale-state direction suppress already takes with the offset.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "Again?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(questions.length, 1);
+
+  tailer.suppress(SESSION); // the window that would have swallowed the resolution line
+  tailer.allow(SESSION);
+  await tailer.poll(); // rebaselines at the file's current end
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Again?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 2, "the later identical ask is a new question, not the old one's echo");
+});
+
+test("the outstanding set is bounded: past the cap the oldest is evicted, costing a duplicate, never a lost question", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  for (let index = 0; index < 9; index += 1) {
+    tailer.question(SESSION, [{ question: `Q${index}?`, header: null, multiSelect: false, options: [] }]);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(questions.length, 9, "nine distinct questions alert once each");
+
+  // Q0's digest was evicted by the ninth ask, so its resolution line alerts again: eviction's
+  // cost is one duplicate ping. Q1's digest survived and is consumed by its own line.
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Q0?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 10, "the evicted digest's line is the duplicate the cap trades for boundedness");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Q1?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 10, "a digest inside the cap still consumes its own duplicate");
+});
+
+test("the hook payload and the transcript line parse to the same bounded questions", async (t) => {
+  // Single-sourcing pin: the intake reads tool_input through the same exported reader the tailer
+  // reads a tool_use block's input through, so the two surfaces cannot drift. The input here is
+  // the captured live PreToolUse payload's shape: four options with descriptions, one question.
+  const input = {
+    questions: [
+      {
+        question: "Test question: which beverage should power this morning's session?",
+        header: "Beverage",
+        options: [
+          { label: "Coffee (Recommended)", description: "The classic." },
+          { label: "Tea", description: "Gentler ramp-up." },
+          { label: "Water", description: "Hydration-first strategy." },
+          { label: "Energy drink", description: "Maximum throughput now." },
+        ],
+        multiSelect: false,
+      },
+    ],
+  };
+  const viaHook = askedQuestions(input);
+  assert.equal(viaHook.length, 1, "the captured shape must be readable");
+
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+  appendFileSync(file, askUserQuestion(input), "utf8");
+  await tailer.poll();
+  assert.deepEqual(questions, [viaHook], "one reader, one reading, on both paths");
 });
 
 /**
@@ -1932,7 +2177,7 @@ test("a tail read reachable only through a corrupted offset must never surface b
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION); // dispatches the stale probe; its read is now genuinely in flight
   await new Promise((resolve) => setImmediate(resolve));
 
@@ -1974,14 +2219,15 @@ test("suppression recorded before the path is learned still holds", async (t) =>
 });
 
 test("an absent, unreadable, or non-JSON transcript posts nothing, throws nothing, logs no bytes", async (t) => {
-  const missing = path.join(transcriptDir(t), "missing.jsonl");
+  const missingDir = transcriptDir(t);
+  const missing = path.join(missingDir, FIXTURE_PATH); // never created on disk
   const { tailer, posts, logs } = harness();
   tailer.learn(SESSION, missing);
   tailer.allow(SESSION);
   await tailer.poll();
   assert.deepEqual(posts, []);
   assert.ok(logs.length > 0, "an unreadable transcript must be visible in the log");
-  assert.ok(!logs.join("\n").includes("missing.jsonl"), `the path is content-adjacent and stays out: ${logs.join("\n")}`);
+  assert.ok(!logs.join("\n").includes(missingDir), `the path is content-adjacent and stays out: ${logs.join("\n")}`);
 
   // Garbage that never parses: written by another process, a half-flushed line is not an error,
   // and V8's parse error would quote the line's own text if anything caught and logged it.
@@ -2127,6 +2373,51 @@ test("re-learning the same path keeps the position; every credited hook post re-
   assert.deepEqual(posts, ["between two hook posts"]);
 });
 
+test("learn() refuses a path whose filename stem is not the session id, keeping the prior path", async (t) => {
+  // The measured invariant: a session's transcript is <session-id>.jsonl, and every credited hook
+  // payload teaches the parent's own path. A path that breaks the invariant (an agent-*.jsonl
+  // sidechain file, or any upstream shape change) must not re-aim the tailer: the entry keeps
+  // reading the file it already trusts, and the refusal leaves one bounded line naming the
+  // session and never the path.
+  const file = transcriptFile(t);
+  const agentPath = path.join(path.dirname(file), "agent-0a1b2c3d.jsonl");
+  writeFileSync(agentPath, assistantText("SECRET-sidechain-content"), "utf8");
+  const { tailer, posts, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.learn(SESSION, agentPath); // refused: the stem is not the session id
+  appendFileSync(file, assistantText("narration on the session's own transcript"), "utf8");
+  await tailer.poll();
+  assert.deepEqual(
+    posts,
+    ["narration on the session's own transcript"],
+    "the entry must keep its prior path; an accepted relearn would have reset the offset and read the wrong file",
+  );
+  assert.ok(
+    logs.some((entry) => entry.includes("filename is not its own session id")),
+    `the refusal must be visible in the log: ${logs.join("\n")}`,
+  );
+  assert.ok(!logs.join("\n").includes("agent-0a1b2c3d"), `the refused path never reaches the log: ${logs.join("\n")}`);
+  assert.ok(!logs.join("\n").includes("SECRET"), logs.join("\n"));
+});
+
+test("a stem-refused path for a session with no path yet teaches nothing and reads nothing", async () => {
+  let reads = 0;
+  const { tailer, logs } = harness({
+    readFile: async () => {
+      reads += 1;
+      return { size: 0, bytes: Buffer.alloc(0) };
+    },
+  });
+  tailer.allow(SESSION);
+  tailer.learn(SESSION, "agent-0a1b2c3d.jsonl");
+  await tailer.poll();
+  assert.equal(reads, 0, "a refused path must never be probed or polled");
+  assert.ok(logs.some((entry) => entry.includes("filename is not its own session id")), logs.join("\n"));
+});
+
 test("a session that left the live set stops being read and is forgotten whole", async (t) => {
   const file = transcriptFile(t);
   const { tailer, posts, live, echo } = harness();
@@ -2182,6 +2473,59 @@ test("a pass that outlasts the poll interval is not overlapped, and the next pol
   release();
   await Promise.all([first, second]);
   assert.deepEqual(deliveries, ["a slow post"], "an overlapping pass must not re-read the same offsets");
+});
+
+test("a pass held open past the watchdog threshold logs one rate-limited line; a normal pass logs nothing", async (t) => {
+  // The visibility line a wedged pass owes the log: a pass legitimately outlasts one interval
+  // when Discord is slow, so the threshold sits at several intervals, and past it each poll tick
+  // reports the pass still running, through the repeat limiter so a long wedge is one line a
+  // window rather than a line a tick.
+  const file = transcriptFile(t);
+  let at = 0;
+  let gated = false;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { tailer, logs } = harness({
+    now: () => at,
+    passWatchdogMs: 5_000,
+    deliver: async (_sessionId, _text) => {
+      if (gated) await gate;
+      return { status: "sent" };
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll(); // the baseline pass, quick and quiet
+
+  appendFileSync(file, assistantText("a quick chunk"), "utf8");
+  await tailer.poll(); // a normal pass: starts and settles with nothing logged
+  assert.equal(logs.length, 0, "a pass inside the threshold owes the log nothing");
+
+  gated = true;
+  appendFileSync(file, assistantText("the chunk whose delivery wedges"), "utf8");
+  const wedged = tailer.poll();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  at += 4_000;
+  void tailer.poll(); // still inside the threshold: no line yet
+  assert.equal(logs.length, 0);
+
+  at += 2_000; // 6s into a 5s threshold
+  void tailer.poll();
+  assert.equal(
+    logs.filter((entry) => entry.includes("running past the watchdog threshold")).length,
+    1,
+    `the wedged pass must be visible: ${logs.join("\n")}`,
+  );
+
+  at += 1_000; // a repeat inside the limiter's window is counted, not written
+  void tailer.poll();
+  assert.equal(logs.filter((entry) => entry.includes("running past the watchdog threshold")).length, 1);
+
+  release();
+  await wedged;
 });
 
 test("one session's slow delivery does not hold another session's narration", async (t) => {
@@ -2246,7 +2590,7 @@ test("poll() does not settle while a probe an allow() started from inside the sa
   const deliveries: string[] = [];
   const { tailer } = harness({
     readFile: async (readPath, offset, maxBytes) => {
-      if (readPath === "other-path") {
+      if (readPath === OTHER_FIXTURE_PATH) {
         probeStarted = true;
         return probeGate;
       }
@@ -2257,14 +2601,14 @@ test("poll() does not settle while a probe an allow() started from inside the sa
     deliver: async (sessionId, text) => {
       deliveries.push(text);
       if (sessionId === SESSION) {
-        tailer.learn(OTHER_SESSION, "other-path");
+        tailer.learn(OTHER_SESSION, OTHER_FIXTURE_PATH);
         tailer.allow(OTHER_SESSION); // starts the late probe this test pins
       }
       return { status: "sent" };
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines SESSION against the still-empty content
 
@@ -2313,7 +2657,7 @@ test("a suppress landing during chunk 1's delivery stops the batch: chunk 2 and 
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines against the still-empty content
 
@@ -2360,7 +2704,7 @@ test("a suppress landing during a queued prompt's delivery stops the batch behin
     },
   });
 
-  tailer.learn(SESSION, "fixture-path");
+  tailer.learn(SESSION, FIXTURE_PATH);
   tailer.allow(SESSION);
   await tailer.poll(); // baselines against the still-empty content
 

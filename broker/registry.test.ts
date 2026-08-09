@@ -404,6 +404,38 @@ test("tool and turn accounting tracks the hook stream", () => {
   assert.equal(record.turnCount, 1);
 });
 
+test("a PreToolUse event is liveness alone: it stamps and revives, and moves no counter", () => {
+  // PreToolUse fires at the moment AskUserQuestion opens its picker, before the call completes;
+  // the completion's own PostToolUse still arrives at answer time and does the tool accounting.
+  // Counting the emission too would count every question twice, and a question is not a turn.
+  const time = clock();
+  const sessions = registry(time.now, 60_000);
+  sessions.apply(sessionStart("session-a", "startup"));
+  sessions.apply(postToolUse("Bash", TOKEN, null, "npm test"));
+
+  time.advance(60_000);
+  assert.equal(sessions.sweep().length, 1, "the session goes stale first, so the revive below is real");
+
+  time.advance(1_000);
+  const record = sessions.apply({
+    event: "PreToolUse",
+    processToken: TOKEN,
+    sessionName: null,
+    sessionId: "session-a",
+    source: null,
+    toolName: "AskUserQuestion",
+    toolInput: null,
+    transcriptPath: null,
+  });
+
+  assert.ok(record);
+  assert.equal(record.state, "live", "a PreToolUse revives a stale session as any hook event does");
+  assert.equal(record.lastHookAt, time.now());
+  assert.equal(record.toolCount, 1, "the emission is not a completed tool call");
+  assert.equal(record.turnCount, 0, "the emission is not a turn boundary");
+  assert.equal(record.lastTool, "Bash", "the card keeps describing the last completed call");
+});
+
 test("a silent session goes stale on the sweep with no inbound event", () => {
   const time = clock();
   const sessions = registry(time.now, 60_000);

@@ -5,15 +5,24 @@
 // The wire shape, which the Section 3 hooks are written against:
 //
 //   POST /hook
-//     X-Channel-Hook-Event:     SessionStart | PostToolUse | Stop
+//     X-Channel-Hook-Event:     SessionStart | PreToolUse | PostToolUse | Stop
 //     X-Channel-Process-Token:  the CHANNEL_PROCESS_TOKEN GUID the launch wrapper minted
 //     X-Channel-Session-Name:   the CHANNEL_SESSION human name (optional)
+//     X-Channel-Mirror:         the per-session mirror switch, carried by the PreToolUse question
+//                               hook alone among this route's entries, because its payload is the
+//                               one on this route that carries conversation text
 //     Content-Type:             application/json
 //     body: the hook payload verbatim, exactly as Claude Code emits it, kept only as far as the
 //     fields the registry stores, one of which is a bounded preview of the tool's input, so this
 //     route carries a little session content and not none; a body past maxBodyBytes is drained and
 //     dropped with a 202, because the Stop payload carries the turn's final assistant message and a
 //     refusal there is a visible error inside the session at the end of its longest turns.
+//     PreToolUse is matched to AskUserQuestion alone and is the question alert's emission-time
+//     source: the transcript line for an open question is withheld until the picker is answered,
+//     so this post is the only signal that exists while the operator could still act on it. Its
+//     tool_input is parsed with the tailer's own bounded reader and handed to the tailer's
+//     question seam, which owns the mirror-verdict gate and the delivery; everything else about
+//     the event is ordinary liveness.
 //
 // The event name rides in a header rather than the body because two of the three hooks are `http`
 // hooks, whose body is authored by Claude Code and cannot be wrapped. A header is static per hook
@@ -35,12 +44,14 @@
 //   GET /sessions  -> the registry as JSON, for debugging.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { FLAG_FALSE } from "./config.ts";
+import type { AskedQuestion } from "./discord/render.ts";
 import type { Logger } from "./log.ts";
 import type { HookEvent, HookIntake, Registry, SessionRecord } from "./registry.ts";
 import type { MirrorKind } from "./routing/outbound.ts";
 import { clean } from "./sanitize.ts";
+import { askedQuestions } from "./tail.ts";
 
-const HOOK_EVENTS: readonly HookEvent[] = ["SessionStart", "PostToolUse", "Stop"];
+const HOOK_EVENTS: readonly HookEvent[] = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"];
 
 /**
  * The mirror route's own event vocabulary, mapped to what each payload's text means. Deliberately
@@ -254,7 +265,10 @@ export type IntakeFailure = { status: number; message: string };
 export function parseIntake(
   request: IncomingMessage,
   body: string,
-): { intake: HookIntake } | { failure: IntakeFailure } | { unwatched: true } {
+):
+  | { intake: HookIntake; questions: readonly AskedQuestion[] | null }
+  | { failure: IntakeFailure }
+  | { unwatched: true } {
   const event = header(request, "x-channel-hook-event");
   if (event === null || !HOOK_EVENTS.includes(event as HookEvent)) {
     return { failure: { status: 400, message: "unknown or missing X-Channel-Hook-Event" } };
@@ -285,7 +299,20 @@ export function parseIntake(
     return { failure: { status: 400, message: "SessionStart payload has no session_id" } };
   }
 
+  const toolName = payloadString(fields, "tool_name");
+
   return {
+    // The bounded reading of a PreToolUse AskUserQuestion's tool_input, beside the intake rather
+    // than inside it: the registry has no use for question content, and the tailer's own reader
+    // (imported, never duplicated, so the two surfaces cannot drift) already guarantees that a
+    // malformed input parses to an empty array rather than a throw or a guess. Null for every
+    // other event and tool, which is what lets the handler tell "not a question post" from "a
+    // question post that parsed to nothing"; both are silent, and only silence needs telling
+    // apart from delivery.
+    questions:
+      event === "PreToolUse" && toolName === "AskUserQuestion"
+        ? askedQuestions(fields["tool_input"])
+        : null,
     intake: {
       event: event as HookEvent,
       processToken,
@@ -294,7 +321,7 @@ export function parseIntake(
       // Recorded verbatim rather than checked against the known trigger names, so a value Claude
       // Code adds later lands in the registry instead of being refused.
       source: payloadString(fields, "source"),
-      toolName: payloadString(fields, "tool_name"),
+      toolName,
       // One bounded field of tool_input is kept, for the card's `Last tool:` line; the rest of it,
       // and the whole of tool_response, are dropped as unbounded and of no use to any surface the
       // broker renders.
@@ -391,6 +418,13 @@ export type HandlerOptions = {
     allow: (sessionId: string) => void;
     /** Stops a session's transcript being read, on the session's own mirror-off switch. */
     suppress: (sessionId: string) => void;
+    /**
+     * Hands a credited PreToolUse AskUserQuestion's bounded questions to the tailer, which owns
+     * the mirror-verdict gate, the delivery seam, and the dedupe digest the resolution-time
+     * transcript yield consults. Required alongside the other three so a caller cannot wire the
+     * seam and silently leave the emission-time alert unrouted.
+     */
+    question: (sessionId: string, questions: readonly AskedQuestion[]) => void;
   };
   /**
    * The mirror route's knobs and its seam into the routing layer. Required rather than optional,
@@ -766,6 +800,33 @@ export function createHandler(
       // re-learns it from the very next hook post.
       if (options.tail !== undefined && parsed.intake.transcriptPath !== null) {
         options.tail.learn(record.sessionId, parsed.intake.transcriptPath);
+      }
+      // The emission-time question alert, from a credited PreToolUse post alone. The question
+      // hook carries the per-session mirror switch because its payload is conversation text, and
+      // both halves of the header are read as /mirror reads the same header. The off half: a
+      // value in the recognized off vocabulary suppresses, so a -NoMirror session's question
+      // post arms nothing and disarms the tailer besides. The allow half: any other value, the
+      // absent header included, is the session mirroring normally, recorded as the mirror-on
+      // verdict under /mirror's own evidence bar, a payload naming the very session the post was
+      // credited to. The allow half is load-bearing for the parked-session restart: /mirror's
+      // verdict rides prompts and turn ends, a session sitting on an open picker produces
+      // neither, so this post is the only thing that can re-arm a fresh tailer before the alert
+      // it carries. The questions then go to the tailer's question seam, which owns the verdict
+      // gate and the dedupe; a parse that yielded nothing hands over nothing. The response below
+      // is not held for any of this: the seam returns before delivery, so the session's hook
+      // never waits on Discord.
+      if (parsed.intake.event === "PreToolUse" && options.tail !== undefined) {
+        const sessionMirror = header(request, "x-channel-mirror");
+        if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
+          options.tail.suppress(record.sessionId);
+        } else {
+          if (parsed.intake.sessionId !== null && parsed.intake.sessionId === record.sessionId) {
+            options.tail.allow(record.sessionId);
+          }
+          if (parsed.questions !== null && parsed.questions.length > 0) {
+            options.tail.question(record.sessionId, parsed.questions);
+          }
+        }
       }
       send(response, 200, { sessionId: record.sessionId, state: record.state });
     })().catch((error: unknown) => {

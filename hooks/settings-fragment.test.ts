@@ -81,10 +81,11 @@ test("the fragment is valid JSON", () => {
   assert.doesNotThrow(() => loadFragment());
 });
 
-test("declares exactly SessionStart, UserPromptSubmit, PostToolUse, and Stop", () => {
+test("declares exactly SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and Stop", () => {
   const fragment = loadFragment();
   assert.deepEqual(Object.keys(fragment.hooks).sort(), [
     "PostToolUse",
+    "PreToolUse",
     "SessionStart",
     "Stop",
     "UserPromptSubmit",
@@ -145,7 +146,11 @@ test("SessionStart runs this repository's own hook script", () => {
 
 test("every http hook posts to a broker route with the token wired through", () => {
   const hooks = httpHooks();
-  assert.equal(hooks.length, 4, "the fragment declares four http hooks: two liveness, two mirror");
+  assert.equal(
+    hooks.length,
+    5,
+    "the fragment declares five http hooks: two liveness, two mirror, one question",
+  );
 
   for (const { event, hook } of hooks) {
     assert.equal(typeof hook.url, "string");
@@ -177,27 +182,30 @@ test("every http hook posts to a broker route with the token wired through", () 
   }
 });
 
-test("only the mirror hooks carry X-Channel-Mirror; every other hook carries no content switch", () => {
+test("only the content-bearing hooks carry X-Channel-Mirror; every liveness hook carries no switch", () => {
   // The generic check above would pass unchanged if X-Channel-Mirror leaked onto a liveness hook or
   // even onto SessionStart's command hook, since it only requires that whatever is interpolated is
   // allowlisted and says nothing about which hooks may carry the header at all. So the negative half
   // is asserted explicitly here, over allHooks() rather than httpHooks(): the command hook has no
   // headers or allowedEnvVars at all, and a check narrowed to http hooks would never see it, passing
-  // even if it somehow carried the switch.
+  // even if it somehow carried the switch. Content-bearing means the two mirror hooks and the
+  // PreToolUse question hook: its payload carries the open question's text to /hook, so it rides
+  // the same per-session consent the mirror posts ride.
   for (const { event, hook } of allHooks()) {
-    const isMirror = hook.type === "http" && (hook.url ?? "").endsWith("/mirror");
+    const carriesContent =
+      hook.type === "http" && ((hook.url ?? "").endsWith("/mirror") || event === "PreToolUse");
     const headers = hook.headers ?? {};
     const allowed = hook.allowedEnvVars ?? [];
 
-    if (isMirror) {
+    if (carriesContent) {
       assert.match(
         headers["X-Channel-Mirror"] ?? "",
         /^\$\{?CHANNEL_SESSION_MIRROR\}?$/,
-        `${event}'s mirror hook must forward -NoMirror's per-session switch as X-Channel-Mirror`,
+        `${event}'s content-bearing hook must forward -NoMirror's per-session switch as X-Channel-Mirror`,
       );
       assert.ok(
         allowed.includes("CHANNEL_SESSION_MIRROR"),
-        `${event}'s mirror hook interpolates CHANNEL_SESSION_MIRROR but does not allowlist it`,
+        `${event}'s content-bearing hook interpolates CHANNEL_SESSION_MIRROR but does not allowlist it`,
       );
     } else {
       assert.equal(
@@ -218,7 +226,12 @@ test("the liveness hooks keep the short timeout they are paid at per tool call",
   // twelve-hour session. A broker that is down costs nothing (a refused loopback connection returns
   // immediately), but one that accepts and answers slowly charges this timeout against every one of
   // them before the result returns to the model.
-  const liveness = httpHooks().filter(({ hook }) => (hook.url ?? "").endsWith("/hook"));
+  // PreToolUse also posts to /hook, but it is the content-bearing question alert, fires only when
+  // AskUserQuestion opens a picker, and keeps its own timeout; the ticks paid per tool call are
+  // the other two.
+  const liveness = httpHooks().filter(
+    ({ event, hook }) => (hook.url ?? "").endsWith("/hook") && event !== "PreToolUse",
+  );
   assert.deepEqual(
     liveness.map(({ event }) => event).sort(),
     ["PostToolUse", "Stop"],
@@ -253,6 +266,30 @@ test("the mirror hooks post content to their own route on their own timeout", ()
       `${event}'s mirror timeout must leave room for a whole reply and still bound the turn`,
     );
   }
+});
+
+test("PreToolUse is the question alert: matched to AskUserQuestion alone, carrying the switch", () => {
+  // The transcript line for an open AskUserQuestion is withheld until the picker is answered, so
+  // this hook is the only emission-time signal a parked question sends. Its payload carries the
+  // question text, which is why it is the one /hook entry that also carries the per-session
+  // mirror switch, and the matcher is exact: any wider and every tool call on the machine posts
+  // its input to the broker at emission.
+  const fragment = loadFragment();
+  assert.equal(fragment.hooks.PreToolUse.length, 1);
+  const [entry] = fragment.hooks.PreToolUse;
+  assert.equal(entry.matcher, "AskUserQuestion", "the matcher is exact, never a wildcard");
+  assert.equal(entry.hooks.length, 1);
+  const [hook] = entry.hooks;
+  assert.equal(hook.type, "http");
+  assert.equal(hook.url, `http://127.0.0.1:${DEFAULT_PORT}/hook`);
+  assert.equal(hook.headers?.["X-Channel-Hook-Event"], "PreToolUse");
+  // Bounded on both sides like the mirror timeouts: the post carries content and fires only when
+  // a question opens, so it is not held to the per-tool-call tick's 2s, but it still must not
+  // stall the console's picker behind a slow broker.
+  assert.ok(
+    typeof hook.timeout === "number" && hook.timeout >= 3 && hook.timeout <= 10,
+    "the question hook's timeout must leave room for the post and still bound the ask",
+  );
 });
 
 test("Stop declares the liveness tick and the mirror post as separate entries", () => {

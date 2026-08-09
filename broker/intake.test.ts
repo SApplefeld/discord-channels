@@ -10,6 +10,8 @@ import { createRegistry } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { startBroker } from "./index.ts";
 import type { BrokerConfig } from "./config.ts";
+import type { AskedQuestion } from "./discord/render.ts";
+import { createEchoMemory, createTranscriptTailer } from "./tail.ts";
 
 const TOKEN = "5f0c2e4a-0000-4000-8000-000000000001";
 
@@ -1352,7 +1354,12 @@ test("the tailer learns a path only from a hook post the registry credited", asy
     registry,
     maxBodyBytes: 1024,
     mirror: fakeMirror().mirror,
-    tail: { learn: (sessionId, path) => learned.push({ sessionId, path }), allow: () => {}, suppress: () => {} },
+    tail: {
+      learn: (sessionId, path) => learned.push({ sessionId, path }),
+      allow: () => {},
+      suppress: () => {},
+      question: () => {},
+    },
   });
 
   // Tokenless (unwatched) and unroutable posts both carry a path and teach nothing.
@@ -1412,6 +1419,7 @@ test("every mirror post reaching a live session reports its verdict: allow on, s
       learn: () => {},
       allow: (sessionId) => allowed.push(sessionId),
       suppress: (sessionId) => suppressed.push(sessionId),
+      question: () => {},
     },
   });
   announce(registry);
@@ -1489,6 +1497,262 @@ test("every mirror post reaching a live session reports its verdict: allow on, s
     ["session-a", "another-session", null],
     "the router is handed the session each post named, which is what it drops a straggler on",
   );
+});
+
+/**
+ * The tool_input of the live-captured PreToolUse payload, verbatim in shape: one question, four
+ * options with descriptions, no multi-select. The tests below drive the /hook route with it.
+ */
+function capturedQuestionInput(): Record<string, unknown> {
+  return {
+    questions: [
+      {
+        question: "Test question: which beverage should power this morning's session?",
+        header: "Beverage",
+        options: [
+          { label: "Coffee (Recommended)", description: "The classic. Reliable caffeine delivery." },
+          { label: "Tea", description: "Gentler ramp-up, wide variety, lower jitter risk." },
+          { label: "Water", description: "Hydration-first strategy. Zero caffeine, zero regrets." },
+          { label: "Energy drink", description: "Maximum throughput now, possible crash later." },
+        ],
+        multiSelect: false,
+      },
+    ],
+  };
+}
+
+/** The captured PreToolUse body, with any field replaceable, aimed at the announced session. */
+function preToolUseBody(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    session_id: "session-a",
+    transcript_path: "C:\\t\\session-a.jsonl",
+    cwd: "C:\\Users\\LocalAdmin",
+    prompt_id: "0ed14699-70a8-42ce-b274-5230a1c0700b",
+    permission_mode: "bypassPermissions",
+    effort: { level: "high" },
+    hook_event_name: "PreToolUse",
+    tool_name: "AskUserQuestion",
+    tool_input: capturedQuestionInput(),
+    tool_use_id: "toolu_01GWPED2HfgzZBLVxgmWY5bC",
+    ...overrides,
+  });
+}
+
+/** A handler over the tailer seam, capturing what the question path and its neighbors report. */
+function questionHarness(): {
+  handle: ReturnType<typeof createHandler>;
+  registry: Registry;
+  asked: Array<{ sessionId: string; questions: readonly AskedQuestion[] }>;
+  suppressed: string[];
+  learned: string[];
+  lines: string[];
+} {
+  const asked: Array<{ sessionId: string; questions: readonly AskedQuestion[] }> = [];
+  const suppressed: string[] = [];
+  const learned: string[] = [];
+  const lines: string[] = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 64 * 1024,
+    log: {
+      info: (message: string) => lines.push(message),
+      warn: (message: string) => lines.push(message),
+      error: (message: string) => lines.push(message),
+    },
+    mirror: fakeMirror().mirror,
+    tail: {
+      learn: (_sessionId, path) => learned.push(path),
+      allow: () => {},
+      suppress: (sessionId) => suppressed.push(sessionId),
+      question: (sessionId, questions) => asked.push({ sessionId, questions }),
+    },
+  });
+  announce(registry);
+  return { handle, registry, asked, suppressed, learned, lines };
+}
+
+test("a credited PreToolUse AskUserQuestion post hands the tailer its bounded questions at emission", async () => {
+  // The emission-time path: the transcript line for an open question is withheld until it is
+  // answered, so this post is the only signal that exists while the picker is open. The intake
+  // parses tool_input with the tailer's own bounded reader and hands the result to the tailer,
+  // which owns the verdict gate and the delivery seam.
+  const { handle, asked, learned } = questionHarness();
+
+  const { status } = await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+  );
+  assert.equal(status, 200, "the liveness answer PostToolUse gets");
+  assert.deepEqual(asked, [
+    {
+      sessionId: "session-a",
+      questions: [
+        {
+          question: "Test question: which beverage should power this morning's session?",
+          header: "Beverage",
+          multiSelect: false,
+          options: ["Coffee (Recommended)", "Tea", "Water", "Energy drink"],
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(learned, ["C:\\t\\session-a.jsonl"], "PreToolUse teaches the path as PostToolUse does");
+});
+
+test("only a credited PreToolUse AskUserQuestion reaches the question seam; everything near it is silent", async () => {
+  // The negative space around the one shape that alerts: a tokenless post, the answer-time
+  // PostToolUse for the same tool, another tool under PreToolUse, and every malformed tool_input.
+  // Silence on all of them, and no log line carries a fragment of any question.
+  const { handle, asked, lines } = questionHarness();
+
+  // Tokenless: unwatched traffic, dropped before any parse of the tool input matters.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: { "x-channel-hook-event": "PreToolUse" },
+      body: preToolUseBody(),
+    }),
+  );
+
+  // The answer-time PostToolUse carries the same questions plus the answers; alerting on it would
+  // recreate the resolution-time ping the emission path exists to replace.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: preToolUseBody({ hook_event_name: "PostToolUse" }),
+    }),
+  );
+
+  // Another tool under PreToolUse: the matcher should prevent this, but the intake must not trust
+  // the matcher.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse"),
+      body: preToolUseBody({ tool_name: "Bash", tool_input: { command: "echo hi" } }),
+    }),
+  );
+
+  // Malformed tool_input in every shape askedQuestions refuses: silence, never a throw.
+  for (const toolInput of [
+    undefined,
+    "SECRET-a-bare-string",
+    ["SECRET-in-an-array"],
+    { questions: "SECRET-not-an-array" },
+    { questions: [{ header: "SECRET-no-question-field" }] },
+    { questions: [{ question: "\u200b\u200b" }] },
+  ]) {
+    const { status } = await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        headers: hookHeaders("PreToolUse"),
+        body: preToolUseBody({ tool_input: toolInput }),
+      }),
+    );
+    assert.equal(status, 200, "a malformed input is still a credited liveness post");
+  }
+
+  assert.deepEqual(asked, [], "none of these may reach the question seam");
+  assert.ok(!lines.join("\n").includes("SECRET"), `no fragment of a question reaches the log: ${lines.join("\n")}`);
+  assert.ok(!lines.join("\n").includes("beverage"), lines.join("\n"));
+});
+
+test("a PreToolUse post carrying the session's mirror-off switch suppresses instead of asking", async () => {
+  // The question hook carries X-Channel-Mirror because its payload is conversation text: a
+  // -NoMirror session's post must land on silence, and it doubles as the same suppress signal the
+  // mirror route records. An absent or unrecognized value changes nothing, exactly as /mirror
+  // reads the header.
+  const { handle, asked, suppressed } = questionHarness();
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse", { "x-channel-mirror": "0" }),
+      body: preToolUseBody(),
+    }),
+  );
+  assert.deepEqual(asked, [], "a mirror-off post never reaches the question seam");
+  assert.deepEqual(suppressed, ["session-a"]);
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse", { "x-channel-mirror": "unrecognized-spelling" }),
+      body: preToolUseBody(),
+    }),
+  );
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+  );
+  assert.equal(asked.length, 2, "an unrecognized value and an absent header both ask normally");
+  assert.deepEqual(suppressed, ["session-a"], "only the recognized off vocabulary suppresses");
+});
+
+test("a PreToolUse post re-arms the verdict after a restart: on and absent alert, off stays silent", async () => {
+  // The parked-session restart, the exact case the emission alert exists for: the broker comes
+  // back with a fresh tailer holding no verdict, the session is sitting on an open picker, and
+  // no /mirror post will arrive because a parked session produces neither a prompt nor a turn
+  // end. The question post itself must carry the verdict, both halves read as /mirror reads the
+  // same header: a non-off value, the absent header included, is the session mirroring normally
+  // and records the allow; the recognized off vocabulary suppresses. Driven against the real
+  // tailer, fresh per case, so what is proved is the re-arm and not a mock's bookkeeping.
+  const delivered: string[][] = [];
+  function restartedBroker(): ReturnType<typeof createHandler> {
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    const tailer = createTranscriptTailer({
+      liveSessions: () => ["session-a"],
+      deliver: async () => ({ status: "sent" }),
+      deliverPrompt: async () => ({ status: "sent" }),
+      deliverQuestion: async (_sessionId, questions) => {
+        delivered.push(questions.map((entry) => entry.question));
+        return { status: "sent" };
+      },
+      echo: createEchoMemory(),
+    });
+    const handle = createHandler({
+      registry,
+      maxBodyBytes: 64 * 1024,
+      mirror: fakeMirror().mirror,
+      tail: {
+        learn: tailer.learn,
+        allow: tailer.allow,
+        suppress: tailer.suppress,
+        question: tailer.question,
+      },
+    });
+    announce(registry);
+    return handle;
+  }
+
+  await call(
+    restartedBroker(),
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+  );
+  await settled();
+  assert.equal(delivered.length, 1, "the absent-header form must re-arm the verdict and alert");
+
+  await call(
+    restartedBroker(),
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse", { "x-channel-mirror": "on" }),
+      body: preToolUseBody(),
+    }),
+  );
+  await settled();
+  assert.equal(delivered.length, 2, "an explicit non-off value is mirroring normally too");
+
+  await call(
+    restartedBroker(),
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse", { "x-channel-mirror": "0" }),
+      body: preToolUseBody(),
+    }),
+  );
+  await settled();
+  assert.equal(delivered.length, 2, "the off form arms nothing and alerts nothing");
 });
 
 test("a transcript path is refused rather than truncated, and never a UNC path", () => {

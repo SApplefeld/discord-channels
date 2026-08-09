@@ -194,6 +194,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliverQuestion: (sessionId, questions) => deliverQuestion(sessionId, questions),
       echo,
       log: note,
+      // The pass watchdog's threshold, scaled here because the tailer does not know the poll
+      // interval: a pass legitimately outlasts one interval when Discord is slow, and three of
+      // them is the wedge the watchdog line exists to make visible.
+      passWatchdogMs: config.interimPollMs * 3,
     });
     tail = tailer;
     tailTimer = setInterval(() => {
@@ -234,7 +238,20 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     registry,
     maxBodyBytes: config.maxBodyBytes,
     log: logger,
-    ...(tail === null ? {} : { tail: { learn: tail.learn, allow: tail.allow, suppress: tail.suppress } }),
+    // The question seam rides beside the other three: both question paths, this hook-fed one and
+    // the tailer's own transcript yield, end in the one deliverQuestion closure below, so they
+    // share one rendering, one alert tier, and one volume window, and a double path cannot
+    // double-ping.
+    ...(tail === null
+      ? {}
+      : {
+          tail: {
+            learn: tail.learn,
+            allow: tail.allow,
+            suppress: tail.suppress,
+            question: tail.question,
+          },
+        }),
     mirror: {
       enabled: config.mirror,
       maxBytes: config.mirrorMaxBytes,
