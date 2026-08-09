@@ -12,13 +12,14 @@ Created: 2026-08-09
 
 ## Goal
 
-The surfaces the operator reads most often become scannable, and the one place a thread answer
-still differs from a console answer stops differing. The cards the broker composes itself, the
-session status card and the fleet usage card, put their tabular body in a fenced monospace block so
-columns line up at a glance, and a multi-select question answered from the thread reaches the
-session in the same text the console's own answer produces. A Markdown table the model wrote is the
-lower-priority third piece: the operator reads those with effort today, so it rides behind the two
-that are read constantly.
+The surfaces the operator reads most often become scannable and findable, and the one place a
+thread answer still differs from a console answer stops differing. The cards the broker composes
+itself, the session status card and the fleet usage card, put their tabular body in a fenced
+monospace block so columns line up at a glance; the channel's pin list becomes the roster of what
+is running, maintained by the broker as sessions start and exit; and a multi-select question
+answered from the thread reaches the session in the same text the console's own answer produces. A
+Markdown table the model wrote is the lower-priority last piece: the operator reads those with
+effort today, where the cards are read at a glance many times a day.
 
 ## The measured ground
 
@@ -75,7 +76,43 @@ question, pinned against the measured console text; single-select still carries 
 free-form still replaces the map with `response`. The comma-in-a-label ambiguity this inherits
 from the console's own format is recorded in the test's own words rather than guarded against.
 
-### 3. A mirrored table becomes an aligned block
+### 3. The channel's pins are the live sessions
+
+Model: opus
+
+A session's card is pinned in the channel while that session is running and unpinned when it
+exits, so the channel's pin list answers "what is running right now" without a scroll. The fleet
+usage card is pinned too, permanently, since it is the one card that is always relevant.
+
+**This section ships dark on a host that has not granted the permission, and that is not a
+fallback, it is the shape.** Discord's pin endpoint requires Manage Messages, which this project's
+install does not currently ask for; measured, both a starter-message pin and an ordinary in-thread
+pin answer `403 Missing Permissions` today, while reading the pin list answers 200 on the
+permissions already granted. So a refused pin is logged once per reason through the repeat limiter
+and changes nothing else: the card, the thread, and every other surface behave exactly as they do
+now. Nothing about this section may make a host without the permission worse than it is today.
+
+**Reconcile rather than track.** On startup and whenever the registry's live set changes, read the
+channel's pins and drive it toward the intended set: pin a live session's card that is not pinned,
+unpin a card whose session has exited or whose binding is gone. Reconciling from Discord's own
+answer is what survives a broker restart, a pin the operator added by hand, and a card rebuilt
+after a 404, none of which a broker-side flag would survive.
+
+**Two costs to hold, both from Discord rather than from us.** A channel takes at most 50 pins, so
+the reconcile needs a policy at the ceiling: oldest live pins are kept, the newest arrivals go
+unpinned, and the shortfall is logged once, because dropping an older session to make room would
+unpin something the operator may be watching. And pinning writes a system line into the channel,
+one per pin, so a host starting many sessions pays a line per session; unpinning writes nothing.
+That cost is named here so it is a decision rather than a surprise.
+
+Acceptance: with the permission absent, every pin call is refused, one log line names it, and no
+other behavior changes; with it granted, a live session's card is pinned, an exited session's is
+unpinned, the fleet card stays pinned, and a broker restart converges the pin list to the live set
+without duplicating or dropping. Tests drive a fake transport for the permission-refused path both
+directions, the reconcile from a divergent starting list, the 50-pin ceiling, and the exit
+transition.
+
+### 4. A mirrored table becomes an aligned block
 
 Model: opus
 
@@ -109,16 +146,20 @@ with cut cells; a table that cannot fit the message ceiling mirrors as raw text;
 or chip can be manufactured by cell content. Tests lock each of those directions and pin the
 escaping order (neutralize, then pad).
 
-### 4. Docs and live verify
+### 5. Docs and live verify
 
 Model: opus
 Locus: inline
 
-`docs/operations.md` gains how to read a card's fenced body and what a mirrored table looks like;
-`docs/architecture.md` names the width bound the cards share and the transform in the mirroring
-path. Live verify: read both cards on a phone and confirm no horizontal drag is needed, answer a
-multi-select question from the thread and confirm the session reports the labels comma-space
-joined, and mirror a turn carrying a table.
+`docs/operations.md` gains how to read a card's fenced body, what the channel's pin list means and
+what a host without the pin permission sees instead, and what a mirrored table looks like;
+`docs/install.md` gains Manage Messages as the optional grant the pin list needs, scoped to the
+broker's channel rather than the server, and says plainly what it also permits;
+`docs/architecture.md` names the width bound the cards share, the pin reconcile, and the transform
+in the mirroring path. Live verify: read both cards on a phone and confirm no horizontal drag is
+needed, watch a session start and exit and confirm the pin list follows it, answer a multi-select
+question from the thread and confirm the session reports the labels comma-space joined, and mirror
+a turn carrying a table.
 
 ## Out of Scope
 
@@ -131,6 +172,9 @@ joined, and mirror a turn carrying a table.
 - Both cards read on the phone with their columns lined up and no horizontal drag, at a fleet
   carrying several accounts and several live sessions. A card that needs dragging reopens
   Section 1's width bound.
+- Manage Messages granted on the broker's channel, then: the pin list holds exactly the sessions
+  that are running, a session exiting drops out of it, and the fleet card stays. Before the grant,
+  the only visible difference from today is one log line.
 - A multi-select answered from the thread reports the same text a console answer reports.
 - A turn carrying a table reads as an aligned block on the phone, with no horizontal drag at three
   columns. Overflow at more columns is acceptable and expected.
