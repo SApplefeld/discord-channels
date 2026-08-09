@@ -1748,6 +1748,7 @@ test("a PreToolUse post re-arms the verdict after a restart: on and absent alert
         delivered.push(questions.map((entry) => entry.question));
         return { status: "sent" };
       },
+      answeredAtConsole: () => false,
       echo: createEchoMemory(),
     });
     const handle = createHandler({
@@ -2029,6 +2030,7 @@ function composedQuestionPath(): {
       delivered.push(questions.map((entry) => entry.question));
       return { status: "sent" };
     },
+    answeredAtConsole: () => false,
     echo: createEchoMemory(),
   });
   const desk = createQuestionDesk({

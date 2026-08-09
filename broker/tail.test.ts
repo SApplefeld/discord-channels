@@ -10,10 +10,19 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { MAX_TAIL_READ_BYTES, askedQuestions, createEchoMemory, createTranscriptTailer } from "./tail.ts";
+import {
+  MAX_TAIL_READ_BYTES,
+  askedQuestions,
+  createEchoMemory,
+  createTranscriptTailer,
+  questionDigest,
+} from "./tail.ts";
 import type { TranscriptSlice, TranscriptTailerOptions } from "./tail.ts";
+import { createQuestionDesk } from "./question-desk.ts";
+import type { QuestionTerminalState } from "./question-desk.ts";
 import { renderAnswer, renderMirror } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
@@ -151,6 +160,8 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   const posts: string[] = [];
   const prompts: string[] = [];
   const questions: (readonly AskedQuestion[])[] = [];
+  /** The asks reported as answered at the console, in the order their resolution lines landed. */
+  const consoleAnswers: (readonly AskedQuestion[])[] = [];
   /** All kinds in the order the tailer delivered them, which is transcript order. */
   const delivered: string[] = [];
   const logs: string[] = [];
@@ -173,12 +184,18 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
       delivered.push(`question:${asked.map((entry) => entry.question).join("|")}`);
       return { status: "sent" };
     },
+    answeredAtConsole: (_sessionId, asked) => {
+      consoleAnswers.push(asked);
+      // Flipped nothing, the shape of a desk holding no record for this ask: the pass goes on to
+      // the alert behind it.
+      return false;
+    },
     echo,
     log: (message) => logs.push(message),
     now: () => 1_000,
     ...overrides,
   });
-  return { tailer, posts, prompts, questions, delivered, logs, live, echo };
+  return { tailer, posts, prompts, questions, consoleAnswers, delivered, logs, live, echo };
 }
 
 test("what a transcript held before it was learned is never republished", async (t) => {
@@ -1692,6 +1709,145 @@ test("a question the hook path already alerted is skipped exactly once by the tr
   assert.equal(questions.length, 2, "the digest is one-shot: a later identical ask still alerts");
 });
 
+test("a question's resolution line reports the console answered it, once per line", async (t) => {
+  // Claude Code writes this line when the picker closes, so the line is the console's answer
+  // arriving. The desk holds the thread message that has been telling the operator to walk to that
+  // console, and this is what lets it stop saying so.
+  const file = transcriptFile(t);
+  const { tailer, consoleAnswers } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  tailer.question(SESSION, [{ question: "Ship it?", header: null, multiSelect: false, options: [] }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(consoleAnswers, [], "an ask still parked has not been answered anywhere");
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Ship it?" }] }), "utf8");
+  await tailer.poll();
+  assert.deepEqual(
+    consoleAnswers,
+    [[{ question: "Ship it?", header: null, multiSelect: false, options: [] }]],
+    "the resolution line reports the ask it names, in the bounded parse the desk digests",
+  );
+
+  // A poll over a file that has grown by nothing re-reads nothing, so the report is not repeated
+  // and the message it flipped is not edited again.
+  await tailer.poll();
+  assert.equal(consoleAnswers.length, 1);
+});
+
+test("the console-answer report does not depend on the alert dedupe having a digest to consume", async (t) => {
+  // The outstanding set is bounded and evicts, and the report is the desk's only signal that a
+  // question stopped waiting: tying it to a digest that may have been pushed out would leave the
+  // operator's phone showing a question the console answered an hour ago. A tailer-only question,
+  // which is the same shape, reports too.
+  const file = transcriptFile(t);
+  const { tailer, consoleAnswers, questions } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Never alerted?" }] }), "utf8");
+  await tailer.poll();
+  assert.equal(questions.length, 1, "with no digest outstanding the yield still alerts");
+  assert.equal(consoleAnswers.length, 1, "and still reports the answer that closed the picker");
+});
+
+test("a flipped ask is not also alerted as one still waiting at the console", async (t) => {
+  // The flip rewrites the ask's own message to say the console answered it. An alert behind that
+  // flip posts the same ask into the same thread as a question still waiting there, contradicting
+  // the message a line above it, and the record the flip consumed is gone so nothing corrects it.
+  // The other direction is the test above: a report that flipped nothing still alerts.
+  const file = transcriptFile(t);
+  const { tailer, questions } = harness({ answeredAtConsole: () => true });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, askUserQuestion({ questions: [{ question: "Ship it?" }] }), "utf8");
+  await tailer.poll();
+  assert.deepEqual(questions, [], "the flipped message is the report; a fresh alert would undo it");
+});
+
+test("the real desk flips a real released ask when its resolution line lands", async (t) => {
+  // The cross-component pin over the digest, which is the only thing naming an ask across these two
+  // modules. The desk digests the parse the hook handed it and the tailer digests the parse it read
+  // off the transcript, so each side tested against its own literal would leave a mismatch between
+  // the two invisible: here one real desk and one real tailer meet over the same ask, and the flip
+  // happens or it does not.
+  const file = transcriptFile(t);
+  const terminals: Array<{ sessionId: string; state: QuestionTerminalState }> = [];
+  const desk = createQuestionDesk({
+    holdMs: 14_400_000,
+    onTerminal: (sessionId, state) => terminals.push({ sessionId, state }),
+    setTimer: () => ({}) as unknown as NodeJS.Timeout,
+    clearTimer: () => {},
+  });
+  const { tailer } = harness({
+    answeredAtConsole: (sessionId, questions) =>
+      desk.answeredAtConsole(sessionId, questionDigest(questions)),
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  // The ask as the hook path delivers it, held and alerted, then released to the console.
+  const payload = { questions: [{ question: "Ship it?", options: [{ label: "Now" }] }] };
+  const parsed = askedQuestions(payload);
+  const response = {
+    writableEnded: false,
+    writableFinished: false,
+    destroyed: false,
+    writeHead: () => response,
+    end: () => {},
+    once: () => response,
+  };
+  desk.hold(SESSION, parsed, payload.questions, response as unknown as ServerResponse, true);
+  desk.noteAlert(SESSION, questionDigest(parsed), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  desk.release(SESSION);
+
+  appendFileSync(file, askUserQuestion(payload), "utf8");
+  await tailer.poll();
+  assert.deepEqual(terminals, [
+    { sessionId: SESSION, state: "released" },
+    { sessionId: SESSION, state: "answered-at-console" },
+  ]);
+});
+
+test("a throwing console-answer report costs the line, not the batch behind it", async (t) => {
+  // Every seam this module calls out to is treated the same way: an injected failure is bounded to
+  // a rate-limited line and the items after it still publish.
+  const file = transcriptFile(t);
+  const { tailer, posts, logs } = harness({
+    answeredAtConsole: () => {
+      throw new Error("the desk exploded");
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    askUserQuestion({ questions: [{ question: "Ship it?" }] }) + assistantText("and on we go"),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.deepEqual(posts, ["and on we go"], "the batch continued past the failed report");
+  assert.ok(
+    logs.some((entry) => entry.includes("console-answer report failed")),
+    logs.join("\n"),
+  );
+  assert.ok(
+    logs.every((entry) => !entry.includes("Ship it?") && !entry.includes("exploded")),
+    "no question text and no error detail reaches the log",
+  );
+});
+
 test("a non-matching transcript question neither consumes the digest nor goes silent", async (t) => {
   // Consume-on-match only: a different question delivered while a hook digest stands must post,
   // and must leave the digest in place for the duplicate it actually answers for.
@@ -1987,6 +2143,7 @@ function integration(t: TestContext) {
     // The router carries no question path; index.ts wires this seam to the steering writer
     // instead, so a stub keeps this helper about the dedup seam the two halves really share.
     deliverQuestion: async () => ({ status: "sent" }),
+    answeredAtConsole: () => false,
     echo,
     now: () => 1_000,
   });
@@ -2836,6 +2993,10 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
     deliverQuestion: async (_sessionId, asked) => {
       if (explode) throw new Error(`question alert exploded while posting: ${asked[0]?.question}`);
       return { status: "sent" };
+    },
+    answeredAtConsole: (_sessionId, asked) => {
+      if (explode) throw new Error(`the console-answer report exploded on: ${asked[0]?.question}`);
+      return false;
     },
     echo,
     log: (message) => logs.push(message),

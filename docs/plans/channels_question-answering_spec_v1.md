@@ -362,3 +362,58 @@ Stamps: adjudicated 1, stamped 1 (claude-code-channel-and-hook-facts)
 Next: Section 3: Typed free-form answers and console-answer cleanup, which also adds the
 answered-at-console terminal state Section 2 deliberately left without a producer
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-09
+Completed: Section 3's code, built and review-fixed. The section does NOT close here: a security
+finding against the typed-answer return channel is with the operator, and its answer decides
+whether the typed path ships as built, ships with the security model rewritten, or comes out.
+Implemented By: implementer-opus (build round), implementer-fable (review-fix round)
+Metrics: 1 full review round (adversarial + blind + security, all at the session tier) plus the
+fix round's red-first evidence; 0 NEEDS_CONTEXT; 1 escalation (accepted, below); advisor off
+Decisions / Surprises: the security review returned BLOCK on a Critical the orchestrator then
+confirmed: a typed answer is written back down the HTTP request the question hook's poster owns,
+and that post is credited on the process token plus payload session-naming alone, so a local
+process holding the token can invent a question, have the broker ring the operator's phone with
+it, and receive the operator's free text on its own socket. The strongest form of the finding is
+not the capability delta (a process that can do this already reads every file the operator owns;
+what is new is eliciting what is not on disk) but the contradiction with this project's own bar:
+`docs/security-model.md` holds a phone-ringing prompt of the sender's devising to the
+per-attachment reply key and says in terms that a process token is not enough, and the reply key
+is minted per attachment and sent only down the relay's pipe, so a subprocess cannot inherit it.
+The question path rings the same phone on the token alone. The operator's options and the
+recommendation ride in the decision brief; the reviewer's own suggested fix (gate the hold on the
+reply key) is assessed as illusory, because the hook is fired by a CLI that holds no such key and
+putting one in the hook headers only creates another inherited env-var secret.
+The blind reviewer flagged the orchestrator's own dispatch as partially contaminated: its brief
+named "control-flow ordering defects in the inbound message pipeline" and "newly-required
+options", which are diff-describing framings that would not read identically for every diff in
+this repository. The reviewer hunted past them and its findings stand on the code, but the
+dispatch was wrong and the rule it broke is the one that makes a blind review worth running.
+Fixed this round, items 1 and 2 red-first: `answeredAtConsole` scanned its closed-ask ring
+newest-first while records append oldest-first and resolution lines arrive oldest-first, so a
+session that asked one question twice had the first answer flip the second message while the
+answered one kept telling the operator to go answer it; and its live-hold early return fired
+ahead of the record search, so a re-asked question left the older instance's message stale
+forever. A flip was then undone in the same block, because the resolution-time alert still posted
+for the ask just flipped. Close-out edits are now serialized against each other through the
+in-flight map rather than only behind prompt draws, the hold-stands log line takes the repeat
+limiter, `answerTyped` bounds its own input at the desk rather than trusting its caller, and the
+composition docstring carries the measured figure the typed-answer footer changed.
+Escalation accepted: the brief's item 4 (drop ring records for a session and digest when a hold
+is created) was refused with a trace showing it makes both halves of the item 1 Major
+unconstructible and, on the ordinary repeat-ask path, drops a record before its resolution line
+can be read, which is the Major it was meant to complement. Residual accepted in its place: a
+released ask abandoned rather than answered leaves a record a later identical ask's resolution
+line can match, flipping the older message to answered-at-console when nobody answered it. The
+narrower fix offered rather than taken, if it ever bites: drop older same-digest records when an
+entry settles as answered.
+Review Findings: blind CHANGES_REQUIRED (2 Major, 5 Minor); adversarial APPROVED_WITH_CONCERNS
+(1 Major, 5 Minor); security BLOCK (1 Critical, 5 Minor). Fixed: both blind Majors and the
+security and adversarial Minors listed above. Open pending the operator's decision: the Critical,
+and the adversarial Major it interacts with (the verdict pattern `y|yes|n|no` plus five letters
+swallows plausible typed answers such as "yes merge" and "no thank" before the answer path sees
+them, which matters only if the typed path survives).
+Stamps: none surfaced at this boundary
+Next: the operator's decision on the typed-answer return channel. Then either close this Chapter
+into Section 4, or amend the section first.
+Commit Model: Commit-and-Push

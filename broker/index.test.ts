@@ -325,7 +325,7 @@ test("a terminal hold rewrites its own message and strips the components that an
       edits.push({ threadId, messageId, text, components });
       return { status: "ok", value: null, rate: NO_RATE_INFO };
     },
-    settled: createPromptEdits().settled,
+    drawing: createPromptEdits(),
     log: (message) => logged.push(message),
   });
 
@@ -395,7 +395,7 @@ function upgradeUnderTest(input: {
   const desk = createQuestionDesk({
     holdMs: 14_400_000,
     setTimer: () => ({}) as NodeJS.Timeout,
-    onTerminal: questionCloseOut({ edit: write, settled: drawing.settled, log: (line) => logged.push(line) }),
+    onTerminal: questionCloseOut({ edit: write, drawing, log: (line) => logged.push(line) }),
   });
   const held = heldResponse();
   assert.equal(
@@ -534,6 +534,46 @@ test("a hold that ends under the upgrade edit is closed out after it, never bene
   );
 });
 
+test("two close-outs for one message land in the order their triggers fired", async () => {
+  // A release and the console answer that follows it both rewrite the one message, both
+  // fire-and-forget off the response path. Under a first edit Discord is pacing, the second would
+  // otherwise land first and the message would be left telling the operator to answer at a console
+  // that has already answered, with nothing behind it to correct that.
+  const landed: string[] = [];
+  const drawing = createPromptEdits();
+  let admit = (): void => {};
+  const paced = new Promise<void>((resolve) => {
+    admit = resolve;
+  });
+  let issued = 0;
+  const closeOut = questionCloseOut({
+    edit: async (_threadId, _messageId, text) => {
+      issued += 1;
+      if (issued === 1) await paced;
+      landed.push(text.split("\n")[0]);
+      return OK;
+    },
+    drawing,
+    log: () => {},
+  });
+  const detail = {
+    entryId: "a1b2c3d4e5f6",
+    alert: { threadId: "thread-1", messageId: "msg-1" },
+    questions: ask("Ship it?"),
+    answers: null,
+  };
+
+  closeOut("session-a", "released", detail);
+  closeOut("session-a", "answered-at-console", detail);
+  admit();
+  for (let tick = 0; tick < 3; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(landed, [
+    "❓ **Question closed** · released to the console, answer it at the console",
+    "✅ **Answered at the console**",
+  ]);
+});
+
 test("a redraw for an entry the desk no longer holds is never issued", async () => {
   // The view a redraw draws from was read before the callback was answered, so the hold can end
   // under it: the message would go back to a live prompt over a session that has already moved on.
@@ -603,7 +643,7 @@ test("a refused close-out is one bounded line and never the question that failed
   const logged: string[] = [];
   const closeOut = questionCloseOut({
     edit: async () => ({ status: "failed", error: "HTTP 404", rate: NO_RATE_INFO }),
-    settled: createPromptEdits().settled,
+    drawing: createPromptEdits(),
     log: (message) => logged.push(message),
   });
 

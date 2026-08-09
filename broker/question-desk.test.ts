@@ -6,12 +6,14 @@ import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import type { AskedQuestion } from "./discord/render.ts";
 import {
+  MAX_CLOSED_ASKS,
   MAX_HELD_QUESTIONS,
   MAX_REPEAT_KEYS,
   MAX_RESPONSES_PER_ENTRY,
   createQuestionDesk,
 } from "./question-desk.ts";
 import type { QuestionTerminalDetail, QuestionTerminalState } from "./question-desk.ts";
+import { MAX_INBOUND_TEXT_LENGTH } from "./routing/inbound.ts";
 import { questionDigest } from "./tail.ts";
 
 // SECRET- prefixed like the intake's question fixtures: the no-content-in-logs assertions grep for
@@ -726,6 +728,277 @@ test("an entry already carrying an alert keeps the message its components live o
   assert.deepEqual(desk.entry(first)?.alert, { threadId: "thread-1", messageId: "msg-1" });
 });
 
+test("a typed answer resolves the ask as response, but only once the thread has the message", () => {
+  // The window between the hold and its alert landing is one Discord round trip, and in it the
+  // thread shows nothing about this ask: a message typed there is about something else, and
+  // answering the session with it would inject words nobody aimed at the question.
+  const { desk, terminals } = harness();
+  const { response, writes } = heldResponse();
+  desk.hold("session-a", ask(), askInput(), response, true);
+
+  assert.equal(
+    desk.answerTyped("session-a", "SECRET-in my own words"),
+    false,
+    "an ask with no message in the thread is not answered by a message in the thread",
+  );
+  assert.equal(writes.length, 0, "and the hold stands, untouched");
+
+  desk.noteAlert("session-a", questionDigest(ask()), { threadId: "thread-1", messageId: "msg-1" });
+  assert.equal(desk.answerTyped("session-a", "SECRET-in my own words"), true);
+  assert.deepEqual(writes[0].body, {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { questions: askInput(), response: "SECRET-in my own words" },
+    },
+  });
+  assert.deepEqual(terminals, [{ sessionId: "session-a", state: "answered" }]);
+
+  assert.equal(
+    desk.answerTyped("session-a", "SECRET-and again"),
+    false,
+    "the ask is answered, so the next message is the operator's to steer with",
+  );
+});
+
+test("a typed answer is bounded by this desk, not by whoever hands it over", () => {
+  // The seam where untrusted text enters a session's own tool result, so the bound is here and not
+  // only at the router that read the message off Discord: invisibles that would show the thread and
+  // the transcript two different answers are stripped, and the cut is on code points, over the same
+  // ceiling the inbound path spends.
+  const { desk } = harness();
+  const { response, writes } = heldResponse();
+  desk.hold("session-a", ask(), askInput(), response, true);
+  desk.noteAlert("session-a", questionDigest(ask()), { threadId: "thread-1", messageId: "msg-1" });
+
+  const typed = `  SECRET-yes,‮ go\u{1f600}${"x".repeat(MAX_INBOUND_TEXT_LENGTH)}  `;
+  assert.equal(desk.answerTyped("session-a", typed), true);
+  const answered = (writes[0].body as { hookSpecificOutput: { updatedInput: { response: string } } })
+    .hookSpecificOutput.updatedInput.response;
+  assert.equal([...answered].length, MAX_INBOUND_TEXT_LENGTH, "cut on code points, at the ceiling");
+  assert.ok(answered.startsWith("SECRET-yes, go\u{1f600}"), answered.slice(0, 40));
+  assert.ok(!answered.includes("‮"), "the invisible class never reaches the tool result");
+});
+
+test("the hold-stands line a console report writes is rate-limited", () => {
+  // Transcript lines drive this refusal, and a poll reads every line a session wrote since the last
+  // one: unlimited, it would push the rest of the log out through rotation far faster than the
+  // per-post lines around it can.
+  let at = 1_000;
+  const { desk, logged } = harness({ now: () => at });
+  const digest = questionDigest(ask());
+  desk.hold("session-a", ask(), askInput(), heldResponse().response, true);
+
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(desk.answeredAtConsole("session-a", digest), false);
+  }
+  assert.equal(
+    logged.filter((line) => line.includes("the hold stands")).length,
+    1,
+    "the first is written at once and the rest of the window is counted",
+  );
+
+  at += 60_000;
+  assert.equal(desk.answeredAtConsole("session-a", digest), false);
+  assert.ok(
+    logged.some((line) => line.includes("occurred 4 more time(s)")),
+    logged.join("\n"),
+  );
+});
+
+test("a console answer after a release flips the message exactly once", () => {
+  // The release tells the operator to answer at the console; the transcript's resolution line is
+  // that answer arriving, minutes or hours later, with the entry long gone. What the flip reaches
+  // is the record of the ask, which names the message the release already rewrote.
+  const { desk, terminals, details } = harness();
+  const { response } = heldResponse();
+  const digest = questionDigest(ask());
+  desk.hold("session-a", ask(), askInput(), response, true);
+  const entryId = desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-1" });
+  desk.release("session-a");
+
+  assert.equal(desk.answeredAtConsole("session-a", digest), true);
+  assert.deepEqual(terminals, [
+    { sessionId: "session-a", state: "released" },
+    { sessionId: "session-a", state: "answered-at-console" },
+  ]);
+  assert.deepEqual(details[1], {
+    entryId,
+    alert: { threadId: "thread-1", messageId: "msg-1" },
+    questions: ask(),
+    answers: null,
+  });
+
+  assert.equal(
+    desk.answeredAtConsole("session-a", digest),
+    false,
+    "the record is consumed by the flip, so a second report edits nothing",
+  );
+  assert.equal(terminals.length, 2);
+});
+
+test("an ask answered from the thread is never also reported answered at the console", () => {
+  // The tool call proceeds and writes its transcript line on this path too, so the report arrives
+  // for an ask whose message already renders what the operator sent. Nothing was left waiting at a
+  // console, so nothing is remembered for one to answer.
+  const { desk, terminals } = harness();
+  const { response } = heldResponse();
+  const digest = questionDigest(ask());
+  desk.hold("session-a", ask(), askInput(), response, true);
+  desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-1" });
+  desk.answerTyped("session-a", "SECRET-in my own words");
+
+  assert.equal(desk.answeredAtConsole("session-a", digest), false);
+  assert.deepEqual(terminals, [{ sessionId: "session-a", state: "answered" }]);
+});
+
+test("a console answer naming an ask still held leaves that hold standing", () => {
+  // A held PreToolUse response blinds the console, so no picker rendered for this ask and nothing
+  // there can have answered it. The report is refused rather than resolving a live hold, which is
+  // the direction every uncertainty here takes.
+  const { desk, terminals } = harness();
+  const { response, writes } = heldResponse();
+  const digest = questionDigest(ask());
+  desk.hold("session-a", ask(), askInput(), response, true);
+  desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-1" });
+
+  assert.equal(desk.answeredAtConsole("session-a", digest), false);
+  assert.deepEqual(terminals, []);
+  assert.deepEqual(writes, [], "the hold is still held and still answerable");
+  assert.equal(desk.answerTyped("session-a", "SECRET-in my own words"), true);
+});
+
+test("two closed instances of one ask flip in the order their console answers landed", () => {
+  // A session that asks the same question twice, both released, leaves two messages in the thread
+  // saying the console has it. Claude Code writes a resolution line per ask, in the order the
+  // console answered them, so the first line is the first message's: matching the newest record
+  // instead would flip the second message and leave the answered one still asking for a walk to a
+  // console that has nothing on it.
+  const { desk, terminals, details } = harness();
+  const digest = questionDigest(ask());
+  const closed: Array<string | null> = [];
+  for (const messageId of ["msg-1", "msg-2"]) {
+    desk.hold("session-a", ask(), askInput(), heldResponse().response, true);
+    closed.push(desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId }));
+    desk.release("session-a");
+  }
+
+  assert.equal(desk.answeredAtConsole("session-a", digest), true);
+  assert.equal(desk.answeredAtConsole("session-a", digest), true);
+  assert.deepEqual(
+    details.slice(2).map((detail) => detail.alert?.messageId),
+    ["msg-1", "msg-2"],
+    "oldest first: the first answer closes the message the first ask left standing",
+  );
+  assert.deepEqual(
+    details.slice(2).map((detail) => detail.entryId),
+    closed,
+  );
+  assert.deepEqual(
+    terminals.map((terminal) => terminal.state),
+    ["released", "released", "answered-at-console", "answered-at-console"],
+  );
+  assert.equal(
+    desk.answeredAtConsole("session-a", digest),
+    false,
+    "and both records are spent, so a third line edits nothing",
+  );
+});
+
+test("an ask asked again and held still flips the message its closed instance left standing", () => {
+  // The transcript is polled on an interval, so a console answer reaches this desk seconds after the
+  // session it unparked has moved on, and a session that re-asks inside that window holds the same
+  // digest the line names. The live hold cannot be what the line reports: no picker renders under a
+  // hold, so the line belongs to the closed instance and its message is the one that stops saying
+  // the console has it.
+  const { desk, terminals, details } = harness();
+  const digest = questionDigest(ask());
+  desk.hold("session-a", ask(), askInput(), heldResponse().response, true);
+  const closed = desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-1" });
+  desk.release("session-a");
+  const live = heldResponse();
+  desk.hold("session-a", ask(), askInput(), live.response, true);
+  desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-2" });
+
+  assert.equal(desk.answeredAtConsole("session-a", digest), true);
+  assert.equal(details.at(-1)?.entryId, closed);
+  assert.deepEqual(details.at(-1)?.alert, { threadId: "thread-1", messageId: "msg-1" });
+  assert.deepEqual(live.writes, [], "and the ask the session is parked on is untouched");
+  assert.deepEqual(
+    terminals.map((terminal) => terminal.state),
+    ["released", "answered-at-console"],
+  );
+  assert.equal(
+    desk.answeredAtConsole("session-a", digest),
+    false,
+    "with the record spent, the live hold is all that is left and it stands",
+  );
+});
+
+test("a hold released before its alert landed remembers nothing to flip", () => {
+  // The ask this thread cannot answer faithfully: it is released before any message is noted on the
+  // entry, so the notice already in the thread stands as the alert it is and there is nothing for a
+  // console answer to rewrite.
+  const { desk, terminals } = harness();
+  const { response } = heldResponse();
+  const digest = questionDigest(ask());
+  desk.hold("session-a", ask(), askInput(), response, true);
+  desk.release("session-a");
+
+  assert.equal(desk.answeredAtConsole("session-a", digest), false);
+  assert.deepEqual(terminals, [{ sessionId: "session-a", state: "released" }]);
+});
+
+test("the closed-ask record is bounded, and the oldest is what falls out of it", () => {
+  // The record holds question text, so it is bounded the way everything else here is. Past the
+  // bound the cost is a message left reading "answer it at the console" for a question already
+  // answered, never a lost question.
+  const { desk } = harness();
+  const asks = Array.from({ length: MAX_CLOSED_ASKS + 1 }, (_value, index) =>
+    ask(`SECRET-question ${String(index)}`),
+  );
+  for (const [index, asked] of asks.entries()) {
+    const session = `session-${String(index)}`;
+    desk.hold(session, asked, askInput(), heldResponse().response, true);
+    desk.noteAlert(session, questionDigest(asked), {
+      threadId: "thread-1",
+      messageId: `msg-${String(index)}`,
+    });
+    desk.release(session);
+  }
+
+  assert.equal(
+    desk.answeredAtConsole("session-0", questionDigest(asks[0])),
+    false,
+    "the oldest record was evicted by the newest",
+  );
+  assert.equal(
+    desk.answeredAtConsole("session-1", questionDigest(asks[1])),
+    true,
+    "and everything inside the bound still flips",
+  );
+  assert.equal(
+    desk.answeredAtConsole(
+      `session-${String(MAX_CLOSED_ASKS)}`,
+      questionDigest(asks[MAX_CLOSED_ASKS]),
+    ),
+    true,
+  );
+});
+
+test("a console answer naming a different ask than the record holds flips nothing", () => {
+  // The digest is what names an ask across the tailer and this desk. A session that asked twice
+  // must not have the wrong message flipped by the resolution of the other one.
+  const { desk, terminals } = harness();
+  desk.hold("session-a", ask(), askInput(), heldResponse().response, true);
+  desk.noteAlert("session-a", questionDigest(ask()), { threadId: "thread-1", messageId: "msg-1" });
+  desk.release("session-a");
+
+  assert.equal(desk.answeredAtConsole("session-a", questionDigest(ask("SECRET-another"))), false);
+  assert.equal(desk.answeredAtConsole("session-b", questionDigest(ask())), false);
+  assert.deepEqual(terminals, [{ sessionId: "session-a", state: "released" }]);
+});
+
 test("the repeat-log map stays bounded even when every reason still owes a count", () => {
   // The reasons carry session ids, so a session that trips the response cap twice and goes away
   // leaves an entry owing a count that only another call for that same session would ever flush.
@@ -779,6 +1052,13 @@ test("no log line ever carries question content, whatever the trigger", () => {
   const freeform = heldResponse();
   desk.hold("session-d", ask(), askInput(), freeform.response, true);
   desk.resolve("session-d", { kind: "response", response: "SECRET-typed reply" });
+
+  // The two refusals the typed and console paths speak: a hold with no message in the thread yet,
+  // and a console answer naming an ask still held.
+  const typed = heldResponse();
+  desk.hold("session-f", ask(), askInput(), typed.response, true);
+  desk.answerTyped("session-f", "SECRET-typed too early");
+  desk.answeredAtConsole("session-f", questionDigest(ask()));
 
   desk.hold("session-e", ask(), askInput(), heldResponse().response, true);
   desk.releaseAll();

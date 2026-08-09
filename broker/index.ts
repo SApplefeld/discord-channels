@@ -115,11 +115,13 @@ export function questionCloseOut(options: {
     components: readonly ActionRow[],
   ) => Promise<CallOutcome<null>>;
   /**
-   * The prompt edits still on the wire for this entry. Waited on before the close-out is written,
-   * because both aim at the one message and this one has to be the last: a prompt edit that landed
-   * after would put components back on a message whose hold has already ended.
+   * The edits already on the wire for this entry's message, which this one goes behind: the prompt
+   * edits that draw it live, and any earlier close-out. Both orders matter, because all three aim at
+   * the one message: a prompt edit landing after would put components back on a message whose hold
+   * has ended, and a close-out landing after a later one would leave the message telling the
+   * operator to answer a question that has since been answered.
    */
-  settled: (entryId: string) => Promise<void>;
+  drawing: PromptEdits;
   log: (message: string) => void;
 }): (sessionId: string, state: QuestionTerminalState, detail: QuestionTerminalDetail) => void {
   return (sessionId, state, detail) => {
@@ -132,66 +134,81 @@ export function questionCloseOut(options: {
       answers: answers !== null && answers.kind === "answers" ? answers.answers : null,
       response: answers !== null && answers.kind === "response" ? answers.response : null,
     });
-    void (async () => {
-      await options.settled(detail.entryId);
-      const outcome = await options.edit(alert.threadId, alert.messageId, content, []);
-      if (outcome.status === "ok") return;
-      // The state and the transport's error class only: the message this failed to write renders
-      // question text, and conversation content never appears in the broker log at any level.
-      options.log(
-        `broker: could not close out session ${sessionId}'s question message: ` +
-          (outcome.status === "rate-limited" ? "rate limited" : outcome.error),
-      );
-    })().catch(() => {
-      options.log(
-        "broker: closing out a question message failed; the error detail is withheld, " +
-          "it can carry content",
-      );
-    });
+    // What each state writes is composed before it takes its place in the queue, so an edit waiting
+    // behind another writes what its own trigger meant rather than what the message says by the
+    // time the wire is free.
+    void options.drawing
+      .closeOut(detail.entryId, async () => {
+        const outcome = await options.edit(alert.threadId, alert.messageId, content, []);
+        if (outcome.status === "ok") return;
+        // The state and the transport's error class only: the message this failed to write renders
+        // question text, and conversation content never appears in the broker log at any level.
+        options.log(
+          `broker: could not close out session ${sessionId}'s question message: ` +
+            (outcome.status === "rate-limited" ? "rate limited" : outcome.error),
+        );
+      })
+      .catch(() => {
+        options.log(
+          "broker: closing out a question message failed; the error detail is withheld, " +
+            "it can carry content",
+        );
+      });
   };
 }
 
 /**
- * The prompt edits still on the wire, one per held entry, and the order the terminal edit takes
- * behind them.
+ * The edits still on the wire for a held ask's one message, and the order the writers aiming at it
+ * take.
  *
- * Two writers aim at a held ask's one message: the edits that draw it as a live prompt, and the
- * close-out that rewrites it once the hold has ended. The close-out is fire-and-forget off the
- * response path, so without an order between them a prompt edit issued a moment earlier lands a
- * moment later and puts live components back over a hold that has already answered its session,
- * where every tap is then a failure the operator has no way to read. `draw` registers each prompt
- * edit under its entry and `settled` is what the close-out waits on, so the close-out is always the
- * last write a message takes. The map holds an entry only while one of those edits is in flight.
+ * Three writers reach that message: the edits that draw it as a live prompt, and the close-outs that
+ * rewrite it as each state of the hold ends. A close-out is fire-and-forget off the response path,
+ * so without an order a prompt edit issued a moment earlier lands a moment later and puts live
+ * components back over a hold that has already answered its session, where every tap is a failure
+ * the operator has no way to read; and a close-out issued a moment earlier lands a moment later and
+ * leaves the message telling the operator to answer at a console for a question the console already
+ * answered. Both edits register under the entry id, and a close-out runs behind whatever it finds
+ * there, so the writes to one message are serialized in the order their triggers fired. The map
+ * holds an entry only while one of those edits is in flight.
  */
 export type PromptEdits = {
   /** Runs one prompt edit for an entry, registered so a close-out for it waits behind. */
   draw: <Result>(entryId: string, run: () => Promise<Result>) => Promise<Result>;
-  /** Resolves once nothing is drawing that entry's message, whether or not the drawing worked. */
-  settled: (entryId: string) => Promise<void>;
+  /** Runs one close-out edit for an entry, behind every edit already writing that message. */
+  closeOut: <Result>(entryId: string, run: () => Promise<Result>) => Promise<Result>;
 };
 
 export function createPromptEdits(): PromptEdits {
   const inFlight = new Map<string, Promise<unknown>>();
+  /** Holds the entry's place until this edit finishes, and only while it is the last registered. */
+  const register = (entryId: string, running: Promise<unknown>): void => {
+    inFlight.set(entryId, running);
+    const forget = (): void => {
+      if (inFlight.get(entryId) === running) inFlight.delete(entryId);
+    };
+    running.then(forget, forget);
+  };
+  // A failed edit is still a finished one, and each edit reports its own refusal: a wait on one
+  // carries no outcome and never rejects on its account.
+  const done = (): void => {};
   return {
     draw(entryId, run) {
       // Started before it is registered, and nothing between the two lines yields: `run` reads the
       // entry and issues its edit synchronously, so a close-out firing from here on either finds
       // this edit registered or has not been provoked yet.
       const running = run();
-      inFlight.set(entryId, running);
-      const forget = (): void => {
-        if (inFlight.get(entryId) === running) inFlight.delete(entryId);
-      };
-      running.then(forget, forget);
+      register(entryId, running);
       return running;
     },
-    settled: (entryId) => {
-      const running = inFlight.get(entryId);
-      if (running === undefined) return Promise.resolve();
-      // A failed drawing is still a finished one, and the close-out's own edit is what reports a
-      // refusal: this wait carries no outcome and never rejects.
-      const done = (): void => {};
-      return running.then(done, done);
+    closeOut(entryId, run) {
+      const ahead = inFlight.get(entryId);
+      // Registered as the wait rather than after it, which is what orders two close-outs against
+      // each other: a close-out arriving while this one waits finds this whole chain in the map and
+      // goes behind it, where finding only the edit this one is waiting on would put the two of them
+      // on the wire together.
+      const running = (ahead === undefined ? Promise.resolve() : ahead.then(done, done)).then(run);
+      register(entryId, running);
+      return running;
     },
   };
 }
@@ -475,7 +492,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     onTerminal: questionCloseOut({
       edit: (threadId, messageId, text, components) =>
         steeringWriter.edit(threadId, messageId, text, components),
-      settled: drawing.settled,
+      drawing,
       log: note,
     }),
   });
@@ -499,6 +516,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         deliver: (sessionId, questions) => deliverQuestion(sessionId, questions),
         desk: questionDesk,
       }),
+      // The console-answer flip. A resolution line means the picker closed, and the desk holds the
+      // one message that has been telling the operator to answer there; the digest is what names
+      // the ask across the two modules, computed from the same bounded parse on both sides.
+      answeredAtConsole: (sessionId, questions) =>
+        questionDesk.answeredAtConsole(sessionId, questionDigest(questions)),
       echo,
       log: note,
       // The pass watchdog's threshold, scaled here because the tailer does not know the poll
@@ -769,6 +791,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       relays,
       gate,
       permissions,
+      // The typed-answer seam. A message posted while this session's question is held answers that
+      // question whole, in the operator's own words, instead of reaching the model as steering it
+      // could only queue against a session parked inside the tool call.
+      questions: { answerTyped: questionDesk.answerTyped },
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
       now: Date.now,

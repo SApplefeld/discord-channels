@@ -7,7 +7,11 @@
 // classify the file as binary, and a test nobody can ever read a diff of is a test nobody reviews.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { ServerResponse } from "node:http";
 import { MAX_LINE_BYTES } from "../../relay/broker.ts";
+import type { AskedQuestion } from "../discord/render.ts";
+import { createQuestionDesk } from "../question-desk.ts";
+import { questionDigest } from "../tail.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
@@ -66,7 +70,66 @@ function announce(registry: Registry, sessionId: string, processToken = TOKEN): 
   });
 }
 
-function harness(options: { attachRelay?: boolean; now?: () => number } = {}) {
+/**
+ * The real desk behind one held ask for `session-a`, so a typed answer is asserted on the JSON the
+ * hook response actually carries rather than on a call the router made. The wire shape is the whole
+ * point of the path, and a hand-built stub cannot catch a change to it.
+ */
+function heldQuestion() {
+  const questions: AskedQuestion[] = [
+    {
+      question: "Which beverage?",
+      header: "Beverage",
+      multiSelect: false,
+      options: [{ label: "Coffee", description: null }],
+    },
+  ];
+  const questionsInput = [
+    { question: "Which beverage?", header: "Beverage", options: [{ label: "Coffee" }] },
+  ];
+  const writes: unknown[] = [];
+  let ended = false;
+  const response = {
+    writableEnded: false,
+    writableFinished: false,
+    destroyed: false,
+    writeHead: () => response,
+    end: (text: string) => {
+      ended = true;
+      writes.push(JSON.parse(text));
+    },
+    once: () => response,
+  };
+  // Hand-driven timers, and never fired here: a real four-hour expiry timer would hold the test
+  // runner's event loop open for as long as it is pending.
+  const desk = createQuestionDesk({
+    holdMs: 14_400_000,
+    setTimer: () => ({}) as unknown as NodeJS.Timeout,
+    clearTimer: () => {},
+  });
+  return {
+    desk,
+    writes,
+    /** Puts one ask in the desk, alerted, which is the state a typed answer is read against. */
+    hold: (sessionId = "session-a"): void => {
+      desk.hold(sessionId, questions, questionsInput, response as unknown as ServerResponse, true);
+      desk.noteAlert(sessionId, questionDigest(questions), {
+        threadId: THREAD,
+        messageId: "920000000000000001",
+      });
+    },
+    questionsInput,
+    answered: (): boolean => ended,
+  };
+}
+
+function harness(
+  options: {
+    attachRelay?: boolean;
+    now?: () => number;
+    questions?: { answerTyped: (sessionId: string, response: string) => boolean };
+  } = {},
+) {
   const now = options.now ?? ((): number => 1_000);
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now });
   announce(registry, "session-a");
@@ -91,16 +154,25 @@ function harness(options: { attachRelay?: boolean; now?: () => number } = {}) {
     editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
   const permissions = watchedDesk();
+  const typed: string[] = [];
   const router = createInboundRouter({
     registry,
     relays,
     gate: createSenderGate(OPERATOR),
     permissions: permissions.desk,
+    // Nothing held, unless a test wires a desk that holds something: the default is a broker whose
+    // sessions have no question parked, which is every test above.
+    questions: options.questions ?? {
+      answerTyped: (_sessionId, response) => {
+        typed.push(response);
+        return false;
+      },
+    },
     threadFor: (sessionId) => (sessionId === "session-a" ? THREAD : null),
     writer: createThreadWriter({ messenger, now }),
     now,
   });
-  return { registry, relays, router, sent, notices, verdicts: permissions.resolved };
+  return { registry, relays, router, sent, notices, typed, verdicts: permissions.resolved };
 }
 
 function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
@@ -377,6 +449,140 @@ test("a verdict costs a session nothing from its inbound rate ceiling", async ()
   assert.equal(sent.length, 1, "the session can still be spoken to");
 });
 
+test("a typed message answers the session's held question, and is not also steering", async () => {
+  // The hold's own answer channel. The session is parked inside the tool call this answers, so the
+  // same text delivered as chat would reach the model as a second, contextless copy of an answer it
+  // is already being handed.
+  const question = heldQuestion();
+  const { router, sent } = harness({ questions: { answerTyped: question.desk.answerTyped } });
+  question.hold();
+
+  await router.deliver(message({ text: "whichever one you have already opened" }));
+
+  assert.deepEqual(sent, [], "an answer is spent on the question, never delivered as steering");
+  assert.deepEqual(question.writes, [
+    {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        // The measured vocabulary: `response` is a sibling of `answers` that replaces the
+        // per-question answers for the whole ask, and the payload's own questions array rides back
+        // verbatim because the session re-reads its whole tool input from this body.
+        updatedInput: {
+          questions: question.questionsInput,
+          response: "whichever one you have already opened",
+        },
+      },
+    },
+  ]);
+  const body = question.writes[0] as { hookSpecificOutput: { updatedInput: object } };
+  assert.equal(
+    Object.hasOwn(body.hookSpecificOutput.updatedInput, "answers"),
+    false,
+    "a free-form answer carries no answers map: the two spellings are alternatives",
+  );
+});
+
+test("with no question held, the same message steers exactly as it does today", async () => {
+  const question = heldQuestion();
+  const { router, sent } = harness({ questions: { answerTyped: question.desk.answerTyped } });
+
+  await router.deliver(message({ text: "whichever one you have already opened" }));
+  assert.deepEqual(sent, [
+    { type: "message", chatId: THREAD, text: "whichever one you have already opened" },
+  ]);
+  assert.equal(question.answered(), false, "nothing was held, so nothing was answered");
+});
+
+test("a second message during the same hold steers: one ask takes one answer", async () => {
+  // The answer resolves the entry, so the desk holds nothing by the time the next message lands
+  // and the session is no longer parked. Whatever the operator says next is steering again.
+  const question = heldQuestion();
+  const { router, sent } = harness({ questions: { answerTyped: question.desk.answerTyped } });
+  question.hold();
+
+  await router.deliver(message({ text: "the first one" }));
+  await router.deliver(message({ text: "and get on with it" }));
+  assert.equal(question.writes.length, 1);
+  assert.deepEqual(sent, [{ type: "message", chatId: THREAD, text: "and get on with it" }]);
+});
+
+test("a verdict is a verdict even while a question is held, never that question's answer", async () => {
+  // Pipeline order, in the one direction it can be got wrong: the verdict pattern runs first, so a
+  // permission approval typed during a hold approves the tool call it names instead of being eaten
+  // as prose the session asked for.
+  const question = heldQuestion();
+  const { router, sent, verdicts } = harness({
+    questions: { answerTyped: question.desk.answerTyped },
+  });
+  question.hold();
+
+  await router.deliver(message({ text: "y abcde" }));
+  assert.deepEqual(verdicts, [
+    { threadId: THREAD, verdict: { behavior: "allow", requestId: "abcde" } },
+  ]);
+  assert.equal(question.answered(), false, "the hold is untouched and still answerable");
+  assert.deepEqual(sent, []);
+
+  // And the hold is still there to answer, which is what makes the ordering safe rather than lossy.
+  await router.deliver(message({ text: "now the beverage" }));
+  assert.equal(question.writes.length, 1);
+});
+
+test("a cut message is never a partial answer, and flows on as the announced chat it is", async () => {
+  // The rule the verdict pattern already follows: what a message is, is decided from the whole
+  // message. Injecting the beginning of a cut one would answer the session's question with a
+  // sentence that stops mid-thought, and the operator would have no way to see that it did.
+  const question = heldQuestion();
+  const { router, sent, notices } = harness({
+    questions: { answerTyped: question.desk.answerTyped },
+  });
+  question.hold();
+
+  await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  assert.equal(question.answered(), false, "the question is still held, and still answerable");
+  assert.deepEqual(sent, [
+    { type: "message", chatId: THREAD, text: "a".repeat(MAX_INBOUND_TEXT_LENGTH) },
+  ]);
+  assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
+});
+
+test("an answer is taken from a session whose relay has dropped, not refused as undeliverable", async () => {
+  // The held response is an HTTP socket the desk owns, independent of the relay pipe: a session
+  // that lost its relay can still be parked on a question, and the ended notice would leave that
+  // question to expire while telling the operator their answer went nowhere.
+  const question = heldQuestion();
+  const { registry, router, notices } = harness({
+    questions: { answerTyped: question.desk.answerTyped },
+  });
+  question.hold();
+  registry.relayClosed(TOKEN, "session-a");
+
+  await router.deliver(message({ text: "the second option" }));
+  assert.equal(question.writes.length, 1, "the desk answered it");
+  assert.deepEqual(notices, [], "and nothing told the operator it was not delivered");
+});
+
+test("the rate ceiling never eats an answer to a held question", async () => {
+  // A verdict is exempt for the same reason: the ceiling bounds what a flood puts into a session's
+  // context, and a hold takes exactly one message.
+  let now = 1_000;
+  const question = heldQuestion();
+  const { router } = harness({
+    now: () => now,
+    questions: { answerTyped: question.desk.answerTyped },
+  });
+  for (let index = 0; index < MAX_INBOUND_PER_WINDOW + 5; index += 1) {
+    now += 10;
+    await router.deliver(message({ text: `message ${String(index)}` }));
+  }
+
+  // The window is spent, and only now does the session park on a question.
+  question.hold();
+  await router.deliver(message({ text: "the second option" }));
+  assert.equal(question.writes.length, 1, "the answer landed on a session over its ceiling");
+});
+
 test("a failed notice does not propagate out of the router", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
@@ -386,6 +592,7 @@ test("a failed notice does not propagate out of the router", async () => {
     relays,
     gate: createSenderGate(OPERATOR),
     permissions: watchedDesk().desk,
+    questions: { answerTyped: () => false },
     threadFor: () => THREAD,
     writer: createThreadWriter({
       messenger: {

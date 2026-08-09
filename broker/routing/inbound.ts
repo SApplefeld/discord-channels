@@ -85,6 +85,15 @@ export type InboundRouterOptions = {
   gate: SenderGate;
   /** Where a verdict goes, and the only thing that decides whether one names an open request. */
   permissions: PermissionDesk;
+  /**
+   * The question desk's typed-answer seam. Required, like the gate and the desk above: a router
+   * wired without it would hand a parked session's answer to the model as chat and leave the
+   * question waiting for a hold expiry nobody is watching for.
+   */
+  questions: {
+    /** True when this text answered the session's held question, and is therefore spent. */
+    answerTyped: (sessionId: string, response: string) => boolean;
+  };
   /** The thread bound to a session, as the Discord surface currently holds it. */
   threadFor: (sessionId: string) => string | null;
   /** Writes a notice back into the thread a message could not be delivered from. */
@@ -215,6 +224,25 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // A thread this broker does not own, or one whose session has been pruned. Silence is right:
       // the operator is talking in some other thread of their own.
       if (record === null) return;
+
+      // A message typed while this session's question is held is that question's answer, in the
+      // operator's own words, for the whole ask. It is consumed here and not also delivered, for
+      // the reason a verdict is: the session is parked inside the tool call this answers, so the
+      // same text as steering would reach the model as a second, contextless copy of an answer it
+      // is already being given.
+      //
+      // Ahead of the ended branch, because a held response is an HTTP socket the desk owns and
+      // owes an answer whatever became of the relay pipe: a session whose relay dropped can still
+      // be parked on a question, and telling the operator their answer was not delivered while the
+      // desk would have taken it leaves that question to expire. Ahead of the rate ceiling for the
+      // reason a verdict is exempt from it too: the ceiling bounds what a flood puts into a
+      // session's context, and at most one message per hold is spent this way.
+      //
+      // A truncated message is never an answer, the rule the verdict pattern above follows: what
+      // the operator sent was longer than what a cut leaves, and injecting the beginning of it
+      // would answer the session's question with a sentence that stops mid-thought. The cut text
+      // flows on as chat instead, announced, and the question stays held and answerable.
+      if (!truncated && options.questions.answerTyped(record.sessionId, text)) return;
 
       if (record.state === "ended") {
         log(

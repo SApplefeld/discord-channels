@@ -17,6 +17,8 @@
 import { randomBytes } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import type { AskedQuestion } from "./discord/render.ts";
+import { MAX_INBOUND_TEXT_LENGTH } from "./routing/inbound.ts";
+import { sliceCodePoints, withoutInvisible } from "./sanitize.ts";
 import { questionDigest } from "./tail.ts";
 
 /**
@@ -60,8 +62,22 @@ const SHUTDOWN_FLUSH_MS = 1_000;
  */
 const REPEAT_WINDOW_MS = 60_000;
 
-/** How a hold ended, for the terminal-state notifier. */
-export type QuestionTerminalState = "answered" | "released" | "expired" | "client-gone" | "shutdown";
+/**
+ * How a hold ended, for the terminal-state notifier.
+ *
+ * `answered-at-console` is the one state that arrives after the hold is already over: the response
+ * was released to the console picker and the operator answered it there, which the transcript's own
+ * resolution line reports minutes or hours later. It is a state of the thread message rather than of
+ * a held response, and it is what stops that message from still saying a question is waiting at a
+ * console that has already been answered.
+ */
+export type QuestionTerminalState =
+  | "answered"
+  | "answered-at-console"
+  | "released"
+  | "expired"
+  | "client-gone"
+  | "shutdown";
 
 /**
  * What an answered hold injects, in the vocabulary Claude Code reads out of `updatedInput`:
@@ -146,6 +162,33 @@ export type QuestionDesk = {
    * socket while the answer was in flight.
    */
   resolve: (sessionId: string, answers: QuestionAnswers) => boolean;
+  /**
+   * Answers the session's held entry with the operator's own words, which replace the per-question
+   * answers for the whole ask. The thread's typed-reply path: a message posted while a session's
+   * question is held is that question's answer.
+   *
+   * Answers only an entry whose alert has landed, on the rule that gates entry creation: an ask
+   * with no message in the thread is one the operator was never shown, so a message typed in that
+   * window is talking about something else, and answering with it would put words the operator
+   * never aimed at a question into the session's tool result with nothing in the thread saying so.
+   * False there and false with nothing held, and either way the caller still has the message.
+   *
+   * The text is stripped of invisibles and cut to the inbound ceiling here as well as at the router
+   * that reads it off Discord: this seam is where untrusted text enters a session's tool result, so
+   * the bound is the desk's own rather than something a caller is trusted to have applied.
+   */
+  answerTyped: (sessionId: string, response: string) => boolean;
+  /**
+   * Reports that an ask this desk held was answered at the console, so its thread message stops
+   * saying the question is still waiting there.
+   *
+   * Fed by the transcript's resolution-time yield, which lands when the picker closes: by then the
+   * hold is over and the entry is gone, so what this reaches is the small record of recently closed
+   * asks rather than a live entry. One-shot per ask, and it reports whether it found one. A session
+   * still holding this ask answers false and is left standing: the console renders no picker under
+   * a hold, so it cannot be the surface that answered.
+   */
+  answeredAtConsole: (sessionId: string, digest: string) => boolean;
   /**
    * Releases the session's held entry with `{}`, so the console picker renders normally.
    *
@@ -265,6 +308,34 @@ type HeldEntry = {
 export const MAX_REPEAT_KEYS = 64;
 
 /**
+ * How many closed asks are remembered for the console-answer flip, oldest evicted.
+ *
+ * A record outlives its entry only to name the message a later console answer rewrites, and the
+ * window between a release and that answer is one operator walking to a keyboard. Small on purpose:
+ * the record holds question text, which is content, so it is bounded the way every other content
+ * this module touches is. Past the bound the oldest record is dropped, whose cost is a thread
+ * message left reading "answer it at the console" for a question already answered, never a lost
+ * question.
+ */
+export const MAX_CLOSED_ASKS = 8;
+
+/**
+ * A hold that ended with its thread message telling the operator to answer at the console.
+ *
+ * The console answer arrives long after the entry is gone, and the message it has to rewrite is the
+ * one the entry carried, so what the edit needs outlives the entry here: the ask's identity
+ * (session and digest), the message, and the questions the edit renders. An answered hold records
+ * nothing, because the thread already carries its answer and the console never rendered a picker.
+ */
+type ClosedAsk = {
+  sessionId: string;
+  digest: string;
+  entryId: string;
+  alert: QuestionAlert;
+  questions: readonly AskedQuestion[];
+};
+
+/**
  * Rate-limits a repeating log line by its reason, which carries the session and the cause and
  * nothing that varies per repeat.
  *
@@ -324,6 +395,10 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
   // interaction arrives holding an id and nothing else, and both maps are written and cleared
   // together in `settle` and in the close watcher.
   const byId = new Map<string, string>();
+  // Oldest first: records are appended as their holds close and the transcript's resolution lines
+  // arrive in that same order, so the search runs from the front and the oldest unspent record is
+  // what a console answer flips. Eviction past the bound is the matching shift.
+  const recentlyClosed: ClosedAsk[] = [];
   const repeats = createRepeatLog(log, now);
 
   function view(entry: HeldEntry, sessionId: string): QuestionEntryView {
@@ -351,9 +426,24 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
 
   function notifyTerminal(
     sessionId: string,
+    digest: string,
     state: QuestionTerminalState,
     detail: QuestionTerminalDetail,
   ): void {
+    // Every state that leaves the operator a question to answer at the console is remembered, so
+    // the console's own answer can rewrite the message this state is about to write. An answered
+    // hold leaves nothing to answer, and the console-answer flip itself is already the last word on
+    // that message.
+    if (state !== "answered" && state !== "answered-at-console" && detail.alert !== null) {
+      recentlyClosed.push({
+        sessionId,
+        digest,
+        entryId: detail.entryId,
+        alert: detail.alert,
+        questions: detail.questions,
+      });
+      if (recentlyClosed.length > MAX_CLOSED_ASKS) recentlyClosed.shift();
+    }
     try {
       options.onTerminal?.(sessionId, state, detail);
     } catch {
@@ -407,7 +497,7 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
       for (const response of entry.responses) respond(sessionId, response, body);
     }
     log(`question desk: session ${sessionId}'s question hold ended: ${state}`);
-    notifyTerminal(sessionId, state, {
+    notifyTerminal(sessionId, entry.digest, state, {
       entryId: entry.id,
       alert: entry.alert,
       questions: entry.questions,
@@ -468,7 +558,7 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
       byId.delete(entry.id);
       clearTimer(entry.timer);
       log(`question desk: session ${sessionId}'s held response closed before resolution`);
-      notifyTerminal(sessionId, "client-gone", {
+      notifyTerminal(sessionId, entry.digest, "client-gone", {
         entryId: entry.id,
         alert: entry.alert,
         questions: entry.questions,
@@ -596,6 +686,60 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
     },
 
     resolve: resolveHold,
+
+    answerTyped(sessionId, response) {
+      const entry = held.get(sessionId);
+      if (entry === undefined) return false;
+      if (entry.alert === null) {
+        // The window between the hold and the alert landing, which is one Discord round trip: the
+        // thread still shows nothing about this ask, so a message typed into it is about something
+        // else. The caller keeps it, and it goes wherever a message goes when nothing is held.
+        log(
+          `question desk: session ${sessionId}'s hold has no message in the thread yet; ` +
+            "a typed message is not read as its answer",
+        );
+        return false;
+      }
+      // Bounded again here, over the router's own ceiling rather than a second one: what crosses
+      // this seam goes verbatim into a session's tool result, and the desk is the boundary that
+      // makes it safe rather than the discipline of whoever calls it. Invisibles first, because a
+      // bidi override is what would show the operator's thread and the session's own transcript two
+      // different answers.
+      const bounded = sliceCodePoints(withoutInvisible(response).trim(), MAX_INBOUND_TEXT_LENGTH);
+      return resolveHold(sessionId, { kind: "response", response: bounded });
+    },
+
+    answeredAtConsole(sessionId, digest) {
+      // Oldest first, because the records and the resolution lines are both in the order their asks
+      // closed: a session that asked one question twice has the first line reporting the first ask,
+      // and the newest match would flip the second message while the answered one went on telling
+      // the operator to walk to a console with nothing on it.
+      for (const [at, closed] of recentlyClosed.entries()) {
+        if (closed.sessionId !== sessionId || closed.digest !== digest) continue;
+        // Consumed as it is matched, so the flip happens exactly once however many times the ask's
+        // resolution is reported.
+        recentlyClosed.splice(at, 1);
+        notifyTerminal(sessionId, digest, "answered-at-console", {
+          entryId: closed.entryId,
+          alert: closed.alert,
+          questions: closed.questions,
+          answers: null,
+        });
+        return true;
+      }
+      const live = held.get(sessionId);
+      if (live !== undefined && live.digest === digest) {
+        // No closed instance of this ask is left, and the one the session holds is not what the line
+        // reports: a held PreToolUse response blinds the console, so no picker has rendered for it
+        // and nothing there can have answered it. The hold is left exactly as it was, which is the
+        // direction every uncertainty here takes. Rate-limited, because transcript lines drive this
+        // one and they arrive far faster than the posts every other bounded line here counts.
+        repeats(
+          `session ${sessionId} is still holding the ask a console answer names; the hold stands`,
+        );
+      }
+      return false;
+    },
 
     held(sessionId, digest) {
       const entry = held.get(sessionId);

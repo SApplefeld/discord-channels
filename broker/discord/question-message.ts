@@ -45,16 +45,26 @@ export const MAX_FAST_PATH_OPTIONS = MAX_BUTTONS_PER_ROW - 1;
  * Room for a question and its header in the message text.
  *
  * Tighter than the notice's own question cap, and it is the whole-message bound rather than a
- * readability choice: four questions at these caps compose to about 1,770 UTF-16 units against the
- * 1,900 ceiling, where the notice's 500 would compose past it. The options are not in the text on
- * this path, which is what buys the room back; they are in the select menus, where each carries its
- * description too.
+ * readability choice: four questions at these caps, plus the typed-answer footer both layouts
+ * carry, compose to 1,826 UTF-16 units against the 1,900 ceiling, where the notice's 500 would
+ * compose past it. The options are not in the text on this path, which is what buys the room back;
+ * they are in the select menus, where each carries its description too.
  */
 const MAX_PROMPT_QUESTION_LENGTH = 300;
 const MAX_PROMPT_HEADER_LENGTH = 100;
 
 /** Separates a question's header from its text, as the card and the notice separate their fields. */
 const SEPARATOR = "·";
+
+/**
+ * The footer every live question message carries, naming the third way to answer.
+ *
+ * A message typed in the thread while the ask is held answers the whole ask in the operator's own
+ * words, which no component on this message shows: without the line the option exists and nothing
+ * says so. It rides both layouts, because the typed path is a property of the hold rather than of
+ * how the ask happened to render.
+ */
+export const TYPED_ANSWER_FOOTER = "_Typing a reply here answers in your own words instead._";
 
 /** The opaque prefix every component this module builds is addressed by. */
 const PREFIX = "qd";
@@ -312,6 +322,7 @@ export function renderQuestionPrompt(input: {
       const shown = inertField(asked.options[at].label, MAX_OPTION_LABEL_LENGTH);
       lines.push(`${String(position + 1)}. **${shown}**${gloss}`);
     }
+    lines.push("", TYPED_ANSWER_FOOTER);
     const row: ActionRow = {
       type: 1,
       components: [
@@ -342,6 +353,7 @@ export function renderQuestionPrompt(input: {
     lines.push(titleLine(asked, at + 1, asked.multiSelect));
     rows.push(selectRow(entryId, asked, at, input.selections[at] ?? []));
   }
+  lines.push("", TYPED_ANSWER_FOOTER);
   rows.push({
     type: 1,
     components: [
@@ -366,15 +378,27 @@ export const CLOSED_NOTICE = "That question is no longer open.";
  * Every state edits and every edit strips the components, because a message whose buttons answer a
  * hold that has ended is a tap that reports a failure to the operator and changes nothing. The four
  * release states say the same thing in their own words, since what the operator does next is the
- * same in all of them: the console picker is up. The answered state renders what was submitted, so
- * the thread carries the answer rather than only the fact of one.
+ * same in all of them: the console picker is up. The two answered states carry no such instruction,
+ * because nothing is left to do: the thread's own answer renders what was submitted, so the thread
+ * carries the answer rather than only the fact of one, and the console's answer closes the message
+ * a release state left pointing at a picker that has since been answered.
  */
 export function renderQuestionOutcome(input: {
-  state: "answered" | "released" | "expired" | "client-gone" | "shutdown";
+  state: "answered" | "answered-at-console" | "released" | "expired" | "client-gone" | "shutdown";
   questions: readonly AskedQuestion[];
   answers: Readonly<Record<string, string | readonly string[]>> | null;
   response: string | null;
 }): string {
+  if (input.state === "answered-at-console") {
+    // What was answered rides along without what it was answered with: the console's picks reach
+    // this broker nowhere, and the transcript line that reports the answer carries only the ask.
+    return [
+      "✅ **Answered at the console**",
+      ...input.questions.map((asked, at) =>
+        titleLine(asked, input.questions.length === 1 ? null : at + 1, false),
+      ),
+    ].join("\n");
+  }
   if (input.state !== "answered") {
     const reason = {
       released: "released to the console",

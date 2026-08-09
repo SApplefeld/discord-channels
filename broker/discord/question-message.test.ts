@@ -15,6 +15,7 @@ import {
   MAX_ACTION_ROWS,
   MAX_BUTTONS_PER_ROW,
   MAX_BUTTON_LABEL_LENGTH,
+  TYPED_ANSWER_FOOTER,
   answerableFromThread,
   autoSubmits,
   incompleteNotice,
@@ -81,6 +82,8 @@ test("a two-question ask renders a select each and one control row", () => {
     "",
     "**1. Timing** · Ship the migration now?",
     "**2. Hosts** · Which hosts get the change? *(pick any)*",
+    "",
+    TYPED_ANSWER_FOOTER,
   ]);
   assert.equal(rows.length, 3, "one row per question, plus the control row");
 
@@ -119,7 +122,9 @@ test("a two-question ask renders a select each and one control row", () => {
       { type: 2, style: 2, label: "Answer at console", custom_id: `qd:${ENTRY}:console` },
     ],
   });
-  assert.ok(!content.includes("Typing"), "typed answers are not offered until they exist");
+  // The third way to answer, which no component on this message shows: a typed reply, which the
+  // inbound router reads as the whole ask's answer for as long as the hold stands.
+  assert.ok(content.endsWith(TYPED_ANSWER_FOOTER), content);
 });
 
 test("an option description rides in the select, and an absent one renders as absent", () => {
@@ -176,6 +181,9 @@ test("a single single-select question with four options renders buttons and its 
     "1. **Commit-and-Push** · land on main as sections complete",
     "2. **Review-Only** · staged, reviewed before commit",
     "3. **Branch-and-PR**",
+    "",
+    // Both layouts carry it: the typed answer is a property of the hold, not of how the ask drew.
+    TYPED_ANSWER_FOOTER,
   ]);
   assert.equal(rows.length, 1, "the options and the release share one row");
   assert.deepEqual(rows[0].components, [
@@ -463,6 +471,19 @@ test("every terminal state rewrites the message, and the answered one carries wh
       "**Timing** · Ship the migration now?",
     ],
     "a single question is not numbered, exactly as the fast path draws it",
+  );
+
+  // The console's own answer, which lands after one of the release states above has already
+  // rewritten this message: it carries no instruction, because the picker it was pointing at has
+  // been answered, and no answer, because the console's picks reach this broker nowhere.
+  assert.deepEqual(
+    renderQuestionOutcome({
+      state: "answered-at-console",
+      questions,
+      answers: null,
+      response: null,
+    }).split("\n"),
+    ["✅ **Answered at the console**", ...titles],
   );
 });
 

@@ -231,6 +231,18 @@ export type TranscriptTailerOptions = {
    * records its dedupe digest; nothing here queues or retries.
    */
   deliverQuestion: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
+  /**
+   * Reports that an ask reached its resolution line, which Claude Code writes when the picker
+   * closes: the question has been answered at the console. The question desk's seam, where it flips
+   * a thread message that has been telling the operator to answer there. Called for every question
+   * the transcript yields, whether or not this session's alert path already handled that ask, since
+   * what a session has open is the desk's to know and not this module's.
+   *
+   * True means a message was flipped, and a flipped ask is one this pass does not also alert: the
+   * thread now says the console answered it, and an alert behind that would post the same ask as
+   * one still waiting there.
+   */
+  answeredAtConsole: (sessionId: string, questions: readonly AskedQuestion[]) => boolean;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
@@ -966,11 +978,32 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
           // delivered on the same one-await-per-item rule the other kinds follow. An alert that
           // could not be made is dropped and never retried, and the error is discarded unread,
           // because it can quote the question.
+          //
+          // This line exists because the picker closed, so the ask it names has been answered at
+          // the console. Reported before the dedupe and independently of it: the outstanding set is
+          // bounded and evicts, and a question whose alert is still on the operator's phone has to
+          // stop saying it is waiting even when its digest was pushed out.
+          let flipped = false;
+          try {
+            flipped = options.answeredAtConsole(sessionId, item.questions);
+          } catch {
+            repeats(
+              `session ${sessionId}'s console-answer report failed`,
+              "the question message is left as it stands; the error detail is withheld, " +
+                "it can carry content",
+            );
+          }
           const outstanding = held.askedDigests.indexOf(questionDigest(item.questions));
           if (outstanding !== -1) {
             held.askedDigests.splice(outstanding, 1);
             continue;
           }
+          // A flip is the report the operator already has: the ask's own message now says the
+          // console answered it, and an alert for that same ask would post it into the same thread
+          // as a question still waiting there, with the record the flip consumed gone and no second
+          // flip left to correct it. A report that flipped nothing alerts, which is the evicted
+          // digest this ordering exists for.
+          if (flipped) continue;
           try {
             const outcome = await options.deliverQuestion(sessionId, item.questions);
             // Every point past an await re-checks the epoch it started under, the rule the rest
