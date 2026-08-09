@@ -33,15 +33,10 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 - Answering a console question from the thread: graduated to its own plan,
   [`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md),
   which carries the ratifying live measurements and the agreed design.
-- A usage and fleet-health card in the channel. From Discord the operator has no view of account
-  limits or agent health: claude-swap reports per-account 5h / 7d / Fable percentages with reset
-  times at the console, and away from the keyboard there is no way to see remaining bandwidth or
-  that an agent is stuck or failing. Wanted shape: one stable card message the broker owns and
-  edits on a cadence (a pinned message or the channel's own status surface, so it is always one
-  scroll away), carrying the same per-account bars claude-swap prints plus a per-session liveness
-  line. Needs its own design round: where claude-swap's report comes from on each host, how the
-  broker reads it without holding credentials it should not hold, and the edit cadence against
-  the card's own rate bucket.
+- A usage and fleet-health card in the channel: graduated to its own plan,
+  [`plans/channels_usage-card_spec_v1.md`](plans/channels_usage-card_spec_v1.md), after the
+  claude-swap recon and the operator's design ratification (thread card, mirror-never-poll,
+  accounts plus session health; backlog surfacing deferred as mechanism-less).
 - Spoiler-collapsed background-task reports, behind `CHANNEL_TASK_NOTIFICATION=full`. The default
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without
