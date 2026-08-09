@@ -106,25 +106,37 @@ cache_creation_input_tokens` from `message.usage` (both measured; see the
 1M window is a per-model fact that can change upstream without notice, and the raw count needs no
 denominator to be honest.
 
-**A model change is rendered as a state, not only as an event.** The motivating case is a
-security-advisory downgrade: it fires mid-session while the advisory reviews security-shaped code,
-it shows only at the console, and it persists for the rest of the session unless the operator
-switches back by hand. The cost is therefore duration, not the moment: an oversight thread that
-drops model at hour one runs degraded for every hour after. So the session record keeps the model
-first seen for the session alongside the current one, and while they differ the card carries a
-standing marker (`⚠ claude-opus-5, down from claude-fable-5`) rather than a silent field that
-reads normal at a glance. Returning to the opening model clears the marker, which is also how the
-operator confirms a manual switch-back took effect from the thread.
+**A safeguard downgrade is read, not inferred.** A mid-session model change writes a `system`
+line with `subtype: "model_refusal_fallback"` carrying `originalModel`, `fallbackModel`,
+`apiRefusalCategory` (measured `cyber` on the specimen), `retractedMessageUuids`, and the console's
+own warning prose, with a matching `fallback` content block on the assistant line at the
+transition (measured; see the `a-model-downgrade-writes-a-structured-transcript-record` memory).
+The tailer's line reader gains this shape as a fourth allowlisted yield. Nothing is guessed: the
+report names the category upstream named and no more, and `apiRefusalExplanation` rides only when
+upstream populates it.
 
-Direction is distinguished by a fixed rank (fable, opus, sonnet, haiku): a downgrade is the
-alarming direction and carries the marker, while an upgrade renders plainly. The reason for a
-change is not observable in the transcript, so nothing in the card or the notice asserts one.
+**It is a state, because upstream says so.** The record carries `scope: "session"`, which is the
+machine-readable form of the operator's observation that a downgraded session stays downgraded
+until it is switched back by hand. The cost is duration rather than the instant: an oversight
+thread that drops model at hour one runs degraded for every hour after. So the session record
+keeps the model first seen for the session beside the current one, and while they differ the card
+carries a standing marker (`⚠ claude-opus-4-8, down from claude-fable-5 · flagged cyber`) rather
+than a field that reads normal at a glance. Returning to the opening model clears the marker,
+which is how the operator confirms from the thread that a manual switch-back took effect.
+
+Direction is distinguished by a fixed rank (fable, opus, sonnet, haiku): a downgrade carries the
+marker, an upgrade renders plainly and clears it. On this fleet the safeguard fallback is the only
+thing that forces a mid-session change and it is always downward from Fable, so the upward
+direction is the operator's own action and needs no alarm.
 
 **The change also posts one message,** on the steering writer's notice tier by default and
 switchable to the alert tier (with the operator mention that reaches the phone) by a config knob,
 because whether a notice is loud enough on a phone is a question only live use answers, and a knob
-makes the upgrade an env change rather than a code round. One message per change, floored the way
-the notice tier already floors, and never one per poll.
+makes the upgrade an env change rather than a code round. The message names the two models and the
+refusal category, and says the scope is the session, so the operator can judge from the thread
+whether to let the work continue or halt it. One message per change, floored the way the notice
+tier already floors, and never one per poll. A downgrade whose record the reader cannot parse
+still posts the plain model-change message: the fallback shape is upstream's and may move.
 
 Files: `broker/tail.ts` (the extraction, extending the existing line reader by allowlist),
 `broker/registry.ts` (the record's opening-model and current-model slots),
@@ -134,10 +146,14 @@ either field renders the card exactly as today, and no new content reaches a log
 
 Acceptance: a card for a session whose transcript carries the fields shows model and raw context;
 a session missing them renders as today; a session below its opening model carries the marker for
-as long as it stays there, and clears it on return; a change posts exactly one message at the
+as long as it stays there, and clears it on return; a downgrade whose `model_refusal_fallback`
+record parses names its category in both the marker and the message; one whose record is absent or
+malformed still posts the plain change message; a change posts exactly one message at the
 configured tier; the extraction never throws on a malformed line. Tests lock both directions of
 the missing-field case, both directions of the tier knob, the marker's persistence across polls
-(not just at the moment of change), and the one-message-per-change rule.
+(not just at the moment of change), the one-message-per-change rule, and the refusal record's
+absence path. Fixtures come from the captured specimen's shape, with its untrusted strings
+rendered inert like every other transcript-sourced field.
 
 ### 4. Docs, deploy, and live verify
 
