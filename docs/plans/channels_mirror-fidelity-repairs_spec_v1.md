@@ -121,7 +121,53 @@ without duplicating or dropping. Tests drive a fake transport for the permission
 directions, the reconcile from a divergent starting list, the 50-pin ceiling, and the exit
 transition.
 
-### 4. A mirrored table becomes an aligned block
+### 4. An exited session's thread archives itself, by default
+
+Model: opus
+
+A thread whose session has exited leaves the active list on its own, so the channel reads as what
+is running rather than as everything that ever ran. The capability already exists behind
+`CHANNEL_DISCORD_ARCHIVE_ON_END` and is off unless a host sets it; this section makes it the
+default and makes the setting survive an install.
+
+**Archiving rather than deleting is the whole point.** An archived thread is not destroyed: it
+stays readable and searchable, and a post revives it. That matters because a session that exits
+wrongly is exactly the one worth reading afterward, and because reading old threads is how this
+project has repeatedly established what actually happened. Deletion would trade a recoverable
+record for a tidier list.
+
+**Default on, with an explicit off, matching the mirror switch's own idiom.** The absent setting
+means archive, and only the recognized off vocabulary disables it, so a new host gets the behavior
+without configuring anything and a host that wants threads left alone says so once.
+
+**Three things must not silently break under the new default**, each with its own test: the fleet
+usage card's thread is never archived, since it is permanent and belongs to a different owner than
+the session surface; an archived thread cannot be renamed, so the archive stays the last write for
+a session and no later rename is attempted against it; and a thread that revives because something
+posts into it is not re-archived until its session exits again.
+
+**A startup reconcile catches what the old default left behind.** Hosts carry exited sessions whose
+threads were never archived, so the surface archives any bound thread whose session has already
+exited, once, rather than only acting on the live transition.
+
+**The install stops clobbering operator settings.** `broker.env` is rewritten from a fixed key list
+today, so a hand-set knob vanishes at the next install with no signal. The writer merges instead:
+keys already in the file that are on the installer's own environment allowlist are preserved, and
+the allowlist is what bounds this, since it already governs everything the broker will export.
+Without this the default is the only reachable behavior, because turning it off would not survive.
+
+**The two flag parsers stop disagreeing.** One accepts `1`, `true`, `yes`; the other also accepts
+`on` and `off`. A host writing `on` for a setting the first parser reads gets a silent false. Both
+read one shared vocabulary, which is this codebase's own recurring defect shape (two components
+each correct alone, disagreeing at the seam) closed at the seam.
+
+Acceptance: a host with no setting archives an exited session's thread; the recognized off
+vocabulary disables it and survives a reinstall; `on` and `true` mean the same thing to every
+reader; the fleet card's thread is never archived; a rename is never attempted against an archived
+thread; and a startup pass archives already-exited threads exactly once. Tests cover each direction
+including the reinstall-preserves-off case against a real temp env file.
+
+### 5. A mirrored table becomes an aligned block
 
 Model: opus
 
@@ -155,13 +201,13 @@ with cut cells; a table that cannot fit the message ceiling mirrors as raw text;
 or chip can be manufactured by cell content. Tests lock each of those directions and pin the
 escaping order (neutralize, then pad).
 
-### 5. Docs and live verify
+### 6. Docs and live verify
 
 Model: opus
 Locus: inline
 
-`docs/operations.md` gains how to read a card's fenced body, what the channel's pin list means and
-what a host without the pin permission sees instead, and what a mirrored table looks like;
+`docs/operations.md` gains how to read a card's fenced body, what the channel's pin list means, what archiving on exit does and how to turn
+it off, what a host without the pin permission sees instead, and what a mirrored table looks like;
 `docs/install.md` gains Pin Messages as the optional grant the pin list needs, scoped to the
 broker's channel rather than the server, and says plainly what it also permits;
 `docs/architecture.md` names the width bound the cards share, the pin reconcile, and the transform
@@ -184,6 +230,7 @@ a turn carrying a table.
 - Pin Messages granted on the broker's channel, then: the pin list holds exactly the sessions
   that are running, a session exiting drops out of it, and the fleet card stays. Before the grant,
   the only visible difference from today is one log line.
+- An exited session's thread leaves the active list on its own, and is still readable when opened.
 - A multi-select answered from the thread reports the same text a console answer reports.
 - A turn carrying a table reads as an aligned block on the phone, with no horizontal drag at three
   columns. Overflow at more columns is acceptable and expected.
