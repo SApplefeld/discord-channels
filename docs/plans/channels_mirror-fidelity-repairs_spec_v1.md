@@ -2,7 +2,7 @@
 
 Status: In Progress
 Commit Model: Commit-and-Push
-Fable Spend: standing (Fable-led session); overage onto usage credits approved 2026-08-09
+Fable Spend: fable-tier sections and the reviewer bumps, dispatched with the explicit override from this Opus-led session; overage onto usage credits approved 2026-08-09
 Created: 2026-08-09
 
 ## Related
