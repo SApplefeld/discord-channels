@@ -241,6 +241,62 @@ whether or not it matched, which bounds it to one turn. What is held is a digest
 bounded derived hashes, never conversation text; the memory is created whenever `CHANNEL_MIRROR` is
 on, so turning mid-turn narration off does not disarm the reply-tool dedup.
 
+## The fleet usage card
+
+A second surface answers a question the session threads cannot: how much headroom the accounts
+behind them still have. One thread the broker owns carries a card it edits in place, built from
+`broker/usage/`: a bounded reader over claude-swap's own local cache and account list, a pure
+renderer from that reading plus a registry snapshot, and a thread module that owns the card's
+lifecycle.
+
+Nothing here invokes claude-swap or touches the network. The usage endpoint it fronts allows on the
+order of thirty requests an hour per account, shared across every machine and consumer polling it,
+so a card that shelled the tool would compete with the auto-switcher for a budget already near its
+ceiling. Reading the cache costs nothing and mutates nothing, and the reader opens exactly two
+files, uses no field of either as a path, and leaves the failure detail of a failed poll unread,
+because an authentication error is where a token would appear.
+
+The card's discipline is freshness rather than completeness. Ages are derived from each reading's
+own fetch time; countdowns are recomputed from reset instants rather than repeated from strings the
+cache froze at fetch time; a window whose reset has passed is drawn for the period it is in now,
+which is what the console shows and what keeps the card from reporting an operator out of headroom
+against a window that has actually reset; and a fetch time the reader cannot believe renders as
+unknown rather than as fresh. The pace marker mirrors claude-swap's own rule constant for constant,
+verified differentially against that tool's own renderer, because a marker on one surface and not
+the other reads as a bug in whichever the operator trusts less.
+
+The card is edited only when its rendered body differs from what was posted, so a fleet with
+nothing moving spends nothing; a running reset ticks the countdowns about once a minute, which is
+the real steady state. Each failure keeps the card honest rather than silent: an unreadable cache
+redraws the last good numbers under a marker so their age goes on climbing, each Discord route
+carries its own refusal count with a decay so one refused verb cannot abandon the others, and a
+pass arriving while one is on the wire is handed the live one, which is what lets shutdown wait for
+the write it must wait for and keeps a second card out of the channel on the next boot.
+
+## What a session card knows about itself
+
+Two more facts ride the session's own card, both read from the transcript lines the tailer already
+follows. The model producing its turns and the raw size of its context, drawn raw rather than as a
+percentage because the window is a per-model fact that can move upstream while a rendered
+percentage keeps looking authoritative. And a standing marker whenever a session is running below
+the model it opened with, which persists for as long as that is true rather than only at the moment
+of the change, so a downgrade nobody saw is still visible later, and clears on return.
+
+Two upstream records force a downgrade and they carry different fields: a safeguard refusal names a
+category and a session scope, while an entitlement fallback names a consent answer and neither of
+those. A reader keyed to the first sees nothing on the second, which is the one an operator can act
+on, so both are read.
+
+The session's in-flight work rides the same card, and it corrects a state rather than adding one. A
+session blocked on dispatched subagents fires no hooks at all, so hook-driven liveness called it
+idle at the moment it was most heavily worked. The harness reports its own table of in-flight
+subagents and background commands on every `Stop` payload, which the broker already receives, so
+the roster is read rather than reconstructed: a reconstruction from dispatch events cannot tell a
+finished agent from a stranded one, and accumulates ghosts across restarts. The count reaches the
+thread title, where a phone's truncation eats everything else, and the rename damper keys on the
+composed title rather than on the state, so a fan-out draining coalesces instead of spending the
+budget a parked session's own title needs.
+
 ## External integrations
 
 Three, and each one fails in its own way.

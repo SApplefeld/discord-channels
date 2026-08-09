@@ -195,6 +195,72 @@ but stops pinging; past the post ceiling it is dropped and the log says so. A re
 questions minutes apart, so hitting either ceiling means a runaway or forged transcript rather
 than a session you are failing to hear.
 
+## The fleet usage card
+
+One thread named **Fleet: Usage** carries a card the broker edits in place, so the channel answers
+"how much headroom is left" without a walk to the console. It is off unless the host sets
+`CHANNEL_USAGE_CARD`, and it appears within a refresh of the broker starting.
+
+The card reads claude-swap's own local files and never runs it. That is deliberate: the usage
+endpoint behind claude-swap allows roughly thirty requests an hour per account, shared across every
+machine and every consumer polling it, so a card that invoked the tool would be a fourth competitor
+for a budget the auto-switcher already spends. What the card reads instead is the cache claude-swap
+keeps beside its own state, which costs nothing and mutates nothing.
+
+Read it as a mirror rather than as a source. Each account carries the age of the numbers beside it,
+so a cache nobody is refreshing shows its numbers going stale rather than presenting them as
+current, and an account whose polling is failing or backing off says so beside its last good
+figures rather than in place of them. Countdowns are recomputed from each window's reset instant
+rather than repeated from the strings claude-swap wrote when it fetched, because those freeze at
+fetch time and drift. A weekly or per-model window whose reset has already passed is drawn for the
+period it is in now, at zero, which is what the console shows for the same window: the alternative
+would report you out of headroom against a window that has actually reset.
+
+The card is edited only when its rendered text changes. A fleet with a running reset changes about
+once a minute as the countdowns tick, and one with no running reset and no session activity goes
+quiet entirely.
+
+## What a session card says about its model
+
+A session's own card carries the model producing its turns and the raw size of its context, both
+read from the transcript the tailer already follows. The count is raw rather than a percentage on
+purpose: the window is a per-model fact that can change upstream, and a percentage keeps looking
+authoritative after its denominator stops being true.
+
+A session forced below the model it opened with carries a standing marker naming the drop and, when
+upstream said why, its category. The marker stands for as long as the session runs below its
+opening model, not just at the moment of the change, so a downgrade you slept through is still
+visible hours later; it clears when the model returns, which is how you confirm from the thread
+that a switch back took effect. A change also posts one message, on the quiet notice tier by
+default and on the mention-bearing tier under `CHANNEL_MODEL_CHANGE_ALERT`.
+
+Two forced downgrades exist and both are read. One is a safeguard refusal, where a model's own
+guardrails flag a message and the session drops to a weaker model for the rest of its life. The
+other is entitlement: the session's model needs usage credits and the consent prompt was dismissed,
+so it fell back. That second one is the one you can act on, at the console with `/model`, and a
+standing authorization to spend credits does not survive a dismissed prompt.
+
+The marker's absence is not proof. Model families are matched by name, so a crafted model string can
+render a genuine downgrade unmarked; whoever could do that already writes the whole line, so this is
+a report rather than an authority.
+
+Both the model line and the context size exist only for sessions with mirroring on, because the
+tailer is the only reader and it never opens a suppressed session's transcript.
+
+## What a session is waiting on
+
+A session whose main thread is blocked on dispatched subagents fires no hooks at all, so before
+this the card called it idle at the moment it was working hardest. The harness reports its own
+table of in-flight work at every turn end, and the card carries it: the count in the thread title,
+where a phone's truncation eats everything else, and the newest few tasks with their ages on the
+card. Long-running background commands ride the same line, since a command left running is the same
+kind of invisible work.
+
+The roster survives a broker restart, so a restart in the middle of a fan-out does not go back to
+reporting idle for the rest of the wait. It is replaced wholesale by each report rather than merged,
+so a task that finishes disappears rather than lingering, and an exited session's card drops the
+line entirely rather than aging work that no longer exists.
+
 ## Background-task wake notices
 
 When a background subagent finishes while its session sits idle, the harness wakes the session by
@@ -371,6 +437,10 @@ the process that reads the bot token.
 | `CHANNEL_TASK_NOTIFICATION` | brief | How a background task's wake prompt reaches the thread: `brief` posts the one-line 📨 notice, `full` mirrors the whole injected report, `off` posts nothing |
 | `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, and open-question alerts; also gated by `CHANNEL_MIRROR` |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
+| `CHANNEL_USAGE_CARD` | off | Whether the Fleet: Usage thread and its card exist on this host |
+| `CHANNEL_USAGE_CARD_REFRESH_MS` | 60 s | How often the fleet card is re-read and re-rendered; bounded 5 s to 1 h |
+| `CHANNEL_USAGE_CACHE_ROOT` | the profile's claude-swap backup | Where the usage cache and account list are read from |
+| `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to
 `node` pinned at install time, which `Start-Broker.ps1` reads directly so it never resolves `node`

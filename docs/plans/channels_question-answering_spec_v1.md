@@ -417,3 +417,39 @@ Stamps: none surfaced at this boundary
 Next: the operator's decision on the typed-answer return channel. Then either close this Chapter
 into Section 4, or amend the section first.
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-09
+Completed: Section 3's blocking decision, and Section 4: docs, deploy, and live re-verify
+Implemented By: main session (docs, adjudication) and implementer-fable (the verdict-collision fix)
+Metrics: 0 review rounds this stretch (the fix carried its own red-first evidence; the finishing
+pass covers the changeset); 0 NEEDS_CONTEXT; 1 blocking decision resolved by the operator
+Decisions / Surprises: the operator chose to accept the typed-answer residual rather than harden
+against it or drop the feature, judging the elicitation primitive extremely narrow against an
+attacker who already runs code as them. The security model was rewritten accordingly and says
+plainly what a forged question can elicit, replacing the two claims that denied it; the distinction
+that survives is what an answer can do, since a forged question cannot approve anything and a
+forged verdict cannot be sent.
+That decision made one deferred finding live, and it was fixed in the same stretch: the permission
+verdict's shape, a yes or no followed by exactly five letters, is also the shape of a short typed
+answer, and the verdict path ran first and returned. A message like "yes merge" drew a notice about
+a request the operator never sent and left the question parked for the rest of its hold. A verdict
+now wins only when it resolves something actually open; otherwise the message falls through to the
+question it was probably meant for, and the unknown-request notice moves behind both. The trade
+encoded in a comment: a real verdict whose request was lost to a restart becomes the held question's
+answer instead of drawing that notice, which is right because the request it named is gone either
+way and the thread message shows what was submitted.
+The live walk passed on real hardware: the install update, a button tap, a typed answer, the
+answer-at-console release, and the ask-time alert all confirmed by the operator. One discrepancy
+surfaced and was root-caused from the session's own transcript rather than from recollection: a
+multi-select answered from the thread reaches the model comma-joined without the space the console's
+own answer carries, because the broker submits the documented array shape and the console supplies
+a pre-joined string. The fix is one line and it graduated into its own round rather than reopening
+this one, since it belongs with the other surface differences the same walk surfaced.
+Docs landed across architecture, the security model, and operations, including the tree sweep for
+claims the round falsified, which came back clean apart from the plan's own description of the task.
+Review Findings: none new this stretch. Riding from Chapter 3 and now closed: the security
+Critical's decision, and the verdict-collision Major.
+Operator-pending: none. The walk is done and its one finding is specced elsewhere.
+Stamps: none surfaced at this boundary
+Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push

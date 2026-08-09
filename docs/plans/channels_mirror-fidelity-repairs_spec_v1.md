@@ -167,7 +167,39 @@ reader; the fleet card's thread is never archived; a rename is never attempted a
 thread; and a startup pass archives already-exited threads exactly once. Tests cover each direction
 including the reinstall-preserves-off case against a real temp env file.
 
-### 5. A mirrored table becomes an aligned block
+### 5. The card says what the session is trying to finish
+
+Model: opus
+
+A session running under a completion goal shows that goal on its card, so the thread answers what a
+long quiet stretch is *for* rather than only that it is busy.
+
+**The reading is confirmed.** A slash command lands in the transcript as a user-type line carrying
+`<command-name>` and `<command-args>` markup; `/goal`, `/model`, and `/rename` were all found that
+way in a live transcript, with the goal's full text in its args. The tailer's line reader gains an
+allowlisted yield for it, admitting `/goal` alone: an allowlist rather than a sweep of every
+command, because a command's args are operator prose and most of them are nobody's business on a
+shared surface.
+
+**Knowing it ended is the hard half, and the design routes around it rather than guessing.** A goal
+set is observable; a goal cleared may not be, since one that auto-clears on completion need not
+write anything. So the card does not try to detect the end. It shows the goal while the session is
+working, and drops it the moment the session reads idle or exited, on the reasoning that a goal
+being met is precisely what lets a session stop. An explicit `/goal clear` clears it immediately
+when it does appear. The failure this avoids is a card that displays a finished goal indefinitely,
+which is worse than no goal line at all because it reads as current.
+
+**Bounded like every other transcript-sourced field:** the text is cut to a line's worth with the
+existing ellipsis helper, neutralized with the same escaper every card field uses, and never
+logged. A session with no goal renders exactly as it does today.
+
+Acceptance: a session under a goal shows it on the card while working and drops it on idle or
+exited; `/goal clear` clears it at once; a session that never set one renders unchanged; a goal
+longer than the line bound is cut rather than wrapping; a crafted goal text cannot manufacture a
+mention pill, a chip, or markdown. Tests cover each direction, including the drop-on-idle rule that
+substitutes for an unobservable clear.
+
+### 6. A mirrored table becomes an aligned block
 
 Model: opus
 
@@ -201,7 +233,7 @@ with cut cells; a table that cannot fit the message ceiling mirrors as raw text;
 or chip can be manufactured by cell content. Tests lock each of those directions and pin the
 escaping order (neutralize, then pad).
 
-### 6. Docs and live verify
+### 7. Docs and live verify
 
 Model: opus
 Locus: inline
