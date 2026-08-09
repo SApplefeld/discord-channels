@@ -106,21 +106,38 @@ cache_creation_input_tokens` from `message.usage` (both measured; see the
 1M window is a per-model fact that can change upstream without notice, and the raw count needs no
 denominator to be honest.
 
-A model change mid-session also posts one line to the thread, on the steering writer's notice
-tier rather than the alert tier (no mention): a session switching models is an event the operator
-cannot otherwise see from Discord, and the case that motivated it is a security-advisory review
-whose overseeing model was swapped out. The card line itself carries whatever the latest line
-says.
+**A model change is rendered as a state, not only as an event.** The motivating case is a
+security-advisory downgrade: it fires mid-session while the advisory reviews security-shaped code,
+it shows only at the console, and it persists for the rest of the session unless the operator
+switches back by hand. The cost is therefore duration, not the moment: an oversight thread that
+drops model at hour one runs degraded for every hour after. So the session record keeps the model
+first seen for the session alongside the current one, and while they differ the card carries a
+standing marker (`⚠ claude-opus-5, down from claude-fable-5`) rather than a silent field that
+reads normal at a glance. Returning to the opening model clears the marker, which is also how the
+operator confirms a manual switch-back took effect from the thread.
+
+Direction is distinguished by a fixed rank (fable, opus, sonnet, haiku): a downgrade is the
+alarming direction and carries the marker, while an upgrade renders plainly. The reason for a
+change is not observable in the transcript, so nothing in the card or the notice asserts one.
+
+**The change also posts one message,** on the steering writer's notice tier by default and
+switchable to the alert tier (with the operator mention that reaches the phone) by a config knob,
+because whether a notice is loud enough on a phone is a question only live use answers, and a knob
+makes the upgrade an env change rather than a code round. One message per change, floored the way
+the notice tier already floors, and never one per poll.
 
 Files: `broker/tail.ts` (the extraction, extending the existing line reader by allowlist),
-`broker/discord/render.ts` (the card line), `broker/registry.ts` if the pair needs a record slot,
-plus tests. The reader stays an allowlist: a line missing either field renders the card exactly
-as today, and no new content reaches a log line.
+`broker/registry.ts` (the record's opening-model and current-model slots),
+`broker/discord/render.ts` (the card line and the change message), `broker/config.ts` (the tier
+knob), `broker/index.ts` (wiring), plus tests. The reader stays an allowlist: a line missing
+either field renders the card exactly as today, and no new content reaches a log line.
 
 Acceptance: a card for a session whose transcript carries the fields shows model and raw context;
-a session missing them renders as today; a model change posts exactly one notice and updates the
-card; the extraction never throws on a malformed line. Tests lock both directions of the
-missing-field case and the one-notice-per-change rule.
+a session missing them renders as today; a session below its opening model carries the marker for
+as long as it stays there, and clears it on return; a change posts exactly one message at the
+configured tier; the extraction never throws on a malformed line. Tests lock both directions of
+the missing-field case, both directions of the tier knob, the marker's persistence across polls
+(not just at the moment of change), and the one-message-per-change rule.
 
 ### 4. Docs, deploy, and live verify
 
