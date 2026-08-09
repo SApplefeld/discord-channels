@@ -65,6 +65,14 @@ export type Surface = {
   tick: (views: SessionView[]) => Promise<void>;
   /** The thread bound to a session, for the message routing that arrives with the relay. */
   threadFor: (sessionId: string) => string | null;
+  /**
+   * The cards of the sessions that are running, for the channel's pin list.
+   *
+   * Read after a pass rather than before one: a card restored from a binding carries no state until
+   * the pass has derived it, and a session the registry has dropped is driven to exited by that
+   * same pass. A card whose surface has been given up on is left out, since nothing maintains it.
+   */
+  livePins: () => readonly string[];
 };
 
 type ThreadState = {
@@ -522,5 +530,15 @@ export function createSurface(options: SurfaceOptions): Surface {
     },
 
     threadFor: (sessionId) => threads.get(sessionId)?.threadId ?? null,
+
+    livePins: () => {
+      const live: string[] = [];
+      for (const entry of threads.values()) {
+        if (entry.messageId === null || entry.abandoned) continue;
+        if (entry.desired === "exited") continue;
+        live.push(entry.messageId);
+      }
+      return live;
+    },
   };
 }

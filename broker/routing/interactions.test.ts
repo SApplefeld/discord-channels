@@ -186,7 +186,8 @@ test("a press from anyone but the operator does nothing and is not even answered
 
 test("the operator's presses accumulate and Send submits the measured answers shape", async () => {
   // The wire shape the whole design rests on: a map keyed by the exact question text the payload
-  // carried, a single-select answering with one label string and a multi-select with an array.
+  // carried, a single-select answering with one label string and a multi-select with its labels
+  // joined the way the console picker joins them, so a session cannot tell which surface answered.
   const { router, entryId, writes, callbacks, refreshed } = harness();
 
   await router.deliver(press({ customId: `qd:${entryId}:0`, values: ["1"] }));
@@ -208,7 +209,7 @@ test("the operator's presses accumulate and Send submits the measured answers sh
   await router.deliver(press({ customId: `qd:${entryId}:send` }));
   assert.deepEqual(submitted(writes), {
     "Commit model for this effort?": "Review-Only",
-    "Which sections ship first?": ["Desk", "Docs"],
+    "Which sections ship first?": "Desk, Docs",
   });
   assert.equal(callbacks[2].kind, "acknowledge", "a submit that landed says nothing extra");
 });
@@ -226,7 +227,7 @@ test("Send with a question still unanswered submits nothing and names that quest
   await router.deliver(press({ customId: `qd:${entryId}:send` }));
   assert.deepEqual(submitted(writes), {
     "Commit model for this effort?": "Commit-and-Push",
-    "Which sections ship first?": ["Message"],
+    "Which sections ship first?": "Message",
   });
 });
 
@@ -299,7 +300,7 @@ test("a selection naming an option the ask never offered selects nothing", async
   await router.deliver(press({ customId: `qd:${entryId}:send` }));
   assert.deepEqual(submitted(writes), {
     "Commit model for this effort?": "Commit-and-Push",
-    "Which sections ship first?": ["Desk"],
+    "Which sections ship first?": "Desk",
   });
 });
 

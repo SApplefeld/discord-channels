@@ -154,6 +154,12 @@ export type UsageCard = {
    * same block as its own, before it starts awaiting anything.
    */
   stop: () => Promise<void>;
+  /**
+   * The message the card is drawn on, for the channel's pin list, and null until one exists. Null
+   * again for as long as a card Discord reported gone has not been rebuilt, so the pin the old
+   * identifier held is dropped rather than kept against a message that is not there.
+   */
+  cardMessage: () => string | null;
 };
 
 /**
@@ -413,6 +419,8 @@ export function createUsageCard(options: UsageCardOptions): UsageCard | null {
 
   return {
     tick,
+
+    cardMessage: () => messageId,
 
     start: () => {
       if (timer !== null) return;

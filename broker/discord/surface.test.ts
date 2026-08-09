@@ -919,6 +919,38 @@ test("a restored binding whose session is gone is titled with the name, not the 
   assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
 });
 
+test("the pin list reads the cards of the sessions that are running, and only after a pass", async () => {
+  // What the channel's pin list is driven from. A binding restored from the previous run carries no
+  // state until a pass has derived one, and a session the registry has dropped is driven to exited
+  // inside that pass, so the read belongs after the tick rather than beside it.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, {
+    bindings: [
+      {
+        sessionId: "session-gone",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+  });
+
+  await surface.tick([view()]);
+  assert.deepEqual(
+    [...surface.livePins()].sort(),
+    ["message-1"],
+    "the restored binding's session is gone, so its card is not in the roster",
+  );
+
+  // The live session exits, which is what the card itself now says.
+  time.advance(EXITED_AFTER_MS + 1);
+  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+  assert.deepEqual(surface.livePins(), [], "an exited session's card drops out of the roster");
+});
+
 test("a card is kept current even while its thread cannot be opened", async () => {
   const time = clock();
   const calls = recorder();

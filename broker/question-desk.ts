@@ -81,9 +81,13 @@ export type QuestionTerminalState =
 
 /**
  * What an answered hold injects, in the vocabulary Claude Code reads out of `updatedInput`:
- * `answers` maps exact question text to an option label (single-select) or an array of labels
- * (multi-select); `response` is a whole-ask free-form reply that replaces the per-question answers
- * entirely.
+ * `answers` maps exact question text to what was chosen for it, and `response` is a whole-ask
+ * free-form reply that replaces the per-question answers entirely.
+ *
+ * A label string and an array of labels are both accepted for a multi-select question. What this
+ * desk's own Send submits is the string, joined the way the console picker joins, so a session
+ * cannot tell which surface answered it; the array stays in the type because it is the documented
+ * shape and `resolve` is a seam any caller composes against.
  */
 export type QuestionAnswers =
   | { kind: "answers"; answers: Readonly<Record<string, string | readonly string[]>> }
@@ -807,7 +811,11 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
       const answers = Object.create(null) as Record<string, string | readonly string[]>;
       for (const [at, asked] of entry.questions.entries()) {
         const chosen = entry.selections[at];
-        answers[asked.question] = asked.multiSelect ? [...chosen] : chosen[0];
+        // A multi-select answer is the labels joined with a comma and a space, which is the text the
+        // console picker's own answer produces for the same picks. The array shape is documented and
+        // answers correctly, but it reaches the session as the labels joined with a bare comma, and
+        // that difference is a session's way of telling which surface answered it.
+        answers[asked.question] = asked.multiSelect ? chosen.join(", ") : chosen[0];
       }
       return resolveHold(sessionId, { kind: "answers", answers })
         ? { kind: "answered" }

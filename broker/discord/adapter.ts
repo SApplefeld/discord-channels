@@ -5,6 +5,7 @@
 // of every outgoing write is testable without a token, a network, or a gateway connection.
 import type {
   CallOutcome,
+  ChannelPins,
   DiscordTransport,
   InteractionResponder,
   RateLimitObservation,
@@ -27,8 +28,9 @@ export type RawResult =
 
 export type RawRequest = (input: {
   route: string;
-  method: "POST" | "PATCH";
-  body: Record<string, unknown>;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  /** Absent on the verbs that carry none: the pin read, the pin, and the unpin. */
+  body?: Record<string, unknown>;
 }) => Promise<RawResult>;
 
 /**
@@ -138,6 +140,25 @@ function readId(body: unknown, field = "id"): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/**
+ * One page of the channel's pin list, as the route answers it: `{ items, has_more }`, where each
+ * item carries the pinned message under `message`. An item whose message carries no readable id is
+ * dropped rather than guessed at; a body that is not a page at all is no page, which the caller
+ * reports as a refusal rather than as an empty channel.
+ */
+function readPinPage(body: unknown): { messageIds: string[]; hasMore: boolean } | null {
+  if (typeof body !== "object" || body === null) return null;
+  const page = body as Record<string, unknown>;
+  if (!Array.isArray(page.items)) return null;
+  const messageIds: string[] = [];
+  for (const item of page.items) {
+    if (typeof item !== "object" || item === null) continue;
+    const messageId = readId((item as Record<string, unknown>).message);
+    if (messageId !== null) messageIds.push(messageId);
+  }
+  return { messageIds, hasMore: page.has_more === true };
+}
+
 /** Folds one attempt into an outcome, leaving the caller to read the body of a successful one. */
 function classify(result: RawResult): CallOutcome<unknown> {
   if (result.kind === "failed") {
@@ -231,13 +252,13 @@ export type AdapterOptions = {
 
 export function createDiscordTransport(
   options: AdapterOptions,
-): DiscordTransport & ThreadMessenger {
+): DiscordTransport & ThreadMessenger & ChannelPins {
   const { channelId, request } = options;
 
   async function write(
     route: string,
-    method: "POST" | "PATCH",
-    body: Record<string, unknown>,
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    body?: Record<string, unknown>,
   ): Promise<CallOutcome<unknown>> {
     return classify(await request({ route, method, body }));
   }
@@ -279,9 +300,8 @@ export function createDiscordTransport(
       return { status: "ok", value: { threadId }, rate: opened.rate };
     },
 
-    // The starter message lives in the parent channel, so it is edited there. It is never
-    // re-posted and never pinned: pinning emits a system message, which is the churn this design
-    // exists to avoid, and a starter message already renders at the top of its thread.
+    // The starter message lives in the parent channel, so it is edited there, and it is never
+    // re-posted.
     editCard: async ({ messageId, card }): Promise<CallOutcome<null>> => {
       const edited = await write(`/channels/${channelId}/messages/${messageId}`, "PATCH", {
         content: card,
@@ -351,6 +371,43 @@ export function createDiscordTransport(
       return archived.status === "ok"
         ? { status: "ok", value: null, rate: archived.rate }
         : archived;
+    },
+
+    // The pin routes are the message-scoped ones under `/messages/pins` rather than the legacy
+    // `/channels/{id}/pins/{id}`. The legacy pair answers `403 Missing Permissions` to a bot holding
+    // Manage Messages without Pin Messages, which names a permission the operator has granted, while
+    // these accept either bit. The read needs neither.
+    listPins: async (): Promise<
+      CallOutcome<{ messageIds: readonly string[]; hasMore: boolean }>
+    > => {
+      const listed = await write(`/channels/${channelId}/messages/pins`, "GET");
+      if (listed.status !== "ok") return listed;
+
+      const page = readPinPage(listed.value);
+      if (page === null) {
+        // Reported permanent because the shape is the route's own: a response that is not a page is
+        // one a later identical read answers the same way, and a caller that treats it as an empty
+        // channel would pin messages that are already pinned, each of which writes a system message.
+        return {
+          status: "failed",
+          error: "the pin list was not a page",
+          rate: listed.rate,
+          permanent: true,
+        };
+      }
+      return { status: "ok", value: page, rate: listed.rate };
+    },
+
+    pin: async ({ messageId }): Promise<CallOutcome<null>> => {
+      const pinned = await write(`/channels/${channelId}/messages/pins/${messageId}`, "PUT");
+      return pinned.status === "ok" ? { status: "ok", value: null, rate: pinned.rate } : pinned;
+    },
+
+    unpin: async ({ messageId }): Promise<CallOutcome<null>> => {
+      const unpinned = await write(`/channels/${channelId}/messages/pins/${messageId}`, "DELETE");
+      return unpinned.status === "ok"
+        ? { status: "ok", value: null, rate: unpinned.rate }
+        : unpinned;
     },
   };
 }

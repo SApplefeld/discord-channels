@@ -76,6 +76,31 @@ export type DiscordTransport = {
 };
 
 /**
+ * The channel's pin list: one read and two writes, on their own surface beside `DiscordTransport`
+ * because they are their own routes with their own buckets and their own caller, and because the
+ * read needs no permission grant while the writes need Discord's `PIN_MESSAGES` bit.
+ *
+ * Channel-scoped, like every other route here: the pin that answers "what is running" lives in the
+ * broker's channel. A thread's starter message cannot be pinned inside its own thread at all, on
+ * either route and either permission, because the starter belongs to the parent channel; Discord
+ * answers `400 Unknown Message`, so no thread-scoped pin is offered.
+ */
+export type ChannelPins = {
+  /**
+   * The messages currently pinned in the channel. `hasMore` reports that the page did not carry the
+   * whole list, which a caller reading the list to drive it toward an intended set has to hold
+   * against: what the page did not show cannot be reasoned about.
+   */
+  listPins: () => Promise<CallOutcome<{ messageIds: readonly string[]; hasMore: boolean }>>;
+  /**
+   * Pins a message in the channel. Writes a system message into the channel, one per pin, which is
+   * the cost this carries; unpinning writes none.
+   */
+  pin: (input: { messageId: string }) => Promise<CallOutcome<null>>;
+  unpin: (input: { messageId: string }) => Promise<CallOutcome<null>>;
+};
+
+/**
  * The two writes that post and edit a message in a thread rather than the card. Separate from
  * `DiscordTransport` because the two have different callers and different cadences: the surfaces
  * reconcile passive state on a timer and must never post, while the message routing posts and

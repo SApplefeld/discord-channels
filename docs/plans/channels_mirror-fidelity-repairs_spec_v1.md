@@ -333,3 +333,36 @@ that no test can see. One constant settles it.
 Stamps: none surfaced at this boundary
 Next: Section 2: A thread answer joins the way the console joins
 Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-09
+Completed: Section 2: A thread answer joins the way the console joins, and Section 3: The channel's
+pins are the live sessions
+Implemented By: implementer-opus (both sections in one round; they touch disjoint files)
+Metrics: 0 review rounds so far (the round carried red-first evidence for both; the finishing pass
+covers the changeset); 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the pin work needed no discovery, because every fact it rests on was
+measured against the live channel before the section was written: the newer message-scoped route,
+the legacy route's misleading refusal, the impossibility of pinning a thread's starter inside its
+own thread, and both Discord ceilings. That is the difference between a section that builds and one
+that investigates, and it is worth noting how cheap the measuring was compared to the review round
+it would otherwise have cost.
+The reconcile drives the channel's pins toward the intended set by reading Discord's own answer
+rather than trusting a flag, which is what survives a restart, a hand-made pin, and a card rebuilt
+after a deletion. A converged channel spends nothing, pinned by a test that runs two identical
+passes and asserts zero calls, which is what keeps a system message per pin from becoming a system
+message per tick.
+Two consequences the implementer named rather than buried. The full sweep unpins anything pinned
+that is not in the intended set, which is the only rule that can unpin a card whose binding is gone
+but which also removes a pin the operator added by hand; that is being narrowed in the following
+round to sweep only messages the broker recognizes as its own cards. And Section 2's join moved a
+bound: the thread's answered-from-the-thread message bounded each label at a hundred characters and
+now bounds the whole joined list at the same number, so three realistic labels would ellipsize
+where they did not before, which the same round corrects.
+Review Findings: none yet; the finishing pass covers both sections.
+Named check riding to Section 7's live verify: the pin keeper's wiring is chained after the
+surface's own tick and nothing exercises that ordering in a test, so a session starting and exiting
+against the real channel is what settles it.
+Stamps: none surfaced at this boundary
+Next: the card's own redesign, which the operator specified against a live screenshot, then
+Section 4
+Commit Model: Commit-and-Push

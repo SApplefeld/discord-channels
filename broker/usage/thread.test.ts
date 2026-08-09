@@ -384,6 +384,27 @@ test("a message Discord reports as gone is rebuilt rather than called forever", 
   assert.equal(calls.opens.length, 1);
 });
 
+test("the card names the message it is drawn on, and names none while it has none", async () => {
+  // What the channel's pin list is driven from at this end. A card Discord reported gone names no
+  // message until it has been rebuilt, so the pin the dead identifier held is dropped rather than
+  // kept against a message that is not there.
+  let pct = 40;
+  const { calls, usage } = card({ binding: () => null, read: () => reading(pct) });
+  assert.equal(usage.cardMessage(), null, "nothing is pinned before the card exists");
+
+  await usage.tick();
+  assert.equal(usage.cardMessage(), MESSAGE_ID);
+
+  // A reading that moves the card is what spends the edit the deletion is reported on.
+  pct = 41;
+  calls.nextEdit = missing();
+  await usage.tick();
+  assert.equal(usage.cardMessage(), null, "a card Discord reports gone names no message");
+
+  await usage.tick();
+  assert.equal(usage.cardMessage(), MESSAGE_ID, "the rebuilt card names the message it is drawn on");
+});
+
 test("a card that keeps going missing is rebuilt a bounded number of times", async () => {
   // Anything deleting the card on a cadence would otherwise get a post and a thread open back at
   // every refresh forever: a rebuild is not a refusal, so no refusal count ever sees one.

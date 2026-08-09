@@ -654,8 +654,82 @@ test("a select records what the ask offered, and Send answers in the measured vo
   assert.deepEqual(
     (writes[0].body as { hookSpecificOutput: { updatedInput: { answers: unknown } } })
       .hookSpecificOutput.updatedInput.answers,
-    { [QUESTION]: "SECRET-Tea", "SECRET-which sections?": ["SECRET-Message"] },
+    { [QUESTION]: "SECRET-Tea", "SECRET-which sections?": "SECRET-Message" },
   );
+});
+
+test("a multi-select answer joins its labels the way the console picker joins them", () => {
+  // Measured from one session's transcript carrying both paths for one question: submitted as an
+  // array of labels the ask reaches the model as "Jalapeños,Mushrooms,Pepperoni", while the console
+  // picker's own answer to the same question arrives as "Jalapeños, Mushrooms, Pepperoni". Both
+  // answer correctly, so what the join buys is that a session cannot tell which surface answered it.
+  //
+  // A label containing a comma is ambiguous in this format: the session reads one separator where
+  // the operator picked two labels. That ambiguity is the console's own, and it is inherited on
+  // purpose rather than guarded against, because a surface that escaped or quoted such a label would
+  // be back to producing text no console answer produces, which is the whole difference being closed.
+  const { desk } = harness();
+  const toppings: AskedQuestion[] = [
+    {
+      question: "SECRET-which toppings?",
+      header: "Toppings",
+      multiSelect: true,
+      options: [
+        { label: "Jalapeños", description: null },
+        { label: "Mushrooms", description: null },
+        { label: "Pepperoni", description: null },
+      ],
+    },
+  ];
+  const { response, writes } = heldResponse();
+  desk.hold("session-a", toppings, askInput(), response, true);
+  const entryId = desk.noteAlert("session-a", questionDigest(toppings), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+
+  desk.select(entryId, 0, [0, 1, 2]);
+  assert.deepEqual(desk.submit(entryId), { kind: "answered" });
+  assert.deepEqual(
+    (writes[0].body as { hookSpecificOutput: { updatedInput: { answers: unknown } } })
+      .hookSpecificOutput.updatedInput.answers,
+    { "SECRET-which toppings?": "Jalapeños, Mushrooms, Pepperoni" },
+    "the console's measured text, not the array's bare-comma rendering",
+  );
+});
+
+test("a single-select answer still carries a bare label and a typed answer still replaces the map", () => {
+  // The two shapes the join leaves alone. A single-select answer is one label, never a one-element
+  // join, and a free-form answer replaces the per-question answers entirely with `response`.
+  const { desk } = harness();
+  const single = heldResponse();
+  desk.hold("session-a", ask(), askInput(), single.response, true);
+  const entryId = desk.noteAlert("session-a", questionDigest(ask()), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+  desk.select(entryId, 0, [0]);
+  assert.deepEqual(desk.submit(entryId), { kind: "answered" });
+  const updated = (
+    single.writes[0].body as {
+      hookSpecificOutput: { updatedInput: { answers?: unknown; response?: unknown } };
+    }
+  ).hookSpecificOutput.updatedInput;
+  assert.deepEqual(updated.answers, { [QUESTION]: "SECRET-Coffee" });
+
+  const typed = heldResponse();
+  desk.hold("session-b", ask(), askInput(), typed.response, true);
+  desk.noteAlert("session-b", questionDigest(ask()), { threadId: "thread-2", messageId: "msg-2" });
+  assert.equal(desk.answerTyped("session-b", "SECRET-neither, tea"), true);
+  const replaced = (
+    typed.writes[0].body as {
+      hookSpecificOutput: { updatedInput: { answers?: unknown; response?: unknown } };
+    }
+  ).hookSpecificOutput.updatedInput;
+  assert.equal(replaced.answers, undefined, "a free-form answer carries no answers map");
+  assert.equal(replaced.response, "SECRET-neither, tea");
 });
 
 test("the refused-retry line is rate-limited, unlike every other line here", () => {

@@ -14,6 +14,7 @@ import { loadSessions, saveSessions } from "./persistence.ts";
 import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
+import { createPinKeeper } from "./discord/pins.ts";
 import { renderModelChange, renderQuestionNotice } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import {
@@ -537,6 +538,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
   });
   let threadFor: (sessionId: string) => string | null = () => null;
+  // The fleet usage card's own message, for the channel's pin list. Mutable for the reason
+  // `threadFor` is: the card is built after the Discord block below, because it is built under two
+  // conditions decided in one place, and the pin reconcile that reads this runs on the surface's
+  // refresh timer, which starts before that.
+  let fleetCard: () => string | null = () => null;
   let messenger: ThreadMessenger = {
     postToThread: async () => ({
       status: "failed",
@@ -863,6 +869,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         stopRefresh();
       },
     });
+    // The channel's pin list, driven from the same timer the surfaces are. Its own budgets and its
+    // own routes: a pin and an unpin are their own rate buckets, and the read is a third.
+    const pinKeeper = createPinKeeper({
+      pins: transport,
+      now: Date.now,
+      log: note,
+    });
     refresh = setInterval(() => {
       // A rejection here would be fatal to the process under Node 24, taking the hook intake down
       // with the Discord surface, and the intake is the half that has to keep running. The pass is
@@ -873,6 +886,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       const waiting = permissions.waiting();
       inFlight = surface
         .tick(registry.list().map((record) => toView(record, waiting.has(record.sessionId))))
+        // After the pass rather than beside it: what is live is what the pass has just derived, and
+        // a session the registry dropped is driven to exited inside it. A pass that changes nothing
+        // spends no Discord call here at all.
+        .then(() => pinKeeper.reconcile({ permanent: fleetCard(), live: surface.livePins() }))
         .catch((error: unknown) => {
         // describe() rather than String(error): a discord.js error can carry the request object,
         // and the Authorization header along with it, and this string lands in the log file.
@@ -1101,6 +1118,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     }),
   );
   if (usageCard !== null) {
+    // The one card the channel keeps pinned permanently. Read through the card rather than from the
+    // binding file, so a card Discord reported gone stops being pinned until it is rebuilt.
+    fleetCard = () => usageCard.cardMessage();
     // Started after the listener is bound, so a broker that never bound leaves no timer editing a
     // Discord thread on behalf of a process that is about to throw.
     usageCard.start();

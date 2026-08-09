@@ -17,8 +17,11 @@ function headers(values: Record<string, string>): (name: string) => string | nul
 function transportWith(reply: (sent: Sent) => RawResult) {
   const sent: Sent[] = [];
   const request: RawRequest = async (input) => {
-    sent.push(input);
-    return reply(input);
+    // The verbs that carry no body record an empty one here. Whether a body reached the wire at all
+    // is the pin routes' own concern and is pinned where they are, against the raw input.
+    const call: Sent = { ...input, body: input.body ?? {} };
+    sent.push(call);
+    return reply(call);
   };
   return { sent, transport: createDiscordTransport({ channelId: CHANNEL, request }) };
 }
@@ -158,6 +161,61 @@ test("archiving patches the thread and is the only call that closes it", async (
   await transport.archiveThread({ threadId: "thread-77" });
 
   assert.deepEqual(sent[0].body, { archived: true });
+});
+
+test("the pin routes are the message-scoped ones, on the channel, carrying no body", async () => {
+  // The legacy `/channels/{id}/pins/{id}` pair answers 403 Missing Permissions to a bot holding
+  // Manage Messages without Pin Messages, which names a permission the operator has granted; these
+  // accept either bit. The raw input is read here rather than the normalized recording above,
+  // because whether a body reached the wire at all is what this pins.
+  const calls: { route: string; method: string; body: unknown }[] = [];
+  const request: RawRequest = async (input) => {
+    calls.push({ route: input.route, method: input.method, body: input.body });
+    return respond(input.method === "GET" ? { items: [], has_more: false } : null);
+  };
+  const transport = createDiscordTransport({ channelId: CHANNEL, request });
+
+  await transport.listPins();
+  await transport.pin({ messageId: "message-42" });
+  await transport.unpin({ messageId: "message-42" });
+
+  assert.deepEqual(
+    calls.map((call) => `${call.method} ${call.route}`),
+    [
+      `GET /channels/${CHANNEL}/messages/pins`,
+      `PUT /channels/${CHANNEL}/messages/pins/message-42`,
+      `DELETE /channels/${CHANNEL}/messages/pins/message-42`,
+    ],
+  );
+  for (const call of calls) assert.equal(call.body, undefined, call.route);
+});
+
+test("the pin list reads the page's message ids, and an unreadable page is a refusal", async () => {
+  // The route answers `{ items, has_more }`, each item carrying the pinned message. An item with no
+  // readable message id is dropped rather than guessed at, and a body that is not a page at all is
+  // reported permanent: read as an empty channel it would have the caller pin messages that are
+  // already pinned, and every pin writes a system message into the operator's channel.
+  const { transport } = transportWith(() =>
+    respond({
+      items: [
+        { pinned_at: "2026-08-09T00:00:00Z", message: { id: "message-42" } },
+        { pinned_at: "2026-08-09T00:00:01Z", message: { id: "message-7" } },
+        { pinned_at: "2026-08-09T00:00:02Z" },
+      ],
+      has_more: true,
+    }),
+  );
+
+  const listed = await transport.listPins();
+  assert.deepEqual(listed.status === "ok" ? listed.value : null, {
+    messageIds: ["message-42", "message-7"],
+    hasMore: true,
+  });
+
+  const { transport: broken } = transportWith(() => respond({ pins: [] }));
+  const refused = await broken.listPins();
+  assert.equal(refused.status, "failed");
+  assert.equal(refused.status === "failed" ? refused.permanent : null, true);
 });
 
 test("rate-limit headers are read in seconds and reported in milliseconds", async () => {
@@ -363,7 +421,7 @@ test("an interaction callback answers on its own route, deferred or ephemeral", 
   // ephemeral flag answers the one person who pressed.
   const sent: Sent[] = [];
   const responder = createInteractionResponder(async (input) => {
-    sent.push(input);
+    sent.push({ ...input, body: input.body ?? {} });
     return respond(null);
   });
 

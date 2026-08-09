@@ -35,6 +35,15 @@ async function readBody(response: { text: () => Promise<string> }): Promise<unkn
  * returns the response itself, headers included, and the headers are the only source of truth for
  * a rename budget Discord does not document.
  */
+/** The library's own verb for each verb the routes above this file name. */
+const VERBS = {
+  GET: RequestMethod.Get,
+  POST: RequestMethod.Post,
+  PUT: RequestMethod.Put,
+  PATCH: RequestMethod.Patch,
+  DELETE: RequestMethod.Delete,
+} as const;
+
 export function createRestRequest(token: string): RawRequest {
   const rest = new REST({ version: "10", rejectOnRateLimit: () => true }).setToken(token);
 
@@ -42,7 +51,9 @@ export function createRestRequest(token: string): RawRequest {
     try {
       const response = await rest.queueRequest({
         fullRoute: route as `/${string}`,
-        method: method === "POST" ? RequestMethod.Post : RequestMethod.Patch,
+        method: VERBS[method],
+        // Left off the verbs that carry none rather than sent as an empty object: a body on a GET or
+        // a DELETE is a request shape the route does not define.
         body,
       });
       return {
