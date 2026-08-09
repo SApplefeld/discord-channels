@@ -84,13 +84,22 @@ A session's card is pinned in the channel while that session is running and unpi
 exits, so the channel's pin list answers "what is running right now" without a scroll. The fleet
 usage card is pinned too, permanently, since it is the one card that is always relevant.
 
-**This section ships dark on a host that has not granted the permission, and that is not a
-fallback, it is the shape.** Discord's pin endpoint requires Manage Messages, which this project's
-install does not currently ask for; measured, both a starter-message pin and an ordinary in-thread
-pin answer `403 Missing Permissions` today, while reading the pin list answers 200 on the
-permissions already granted. So a refused pin is logged once per reason through the repeat limiter
-and changes nothing else: the card, the thread, and every other surface behave exactly as they do
-now. Nothing about this section may make a host without the permission worse than it is today.
+**The route and the permission, both measured rather than assumed.** Pinning wants Discord's own
+`PIN_MESSAGES` bit rather than `MANAGE_MESSAGES`: with Manage Messages alone the legacy route
+answers `403 Missing Permissions` while the newer `PUT /channels/{id}/messages/pins/{message}`
+answers 204, and with Pin Messages alone both answer 204. Use the newer route, and have the install
+ask for Pin Messages as a channel-level overwrite. Reads need neither grant.
+
+**A thread's starter message cannot be pinned inside its own thread**, measured on both routes and
+both permissions: it answers `400 Unknown Message`, because the starter belongs to the parent
+channel even though clients draw it at the top of the thread. So the pin lives in the channel,
+where the thread list lives, which is also where it answers the question the operator actually
+asked.
+
+**The section ships dark on a host that has not granted the permission, and that is not a fallback,
+it is the shape.** A refused pin is logged once per reason through the repeat limiter and changes
+nothing else: the card, the thread, and every other surface behave exactly as they do now. Nothing
+about this section may make a host without the permission worse than it is today.
 
 **Reconcile rather than track.** On startup and whenever the registry's live set changes, read the
 channel's pins and drive it toward the intended set: pin a live session's card that is not pinned,
@@ -153,7 +162,7 @@ Locus: inline
 
 `docs/operations.md` gains how to read a card's fenced body, what the channel's pin list means and
 what a host without the pin permission sees instead, and what a mirrored table looks like;
-`docs/install.md` gains Manage Messages as the optional grant the pin list needs, scoped to the
+`docs/install.md` gains Pin Messages as the optional grant the pin list needs, scoped to the
 broker's channel rather than the server, and says plainly what it also permits;
 `docs/architecture.md` names the width bound the cards share, the pin reconcile, and the transform
 in the mirroring path. Live verify: read both cards on a phone and confirm no horizontal drag is
@@ -172,7 +181,7 @@ a turn carrying a table.
 - Both cards read on the phone with their columns lined up and no horizontal drag, at a fleet
   carrying several accounts and several live sessions. A card that needs dragging reopens
   Section 1's width bound.
-- Manage Messages granted on the broker's channel, then: the pin list holds exactly the sessions
+- Pin Messages granted on the broker's channel, then: the pin list holds exactly the sessions
   that are running, a session exiting drops out of it, and the fleet card stays. Before the grant,
   the only visible difference from today is one log line.
 - A multi-select answered from the thread reports the same text a console answer reports.
