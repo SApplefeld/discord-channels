@@ -72,6 +72,20 @@ export type BrokerConfig = {
    * mirrors the whole report exactly as an ordinary prompt, and `off` posts nothing at all.
    */
   taskNotifications: "brief" | "full" | "off";
+  /**
+   * Whether the broker owns a fleet usage card: one thread in the configured channel carrying every
+   * account's usage windows and every live session on this host. Off by default, and off is the
+   * absence of the machinery rather than a check inside it: no thread is created, no refresh timer
+   * runs, and claude-swap's files are never opened.
+   */
+  usageCard: boolean;
+  /** How often the fleet card is re-read and re-rendered. An edit is spent only when it changed. */
+  usageCardRefreshMs: number;
+  /**
+   * claude-swap's backup directory, for an install that does not keep it under the user profile.
+   * Null leaves the reader on its own default.
+   */
+  usageCacheRoot: string | null;
 };
 
 /**
@@ -159,6 +173,15 @@ export const REPLY_HEARTBEAT_MS = Math.floor(RELAY_REPLY_IDLE_MS / 3);
 const MAX_RELAY_HEARTBEAT_MS = Math.floor(RELAY_READ_TIMEOUT_MS / 3);
 const MIN_RELAY_HEARTBEAT_MS = 1_000;
 const DEFAULT_RELAY_HEARTBEAT_MS = 15 * 1000;
+// A minute between reads of two small local files, which is the cadence the card's own contents
+// move at: claude-swap polls on its own schedule and a session's age line is drawn in minutes.
+const DEFAULT_USAGE_CARD_REFRESH_MS = 60 * 1000;
+// The floor keeps a typo from turning the refresh into a stream of Discord edits on a fleet that is
+// changing every few seconds. The ceiling is the point past which the card stops being a live
+// surface, and it also holds the value inside what setInterval accepts, since Node clamps a delay
+// past 2^31-1 down to 1ms, which would turn an over-large value into a busy loop.
+const MIN_USAGE_CARD_REFRESH_MS = 5 * 1000;
+const MAX_USAGE_CARD_REFRESH_MS = 60 * 60 * 1000;
 const DEFAULT_RETAIN_TERMINAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SESSIONS = 500;
 const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -297,5 +320,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     // the terminal it mirrors is the reported failure. `full` is the escape hatch for an operator
     // who wants the whole report in the thread.
     taskNotifications: taskNotificationMode(env.CHANNEL_TASK_NOTIFICATION),
+    // Off by default: the card reads another program's files and opens a thread of its own in the
+    // operator's channel, and neither belongs on a host that never asked for it.
+    usageCard: strictFlag(env.CHANNEL_USAGE_CARD, false),
+    usageCardRefreshMs: bounded(
+      env.CHANNEL_USAGE_CARD_REFRESH_MS,
+      MIN_USAGE_CARD_REFRESH_MS,
+      MAX_USAGE_CARD_REFRESH_MS,
+      DEFAULT_USAGE_CARD_REFRESH_MS,
+    ),
+    usageCacheRoot: env.CHANNEL_USAGE_CACHE_ROOT?.trim() || null,
   };
 }

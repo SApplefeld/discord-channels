@@ -71,7 +71,8 @@ writers do.
 
 **Sections of the card:**
 1. Per account (ordered as `sequence.json`): active marker, email or alias, then one line per
-   window: `5h 46% · resets 3h44m`, `7d 56% · resets 4d6h · ahead of pace`, per-model scoped rows
+   window: `5h 46% · resets 3h 44m`, `7d 56% · resets 4d 6h · ahead of pace` (the space between the
+   two units is the operator's own request, made for readability on a phone), per-model scoped rows
    (Fable) the same way, spend when present. Percent bars as text (the repo's aesthetic: compact
    lines, no embeds). Over-threshold (>= 90%) values carry a warning glyph.
 2. Per live session on this host, from the registry: `⚙ CHNL: Answering · working · 2m` (name,
@@ -349,4 +350,56 @@ deliberately; the differential covers it at a ninety-second gap between the two 
 a gap wide enough to straddle a boundary by itself.
 Stamps: adjudicated 0 unstamped over the section span; none surfaced
 Next: Section 2: The card thread lifecycle and wiring
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-09
+Completed: Section 2: The card thread lifecycle and wiring
+Implemented By: implementer-opus (build round), implementer-fable (review-fix round)
+Metrics: 1 review round (adversarial + blind at the session tier; no security pass, the section
+adds no inbound surface and opens no new file); 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the build round disproved an assumption in its own brief before it cost
+anything. Told to persist the card's thread binding the way session threads are persisted, it read
+that store first and found it retires and deletes any binding no registry record claims, which no
+session will ever do for a fleet thread: sharing the file would have deleted the binding on the
+first pass after every restart and opened a new thread each boot. It wrote a sibling store on the
+same mechanism instead.
+Both reviewers then found Criticals that a green suite structurally cannot see. The shutdown drain
+did not drain: a refresh firing while a pass was on the wire short-circuited and overwrote the
+handle `stop()` waits on, so shutdown returned mid-write, the binding was never saved, and the next
+boot would post a second card into the operator's channel, accumulating an orphan per occurrence.
+The blind reviewer reproduced it outside the repo rather than arguing it. The unreadable-cache hold
+suppressed the whole edit rather than the usage block, which inverted Section 1's own behavior
+(rendering unavailable once and never again), made the 404 self-heal unreachable, and froze the
+card's age while the data aged, the stale-as-fresh direction the module exists to prevent; the
+implementer had recorded that as an accepted cost and the reviewer correctly overturned it, while
+bounding the claim to the unreadable branch alone. Also fixed: the card's timer was cleared after
+unbounded awaits in the broker's stop, so a pass could write to Discord and to disk on behalf of a
+torn-down broker; one refusal counter covered three routes and any success reset it, so a
+permanently refused route retried forever while a permanently failing thread-open abandoned a card
+whose edits worked; and no pass ran at startup, so the thread would not exist for up to a full
+refresh interval, an hour at the configured ceiling.
+Operator request folded into the same round: the countdowns put a space between their two units
+(`4d 0h`), which the spec's own illustration above now matches. The operator declined an absolute
+wall-clock time, since it would be converted in the head anyway and the relative figure is what a
+burst decision actually uses.
+Two false claims corrected rather than carried: the comment asserting the card's budgets are not
+buckets the session writers spend (they route through the same channel-scoped paths; the true
+statement is the thread-messenger distinction), and the header's claim that a quiet fleet costs no
+Discord calls. The implementer refused half of that second item as briefed and was right: an idle
+card is not byte-stable either, because ages are minute-granular below an hour, so the honest
+steady state is about one edit a minute until every reading and session line has aged past that
+mark. The same overstatement in Section 1's footer comment is corrected in this changeset.
+Review Findings: adversarial CHANGES_REQUIRED (1 Critical, 3 Major, 4 Minor); blind
+CHANGES_REQUIRED (1 Critical, 2 Major, 3 Minor). All 13 deduplicated items implemented, items 1 to
+5 red-first. Accepted with justification: the refusal decay window is expressed in refresh passes
+rather than wall time, so it holds at both ends of the configured range; reaching the rebuild
+ceiling or a route's refusal ceiling halts that path for the process lifetime, mirroring the
+existing refusal precedent, with a restart as the recovery; and the hundred-column convention is
+convention rather than a gate, so pre-existing long lines elsewhere were left alone.
+Named check riding to Section 5's live verify: a host with zero live sessions and no claude-swap
+install renders a static body, so no edit is attempted and a deleted card would go undetected until
+restart. That is the byte-compare design rather than a defect, and it is the one remaining path to
+a silent card.
+Stamps: none surfaced at this boundary
+Next: Section 3: The session card's model and context line
 Commit Model: Commit-and-Push

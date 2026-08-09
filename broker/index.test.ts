@@ -3,7 +3,7 @@
 // console, because a scheduled task (S7) has no console to catch either one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
@@ -14,13 +14,17 @@ import {
   questionRefresh,
   questionUpgrade,
   startBroker,
+  usageCardWiring,
 } from "./index.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
+import type { SessionRecord } from "./registry.ts";
 import { createQuestionDesk } from "./question-desk.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
-import type { CallOutcome } from "./discord/transport.ts";
+import type { CallOutcome, DiscordTransport } from "./discord/transport.ts";
 import { questionDigest } from "./tail.ts";
+import { createUsageCard } from "./usage/thread.ts";
+import { loadUsageBinding } from "./usage/binding.ts";
 
 function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile: string | null }): BrokerConfig {
   return {
@@ -40,6 +44,9 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     interimPollMs: 20_000,
     questionHoldMs: 14_400_000,
     taskNotifications: "brief",
+    usageCard: false,
+    usageCardRefreshMs: 60_000,
+    usageCacheRoot: null,
     ...overrides,
   };
 }
@@ -307,6 +314,110 @@ test("startBroker exposes the logger it started with", async (t) => {
 
   broker.logger.info("probe line from the test");
   assert.match(readFileSync(logFile, "utf8"), /probe line from the test/);
+});
+
+test("the usage card knob builds nothing on a broker with no discord configured", async (t) => {
+  // Both conditions have to hold, and this is the half a unit test cannot reach: with no channel
+  // there is nowhere to draw a card, so the knob alone must open no thread and start no refresh.
+  //
+  // The state file beside the registry's is deliberately corrupt. Reading it would report itself in
+  // the log, so a card wired to load its binding before it decides whether it exists leaves a trace
+  // here that a broker leaving that file alone cannot produce.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-usage-wiring-"));
+  const logFile = path.join(dir, "broker.log");
+  const bindingFile = path.join(dir, "usage-card.json");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(bindingFile, "{not json", "utf8");
+
+  const broker = await startBroker(
+    config({ stateFile: path.join(dir, "state.json"), logFile, usageCard: true }),
+  );
+  await broker.stop();
+
+  // A broker with no Discord writes nothing at startup, so the log file need not exist at all.
+  const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  assert.doesNotMatch(logged, /usage card/);
+  assert.equal(readFileSync(bindingFile, "utf8"), "{not json", "the file is not touched either");
+});
+
+test("the usage card's wiring draws this broker's own sessions, cache, and binding file", async (t) => {
+  // The seam a unit test of the card cannot reach: the closure it calls for its session lines, the
+  // permission desk's waiting set joined onto them, the cache root it reads, the footer's coupling
+  // note, and the path from a bind back to a snapshot on disk. A stub transport is what puts all of
+  // it in reach without a Discord connection.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-usage-wired-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, "cache"));
+  writeFileSync(
+    path.join(dir, "cache", "usage.json"),
+    JSON.stringify({
+      accounts: { "1": { lastGood: { five_hour: { pct: 46 } }, fetchedAt: Date.now() / 1000 } },
+    }),
+    "utf8",
+  );
+
+  const record: SessionRecord = {
+    sessionId: "0f3c9d21-4444-4000-8000-000000000004",
+    processToken: "0f3c9d21-4444-4000-8000-00000000000b",
+    name: "wired-session",
+    host: "NEO",
+    source: "startup",
+    state: "live",
+    lastTool: "Bash",
+    lastToolInput: null,
+    toolCount: 1,
+    turnCount: 1,
+    startedAt: Date.now(),
+    lastHookAt: Date.now(),
+    lastRelayAt: null,
+    endedAt: null,
+  };
+
+  const posts: string[] = [];
+  const transport: DiscordTransport = {
+    postCard: async ({ card }) => {
+      posts.push(card);
+      return { status: "ok", value: { messageId: "111111111111111111" }, rate: NO_RATE_INFO };
+    },
+    openThread: async () => ({
+      status: "ok",
+      value: { threadId: "222222222222222222" },
+      rate: NO_RATE_INFO,
+    }),
+    editCard: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    renameThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    archiveThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+
+  const card = createUsageCard(
+    usageCardWiring({
+      config: {
+        stateFile: path.join(dir, "state.json"),
+        usageCacheRoot: dir,
+        usageCard: true,
+        usageCardRefreshMs: 60_000,
+      },
+      channel: { transport, thresholds: { idleAfterMs: 30_000, exitedAfterMs: 4 * 60 * 60 * 1000 } },
+      registry: { list: () => [record] },
+      waiting: () => new Set([record.sessionId]),
+      interimMirror: false,
+      log: () => {},
+      onError: () => {},
+    }),
+  );
+  assert.ok(card !== null, "the knob is on and a channel is configured");
+  await card.tick();
+
+  const body = posts[0] ?? "";
+  assert.equal(posts.length, 1);
+  assert.match(body, /^5h 46%$/m, "the cache under the configured root is what the card reads");
+  assert.match(body, /^⏸ wired-session · needs you · 0m$/m, "and the registry is what it lists");
+  assert.match(body, /interim mirroring off/, "with the tailer's own state in the footer");
+  assert.deepEqual(
+    loadUsageBinding(path.join(dir, "usage-card.json")),
+    { messageId: "111111111111111111", threadId: "222222222222222222" },
+    "and the thread it opened is persisted beside the registry snapshot",
+  );
 });
 
 test("a terminal hold rewrites its own message and strips the components that answered it", async () => {

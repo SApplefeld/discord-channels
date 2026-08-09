@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_CARD_LENGTH } from "../discord/render.ts";
 import type { SessionView, StateThresholds } from "../discord/state.ts";
-import type { UsageAccount, UsageReading } from "./cache.ts";
+import type { UsageAccount, UsageReading, UsageUnavailableReason } from "./cache.ts";
 import { WARNING_PCT, renderUsageCard } from "./card.ts";
 
 const NOW = 1_786_300_000_000;
@@ -49,16 +49,24 @@ function card(
   reading: UsageReading,
   sessions: readonly SessionView[] = [],
   interimMirror = true,
+  unreadable: UsageUnavailableReason | null = null,
 ): string {
-  return renderUsageCard({ reading, sessions, thresholds: THRESHOLDS, interimMirror, now: NOW });
+  return renderUsageCard({
+    reading,
+    sessions,
+    thresholds: THRESHOLDS,
+    interimMirror,
+    unreadable,
+    now: NOW,
+  });
 }
 
 test("an account renders a line per window, with reset times derived from now", () => {
   const body = card({ available: true, accounts: [account({ active: true })] });
 
   assert.match(body, /^▶ \*\*one@example\.test\*\* · as of 14m ago$/m);
-  assert.match(body, /^5h 46% · resets 3h44m$/m);
-  assert.match(body, /^7d 56% · resets 4d6h · ahead of pace$/m);
+  assert.match(body, /^5h 46% · resets 3h 44m$/m);
+  assert.match(body, /^7d 56% · resets 4d 6h · ahead of pace$/m);
   assert.match(body, /^Fable 12%$/m, "a window with no reset time renders without the clause");
   assert.match(body, /^spend 6% · 95\.4 of 1500 USD$/m);
 });
@@ -93,7 +101,7 @@ test("an account whose usage checks are failing carries a warning line beside it
   });
 
   assert.match(body, /^⚠ usage checks failing · backing off · 3 consecutive$/m);
-  assert.match(body, /^5h 46% · resets 3h44m$/m, "the numbers still render, under an honest age");
+  assert.match(body, /^5h 46% · resets 3h 44m$/m, "the numbers still render, under an honest age");
 });
 
 test("a backoff instant that has passed renders no warning at all", () => {
@@ -155,7 +163,7 @@ test("a weekly window inside the pace margin carries no marker", () => {
     accounts: [account({ sevenDay: { pct: 50, resetsAt: NOW + 4 * 24 * HOUR + 6 * HOUR } })],
   });
 
-  assert.match(body, /^7d 50% · resets 4d6h$/m, "10.9 points over schedule is inside the margin");
+  assert.match(body, /^7d 50% · resets 4d 6h$/m, "10.9 points over schedule is inside the margin");
 });
 
 test("the five-hour window carries no pace marker on numbers that would mark a weekly one", () => {
@@ -170,7 +178,7 @@ test("the five-hour window carries no pace marker on numbers that would mark a w
     ],
   });
 
-  assert.match(body, /^5h 56% · resets 4d6h$/m, "a 5h window resets too fast for pace to mean anything");
+  assert.match(body, /^5h 56% · resets 4d 6h$/m, "a 5h window resets too fast for pace to mean anything");
 });
 
 test("a weekly window in its first day after a reset carries no marker", () => {
@@ -190,7 +198,7 @@ test("a weekly window whose reset has passed is drawn for the period it is in no
 
   // The last-written 99% belongs to a window that no longer exists. Drawn against a boundary that is
   // gone, it would report no headroom at the moment a full week of it opened up.
-  assert.match(body, /^7d 0% · resets 6d23h$/m);
+  assert.match(body, /^7d 0% · resets 6d 23h$/m);
   assert.doesNotMatch(body, /99%/);
   assert.doesNotMatch(body, /ahead of pace/, "a period with no measured spend is not ahead of anything");
 });
@@ -201,7 +209,7 @@ test("a reset several periods back rolls to the next future boundary, not to the
     accounts: [account({ sevenDay: { pct: 66, resetsAt: NOW - 15 * 24 * HOUR }, scoped: [] })],
   });
 
-  assert.match(body, /^7d 0% · resets 6d0h$/m, "three whole weeks past a boundary fifteen days old");
+  assert.match(body, /^7d 0% · resets 6d 0h$/m, "three whole weeks past a boundary fifteen days old");
 });
 
 test("a per-model window rolls the same way and drops its maxed warning with the period", () => {
@@ -210,7 +218,7 @@ test("a per-model window rolls the same way and drops its maxed warning with the
     accounts: [account({ sevenDay: null, scoped: [{ name: "Fable", pct: 100, resetsAt: NOW - MINUTE }] })],
   });
 
-  assert.match(body, /^Fable 0% · resets 6d23h$/m);
+  assert.match(body, /^Fable 0% · resets 6d 23h$/m);
   assert.doesNotMatch(body, /⚠ Fable/);
 });
 
@@ -245,8 +253,8 @@ test("a scoped window carries the marker, and a maxed one carries the warning al
     accounts: [account({ scoped: [{ name: "Fable", pct: 100, resetsAt: NOW + 4 * 24 * HOUR + 6 * HOUR }] })],
   });
 
-  assert.match(ahead, /^Fable 56% · resets 4d6h · ahead of pace$/m);
-  assert.match(maxed, /^⚠ Fable 100% · resets 4d6h$/m);
+  assert.match(ahead, /^Fable 56% · resets 4d 6h · ahead of pace$/m);
+  assert.match(maxed, /^⚠ Fable 100% · resets 4d 6h$/m);
 });
 
 test("a fetch time the card will not believe takes the pace marker down with the age", () => {
@@ -298,6 +306,25 @@ test("the footer ages the card off the oldest reading on it", () => {
   });
 
   assert.equal(body.split("\n").at(-1), "card as of 3h ago");
+});
+
+test("a held reading keeps its numbers and says the cache behind them is down", () => {
+  // The numbers stand because they are the best answer available, and the marker is what keeps
+  // them from reading as a cache that is still answering.
+  const body = card({ available: true, accounts: [account()] }, [], true, "unreadable");
+
+  assert.match(body, /^5h 46% · resets 3h 44m$/m);
+  assert.equal(
+    body.split("\n").at(-1),
+    "⚠ the usage cache cannot be read on this host, so these are the last numbers it held · " +
+      "card as of 14m ago",
+  );
+});
+
+test("a card drawn from a live reading carries no held marker", () => {
+  const body = card({ available: true, accounts: [account()] });
+
+  assert.doesNotMatch(body, /last numbers it held/);
 });
 
 test("the footer names interim mirroring only while it is off", () => {
@@ -399,7 +426,7 @@ test("a host with few accounts and many sessions overflows on the sessions alone
     `the card must stay inside ${MAX_CARD_LENGTH}, rendered ${body.length}`,
   );
   assert.match(body, /^· \*\*one@example\.test\*\* · as of 14m ago$/m, "the account heading survives whole");
-  assert.match(body, /^5h 46% · resets 3h44m$/m, "and so do its windows");
+  assert.match(body, /^5h 46% · resets 3h 44m$/m, "and so do its windows");
   assert.match(
     body.split("\n").at(-2) ?? "",
     /^\(\+\d+ sessions not shown\)$/,

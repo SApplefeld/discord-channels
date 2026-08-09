@@ -138,6 +138,46 @@ test("the task notification knob defaults to brief, honors its three modes, and 
   }
 });
 
+test("the usage card is off unless it is asked for, and a typo is refused rather than read", () => {
+  // Off by default: the card reads another program's files and opens a thread of its own in the
+  // operator's channel, and neither belongs on a host that never asked for it.
+  assert.equal(loadConfig({}).usageCard, false);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CARD: "" }).usageCard, false);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CARD: "on" }).usageCard, true);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CARD: "TRUE" }).usageCard, true);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CARD: "off" }).usageCard, false);
+
+  for (const raw of ["ture", "enabled", "2"]) {
+    assert.throws(() => loadConfig({ CHANNEL_USAGE_CARD: raw }), /expected one of/, raw);
+  }
+});
+
+test("the usage card refresh is a minute by default and refuses a value outside its bounds", () => {
+  assert.equal(loadConfig({}).usageCardRefreshMs, 60_000);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CARD_REFRESH_MS: "5000" }).usageCardRefreshMs, 5_000);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CARD_REFRESH_MS: "3600000" }).usageCardRefreshMs, 3_600_000);
+
+  // The floor keeps a typo from turning the refresh into a stream of Discord edits; the ceiling
+  // keeps the value inside what setInterval accepts, since Node clamps a delay past 2^31-1 down to
+  // one millisecond, which is the busy loop an over-large value would otherwise buy.
+  for (const raw of ["4999", "3600001", "0", "-1", "1.5", "soon"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_USAGE_CARD_REFRESH_MS: raw }),
+      /expected an integer/,
+      raw,
+    );
+  }
+});
+
+test("the usage cache root is unset unless an install keeps it somewhere else", () => {
+  assert.equal(loadConfig({}).usageCacheRoot, null);
+  assert.equal(loadConfig({ CHANNEL_USAGE_CACHE_ROOT: "   " }).usageCacheRoot, null);
+  assert.equal(
+    loadConfig({ CHANNEL_USAGE_CACHE_ROOT: " D:\\swap " }).usageCacheRoot,
+    "D:\\swap",
+  );
+});
+
 test("the mirror body ceiling is its own knob, wider than the hook cap by default", () => {
   const defaults = loadConfig({});
   assert.equal(defaults.mirrorMaxBytes, 256 * 1024);

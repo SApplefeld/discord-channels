@@ -139,6 +139,9 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     interimPollMs: 20_000,
     questionHoldMs: 14_400_000,
     taskNotifications: "brief",
+    usageCard: false,
+    usageCardRefreshMs: 60_000,
+    usageCacheRoot: null,
     ...overrides,
   };
 }

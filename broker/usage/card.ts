@@ -80,19 +80,20 @@ const UNAVAILABLE: Record<UsageUnavailableReason, string> = {
 };
 
 /**
- * A duration in the card's compact form: `44m`, `3h44m`, `4d6h`. Two units at most, because the
- * third never changes a decision and the card is read at a glance on a phone.
+ * A duration in the card's compact form: `44m`, `3h 44m`, `4d 6h`. Two units at most, because the
+ * third never changes a decision and the card is read at a glance on a phone, and a space between
+ * the two because that is what stays legible at phone width.
  */
 function span(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h${minutes % 60}m`;
-  return `${Math.floor(hours / 24)}d${hours % 24}h`;
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 /**
- * ` · resets 3h44m` for a window that carries a reset time, and nothing at all for one that does
+ * ` · resets 3h 44m` for a window that carries a reset time, and nothing at all for one that does
  * not, which is the shape claude-swap really writes for some accounts. A reset instant already
  * behind the current time renders as due rather than as a countdown running backwards: the cache
  * can be older than the window it describes.
@@ -276,18 +277,31 @@ function sessionLine(view: SessionView, state: SurfaceState, now: number): strin
  * The card's closing line: how old the card's information is, and the standing conditions that
  * change what the rest of it means.
  *
+ * A held reading says so here first. Numbers redrawn from the last readable cache with nothing
+ * marking them read as a cache that is still answering, and the age beside them is the only other
+ * signal; the marker names the failure so the two are read together.
+ *
  * The age is anchored to the oldest reading on the card rather than to the current time, and that is
  * load-bearing rather than incidental. This card is edited only when its text changes, so a footer
  * carrying a clock would rewrite the message on every refresh and spend an edit on a fleet where
- * nothing happened. Anchored to the data, it moves when claude-swap writes, which is the only time
- * the answer to "how old is this" actually changed.
+ * nothing happened. Anchored to the data, it changes only as that reading ages, which is a slower
+ * clock than the refresh but not a still one: the age is minute-granular below an hour, so the body
+ * still moves once a minute until every reading and every session line has aged past that mark.
  *
  * The interim-mirroring note is here because the card cannot be read correctly without it: with the
  * transcript tailer off, threads carry no mid-turn narration and no open-question alerts, so quiet
  * threads beside a card full of working sessions are the configuration rather than the fleet.
  */
-function footerLine(reading: UsageReading, interimMirror: boolean, now: number): string {
+function footerLine(
+  reading: UsageReading,
+  interimMirror: boolean,
+  unreadable: UsageUnavailableReason | null,
+  now: number,
+): string {
   const parts: string[] = [];
+  if (unreadable !== null) {
+    parts.push(`⚠ ${UNAVAILABLE[unreadable]}, so these are the last numbers it held`);
+  }
   const measured = reading.available
     ? reading.accounts.map((account) => measuredAt(account, now)).filter((at) => at !== null)
     : [];
@@ -330,9 +344,15 @@ export function renderUsageCard(input: {
   thresholds: StateThresholds;
   /** Whether the transcript tailer is running, which is what the footer's coupling note reports. */
   interimMirror: boolean;
+  /**
+   * Set when the reading above is a held one: the cache could not be read for this card, and the
+   * numbers on it are the last that could be. Absent means the reading is what the cache says now,
+   * which includes an unavailable reading with nothing behind it to hold.
+   */
+  unreadable?: UsageUnavailableReason | null;
   now: number;
 }): string {
-  const footer = footerLine(input.reading, input.interimMirror, input.now);
+  const footer = footerLine(input.reading, input.interimMirror, input.unreadable ?? null, input.now);
   const lines = [HEADING];
   let used = HEADING.length + (footer === "" ? 0 : 1 + footer.length);
   const finish = (): string => {

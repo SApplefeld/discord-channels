@@ -24,6 +24,9 @@ import {
 import type { ActionRow } from "./discord/question-message.ts";
 import { toView } from "./discord/state.ts";
 import { loadBindings, saveBindings } from "./discord/bindings.ts";
+import { createUsageCard } from "./usage/thread.ts";
+import type { UsageCardChannel, UsageCardOptions } from "./usage/thread.ts";
+import { loadUsageBinding, saveUsageBinding } from "./usage/binding.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "./discord/transport.ts";
 import {
@@ -342,6 +345,58 @@ export function questionRefresh(options: {
   };
 }
 
+/**
+ * What the fleet usage card is built from: the two conditions it exists under, what it reads on
+ * every pass, and where the thread it owns is persisted.
+ *
+ * Assembled here rather than inline so the seam between this broker and the card is drivable with a
+ * stub transport. `startBroker` builds its card from this function and from nothing else, which is
+ * what keeps the seam a test can reach the same one production runs.
+ *
+ * The binding gets its own file beside the registry snapshot rather than a record inside
+ * `discord-threads.json`: that file belongs to the session surface, which retires and deletes every
+ * binding in it that no registry record claims, and no record will ever claim this one.
+ *
+ * The session list is recomputed each pass rather than pushed, so a prompt answered between ticks
+ * stops showing as waiting without anything having to remember to clear it, exactly as the surface
+ * refresh does.
+ */
+export function usageCardWiring(options: {
+  config: Pick<BrokerConfig, "stateFile" | "usageCacheRoot" | "usageCard" | "usageCardRefreshMs">;
+  /** Null when no Discord is configured, which is the other way the card is not built at all. */
+  channel: UsageCardChannel | null;
+  registry: Pick<Registry, "list">;
+  /** The sessions holding an unanswered permission prompt, read fresh on every pass. */
+  waiting: () => ReadonlySet<string>;
+  /** Whether the transcript tailer is running, which is what the card's footer note reports. */
+  interimMirror: boolean;
+  log: (message: string) => void;
+  onError: (message: string) => void;
+}): UsageCardOptions {
+  const file = path.join(path.dirname(options.config.stateFile), "usage-card.json");
+  return {
+    enabled: options.config.usageCard,
+    channel: options.channel,
+    sessions: () => {
+      const waiting = options.waiting();
+      return options.registry.list().map((record) => toView(record, waiting.has(record.sessionId)));
+    },
+    interimMirror: options.interimMirror,
+    cacheRoot: options.config.usageCacheRoot,
+    binding: () => loadUsageBinding(file, { log: options.log }),
+    onBind: (binding) => {
+      try {
+        saveUsageBinding(file, binding);
+      } catch (error) {
+        options.onError(`broker: cannot write the usage card binding to ${file}: ${String(error)}`);
+      }
+    },
+    refreshMs: options.config.usageCardRefreshMs,
+    now: Date.now,
+    log: options.log,
+  };
+}
+
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
   // it. The logger writes the same lines to a rotating file too, when one is configured, because a
@@ -636,6 +691,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;
+  // What the fleet card needs from Discord, filled in below only when a channel exists. It is one
+  // of the two conditions the card is built under, and the card is built after this block rather
+  // than inside it so that both conditions are decided in one place the tests can drive.
+  let usageChannel: UsageCardChannel | null = null;
   if (discord !== null) {
     // Imported here rather than at the top so that discord.js, the one dependency with a network
     // client in it, is loaded only by a broker that is actually configured to reach Discord.
@@ -699,6 +758,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       });
     }, discord.refreshIntervalMs);
     threadFor = (sessionId) => surface.threadFor(sessionId);
+    usageChannel = {
+      transport,
+      // The same windows the session threads title themselves from, so one session cannot read as
+      // working on the fleet card and idle in the channel list.
+      thresholds: { idleAfterMs: discord.idleAfterMs, exitedAfterMs: discord.exitedAfterMs },
+    };
 
     // Read here rather than beside the other configuration: it is only meaningful for a broker
     // that has a channel to be steered through, and it throws when it is missing, which stops a
@@ -868,17 +933,52 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : config.port;
 
+  // The fleet card, under both of its conditions: the knob and a configured channel. Off either
+  // way means the machinery is absent rather than idle, so nothing opens a thread, nothing runs on
+  // a timer, and claude-swap's files are never read.
+  const usageCard = createUsageCard(
+    usageCardWiring({
+      config,
+      channel: usageChannel,
+      registry,
+      waiting: () => permissions.waiting(),
+      // The tailer's own presence, which is what the card's footer note reports: with it off,
+      // threads carry no narration and no question alerts, and the card cannot be read correctly
+      // without saying so.
+      interimMirror: tail !== null,
+      log: note,
+      onError: (message) => {
+        console.error(message);
+        logger.error(message);
+      },
+    }),
+  );
+  if (usageCard !== null) {
+    // Started after the listener is bound, so a broker that never bound leaves no timer editing a
+    // Discord thread on behalf of a process that is about to throw.
+    usageCard.start();
+    note(`broker: the fleet usage card refreshes every ${config.usageCardRefreshMs}ms`);
+  }
+
   async function stop(): Promise<void> {
     clearInterval(sweep);
     clearInterval(heartbeat);
     if (tailTimer !== null) clearInterval(tailTimer);
     if (refresh !== null) clearInterval(refresh);
+    // The card's own timer goes down with the rest of them, before the first await below: left
+    // running across those seconds it starts a pass that writes to Discord and to the binding file
+    // for a broker that has already dropped its gateway. What it returns is the drain, awaited
+    // beside the others.
+    const cardDrain = usageCard === null ? null : usageCard.stop();
     if (gateway !== null) await gateway.stop();
     // Clearing the timer does not cancel the pass already running, which may still be waiting on a
     // Discord call and will write the bindings file when it returns. The tailer's pass is awaited
     // for the same reason: shutdown must not race a read still holding a file handle.
     await inFlight;
     await tailInFlight;
+    // The card's pass may still be waiting on a Discord edit, and its binding write follows that
+    // call's return.
+    if (cardDrain !== null) await cardDrain;
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();
