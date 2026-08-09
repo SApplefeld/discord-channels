@@ -345,11 +345,11 @@ const MAX_OPTIONS_PER_QUESTION = 4;
  * entries of `questions` are read, and per entry the `question` string carries the weight: an
  * entry without one, or whose question is empty once the invisible class is stripped and the rest
  * trimmed (the same reading the renderer neutralizes by, so an entry the notice would draw as a
- * blank line never yields), is skipped whole. The `header` rides
- * along only as a non-empty string, `multiSelect` is read strictly (anything but `true` reads
- * false), and at most the first four option entries contribute their `label`, descriptions
- * dropped: the notice this feeds is a glance that sends the operator to the console, not a copy
- * of the picker.
+ * blank line never yields), is skipped whole. The `header` and each option `label` are read on
+ * that same stripped-then-trimmed test, so no field admitted here renders as absent later,
+ * `multiSelect` is read strictly (anything but `true` reads false), and at most the first four
+ * option entries contribute their `label`, descriptions dropped: the notice this feeds is a
+ * glance that sends the operator to the console, not a copy of the picker.
  */
 function askedQuestions(input: unknown): AskedQuestion[] {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
@@ -368,12 +368,13 @@ function askedQuestions(input: unknown): AskedQuestion[] {
       for (const option of rawOptions.slice(0, MAX_OPTIONS_PER_QUESTION)) {
         if (typeof option !== "object" || option === null || Array.isArray(option)) continue;
         const label = (option as Record<string, unknown>)["label"];
-        if (typeof label === "string" && label.trim() !== "") options.push(label);
+        if (typeof label === "string" && withoutInvisible(label).trim() !== "") options.push(label);
       }
     }
     readable.push({
       question,
-      header: typeof header === "string" && header.trim() !== "" ? header : null,
+      header:
+        typeof header === "string" && withoutInvisible(header).trim() !== "" ? header : null,
       multiSelect: fields["multiSelect"] === true,
       options,
     });

@@ -1,9 +1,17 @@
-# Channels: prompt surfacing and wake compression
+﻿# Channels: prompt surfacing and wake compression
 
-Status: In Progress
+Status: Complete
 Commit model: Commit-and-Push (per this repo's precedent and the operator's "run them both now",
 2026-08-08)
 Model: implementer sections at the session tier (fable), reviewer pair per section
+
+## Related
+
+- [channels_thread-fidelity_spec_v1.md](channels_thread-fidelity_spec_v1.md):
+  established the transcript tailer's allowlist and the mirror-on arming gate this effort's
+  question yield extends.
+- [channels_narration-coalescing_spec_v1.md](channels_narration-coalescing_spec_v1.md):
+  built the `endNarration` seam the question alert rides through the steering writer.
 
 ## Why
 
@@ -38,8 +46,8 @@ An `AskUserQuestion` `tool_use` block's `input`, from a real transcript
 (`4724aa3a-5ad6-4780-9064-943424d85355.jsonl`):
 
 ```json
-{ "questions": [ { "question": "…", "header": "Posture", "multiSelect": false,
-    "options": [ { "label": "…", "description": "…" }, … ] }, … ] }
+{ "questions": [ { "question": "â€¦", "header": "Posture", "multiSelect": false,
+    "options": [ { "label": "â€¦", "description": "â€¦" }, â€¦ ] }, â€¦ ] }
 ```
 
 `questions` is 1 to 4 entries; `options` is 2 to 4 entries per question. All strings are untrusted
@@ -64,9 +72,9 @@ reaches Discord, through the hook mirror.
   `brief | full | off`, default `brief`, refusing any other spelling at startup exactly as
   `strictFlag` refuses (a knob silently moved is a knob nobody can reason about).
 - `broker/discord/render.ts`: `renderTaskNotice(text: string): string`. Extracts the task id from
-  the first `<task-id>…</task-id>` pair (bounded: accept at most 64 characters of id, else treat
-  as absent), and composes one line: `📨 background task finished · <id>` with the id through
-  `inertText`, or `📨 background task finished` when no id is readable. Broker-composed text with
+  the first `<task-id>â€¦</task-id>` pair (bounded: accept at most 64 characters of id, else treat
+  as absent), and composes one line: `ðŸ“¨ background task finished Â· <id>` with the id through
+  `inertText`, or `ðŸ“¨ background task finished` when no id is readable. Broker-composed text with
   one neutralized untrusted field, following `renderPermissionRequest`'s pattern.
 - `broker/routing/outbound.ts`: a new option `taskNotifications: "brief" | "full" | "off"`
   (default `"brief"` when absent). A prompt-kind post is recognized as a wake prompt by
@@ -84,7 +92,7 @@ reaches Discord, through the hook mirror.
 
 **Acceptance:** with the knob at `brief` (and by default), a prompt-kind mirror post whose text is
 a `<task-notification>` wake prompt produces exactly one thread message reading
-`📨 background task finished · <id>`; `full` reproduces today's behavior byte-for-byte;
+`ðŸ“¨ background task finished Â· <id>`; `full` reproduces today's behavior byte-for-byte;
 `off` posts nothing and logs one bounded line; an ordinary prompt and a channel-envelope prompt
 behave exactly as before on all three settings; an unrecognized `CHANNEL_TASK_NOTIFICATION`
 spelling refuses startup. `npm run lint` and `npm test` green.
@@ -101,18 +109,18 @@ spelling refuses startup. `npm run lint` and `npm test` green.
   and at most 4 option labels (`options[].label`, non-empty strings; descriptions are dropped).
   An entry missing a readable `question` is skipped; a line yielding zero readable questions
   yields nothing (allowlist silence, never a guess). New `TailItem` variant
-  `{ kind: "question", questions: … }`.
+  `{ kind: "question", questions: â€¦ }`.
 - Delivery: a new injected seam `deliverQuestion` beside `deliver` and `deliverPrompt`, one await
   per item in transcript order, drop-not-retry, no echo digest (no other path posts this text),
   errors discarded unread exactly as the sibling paths discard them.
-- `broker/discord/render.ts`: `renderQuestionNotice(input: { operatorId: string; questions: … }):
+- `broker/discord/render.ts`: `renderQuestionNotice(input: { operatorId: string; questions: â€¦ }):
   string`. One message: a mention of the operator composed from the broker's own config (the
   second deliberate mention in the system, alongside the permission prompt, and safe for the same
   reason: every untrusted field goes through `inertText`), a header line saying a question is
   waiting at the console, then per question a bounded `Q:` line (`fit` at 500 code points,
   prefixed with the `header` through `inertText` when present, suffixed `(multi-select)` when
   set) and an `Options:` line (labels through `inertText`, each `fit` at 100, joined with the
-  `·` separator). Field caps follow `renderPermissionRequest`'s reasoning: the mention and the
+  `Â·` separator). Field caps follow `renderPermissionRequest`'s reasoning: the mention and the
   header line must survive any content length.
 - `broker/index.ts`: wire `deliverQuestion` to a closure that resolves the thread via `threadFor`,
   renders with the sender gate's `operatorId`, and posts through `steeringWriter.alert` (the
@@ -154,17 +162,11 @@ work (subagents cannot write under `docs/` in this harness).
 
 ## Section 4: deploy and live verify
 
-**Deploy status 2026-08-08: blocked on an elevated action.** Sections 1 through 3 are committed
-and pushed (f8afb7d); the SCOTT broker still serves pre-effort code. `Repair-Broker.ps1` could not
-kill the running broker, PID 4784: it is an elevated orphan (started at logon by the
-highest-runlevel scheduled task), the session driving the repair is unelevated (measured
-IsInRole = False; the elevation memory was corrected the same turn), and Stop-Process, taskkill,
-WMI terminate, one-shot `/RL HIGHEST` task creation, and `Stop-ScheduledTask` were each tried and
-denied or inert, while every fresh task start dies on EADDRINUSE against the held port. Unblock
-paths, decision with the operator: an elevated `Repair-Broker.ps1` run at the keyboard, or
-authorizing a port-clearing kill-by-proof step in `Start-Broker.ps1` so the elevated task clears
-its own port (also the durable fix for this orphan class). On unblock, resume at the deploy
-bullet below.
+**Deploy resolution.** The first restart attempt hit an elevated orphan broker holding the port
+(an unelevated session cannot kill a process the highest-runlevel scheduled task started
+elevated; the corrected `claude-sessions-on-scott-run-elevated` memory carries the full failure
+matrix). The operator ran `Repair-Broker.ps1` from an elevated prompt, the orphan died, and the
+new broker bound cleanly; Chapter 4 records the live evidence.
 
 - Baseline `npm run lint` / `npm test` counts are recorded before Section 1 and re-run after each
   section; deltas reported against the baseline.
@@ -172,9 +174,9 @@ bullet below.
   memory), confirm `GET /sessions` answers and the log shows the Discord surfaces up.
 - Live verify Section 1: from this session, dispatch a trivial background subagent, end the turn,
   and let its completion wake the session; read the thread over REST and confirm the wake shows
-  as one `📨` line rather than a quoted report.
+  as one `ðŸ“¨` line rather than a quoted report.
 - Live verify Section 2: at close-out, issue a real `AskUserQuestion` from this session and
-  confirm the ❓ alert lands in this session's own thread within one poll interval.
+  confirm the â“ alert lands in this session's own thread within one poll interval.
 
 ## Out of scope, recorded so it is not re-litigated
 
@@ -274,3 +276,39 @@ carried finding.
 Stamps: none surfaced
 Next: Section 4: deploy and live verify
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-08
+Completed: Section 4: deploy and live verify, plus the whole-effort finishing pass
+Implemented By: main session
+Metrics: finishing pass: qa-verifier PASS; security-reviewer CLEAR (2 Minor); adversarial-reviewer
+APPROVED_WITH_CONCERNS (4 Minor); docs-curator drift report 7 items, all deviation-class, 0
+mistakes; all reviews at fable (session model); advisor off
+Decisions / Surprises: the deploy stalled on an elevated orphan broker holding port 8787, which
+an unelevated session cannot kill by any route (Stop-Process, taskkill, WMI, one-shot elevated
+task, task-engine stop all denied or inert); the operator resolved it with one elevated
+`Repair-Broker.ps1` run, and the failure matrix plus the corrected elevation memory
+(`claude-sessions-on-scott-run-elevated`, whose old claim today's measurement disproved) carry
+the learning. A `Start-Broker.ps1` port-clearing hardening rides the backlog as the durable fix.
+Live evidence: fresh broker bind at 2026-08-08T23:39:01Z (PID 12700, orphan was 4784), and the
+wake-compression verified against a real idle-wake at 23:40:37Z, thread message exactly
+`ðŸ“¨ background task finished Â· af89b7eeade5bb27a` where the injection previously mirrored the
+whole report. The open-question alert's live check is the session's deliberately-final act (the
+question itself asks the operator to confirm the alert reached the phone), because an open picker
+parks the asking session. Finishing-review Minors, all fixed in the polish batch: the tailer's
+header/label readability gates aligned to the invisible-stripped reading the question field and
+the renderer already use (flagged independently by both reviewers); the security model's
+allowlist paragraph restitched (the question-window insertion had stranded the queued-command
+clauses' rationale); the architecture hook paragraph gained the compression clause the spec named
+and Section 3 missed; operations.md lost its change-narrative phrasing and gained the
+`question alert failed` log-line row. The docs-curator's sweep additionally fixed four stale
+two-item enumerations (architecture's and the security model's "two things the console shows",
+the approval section's "one message that pings", and operations' interim-off costs, which now
+name the parked-session signal an interim-off host loses) and added the two spec-promised backlog
+entries (remote question answering, upstream-blocked; spoiler-collapsed reports).
+Review Findings: 0 Critical, 0 Major across both finishing reviews; 6 Minors fixed as above, none
+waived. QA: 728 tests / 727 pass / 0 fail / 1 pre-existing skip, run twice with identical counts,
+against the effort's 696/695/0/1 baseline; every Section 1 and 2 criterion test-pinned.
+Stamps: adjudicated below in the close-out sweep
+Next: finishing-work complete; effort closed and archived
+Commit Model: Commit-and-Push
+

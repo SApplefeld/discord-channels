@@ -4,8 +4,9 @@ This repository steers long-running Claude Code sessions from Discord. Every run
 host appears as its own Discord thread: the thread list is a live dashboard of the fleet, the
 thread's first message is a status card showing what that session is doing, the conversation itself
 is mirrored into the thread turn by turn, and a message typed in the thread reaches the running
-session. Tool permission prompts are answered from the same thread with a one-line reply. All of it
-is built and installable.
+session. Tool permission prompts are answered from the same thread with a one-line reply, a session
+parked on a console-only question alerts the thread, and a background task's wake-up arrives as one
+line rather than its whole report. All of it is built and installable.
 
 ## Reference
 
@@ -25,6 +26,7 @@ Archived plans, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
+| [`archive/plans/channels_prompt-surfacing-and-wake-compression_spec_v1.md`](archive/plans/channels_prompt-surfacing-and-wake-compression_spec_v1.md) | Complete | The two operator reports from live fleet use: a background subagent's idle-wake injection, which fires `UserPromptSubmit` carrying the subagent's whole report, compresses to a one-line 📨 notice under the `CHANNEL_TASK_NOTIFICATION` knob; and an `AskUserQuestion` picker, which no hook observes, is read off the transcript by the tailer's third allowlist shape and posted as a mention-bearing ❓ alert under its own per-thread ping/quiet/drop window, separate from the permission prompt's. Remote answering of the picker stays impossible upstream and rides the backlog. |
 | [`archive/plans/channels_inbound-whole-delivery_spec_v1.md`](archive/plans/channels_inbound-whole-delivery_spec_v1.md) | Complete | The inbound ceiling rises to Discord's own 4,000-character maximum so every deliverable channel message lands in the session whole, as one event; a message over the ceiling is delivered cut with an unfloored in-thread notice instead of in silence, and a truncated message is never parsed as a permission verdict. |
 | [`archive/plans/channels_provenance-instructions_spec_v1.md`](archive/plans/channels_provenance-instructions_spec_v1.md) | Complete | The relay's MCP instructions describe the sender gate instead of calling channel messages unattributed: a delivered message has passed the broker's one-account allowlist, so the session treats channel steering as the operator's own, at the keyboard's standing, with the confirm-before-irreversible discipline kept explicit and the forged-broker residual recorded in the security model's accepted-risk list. |
 | [`archive/plans/channels_thread-fidelity_spec_v1.md`](archive/plans/channels_thread-fidelity_spec_v1.md) | Complete | The thread carries what the console carried. Narration coalescing judges freshness by snowflake order, so the broker's own gateway echo no longer forfeits the block it is echoing. The tailer takes its baseline at the mirror-on verdict rather than the next poll tick, guarded by a per-entry epoch, so a turn narrates from its opening chunk and a re-allow after a mirror-off cannot republish the suppressed window. A message typed at the console mid-turn, which fires no hook, is extracted from the transcript by an allowlist and posted with the same operator attribution and escaping a hook-mirrored prompt gets. And a run that renders into many messages paces itself and retries a rate-limited refusal under bounds instead of truncating, with the broker acknowledging a reply early and heartbeating so the relay's idle timer measures liveness rather than run length. Operator check F, the side-by-side fidelity watch, is the live gate still to run. |

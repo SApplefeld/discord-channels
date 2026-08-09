@@ -132,12 +132,13 @@ a local process park every session on the host by spending it first, turning phi
 ## The transcript is read, not posted
 
 Everything above describes content that reaches Discord because a session posted it. The transcript
-tailer is the one stream that reaches Discord because the broker went and read it. Two things the
-console shows are carried by no hook payload: the text a model writes between tool calls, and a
+tailer is the one stream that reaches Discord because the broker went and read it. Three things the
+console shows are carried by no hook payload: the text a model writes between tool calls, a
 message the operator types while the model is mid-turn, which the harness queues and injects without
-firing the hook the mirror rides. So `broker/tail.ts` polls the session's own transcript file, the
-JSONL Claude Code appends beside every session, and publishes both, the assistant text blocks it
-finds and the queued lines carrying a message a human typed.
+firing the hook the mirror rides, and the question an `AskUserQuestion` call parks the session on,
+which fires no hook at all. So `broker/tail.ts` polls the session's own transcript file, the
+JSONL Claude Code appends beside every session, and publishes all three: the assistant text blocks
+it finds, the queued lines carrying a message a human typed, and the open-question alert.
 
 That inverts the direction a mirror switch has to fail in, and the design accounts for it.
 Everywhere else, suppression means the hooks post nothing, so an absent signal means absent content.
@@ -163,7 +164,14 @@ whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `hu
 prompt is a non-empty string, or an assistant line's `tool_use` block naming exactly
 `AskUserQuestion`, whose bounded reading (at most 4 questions and 4 option labels, each readable
 only as a non-empty string once invisibles are stripped) becomes the open-question alert. A
-deviation in any field yields silence.
+deviation in any field yields silence. Two of the queued-command clauses carry weight past format
+hygiene. The mode clause keeps out the machine-written background-task notices that make up the
+bulk of queued lines, which would otherwise fill the thread. And the origin clause is what stops a
+message the operator posted in the thread itself from being extracted and posted back into it,
+because the harness records that one under a channel origin rather than a human one. The envelope
+check is the belt beside that brace: one reading of the harness's injection marker, shared by the
+hook-carried prompt and the extracted one, so the two cannot answer differently about the same
+message.
 
 **The question alert is the second mention-bearing write, so its volume is bounded the way the
 permission prompt's is, by a window of its own.** Its trigger is a transcript line, which anything
@@ -177,14 +185,7 @@ permission prompt into drop, converting a ping nuisance into a parked session. T
 also what bounds this path's spend of the steering writer's budget, the bucket permission prompts
 ride, so a crafted transcript cannot starve the approval channel through it. The alert composes at
 most one Discord message, naming how many further questions wait at the console when the content
-would not fit, so the mention and the alert line always survive. Two of those clauses carry
-weight past format hygiene. The mode clause keeps out the machine-written background-task notices
-that make up the bulk of queued lines, which would otherwise fill the thread. And the origin clause
-is what stops a message the operator posted in the thread itself from being extracted and posted
-back into it, because the harness records that one under a channel origin rather than a human one.
-The envelope check is the belt beside that brace: one reading of the harness's injection marker,
-shared by the hook-carried prompt and the extracted one, so the two cannot answer differently about
-the same message.
+would not fit, so the mention and the alert line always survive.
 
 **What a token holder gains is a second door to a capability it already had, not a new one.** The
 broker's scheduled task runs as the operator at limited integrity, the same account a token-holding
@@ -283,7 +284,8 @@ a phone. **The sender gate governs who can write, not who can read**, so every m
 sees every prompt. The channel must be private to the operator, and `install.md` says so.
 
 The description and the input preview are written by a tool call, which anything the session has
-read can influence, and they land in the one message this system deliberately pings with. They are
+read can influence, and they land in one of the two messages this system deliberately pings with,
+the only one it asks the operator to answer. They are
 rendered as inert text with mention and chip syntax escaped, and each is cut to its own budget so it
 cannot push the request ID and the answering instructions off the end of the message. A cut field is
 labelled as cut, because otherwise an attacker-influenced input can front-load benign content and

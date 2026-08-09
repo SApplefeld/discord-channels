@@ -157,7 +157,10 @@ picker, so the alert's job is to tell you the session is parked and what it is a
 poll interval of the ask. Anything you type in the thread is delivered to the session as ordinary
 steering when its turn resumes, not as the picker's answer.
 
-The alert rides the same unfloored tier as a permission prompt, with its own per-thread window:
+The alert rides the transcript tailer, so it lands only where mid-turn narration does: a host with
+`CHANNEL_INTERIM_MIRROR` or `CHANNEL_MIRROR` off, and a session launched with `-NoMirror`, get no
+alert at all and the question stays visible only at the console. It rides the same unfloored
+writer tier as a permission prompt, with its own per-thread window:
 **1 mention and 4 posts per thread per minute**. Past the mention ceiling the alert still posts
 but stops pinging; past the post ceiling it is dropped and the log says so. A real session asks
 questions minutes apart, so hitting either ceiling means a runaway or forged transcript rather
@@ -166,9 +169,8 @@ than a session you are failing to hear.
 ## Background-task wake notices
 
 When a background subagent finishes while its session sits idle, the harness wakes the session by
-injecting the subagent's entire final report as a prompt, and the mirror used to post that report
-into the thread whole, as a quoted block spanning many messages. By default the broker now
-compresses the wake to one line:
+injecting the subagent's entire final report as a prompt. By default the broker compresses that
+wake to one line rather than mirroring the report as a quoted block spanning many messages:
 
 ```
 📨 background task finished · a4f567e05ff9c7b5f
@@ -176,8 +178,12 @@ compresses the wake to one line:
 
 The session's own next reply, which summarizes what the subagent found, mirrors normally moments
 later, so the thread keeps the readable account and loses only the raw report. The
-`CHANNEL_TASK_NOTIFICATION` knob restores the old behavior (`full`) or silences the wake
-entirely (`off`).
+`CHANNEL_TASK_NOTIFICATION` knob selects the behavior: `brief` is the default, `full` mirrors the
+whole injected report, and `off` posts nothing.
+
+`off` is silent on every surface but the log, where each suppressed wake writes one line naming the
+session and no content. That line is the only thing telling a deliberately quiet wake apart from a
+wake path that is broken, so check for it before treating a missing 📨 notice as a defect.
 
 ## Mid-turn narration and typed messages
 
@@ -211,18 +217,22 @@ Two knobs govern it, both in `broker.env`:
 
 | Setting | Default | What it decides |
 |---|---|---|
-| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed at all, which is what carries both mid-turn narration and a message typed at the console mid-turn; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns both off together |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed at all, which is what carries mid-turn narration, a message typed at the console mid-turn, and the open-question alert; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns all three off together |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; refuses below 1 s or above 5 min |
 
-Turning `CHANNEL_INTERIM_MIRROR` off silences everything the tailer carries, mid-turn narration and
-mid-turn typed messages alike, while the prompt that opens a turn and the reply that closes it keep
-mirroring: those two ride hooks rather than the transcript, and the two mechanisms stop
-independently. What an interim-off host loses on the prompt side is the mid-turn kind alone, the one
-no hook fires for. `CHANNEL_MIRROR` off stops all of it, hooks included. The one-copy close above
+Turning `CHANNEL_INTERIM_MIRROR` off silences everything the tailer carries: mid-turn narration,
+mid-turn typed messages, and the open-question alert alike. That last one is the costly loss, so
+it is worth deciding deliberately rather than as a side effect: a session parked on an
+`AskUserQuestion` picker then signals nothing anywhere off the console, where narration merely goes
+quiet. The prompt that opens a turn and the reply that closes it keep mirroring either way: those
+two ride hooks rather than the transcript, and the two mechanisms stop independently. What an
+interim-off host loses on the prompt side is the mid-turn kind alone, the one no hook fires for.
+`CHANNEL_MIRROR` off stops all of it, hooks included. The one-copy close above
 survives an interim-off host, because the record the mirror compares against is written by the reply
 tool rather than by the tailer, and it exists whenever `CHANNEL_MIRROR` is on. A session launched
-with `-NoMirror` neither narrates nor carries the messages typed into it, for the same reason its
-prompts and replies do not mirror.
+with `-NoMirror` narrates nothing, carries none of the messages typed into it, and raises no
+question alert, for the same reason its prompts and replies do not mirror: the tailer is never
+armed for it.
 
 **The log carries `tail:` lines**, each naming a session ID, a count, or a byte offset and never any
 transcript text:
@@ -244,6 +254,9 @@ transcript text:
 - `tail: session <id>'s question alert was refused (...)`: an open-question alert was not written,
   because the per-thread window dropped it or Discord refused the write. The console still shows
   the question; the thread does not.
+- `tail: session <id>'s question alert failed (...)`: the alert's delivery threw rather than
+  returning a refusal, and it was dropped without holding up the rest of the pass. The console
+  still shows the question.
 - `tail: session <id>'s transcript pass failed (...)`: the file could not be opened or read this
   pass; the next pass tries again.
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
@@ -272,11 +285,20 @@ second time. A message typed at the console is recorded differently and never ma
 this line beside a console message missing from the thread means the message opened with the text
 the harness wraps a channel message in, and the console holds its only copy.
 
+Two more `routing:` lines belong to the background-task wake above. `routing: the task notification
+waking session <id> was dropped, task notifications are off` is `CHANNEL_TASK_NOTIFICATION=off`
+working as set, and it is the only evidence of it anywhere. `routing: the task notice for session
+<id> stopped after N of M messages: <error>` is the 📨 notice itself failing to post under `brief`,
+with the transport's error class and no content. Neither line names which path the wake arrived on:
+the hook-carried mirror and the transcript tailer's queued prompt write the same text, deliberately,
+so one wake gets one answer whichever way it arrives.
+
 **One operational surprise worth knowing.** Narration for a session is armed by a `/mirror` post
 carrying that session's mirror-on verdict, not by the session simply being live, so a broker
 restarted mid-turn narrates nothing for the remainder of that turn: the verdict that would arm it
-already arrived before the restart, under the previous process. The next turn's `UserPromptSubmit`
-re-arms it as normal. See [`security-model.md`](security-model.md) for why the gate fails in that
+already arrived before the restart, under the previous process. The whole transcript read is armed
+together, so a question asked in that same unarmed stretch raises no alert either. The next turn's
+`UserPromptSubmit` re-arms it as normal. See [`security-model.md`](security-model.md) for why the gate fails in that
 direction rather than the other.
 
 ## Tunables

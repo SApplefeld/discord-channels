@@ -36,9 +36,11 @@ whether or not the model cooperates, and the `Stop` payload already carries
 is therefore structural, and the `reply` tool remains for what the model wants to say on its own
 initiative.
 
-Two things the console shows reach no hook payload at all: what the model writes *between* tool
-calls, and a message the operator types while the model is mid-turn, which the harness queues and
-injects without a `UserPromptSubmit` ever firing. The transcript tailer below is what recovers both.
+Three things the console shows reach no hook payload at all: what the model writes *between* tool
+calls, a message the operator types while the model is mid-turn, which the harness queues and
+injects without a `UserPromptSubmit` ever firing, and the multiple-choice question an
+`AskUserQuestion` call parks the session on, which fires no hook of any kind. The transcript tailer
+below is what recovers all three.
 
 ## Components
 
@@ -146,7 +148,7 @@ arrives second, by a probe that reads its size and no content: what the transcri
 never republished into the thread, and the turn's opening chunk, written seconds after the mirror-on
 verdict rather than a poll tick later, falls inside the window rather than behind it.
 
-A queued mid-turn message takes the other rendering: the operator's own words in the
+A queued mid-turn message takes a rendering of its own: the operator's own words in the
 operator-attributed quoted block a hook-mirrored prompt draws, through the same escape and the same
 check that keeps a message posted in the thread itself from echoing back into it. Posting it ends
 the narration block above it, so the next chunk starts fresh below the operator's words.
@@ -214,8 +216,9 @@ Three, and each one fails in its own way.
   far as a session's identity and activity plus the two bounded fields above (a tool-input preview
   and a transcript path); the Stop tick's payload also carries the turn's final reply, which that
   route drops unread. `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the
-  turn's final assistant reply to the mirror, which keeps them. All of them fail open: a broker that
-  is down cannot slow or block a session.
+  turn's final assistant reply to the mirror, which keeps them, save for a background task's wake
+  prompt, which mirrors as the one-line notice under the default `CHANNEL_TASK_NOTIFICATION`
+  setting. All of them fail open: a broker that is down cannot slow or block a session.
 - **Claude Code's channel protocol.** The relay registers only from the interactive REPL, and only
   when `channelsEnabled` is on and the plugin is allowlisted. Claude Code refuses a channel whose
   negotiated protocol revision is at or past `2026-07-28`.
