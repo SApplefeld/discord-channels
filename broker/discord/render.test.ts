@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  MAX_BLOCK_WIDTH,
   MAX_CARD_LENGTH,
   MAX_MESSAGE_LENGTH,
   MAX_MIRRORED_PROMPT_LENGTH,
@@ -48,6 +49,23 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
   };
 }
 
+/**
+ * A card's body: the lines inside the fence. The title is outside one and everything else inside,
+ * so a card that stopped fencing its body fails here rather than in whichever assertion noticed.
+ */
+function bodyOf(card: string): string[] {
+  const lines = card.split("\n");
+  assert.equal(lines[1], "```", card);
+  assert.equal(lines.at(-1), "```", card);
+  return lines.slice(2, -1);
+}
+
+/** The value drawn beside a label, without the padding that aligns it. */
+function value(card: string, label: string): string {
+  const line = bodyOf(card).find((text) => text.startsWith(`${label} `)) ?? "";
+  return line.slice(label.length).trimStart();
+}
+
 test("the downgrade marker stands on every render, not only the one the change landed on", () => {
   // The cost of a forced downgrade is duration rather than the instant: an oversight thread that
   // drops model at hour one runs degraded for every hour after, so the card carries the marker for
@@ -67,9 +85,15 @@ test("the downgrade marker stands on every render, not only the one the change l
     },
   });
 
-  const marked = /^Model: ⚠ claude-opus-4-8, down from claude-fable-5 · flagged cyber/m;
-  assert.match(renderCard(downgraded, "working", NOW), marked);
-  assert.match(renderCard({ ...downgraded, contextTokens: 120_000 }, "working", NOW), marked);
+  // Two rows rather than one sentence, because the block is a fixed width: what a session came
+  // down from, and why, does not fit beside the model it is running, and a row cut to fit would
+  // drop exactly the part that says the session is degraded.
+  const marked = (card: string): void => {
+    assert.ok(value(card, "Model").startsWith("⚠ claude-opus-4-8"), card);
+    assert.equal(value(card, "Down from"), "claude-fable-5 · flagged cyber", card);
+  };
+  marked(renderCard(downgraded, "working", NOW));
+  marked(renderCard({ ...downgraded, contextTokens: 120_000 }, "working", NOW));
 
   // Returning to the opening model clears it, which is how the operator confirms from the thread
   // that a manual switch-back took effect.
@@ -78,8 +102,8 @@ test("the downgrade marker stands on every render, not only the one the change l
     "working",
     NOW,
   );
-  assert.match(restored, /^Model: claude-fable-5 · context 61,380 tokens$/m);
-  assert.ok(!restored.includes("down from"), restored);
+  assert.equal(value(restored, "Model"), "claude-fable-5 · ctx 61k");
+  assert.ok(!restored.includes("Down from"), restored);
 });
 
 test("a thread name puts the glyph first and the state last", () => {
@@ -140,17 +164,20 @@ test("untrusted text in the card is inert", () => {
   assert.equal(inertText("a*b_c~d|e`f"), "a\\*b\\_c\\~d\\|e\\`f");
 });
 
-test("Discord's chip syntax cannot survive into the card", () => {
+test("Discord's chip syntax cannot render anywhere on the card", () => {
   // `<t:...:R>` renders as a live relative timestamp, which would spoof the heartbeat the card
-  // exists to carry, and the same brackets carry mentions, channel links, and custom emoji.
+  // exists to carry, and the same brackets carry mentions, channel links, and custom emoji. The
+  // title is live markdown, so the syntax is escaped out of it; the body is inside a fence, where
+  // Discord resolves no chip at all, so the syntax survives as the characters it is, which is what
+  // the operator should see a tool called `<@...>` as.
   const card = renderCard(
     view({ name: "<t:2000000000:R>", lastTool: "<@123456789012345678>" }),
     "working",
     NOW,
   );
 
-  assert.ok(!/<t:\d+:R>/.test(card), card);
-  assert.ok(!/<@\d+>/.test(card), card);
+  assert.ok(!/<t:\d+:R>/.test(card.split("\n")[0]), card);
+  assert.equal(value(card, "Last tool"), "<@123456789012345678>", "characters inside the fence");
   assert.equal(inertText("<#123>"), "\\<\\#123\\>");
 });
 
@@ -166,14 +193,15 @@ test("a long tool name cannot push the turn count and the heartbeat off the card
   // above them have to be bounded individually, or a session announcing a tool name of maximum
   // length spends the whole card on it and the operator's glance answers nothing. Driven at the
   // real wire cap, MAX_FIELD_LENGTH, which is what `clean` holds every payload string to, and in
-  // characters the escape doubles, which is the widest a field of that length can render.
+  // backticks, the character the block escape doubles, which is the widest a field of that length
+  // can render.
   const card = renderCard(
     view({
-      sessionId: "*".repeat(MAX_FIELD_LENGTH),
-      name: "*".repeat(MAX_FIELD_LENGTH),
-      host: "*".repeat(MAX_FIELD_LENGTH),
-      lastTool: "*".repeat(MAX_FIELD_LENGTH),
-      lastToolInput: "*".repeat(MAX_FIELD_LENGTH),
+      sessionId: "`".repeat(MAX_FIELD_LENGTH),
+      name: "`".repeat(MAX_FIELD_LENGTH),
+      host: "`".repeat(MAX_FIELD_LENGTH),
+      lastTool: "`".repeat(MAX_FIELD_LENGTH),
+      lastToolInput: "`".repeat(MAX_FIELD_LENGTH),
       lastHookAt: NOW - 840_000,
     }),
     "working",
@@ -181,8 +209,8 @@ test("a long tool name cannot push the turn count and the heartbeat off the card
   );
 
   assert.ok([...card].length <= MAX_CARD_LENGTH, `${[...card].length} characters`);
-  assert.match(card, /^Turns: 14$/m);
-  assert.match(card, /^Heartbeat: 14m ago$/m);
+  assert.equal(value(card, "Turns"), "14");
+  assert.equal(value(card, "Heartbeat"), "14m ago");
 });
 
 test("a name is cut on code points, never mid-character", () => {
@@ -198,13 +226,103 @@ test("a name is cut on code points, never mid-character", () => {
 test("the card carries the six named fields and the state", () => {
   const card = renderCard(view({ lastHookAt: NOW - 840_000 }), "working", NOW);
 
-  assert.match(card, /^⚙ \*\*neo-intake\*\* · working$/m);
-  assert.match(card, /^Session: 0f3c9d21-1111-4000-8000-000000000001$/m);
-  assert.match(card, /^Host: NEO$/m);
-  assert.match(card, /^State: working$/m);
-  assert.match(card, /^Last tool: Bash$/m);
-  assert.match(card, /^Turns: 14$/m);
-  assert.match(card, /^Heartbeat: 14m ago$/m);
+  // The title is the one line outside the fence, since it is what the channel's thread list shows
+  // and Discord draws no bold inside a block; every field below it is a row of the block.
+  assert.equal(card.split("\n")[0], "⚙ **neo-intake** · working");
+  assert.equal(value(card, "Session"), "0f3c9d21", "the head a session is known by everywhere here");
+  assert.equal(value(card, "Host"), "NEO");
+  assert.equal(value(card, "State"), "working");
+  assert.equal(value(card, "Last tool"), "Bash");
+  assert.equal(value(card, "Turns"), "14");
+  assert.equal(value(card, "Heartbeat"), "14m ago");
+  // Every value starts in the same column, which is the whole reason the body is fenced: a phone
+  // draws the block in a monospace font, so a padded label column is what makes the fields scannable.
+  const columns = new Set(
+    ["Session", "Host", "State", "Last tool", "Turns", "Heartbeat"].map((label) => {
+      const line = bodyOf(card).find((text) => text.startsWith(`${label} `)) ?? "";
+      return line.length - value(card, label).length;
+    }),
+  );
+  assert.equal(columns.size, 1, bodyOf(card).join("\n"));
+});
+
+test("the card's body stays inside the width bound at its widest fields", () => {
+  // A phone scrolls a code block sideways rather than wrapping it, so one line past the bound costs
+  // a drag across the whole card. Driven at the widest a session can make it: a tool preview at its
+  // own budget, a model line carrying a downgrade and a context size, and a full fan-out roster.
+  const card = renderCard(
+    view({
+      lastTool: "Bash",
+      lastToolInput: "x".repeat(MAX_TOOL_INPUT_PREVIEW),
+      model: "claude-opus-4-8",
+      openingModel: "claude-fable-5",
+      contextTokens: 348_000,
+      downgrade: {
+        cause: "refusal",
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-4-8",
+        category: "cyber",
+        choice: null,
+      },
+      backgroundTasks: Array.from({ length: 12 }, (_unused, index) =>
+        agent(`task-${index}`, { since: NOW - (index + 1) * 60_000 }),
+      ),
+    }),
+    "working",
+    NOW,
+  );
+
+  for (const line of bodyOf(card)) {
+    assert.ok(
+      [...line].length <= MAX_BLOCK_WIDTH,
+      `${[...line].length} characters is past the ${MAX_BLOCK_WIDTH} bound: ${line}`,
+    );
+  }
+});
+
+test("a field inside the fence shows its own characters, with no escape a fence would draw", () => {
+  // Inside a block Discord renders no markdown and resolves no chip, so nothing there needs the
+  // full escape, and applying it would reach the operator as a visible backslash in front of every
+  // underscore and asterisk: a real tool name is exactly the string that pays that cost. The title
+  // is outside the fence and keeps the full escape, because there the syntax is live.
+  const card = renderCard(
+    view({
+      name: "**loud**",
+      host: "**host**",
+      lastTool: "mcp__plugin_relay_channel-relay",
+      lastToolInput: null,
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.equal(value(card, "Last tool"), "mcp__plugin_relay_channel-relay");
+  assert.equal(value(card, "Host"), "**host**", "the fence shows the asterisks as characters");
+  assert.ok(card.split("\n")[0].includes(String.raw`\*\*loud\*\*`), "the title still escapes");
+});
+
+test("no crafted field can break out of the fence or compose a body line of its own", () => {
+  // The two escapes a fence still needs: the backtick, because a run of three would close the
+  // block and put the rest of the card outside it, and the backslash, because one in front of an
+  // inserted escape would free the backtick after it. Escaped output can never carry two adjacent
+  // backticks, so no field can compose a delimiter at any length; and the newline dies in the
+  // invisible strip, so no field composes a body line of its own.
+  const card = renderCard(
+    view({
+      host: "before\nafter",
+      lastTool: "```js",
+      lastToolInput: "`".repeat(200),
+    }),
+    "working",
+    NOW,
+  );
+
+  const delimiters = card.split("\n").filter((line) => line.includes("``"));
+  assert.deepEqual(delimiters, ["```", "```"], "exactly the two fence delimiters, nothing else");
+  for (const line of bodyOf(card)) {
+    assert.doesNotMatch(line, /``/, `no adjacent backticks inside the body: ${line}`);
+  }
+  assert.equal(value(card, "Host"), "beforeafter", "the newline is stripped, never a line break");
 });
 
 test("the tool line carries what the tool was called with, from the record through the view", () => {
@@ -233,52 +351,91 @@ test("the tool line carries what the tool was called with, from the record throu
     backgroundTasks: [],
   };
 
-  assert.match(renderCard(toView(record), "working", NOW), /^Last tool: Bash · npm test$/m);
+  assert.equal(value(renderCard(toView(record), "working", NOW), "Last tool"), "Bash · npm test");
 });
 
 test("a tool that supplied nothing previewable renders the line it always has", () => {
-  assert.match(renderCard(view({ lastToolInput: null }), "working", NOW), /^Last tool: Bash$/m);
-  assert.match(
-    renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW),
-    /^Last tool: none yet$/m,
+  assert.equal(value(renderCard(view({ lastToolInput: null }), "working", NOW), "Last tool"), "Bash");
+  assert.equal(
+    value(renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW), "Last tool"),
+    "none yet",
   );
   // A preview of nothing but invisible characters neutralizes to an empty string, which renders as
   // no preview rather than as a separator with nothing after it.
-  assert.match(
-    renderCard(view({ lastToolInput: "​‮" }), "working", NOW),
-    /^Last tool: Bash$/m,
-  );
+  assert.equal(value(renderCard(view({ lastToolInput: "​‮" }), "working", NOW), "Last tool"), "Bash");
 });
 
 test("a preview past the card's room is cut and says so", () => {
   const long = renderCard(view({ lastToolInput: "a".repeat(MAX_TOOL_INPUT_PREVIEW + 1) }), "working", NOW);
-  const line = long.split("\n").find((text) => text.startsWith("Last tool: "));
-  assert.ok(line, long);
-  assert.ok(line.endsWith(" (cut)"), line);
+  const line = bodyOf(long).find((text) => text.startsWith("Last tool ")) ?? "";
   // The marker names the cut rather than leaving it to the ellipsis: a tool input is
-  // attacker-influenced text, so it can front-load the harmless part.
-  assert.equal([...line.slice("Last tool: Bash · ".length, -" (cut)".length)].length, MAX_TOOL_INPUT_PREVIEW);
+  // attacker-influenced text, so it can front-load the harmless part. Its own room comes out of the
+  // row before the preview is cut, so the width bound can never eat the mark off a partial preview
+  // and leave it reading as whole.
+  assert.ok(line.endsWith(" (cut)"), line);
+  assert.equal([...line].length, MAX_BLOCK_WIDTH, line);
+  assert.ok(value(long, "Last tool").startsWith("Bash · aaaa"), line);
 
-  const exact = renderCard(view({ lastToolInput: "a".repeat(MAX_TOOL_INPUT_PREVIEW) }), "working", NOW);
-  assert.match(exact, new RegExp(`^Last tool: Bash · a{${MAX_TOOL_INPUT_PREVIEW}}$`, "m"));
+  // The row's own budget beside this fixture's name: the block width, less the label column and
+  // its space, less the name and its separator. A preview exactly at it renders whole and
+  // unmarked, filling the row to the bound; one character more takes the cut and its marker.
+  const budget = MAX_BLOCK_WIDTH - "Heartbeat ".length - "Bash · ".length;
+  const exact = renderCard(view({ lastToolInput: "p".repeat(budget) }), "working", NOW);
+  assert.equal(value(exact, "Last tool"), `Bash · ${"p".repeat(budget)}`);
+  const exactLine = bodyOf(exact).find((text) => text.startsWith("Last tool ")) ?? "";
+  assert.equal([...exactLine].length, MAX_BLOCK_WIDTH, exactLine);
+  const over = renderCard(view({ lastToolInput: "p".repeat(budget + 1) }), "working", NOW);
+  assert.ok(value(over, "Last tool").endsWith(" (cut)"), value(over, "Last tool"));
+
+  // A short preview renders whole, with no marker at all.
+  const short = renderCard(view({ lastToolInput: "npm test" }), "working", NOW);
+  assert.equal(value(short, "Last tool"), "Bash · npm test");
 });
 
-test("Discord's chip syntax cannot survive into a tool-input preview", () => {
-  // The preview is a tool call's own argument, so anything the session read can steer it. A pill or
-  // a live relative timestamp drawn there sits on the one card the operator reads to tell whether a
-  // session is doing what they asked.
+test("a long tool name is cut before the preview is, never the other way around", () => {
+  // Both halves of the row are attacker-influenceable, so a name allowed to fill the row would let
+  // a session hide what its tools are called with from the operator's glance surface by naming the
+  // tool long. The preview keeps a floor of the row instead, and the name gives way to it with its
+  // own ellipsis, so the outer width bound never cuts the row and never eats the cut marker.
   const card = renderCard(
-    view({ lastTool: "Bash", lastToolInput: "<@123456789012345678> at <t:2000000000:R>" }),
+    view({ lastTool: "t".repeat(120), lastToolInput: "rm -rf / --no-preserve-root" }),
     "working",
     NOW,
   );
 
-  assert.ok(!/<@\d+>/.test(card), card);
-  assert.ok(!/<t:\d+:R>/.test(card), card);
-  assert.match(
-    card,
-    /^Last tool: Bash · \\<@123456789012345678\\> at \\<t:2000000000:R\\>$/m,
+  const row = value(card, "Last tool");
+  assert.ok(row.includes(" · rm -"), `the preview survives the name: ${row}`);
+  assert.ok(row.startsWith("ttttt"), row);
+  assert.ok(/t…/.test(row), `the name carries its own cut: ${row}`);
+  assert.ok(row.endsWith(" (cut)"), `the preview's cut is marked, not eaten: ${row}`);
+  const line = bodyOf(card).find((text) => text.startsWith("Last tool ")) ?? "";
+  assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+});
+
+test("Discord's chip syntax in a tool-input preview reads as its characters", () => {
+  // The preview is a tool call's own argument, so anything the session read can steer it. It is
+  // drawn inside the fence, where Discord resolves no chip and renders no pill, so the syntax
+  // reaches the operator as the characters the tool was really called with rather than behind
+  // backslashes that halve the preview's budget.
+  const card = renderCard(
+    view({ lastTool: "Bash", lastToolInput: "<@123456> at <t:99:R>" }),
+    "working",
+    NOW,
   );
+
+  assert.equal(value(card, "Last tool"), "Bash · <@123456> at <t:99:R>");
+});
+
+test("eight characters of the session id are eight, however many need escaping", () => {
+  // The raw id is sliced before it is neutralized. Sliced after, every escaped character would
+  // spend two of the eight, and two ids differing only past the escapes would draw one prefix on
+  // the surface the operator tells threads apart by.
+  const first = renderCard(view({ sessionId: "````aaaa-rest" }), "working", NOW);
+  const second = renderCard(view({ sessionId: "````bbbb-rest" }), "working", NOW);
+
+  assert.equal(value(first, "Session"), String.raw`\`\`\`\`aaaa`);
+  assert.equal(value(second, "Session"), String.raw`\`\`\`\`bbbb`);
+  assert.notEqual(value(first, "Session"), value(second, "Session"));
 });
 
 test("an exited card measures its heartbeat from when the session ended", () => {
@@ -288,7 +445,7 @@ test("an exited card measures its heartbeat from when the session ended", () => 
     NOW,
   );
 
-  assert.match(card, /^Heartbeat: 2h ago$/m);
+  assert.equal(value(card, "Heartbeat"), "2h ago");
 });
 
 test("the heartbeat is bucketed so an unchanged session does not spend an edit", () => {
@@ -1322,20 +1479,20 @@ test("a session no transcript line has reported a model for renders exactly as i
   // no line about a model at all.
   const plain = renderCard(view(), "working", NOW);
 
-  assert.ok(!plain.includes("Model:"), plain);
-  assert.deepEqual(plain.split("\n").length, 7, plain);
+  assert.ok(!plain.includes("Model"), plain);
+  assert.deepEqual(plain.split("\n").length, 9, "a title, two fence lines, and the six rows");
 
   // A model with no context figure beside it, which is what a restart reads until the next line
   // reports one, renders the model alone rather than an empty clause.
-  assert.match(
-    renderCard(view({ model: "claude-fable-5", openingModel: "claude-fable-5" }), "working", NOW),
-    /^Model: claude-fable-5$/m,
+  assert.equal(
+    value(renderCard(view({ model: "claude-fable-5", openingModel: "claude-fable-5" }), "working", NOW), "Model"),
+    "claude-fable-5",
   );
 });
 
 test("the marker is drawn on the model family, and never on a direction it cannot read", () => {
   const marked = (model: string, openingModel: string): boolean =>
-    renderCard(view({ model, openingModel, contextTokens: 10 }), "working", NOW).includes("down from");
+    renderCard(view({ model, openingModel, contextTokens: 10 }), "working", NOW).includes("Down from");
 
   assert.ok(marked("claude-opus-5[1m]", "claude-fable-5"), "a decorated fallback still ranks");
   assert.ok(marked("claude-haiku-4-5", "claude-sonnet-4-5"));
@@ -1345,12 +1502,14 @@ test("the marker is drawn on the model family, and never on a direction it canno
   assert.ok(!marked("claude-opus-4-8", "some-other-model"));
 });
 
-test("an untrusted model string cannot draw a chip or crowd the card", () => {
+test("an untrusted model string cannot close the fence or crowd the card", () => {
   // Model strings and the category come off another program's file, and the card is the surface the
-  // operator reads to tell what a session is doing.
+  // operator reads to tell what a session is doing. Both rows sit inside the fence, where Discord
+  // resolves no chip, so the syntax reads as the characters it is; what a crafted string cannot do
+  // is close the block and put the rest of the card on a surface where a chip renders.
   const card = renderCard(
     view({
-      model: "<@123456789012345678>",
+      model: "``` <@123456789012345678>",
       openingModel: "claude-fable-5",
       contextTokens: 61_380,
       downgrade: {
@@ -1365,9 +1524,10 @@ test("an untrusted model string cannot draw a chip or crowd the card", () => {
     NOW,
   );
 
-  assert.ok(!/<@\d+>/.test(card), card);
-  assert.ok(!/<t:\d+:R>/.test(card), card);
-  assert.match(card, /^Heartbeat: /m, "the fields below the model line survive it");
+  const delimiters = card.split("\n").filter((line) => line.includes("``"));
+  assert.deepEqual(delimiters, ["```", "```"], card);
+  assert.ok(!/<@\d+>/.test(card.split("\n")[0]), "no chip syntax outside the fence");
+  assert.ok(value(card, "Heartbeat") !== "", "the rows below the model line survive it");
 });
 
 test("a model change message names both models and the session scope", () => {
@@ -1465,18 +1625,20 @@ test("a session waiting on agents says so on the card and in the title", () => {
   });
 
   const card = renderCard(waiting, "working", NOW);
-  assert.ok(card.includes("Waiting on: 2"), card);
-  assert.ok(card.includes("Grooming S6 implementation (implementer-fable) 35m"), card);
-  assert.ok(card.includes("PR ladder fix round three (implementer-opus) 1h 2m"), card);
-  assert.ok(!card.includes("more"), "two entries need no overflow count");
+  const roster = value(card, "Waiting");
+  // The newest task is the one named, since an older one's entry is unchanged from the last look,
+  // and what it is running under and how long it has been out survive the width ahead of its prose.
+  assert.ok(roster.startsWith("Groomi"), roster);
+  assert.ok(roster.includes("(implementer-fable) 35m"), roster);
+  assert.ok(roster.endsWith(" · +1"), "the task there was no room to name is counted, not dropped");
   // The count rides the state on both surfaces, since the four states cannot say waiting on agents
   // and the title is what survives the thread list's truncation on a phone. The word is "tasks"
   // because the count covers shell tasks too.
-  assert.ok(card.includes("State: working · 2 tasks"), card);
+  assert.equal(value(card, "State"), "working · 2 tasks");
   assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 2 tasks");
-  // The roster sits below the turn count and the heartbeat, because the card is cut from the end
-  // when it runs long and those are the lines the card exists to carry.
-  assert.ok(card.indexOf("Waiting on:") > card.indexOf("Heartbeat:"), card);
+  // The roster sits below the turn count and the heartbeat, because those are the rows the card
+  // exists to carry and the roster is the one sized by another program's fan-out.
+  assert.ok(card.indexOf("Waiting") > card.indexOf("Heartbeat"), card);
 });
 
 test("a shell task renders beside a subagent, since both are invisible work", () => {
@@ -1492,16 +1654,18 @@ test("a shell task renders beside a subagent, since both are invisible work", ()
   });
 
   const card = renderCard(waiting, "working", NOW);
-  assert.ok(card.includes("Waiting on: 1"), card);
-  assert.ok(card.includes("npm test on the integration suite (shell) 4m"), card);
+  const roster = value(card, "Waiting");
+  assert.ok(roster.startsWith("npm test on the integrat"), roster);
+  assert.ok(roster.endsWith("(shell) 4m"), "the kind is what tells a shell task from a subagent");
+  assert.equal(value(card, "State"), "working · 1 task");
   assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 1 task");
 });
 
 test("a session waiting on nothing carries no roster line and no count", () => {
   const card = renderCard(view(), "working", NOW);
 
-  assert.ok(!card.includes("Waiting on"), card);
-  assert.ok(card.includes("State: working"), card);
+  assert.ok(!card.includes("Waiting"), card);
+  assert.equal(value(card, "State"), "working");
   assert.ok(!/tasks?/.test(card), card);
   assert.equal(threadName(view(), "working"), "⚙ neo-intake · working");
   // An idle or exited session is drawn exactly as it always was, roster or not.
@@ -1514,7 +1678,7 @@ test("an exited session's card carries no roster line", () => {
   // line with ages growing on every re-render under a header that says exited.
   const card = renderCard(view({ backgroundTasks: [agent("S6")] }), "exited", NOW);
 
-  assert.ok(!card.includes("Waiting on"), card);
+  assert.ok(!card.includes("Waiting"), card);
   assert.equal(threadName(view({ backgroundTasks: [agent("S6")] }), "exited"), "⚠ neo-intake · exited");
 });
 
@@ -1527,25 +1691,45 @@ test("a twelve-agent fan-out names a few and counts the rest", () => {
   );
 
   const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
-  const roster = card.split("\n").find((line) => line.startsWith("Waiting on:")) ?? "";
+  const roster = value(card, "Waiting");
 
-  assert.ok(roster.startsWith("Waiting on: 12 · "), roster);
-  assert.ok(roster.includes("+10 more"), roster);
-  assert.ok(roster.includes("1m"), "the newest entries are the ones named");
+  assert.equal(value(card, "State"), "working · 12 tasks", "the size of the fan-out is on the state");
+  assert.ok(roster.endsWith("· +11"), roster);
+  assert.ok(roster.includes(" 1m"), "the newest entry is the one named");
   assert.ok(!roster.includes("12m"), "and the oldest are left to the count");
-  assert.ok(roster.length < 300, `the roster line stays a line: ${roster.length}`);
-  assert.ok(card.includes("Turns: 14"), "the rest of the card survives a full fan-out");
-  assert.ok(card.includes("Heartbeat:"), card);
+  assert.ok([...roster].length <= MAX_BLOCK_WIDTH, `the roster stays inside the block: ${roster}`);
+  assert.equal(value(card, "Turns"), "14", "the rest of the card survives a full fan-out");
+  assert.ok(value(card, "Heartbeat") !== "", card);
   assert.ok(card.length <= MAX_CARD_LENGTH, card);
 });
 
-test("a hostile task description is drawn as text, and cannot draw a chip or a heading", () => {
+test("the roster's overflow count survives the width, whatever it is counting", () => {
+  // The count is what keeps the bound honest, so it is composed after the entries are cut to what it
+  // leaves. Cut alongside them, a twelve-agent fan-out would read as one task and a stub.
+  for (const size of [2, 3, 11, 12, 40]) {
+    const fleet = Array.from({ length: size }, (_unused, index) =>
+      agent(`task-${index}`, {
+        description: "a description long enough to fill the whole row by itself",
+        since: NOW - (index + 1) * 60_000,
+      }),
+    );
+    const roster = value(renderCard(view({ backgroundTasks: fleet }), "working", NOW), "Waiting");
+
+    assert.ok(roster.endsWith(` · +${size - 1}`), roster);
+    assert.ok([...roster].length <= MAX_BLOCK_WIDTH, roster);
+  }
+});
+
+test("a hostile task description is drawn as text, and cannot draw a chip or close the fence", () => {
+  // The roster is inside the fence, where Discord renders no markdown and resolves no chip, so the
+  // syntax reads as the characters it is; what a crafted description must not do is close the
+  // block and put the rest of the card outside it.
   const card = renderCard(
     view({
       backgroundTasks: [
         agent("hostile", {
-          description: "<@222222222222222222> **done** <t:2000000000:R>",
-          agentType: "# not a heading",
+          description: "``` <t:20:R>",
+          agentType: "#h",
         }),
       ],
     }),
@@ -1553,15 +1737,34 @@ test("a hostile task description is drawn as text, and cannot draw a chip or a h
     NOW,
   );
 
-  assert.ok(!/<@\d+>/.test(card), card);
-  assert.ok(!/<t:\d+:R>/.test(card), card);
-  assert.ok(card.includes(String.raw`\*\*done\*\*`), card);
-  assert.ok(card.includes(String.raw`\#`), card);
+  const delimiters = card.split("\n").filter((line) => line.includes("``"));
+  assert.deepEqual(delimiters, ["```", "```"], card);
+  assert.ok(card.includes("<t:20:R>"), "the chip syntax is characters inside the fence");
+  assert.ok(card.includes("(#h)"), "and so is the heading marker");
   assert.ok(card.length <= MAX_CARD_LENGTH, card);
 });
 
 test("a task with nothing to say about itself is named by its kind", () => {
-  const card = renderCard(
+  const blank = renderCard(
+    view({ backgroundTasks: [agent("blank", { description: "   ", agentType: "   ", since: NOW })] }),
+    "working",
+    NOW,
+  );
+  const absent = renderCard(
+    view({
+      backgroundTasks: [agent("absent", { description: null, agentType: null, since: NOW - 60_000 })],
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.equal(value(blank, "Waiting"), "subagent (subagent) 0m");
+  assert.equal(value(absent, "Waiting"), "subagent (subagent) 1m");
+
+  // Two of them on one card. A kind-named entry has no description to give way to the width, so
+  // the pair cannot share the row whole: the second is counted rather than the joined pair being
+  // ellipsis-cut mid-parenthesis, and the entry that is drawn keeps its kind and its age.
+  const both = renderCard(
     view({
       backgroundTasks: [
         agent("blank", { description: "   ", agentType: "   ", since: NOW }),
@@ -1571,7 +1774,22 @@ test("a task with nothing to say about itself is named by its kind", () => {
     "working",
     NOW,
   );
+  assert.equal(value(both, "Waiting"), "subagent (subagent) 0m · +1");
+});
 
-  assert.ok(card.includes("subagent (subagent) 0m"), card);
-  assert.ok(card.includes("subagent (subagent) 1m"), card);
+test("an entry whose fixed parts overflow its share is counted, never cut mid-parenthesis", () => {
+  // The kind and the age are the two parts a reader cannot reconstruct, so an entry that cannot
+  // carry them whole inside its share is not drawn at all: the roster falls back to the count
+  // rather than to a cut that drops the kind and the age without saying anything was dropped.
+  const card = renderCard(
+    view({
+      backgroundTasks: [
+        agent("wide", { description: null, agentType: "a".repeat(32), since: NOW - 60_000 }),
+      ],
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.equal(value(card, "Waiting"), "+1");
 });

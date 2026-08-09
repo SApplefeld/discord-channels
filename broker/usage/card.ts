@@ -24,13 +24,20 @@
 // broker draws, and the glyphs and the session label come from that same module so the card and the
 // thread title cannot disagree about what a session is called or what state it is in.
 import {
+  FENCE_COST,
   GLYPHS,
+  MAX_BLOCK_WIDTH,
   MAX_CARD_LENGTH,
+  alignedRows,
+  columnWidth,
   displayName,
+  fenced,
   heartbeat,
-  inertField,
+  inertBlockField,
   span,
+  wrapped,
 } from "../discord/render.ts";
+import type { BlockRow } from "../discord/render.ts";
 import { deriveSurfaceState } from "../discord/state.ts";
 import type { SessionView, StateThresholds, SurfaceState } from "../discord/state.ts";
 import type { UsageAccount, UsageReading, UsageUnavailableReason, UsageWindow } from "./cache.ts";
@@ -72,8 +79,10 @@ export const PACE_SUPPRESS_AFTER_RESET_MS = 24 * 60 * 60 * 1_000;
 export const PACE_AHEAD_THRESHOLD_PCT = 15;
 
 const SEPARATOR = "·";
+// The one line outside the fence, because it is what the channel list and a notification show, and
+// Discord draws no bold inside a block. Everything below it is the card's body, which is a table.
 const HEADING = "📊 **Fleet: Usage**";
-const SESSIONS_HEADING = "**Sessions**";
+const SESSIONS_HEADING = "Sessions";
 const NO_ACCOUNTS = `⚠ usage unavailable ${SEPARATOR} the usage cache holds no accounts`;
 
 /** What a scoped row is called when the cache's name for it neutralizes to nothing. */
@@ -160,23 +169,30 @@ function aheadOfPace(window: UsageWindow, fetchedAt: number | null): boolean {
 }
 
 /**
+ * One window's value, drawn beside its own name in the block's label column.
+ *
  * The warning is decided on the percentage as it renders, not on the raw one, so two rows drawn as
  * `90%` are never marked differently: a threshold read off a number the operator cannot see is a
- * card that looks inconsistent with itself.
+ * card that looks inconsistent with itself. The glyph leads the value rather than the name, because
+ * the names are the column that does the aligning and an emoji in it is not one column wide.
  */
-function windowLine(label: string, window: UsageWindow, now: number, ahead: boolean): string {
+function windowValue(window: UsageWindow, now: number, ahead: boolean): string {
   const pct = drawnPct(window.pct);
   const pace = ahead ? ` ${SEPARATOR} ahead of pace` : "";
-  return `${pct >= WARNING_PCT ? "⚠ " : ""}${label} ${pct}%${resetsClause(window, now)}${pace}`;
+  return `${pct >= WARNING_PCT ? "⚠ " : ""}${pct}%${resetsClause(window, now)}${pace}`;
 }
 
 /**
  * What an account is called: its address, its organization name, or its slot number. The slot
  * number is the one part that is this broker's own, so it is what the label falls back to when
  * `sequence.json` was unreadable or when the identity it held neutralizes to nothing.
+ *
+ * Bounded by what its own line leaves rather than by the field cap alone, since the heading is one
+ * line of a block whose width is fixed.
  */
-function accountLabel(account: UsageAccount): string {
-  const named = inertField(account.email ?? account.organizationName ?? "", MAX_ACCOUNT_LABEL_LENGTH);
+function accountLabel(account: UsageAccount, room: number): string {
+  const limit = Math.min(MAX_ACCOUNT_LABEL_LENGTH, Math.max(room, 0));
+  const named = inertBlockField(account.email ?? account.organizationName ?? "", limit);
   return named === "" ? `account ${account.number}` : named;
 }
 
@@ -195,51 +211,89 @@ function measuredAt(account: UsageAccount, now: number): number | null {
 }
 
 /**
- * A money amount as the card draws it. The cache's numbers arrive as JSON doubles, so a sum of
- * fractional charges reaches this renderer as `0.30000000000000004`; two decimal places is what a
- * currency amount means and what the console shows.
+ * The currency symbols this card knows, keyed by the code the cache writes. Tiny on purpose: USD
+ * is the only code the live cache has ever carried. A symbol is substituted only on an exact match
+ * against this map, never composed from the cache's own string, and a code with no entry keeps
+ * today's shape, the bounded code drawn after the amount. A Map rather than an object so an
+ * untrusted code can never reach a prototype property.
+ */
+const CURRENCY_SYMBOLS = new Map([["USD", "$"]]);
+
+/**
+ * A money amount as the card draws it: the integer part grouped in threes, two decimal places, and
+ * a trailing `.00` dropped, so 95.4 draws as `95.40` and 1500 as `1,500`. The cache's numbers
+ * arrive as JSON doubles, so a sum of fractional charges reaches this renderer as
+ * `0.30000000000000004`, and rounding to the cent is what a currency amount means.
+ *
+ * Formatted by hand rather than through `toLocaleString`, because the rendered body must depend on
+ * nothing but the inputs: the card's byte-compare change detection rests on identical inputs
+ * producing identical bytes, and a locale that groups with periods or swaps the decimal separator
+ * would also silently change what the operator reads.
  */
 function amount(value: number): string {
-  return String(Math.round(value * 100) / 100);
+  const cents = Math.round(value * 100);
+  const sign = cents < 0 ? "-" : "";
+  const magnitude = Math.abs(cents);
+  const whole = String(Math.trunc(magnitude / 100)).replace(/\B(?=(\d{3})+$)/g, ",");
+  const fraction = magnitude % 100;
+  return `${sign}${whole}${fraction === 0 ? "" : `.${String(fraction).padStart(2, "0")}`}`;
 }
 
-/** One account's block: a heading carrying the marker, the label, and the age, then its windows. */
-function accountLines(account: UsageAccount, now: number): string[] {
+/**
+ * One account's block: a heading carrying the marker, the label, and the age, then a row per window.
+ *
+ * The heading is a line of its own rather than a labelled row, so a long address is cut on its own
+ * line instead of taking the column every window's numbers are drawn in. Its marker leads the line,
+ * where a glyph's width costs nothing but its own column.
+ */
+function accountRows(account: UsageAccount, now: number): BlockRow[] {
   const fetchedAt = measuredAt(account, now);
   const age = fetchedAt === null ? "unknown" : heartbeat(Math.max(now - fetchedAt, 0));
-  const lines = [
-    `${account.active ? "▶" : SEPARATOR} **${accountLabel(account)}** ${SEPARATOR} as of ${age}`,
-  ];
+  const marker = account.active ? "▶" : SEPARATOR;
+  const suffix = ` ${SEPARATOR} as of ${age}`;
+  const label = accountLabel(account, MAX_BLOCK_WIDTH - [...marker].length - 1 - [...suffix].length);
+  const rows: BlockRow[] = [{ label: null, value: `${marker} ${label}${suffix}` }];
   // The 5h window carries no pace marker at any percentage, and no roll either: it resets too fast
   // for a pace reading to mean anything, and its cadence is not the weekly one the roll advances by.
-  if (account.fiveHour !== null) lines.push(windowLine("5h", account.fiveHour, now, false));
+  if (account.fiveHour !== null) {
+    rows.push({ label: "5h", value: windowValue(account.fiveHour, now, false) });
+  }
   if (account.sevenDay !== null) {
     const seven = rolledWeekly(account.sevenDay, fetchedAt, now);
-    lines.push(windowLine("7d", seven, now, aheadOfPace(seven, fetchedAt)));
+    rows.push({ label: "7d", value: windowValue(seven, now, aheadOfPace(seven, fetchedAt)) });
   }
   for (const row of account.scoped) {
     const scoped = { ...row, ...rolledWeekly(row, fetchedAt, now) };
     // A maxed per-model limit carries the warning glyph alone. Being ahead of pace is a forecast, and
     // it says nothing beside a window that has already arrived where the forecast pointed.
     const ahead = scoped.pct < 100 && aheadOfPace(scoped, fetchedAt);
-    const name = inertField(scoped.name, MAX_SCOPED_NAME_LENGTH);
-    lines.push(windowLine(name === "" ? UNNAMED_SCOPE : name, scoped, now, ahead));
+    const name = inertBlockField(scoped.name, MAX_SCOPED_NAME_LENGTH);
+    rows.push({
+      label: name === "" ? UNNAMED_SCOPE : name,
+      value: windowValue(scoped, now, ahead),
+    });
   }
   if (account.spend !== null) {
+    const symbol =
+      account.spend.currency === null ? null : (CURRENCY_SYMBOLS.get(account.spend.currency) ?? null);
     // The amounts are shown only when both sides of the ratio are readable: a spend of 95.4 with no
-    // limit beside it says nothing the percentage has not already said.
+    // limit beside it says nothing the percentage has not already said. A known currency's symbol
+    // leads each amount; an unknown code trails the pair instead.
     const amounts =
       account.spend.used === null || account.spend.limit === null
         ? ""
-        : ` ${SEPARATOR} ${amount(account.spend.used)} of ${amount(account.spend.limit)}`;
+        : ` ${SEPARATOR} ${symbol ?? ""}${amount(account.spend.used)} of ${symbol ?? ""}${amount(account.spend.limit)}`;
     const currency =
-      account.spend.currency === null || amounts === ""
+      account.spend.currency === null || symbol !== null || amounts === ""
         ? ""
-        : ` ${inertField(account.spend.currency, MAX_CURRENCY_LENGTH)}`;
+        : ` ${inertBlockField(account.spend.currency, MAX_CURRENCY_LENGTH)}`;
     // The same threshold and the same rounding the window lines use: a credit limit is a limit, and
     // an operator scanning for what is close to running out reads one glyph, not two rules.
     const pct = drawnPct(account.spend.pct);
-    lines.push(`${pct >= WARNING_PCT ? "⚠ " : ""}spend ${pct}%${amounts}${currency}`);
+    rows.push({
+      label: "spend",
+      value: `${pct >= WARNING_PCT ? "⚠ " : ""}${pct}%${amounts}${currency}`,
+    });
   }
   // Backing off is an instant that has not arrived yet, not a field that is set: claude-swap leaves
   // the timestamp behind after the pause it describes has elapsed.
@@ -255,16 +309,27 @@ function accountLines(account: UsageAccount, now: number): string[] {
     // it contradicts itself, and a backoff can outlive the failure count that opened it.
     const count =
       account.consecutiveFailures > 0 ? ` ${SEPARATOR} ${account.consecutiveFailures} consecutive` : "";
-    lines.push(`⚠ usage checks ${trouble}${count}`);
+    // A whole-width line rather than a row: it is a sentence about the account, not a number in the
+    // column, and it wraps rather than being cut, because the part that names the trouble is the
+    // whole point of it.
+    rows.push({ label: null, value: `⚠ usage checks ${trouble}${count}` });
   }
-  return lines;
+  return rows;
 }
 
-/** One live session: the state glyph, the name, the state, and how long since it last reported. */
+/**
+ * One live session: the state glyph, the name, the state, and how long since it last reported.
+ *
+ * A whole-width line, with the name cut to what the rest of it leaves. The glyph leads, the way it
+ * leads a thread title, and the state and the age are what the name gives way to: a session's name
+ * is the field this broker does not size, and the other two are why the row is read.
+ */
 function sessionLine(view: SessionView, state: SurfaceState, now: number): string {
-  const name = inertField(displayName(view), MAX_SESSION_NAME_LENGTH);
-  const age = span(Math.max(now - view.lastHookAt, 0));
-  return `${name} ${SEPARATOR} ${state} ${SEPARATOR} ${age}`;
+  const glyph = `${GLYPHS[state]} `;
+  const suffix = ` ${SEPARATOR} ${state} ${SEPARATOR} ${span(Math.max(now - view.lastHookAt, 0))}`;
+  const room = MAX_BLOCK_WIDTH - [...glyph].length - [...suffix].length;
+  const limit = Math.min(MAX_SESSION_NAME_LENGTH, Math.max(room, 0));
+  return `${glyph}${inertBlockField(displayName(view), limit)}${suffix}`;
 }
 
 /**
@@ -330,7 +395,17 @@ function overflowTail(accounts: number, sessions: number): string {
  *
  * The footer's room is taken out of the budget before the first block is measured, so it survives a
  * card that ran out of room: it carries the age of everything above it, which is worth more on a
- * crowded card than the last account that would otherwise have taken its place.
+ * crowded card than the last account that would otherwise have taken its place. The fence's own two
+ * delimiter lines are reserved the same way and for the same reason.
+ *
+ * The heading is the one line outside the fence and everything else is inside it, because this is
+ * one message carrying every account: a per-account heading in bold would die inside the block, and
+ * the alignment the block provides is what replaces that emphasis. The whole body is measured in one
+ * pass so every account's numbers stand in one column rather than in a column per account.
+ *
+ * Nothing here reads a clock or anything else the inputs do not carry, so two renders of the same
+ * inputs compose the same bytes: the card is edited only when its text changes, and a body that
+ * varied between renders would spend an edit a minute on a fleet where nothing happened.
  */
 export function renderUsageCard(input: {
   reading: UsageReading;
@@ -347,11 +422,13 @@ export function renderUsageCard(input: {
   now: number;
 }): string {
   const footer = footerLine(input.reading, input.interimMirror, input.unreadable ?? null, input.now);
-  const lines = [HEADING];
-  let used = HEADING.length + (footer === "" ? 0 : 1 + footer.length);
+  const footerLines = wrapped(footer);
+  const body: string[] = [];
+  let used =
+    HEADING.length + FENCE_COST + footerLines.reduce((sum, line) => sum + 1 + line.length, 0);
   const finish = (): string => {
-    if (footer !== "") lines.push(footer);
-    return lines.join("\n");
+    body.push(...footerLines);
+    return `${HEADING}\n${fenced(body)}`;
   };
 
   // The state each session renders under comes from the one derivation the thread titles use, so a
@@ -364,20 +441,26 @@ export function renderUsageCard(input: {
   // A reading that parsed but holds no accounts gets a reason of its own. It is a real state, not a
   // hypothetical one: a cache whose entries are all the wrong shape reads exactly this way, and a
   // heading with nothing under it tells the operator neither what is wrong nor that anything is.
-  const blocks = !input.reading.available
-    ? [[`⚠ usage unavailable ${SEPARATOR} ${UNAVAILABLE[input.reading.reason]}`]]
+  const blocks: BlockRow[][] = !input.reading.available
+    ? [[{ label: null, value: `⚠ usage unavailable ${SEPARATOR} ${UNAVAILABLE[input.reading.reason]}` }]]
     : input.reading.accounts.length === 0
-      ? [[NO_ACCOUNTS]]
-      : input.reading.accounts.map((account) => accountLines(account, input.now));
+      ? [[{ label: null, value: NO_ACCOUNTS }]]
+      : input.reading.accounts.map((account) => accountRows(account, input.now));
+
+  // One column for the whole card, measured over every account's rows before any of them is drawn.
+  // A width measured per account would step in and out as one account carries a per-model window
+  // another does not, which is the misalignment down the card that the block exists to remove.
+  const column = columnWidth(blocks.flat());
 
   for (const [index, block] of blocks.entries()) {
-    const cost = block.reduce((sum, line) => sum + 1 + line.length, 0);
+    const drawn = alignedRows(block, column);
+    const cost = drawn.reduce((sum, line) => sum + 1 + line.length, 0);
     const tail = overflowTail(blocks.length - index, live.length);
     if (used + cost + 1 + tail.length > MAX_CARD_LENGTH) {
-      lines.push(tail);
+      body.push(...wrapped(tail));
       return finish();
     }
-    lines.push(...block);
+    body.push(...drawn);
     used += cost;
   }
 
@@ -385,20 +468,20 @@ export function renderUsageCard(input: {
 
   const headingCost = 1 + SESSIONS_HEADING.length;
   if (used + headingCost + 1 + overflowTail(0, live.length).length > MAX_CARD_LENGTH) {
-    lines.push(overflowTail(0, live.length));
+    body.push(...wrapped(overflowTail(0, live.length)));
     return finish();
   }
-  lines.push(SESSIONS_HEADING);
+  body.push(SESSIONS_HEADING);
   used += headingCost;
 
   for (const [index, entry] of live.entries()) {
-    const line = `${GLYPHS[entry.state]} ${sessionLine(entry.view, entry.state, input.now)}`;
+    const line = sessionLine(entry.view, entry.state, input.now);
     const tail = overflowTail(0, live.length - index);
     if (used + 1 + line.length + 1 + tail.length > MAX_CARD_LENGTH) {
-      lines.push(tail);
+      body.push(...wrapped(tail));
       return finish();
     }
-    lines.push(line);
+    body.push(line);
     used += 1 + line.length;
   }
   return finish();

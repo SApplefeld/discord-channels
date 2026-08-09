@@ -273,4 +273,63 @@ None.
 
 ## Chapters
 
-(Appended by executing-work as sections complete.)
+### Chapter 1 - 2026-08-09
+Completed: Section 1: The broker's own cards read as aligned blocks
+Implemented By: implementer-opus (build round), implementer-fable (review-fix round, dispatched
+with the explicit override this Opus-led session's spend header authorizes)
+Metrics: 1 review round (adversarial at fable via the one-tier bump, security at its default; no
+blind pass, the change is a rendering shape with no new inbound surface) plus the fix round's
+red-first evidence; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: moving a card body inside a fence created a security surface that did not
+exist before, which is why this section drew a security review at all: untrusted text inside a
+block can close the block, after which everything following renders as live markdown. It holds,
+and it was proven rather than argued, by enumerating every untrusted field that reaches a body and
+then driving a hostile cast through the real renderer (two hundred backticks, a literal triple
+backtick, a mention and a timestamp chip in every field, sixteen accounts and forty sessions),
+which composed exactly two fence delimiters with no adjacent backticks anywhere.
+That same property then constrained the round's own fidelity fix, and the tension is worth
+recording because the next person to tidy this will feel the pull. The full markdown escaper was
+still running on text a fence renders none of, so a realistic tool name drew with six literal
+backslashes and burned double width per escaped character. The obvious simplification, stop
+escaping inside a fence, would reopen the breakout: the backtick and backslash escapes are exactly
+what make two adjacent backticks impossible to compose. The fix is a fence-aware neutralizer that
+drops the characters a fence ignores and keeps those two plus the invisible strip, and the
+breakout is now pinned directly in both cards rather than resting on the reasoning.
+The adversarial reviewer caught the round's own worst habit: a pin that would have caught a real
+defect had been rewritten to match the new output. The roster's whole-entry rule was pinned by a
+two-blank-task card; the rewrite split it into two single-task cards, which is precisely the shape
+that cannot expose the defect, and the defect was live (an entry named by its kind ignored the
+width budget, so two of them cut mid-parenthesis with no overflow count). The pin is restored on
+the original input shape.
+Two attacker-shaped findings from security, neither obvious: a long tool name silently removed the
+input preview, and both the name and the input are attacker-influenceable, so a session could hide
+what its tools were called with by naming the tool long; and the session id was sliced after
+escaping, so eight code points could be four real characters and two sessions could be made to
+show the same prefix on the surface the operator uses to tell threads apart.
+Decisions the orchestrator made rather than deferring: the width bound stays at 46 and the roster
+keeps its one-named-entry-plus-count shape, because the approved sample that conflicts with the
+bound was drawn with artificially short task descriptions and real ones exceed thirty characters
+alone, so two whole entries fit at no width a phone reads without dragging. The bound remains a
+single constant so the live walk can overrule it. Accepted from the implementer: the downgrade
+marker splits across two rows rather than being cut, since one row would have dropped the opening
+model and the refusal category, both recorded elsewhere as load-bearing; the session id shows eight
+characters, which is the one affordance this change costs, since the full id existed on no other
+Discord surface and is what a resume takes; and the context size rounds in its rendering while the
+record keeps the exact figure.
+Operator requests folded into the same round: money renders as money (`$95.40 of $1,500`), grouped
+and symboled by hand rather than through a locale-dependent formatter, because the fleet card edits
+only when its bytes change and a locale that groups differently would both misread and defeat that.
+The operator also asked what an Opus row was doing on the fleet card; it was an implementer fixture
+inventing a second scoped window, and the live cache carries exactly one per account, so nothing
+was wrong and nothing changed.
+Review Findings: adversarial CHANGES_REQUIRED (4 Major, 3 Minor); security CONCERNS (0 Critical,
+3 Minor). All items implemented, items 1 to 4 red-first, plus the operator's money formatting. The
+implementer corrected one claim in the brief rather than implementing it as written: a newline is
+stopped by the invisible strip rather than by the whitespace collapse, same guarantee by a
+different mechanism, and the comments now state the accurate one.
+Named check riding to Section 7's live verify: the width bound counts code points while a
+glyph-led line can draw one column wider, so a card may need a horizontal drag on a real phone
+that no test can see. One constant settles it.
+Stamps: none surfaced at this boundary
+Next: Section 2: A thread answer joins the way the console joins
+Commit Model: Commit-and-Push

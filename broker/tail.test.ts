@@ -3297,11 +3297,11 @@ test("an entitlement downgrade carries the marker onto the card, category or no 
   assert.equal(record.openingModel, "claude-fable-5");
   assert.equal(record.model, "claude-opus-5[1m]");
   assert.equal(record.contextTokens, 61_380);
-  assert.match(
-    renderCard(toView(record), "working", 1_000),
-    // The decoration is escaped where the card draws it, like every other transcript-sourced field.
-    /^Model: ⚠ claude-opus-5\\\[1m\\\], down from claude-fable-5 · context 61,380 tokens$/m,
-  );
+  const card = renderCard(toView(record), "working", 1_000);
+  // The decoration reaches the card as its own characters: the row is inside the fence, where
+  // Discord renders no markdown, so the brackets need no escape and get none.
+  assert.match(card, /^Model {5}⚠ claude-opus-5\[1m\] · ctx 61k$/m);
+  assert.match(card, /^Down from claude-fable-5$/m, "and what it came down from is its own row");
 });
 
 test("a malformed downgrade record contributes nothing and never throws", async (t) => {
@@ -3437,11 +3437,14 @@ test("the marker stands across the polls that follow the change, not only the on
       { input_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 61_376 },
       text,
     );
-  const marked = /^Model: ⚠ claude-opus-4-8, down from claude-fable-5 · flagged cyber/m;
+  const marked = (rendered: string): void => {
+    assert.match(rendered, /^Model {5}⚠ claude-opus-4-8/m);
+    assert.match(rendered, /^Down from claude-fable-5 · flagged cyber$/m);
+  };
 
   appendFileSync(file, turn("claude-fable-5", "before the downgrade"), "utf8");
   await tailer.poll();
-  assert.ok(!renderCard(toView(registry.list()[0]), "working", 1_000).includes("down from"));
+  assert.ok(!renderCard(toView(registry.list()[0]), "working", 1_000).includes("Down from"));
 
   appendFileSync(
     file,
@@ -3449,13 +3452,13 @@ test("the marker stands across the polls that follow the change, not only the on
     "utf8",
   );
   await tailer.poll();
-  assert.match(renderCard(toView(registry.list()[0]), "working", 1_000), marked);
+  marked(renderCard(toView(registry.list()[0]), "working", 1_000));
 
   // The polls that follow, each reading the same model off the lines the session keeps writing.
   for (const text of ["an hour later", "and later still"]) {
     appendFileSync(file, turn("claude-opus-4-8", text), "utf8");
     await tailer.poll();
-    assert.match(renderCard(toView(registry.list()[0]), "working", 1_000), marked);
+    marked(renderCard(toView(registry.list()[0]), "working", 1_000));
   }
 
   assert.deepEqual(changes, ["claude-fable-5->claude-opus-4-8"], "one change, however many polls");

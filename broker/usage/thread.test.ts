@@ -285,15 +285,18 @@ test("a failed read redraws the last good numbers under a marker rather than bla
   time.advance(60_000);
   await usage.tick();
   assert.equal(calls.edits.length, 2, "the outage is drawn, not suppressed");
+  // The footer is prose inside the card's fenced body, so it wraps to the block's width rather
+  // than running off the side of a phone: read back as one string to compare it whole.
+  const flat = (rendered: string): string => rendered.split("\n").join(" ");
   const held = calls.edits[1]?.card ?? "";
   assert.match(held, /40%/, "the last numbers that could be read are still on the card");
-  assert.match(held, /last numbers it held/, "marked as held rather than as a live reading");
-  assert.match(held, /card as of 1m ago/, "under an age that keeps climbing through the outage");
+  assert.match(flat(held), /last numbers it held/, "marked as held rather than as a live reading");
+  assert.match(flat(held), /card as of 1m ago/, "under an age that keeps climbing through the outage");
 
   time.advance(60_000);
   await usage.tick();
   assert.equal(calls.edits.length, 3, "and it keeps climbing on every pass");
-  assert.match(calls.edits[2]?.card ?? "", /card as of 2m ago/);
+  assert.match(flat(calls.edits[2]?.card ?? ""), /card as of 2m ago/);
   assert.equal(
     logged.filter((line) => line.includes("could not be read")).length,
     1,

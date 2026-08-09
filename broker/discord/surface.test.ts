@@ -142,7 +142,7 @@ test("a new session gets one thread, opened on the broker's own starter message"
   await surface.tick([view()]);
 
   assert.equal(calls.posts.length, 1, "the starter message is posted once");
-  assert.match(calls.posts[0], /^State: working$/m);
+  assert.match(calls.posts[0], /^State {5}working$/m);
   assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "⚙ neo-intake · working" }]);
   assert.equal(surface.threadFor("session-a"), "thread-1");
   assert.equal(surface.threadFor("session-b"), null);
@@ -424,8 +424,8 @@ test("the card is edited in place, and only when its text changed", async () => 
 
   assert.equal(calls.posts.length, 1, "the starter message is never re-posted");
   assert.equal(calls.cards.length, 1);
-  assert.match(calls.cards[0], /^Last tool: Read$/m);
-  assert.match(calls.cards[0], /^Turns: 2$/m);
+  assert.match(calls.cards[0], /^Last tool Read$/m);
+  assert.match(calls.cards[0], /^Turns {5}2$/m);
 });
 
 test("an in-flight pass is not overtaken by the next tick", async () => {
@@ -604,7 +604,7 @@ test("a retiring session has its card driven to exited, not just its title", asy
   await surface.tick([]);
 
   assert.equal(calls.cards.length, 1, "the card is rewritten before the entry is let go");
-  assert.match(calls.cards[0], /^State: exited$/m);
+  assert.match(calls.cards[0], /^State {5}exited$/m);
   assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
   assert.equal(surface.threadFor("session-a"), null);
 });
@@ -942,7 +942,7 @@ test("a card is kept current even while its thread cannot be opened", async () =
 
   assert.equal(calls.posts.length, 1);
   assert.equal(calls.cards.length, 1, "the posted message does not freeze at its first text");
-  assert.match(calls.cards[0], /^Turns: 4$/m);
+  assert.match(calls.cards[0], /^Turns {5}4$/m);
 });
 
 test("a failed call is not evidence about the bucket it failed in", async () => {

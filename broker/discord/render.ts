@@ -103,6 +103,31 @@ export function inertField(value: string, limit: number): string {
   return fit(inertText(value), limit);
 }
 
+// The two characters a fenced block still gives meaning to. A run of backticks can close the
+// block and put the rest of the card outside it, and a backslash in front of an inserted escape
+// would free the backtick after it, so both are escaped: escaped output can never carry two
+// adjacent backticks, which is what makes a delimiter impossible to compose at any length.
+const BLOCK_SYNTAX = /[\\`]/g;
+
+/**
+ * Untrusted text for a line inside a fenced block.
+ *
+ * A fence renders no markdown, resolves no chip, and honors no quote marker, so the full escape
+ * would reach the operator as a visible backslash in front of every underscore and asterisk a
+ * real tool name contains. What a fence does still honor is its own delimiter, so the backtick
+ * and the backslash are escaped, and `visible` is what keeps a field from composing a body line
+ * of its own: the newline is in the invisible class it strips, and any whitespace run left over
+ * collapses to one space.
+ */
+export function inertBlock(value: string): string {
+  return visible(value).replace(BLOCK_SYNTAX, (character) => `\\${character}`);
+}
+
+/** The `inertField` pairing for a fenced line: block-inert, and bounded on the escaped text. */
+export function inertBlockField(value: string, limit: number): string {
+  return fit(inertBlock(value), limit);
+}
+
 /** Discord's ceiling on a message, less room for the cut marker this renderer adds. */
 export const MAX_MESSAGE_LENGTH = 1_900;
 
@@ -304,9 +329,16 @@ function isBelowModel(model: string, openingModel: string): boolean {
   return now > opened;
 }
 
-/** A token count with thousands separators, which is what makes a six-figure one readable at a glance. */
-function grouped(value: number): string {
-  return Math.trunc(value).toString().replace(/\B(?=(\d{3})+$)/g, ",");
+/**
+ * A context size in thousands, which is the figure at the width the card has for it: `348k`.
+ *
+ * Rounded rather than exact because nothing a reader decides from this line turns on the last three
+ * digits, and the line shares a fixed-width block with the model's own name. A size below a thousand
+ * is drawn as itself, since there is nothing to round it to.
+ */
+function compactTokens(value: number): string {
+  const whole = Math.max(Math.trunc(value), 0);
+  return whole < 1_000 ? String(whole) : `${Math.round(whole / 1_000)}k`;
 }
 
 /**
@@ -586,6 +618,105 @@ function fit(value: string, limit: number): string {
     fitted = `${kept.join("")}…`;
   }
   return fitted;
+}
+
+/**
+ * The width a fenced card body is held to, in characters.
+ *
+ * A Discord code block scrolls horizontally on a phone rather than wrapping, so a line past this
+ * width costs the reader a drag across the block, which is worse than the ragged unfenced lines the
+ * block replaces. Both cards read this one bound, so neither can be readable at a glance while the
+ * other is not.
+ */
+export const MAX_BLOCK_WIDTH = 46;
+
+/**
+ * The widest a label column grows, whatever sits in it.
+ *
+ * The column is padded to the longest label a body actually carries, and this is what keeps one
+ * long label from taking the room every value on the card is drawn in: a per-model window names
+ * itself out of another program's cache, at whatever length that program wrote.
+ */
+const MAX_LABEL_WIDTH = 10;
+
+/**
+ * One line of a fenced body: a label and the value drawn beside it, or a whole-width line of its
+ * own when the label is null, which is what a heading, a note, and a session row are.
+ */
+export type BlockRow = { label: string | null; value: string };
+
+/** What a fenced body costs beyond its own lines: the two delimiter lines and their newlines. */
+export const FENCE_COST = 2 * (FENCE.length + 1);
+
+/**
+ * A body inside one fenced block.
+ *
+ * Discord renders no markdown inside one, so nothing composed into these lines may rely on any:
+ * emphasis there reaches the reader as the asterisks it is written with, and a mention as its raw
+ * id. What the fence buys instead is a monospace grid, which is what lets a column of values line
+ * up. Untrusted text still goes through this module's escaping before it gets here, because an
+ * unescaped run of backticks would close the block early and put the rest of the card outside it.
+ */
+export function fenced(lines: readonly string[]): string {
+  return [FENCE, ...lines, FENCE].join("\n");
+}
+
+/** The room a value has beside a label column of this width. */
+function valueRoom(width: number): number {
+  return MAX_BLOCK_WIDTH - width - 1;
+}
+
+/** The column a body's labelled rows are padded to: the longest label present, bounded. */
+export function columnWidth(rows: readonly BlockRow[]): number {
+  const widths = rows.flatMap((row) => (row.label === null ? [] : [[...row.label].length]));
+  return Math.min(Math.max(0, ...widths), MAX_LABEL_WIDTH);
+}
+
+/**
+ * A body's rows as its lines: every label padded to the column so the values start in one place,
+ * every value cut to the room the column leaves, and every whole-width line wrapped to the bound.
+ *
+ * No glyph is ever drawn inside the run of spaces that does the aligning. A glyph leads a value or
+ * leads a whole-width line instead, because an emoji is not one column wide in a monospace font:
+ * one sitting in the padding would push that line's value out of the column every other line shares,
+ * which is the whole thing the fence is here to provide. Leading a line, the same glyph costs at
+ * most the one column it is wider than the character count measured here.
+ */
+export function alignedRows(rows: readonly BlockRow[], width: number): string[] {
+  const room = valueRoom(width);
+  return rows.flatMap((row) => {
+    if (row.label === null) return wrapped(row.value);
+    const label = fit(row.label, width);
+    const padded = `${label}${" ".repeat(Math.max(width - [...label].length, 0))}`;
+    return [`${padded} ${fit(row.value, room)}`.trimEnd()];
+  });
+}
+
+/**
+ * A line of prose broken into lines that fit the block's width.
+ *
+ * Prose is wrapped rather than cut because none of it is decoration: the footer names why the
+ * numbers above it are held, and a cut there would drop the reason rather than shorten it. Broken
+ * on spaces, and mid-word for a word wider than the whole block, which is the only way a line that
+ * long can be drawn without a drag.
+ */
+export function wrapped(text: string): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter((part) => part !== "")) {
+    if (line === "") line = word;
+    else if ([...line].length + 1 + [...word].length <= MAX_BLOCK_WIDTH) line = `${line} ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+    while ([...line].length > MAX_BLOCK_WIDTH) {
+      lines.push(sliceCodePoints(line, MAX_BLOCK_WIDTH));
+      line = [...line].slice(MAX_BLOCK_WIDTH).join("");
+    }
+  }
+  if (line !== "") lines.push(line);
+  return lines;
 }
 
 /**
@@ -926,30 +1057,83 @@ export function heartbeat(ageMs: number): string {
 }
 
 /**
- * The card's tool line: the last tool's name, and what it was called with when the input carried
+ * The labels the status card draws, which are what its column is padded to.
+ *
+ * Named here as one set because the column is measured off all of them rather than off the rows a
+ * given card happens to carry: a card whose values shift sideways as the model row comes and goes
+ * reads at a glance as a different card.
+ */
+const CARD_LABELS = {
+  session: "Session",
+  host: "Host",
+  state: "State",
+  model: "Model",
+  from: "Down from",
+  tool: "Last tool",
+  turns: "Turns",
+  heartbeat: "Heartbeat",
+  waiting: "Waiting",
+} as const;
+
+const CARD_COLUMN = columnWidth(
+  Object.values(CARD_LABELS).map((label) => ({ label, value: "" })),
+);
+const CARD_ROOM = valueRoom(CARD_COLUMN);
+
+/**
+ * How much of a session ID the card draws, in code points.
+ *
+ * The head of it, which is what a session is called everywhere else here: `displayName` falls back
+ * to the same eight characters, and the block has room for a value rather than for a 36-character
+ * identifier that would take the row and most of the width bound with it.
+ */
+const SHOWN_SESSION_ID = 8;
+
+/** What a cut tool preview is marked with, reserved out of the room before the preview is cut. */
+const CUT_MARKER = " (cut)";
+
+/**
+ * The least of the row's room a preview keeps beside the tool's name. Both halves of the row are
+ * attacker-influenceable, and without this floor a name at its cap squeezes the preview's budget
+ * to zero: a session could then hide what its tools are called with from the operator's glance
+ * surface by naming the tool long. Wide enough to carry the cut marker and a readable head of the
+ * input beside it.
+ */
+const MIN_TOOL_INPUT_PREVIEW = 12;
+
+/**
+ * The card's tool row: the last tool's name, and what it was called with when the input carried
  * anything previewable.
  *
- * The name comes first and the preview after the separator, because the thread list and a narrow
- * phone view truncate from the right, and the name is the part that has to survive that. The cut is
- * named rather than left to the ellipsis, on `promptField`'s reasoning: a tool input is
- * attacker-influenced text, so it can front-load the harmless part, and a reader has to be able to
- * tell a whole preview from a partial one. Whether it was cut is measured on the escaped text,
- * which is what the reader sees and what the budget is spent on.
+ * The name comes first and the preview after the separator, because a narrow phone view truncates
+ * from the right, and the name is the part that has to survive that. The cut is named rather than
+ * left to the ellipsis, on `promptField`'s reasoning: a tool input is attacker-influenced text, so
+ * it can front-load the harmless part, and a reader has to be able to tell a whole preview from a
+ * partial one. The marker's own room is taken out of the budget before the preview is cut, and the
+ * name is capped against the row's own room, its preview floor included, so the composed value
+ * always fits the row: the width bound never cuts it and can never eat the mark off a partial
+ * preview. Whether the preview was cut is measured on the escaped text, which is what the reader
+ * sees.
  *
  * A preview that neutralizes to nothing renders as no preview at all, rather than as a separator
- * with nothing after it, and a session that has run no tool keeps the line it has always had.
+ * with nothing after it, and a session that has run no tool keeps the value it has always had.
  */
-function toolLine(view: SessionView): string {
-  if (view.lastTool === null) return "Last tool: none yet";
-  // Cut to the same budget the permission prompt gives a tool name. A tool name is untrusted text
-  // capped at MAX_FIELD_LENGTH, and escaping can double what that cap allows, so a name left whole
-  // beside a bounded preview is the half of this line that can push the turn count and the
-  // heartbeat past the card's own ceiling, where the final fit() would drop them.
-  const name = fit(inertText(view.lastTool), MAX_TOOL_NAME_LENGTH);
-  const whole = view.lastToolInput === null ? "" : inertText(view.lastToolInput);
-  if (whole === "") return `Last tool: ${name}`;
-  const shown = fit(whole, MAX_TOOL_INPUT_PREVIEW);
-  return `Last tool: ${name} ${SEPARATOR} ${shown}${shown === whole ? "" : " (cut)"}`;
+function toolRow(view: SessionView): BlockRow {
+  const label = CARD_LABELS.tool;
+  if (view.lastTool === null) return { label, value: "none yet" };
+  const whole = view.lastToolInput === null ? "" : inertBlock(view.lastToolInput);
+  // The name gives way to the preview, never the other way around: cut with its own ellipsis to
+  // what the row leaves after the separator and the preview's floor, so a long name loses its own
+  // tail rather than the preview.
+  const nameRoom = whole === "" ? CARD_ROOM : CARD_ROOM - 3 - MIN_TOOL_INPUT_PREVIEW;
+  const name = fit(inertBlock(view.lastTool), nameRoom);
+  if (whole === "") return { label, value: name };
+  const room = Math.max(CARD_ROOM - [...name].length - 3, 0);
+  const budget = Math.min(MAX_TOOL_INPUT_PREVIEW, room);
+  const shown = fit(whole, budget);
+  if (shown === whole) return { label, value: `${name} ${SEPARATOR} ${shown}` };
+  const marked = fit(whole, Math.max(budget - CUT_MARKER.length, 0));
+  return { label, value: `${name} ${SEPARATOR} ${marked}${CUT_MARKER}` };
 }
 
 /**
@@ -974,7 +1158,8 @@ export function span(ms: number): string {
  * Small, and structurally rather than cosmetically so: a measured fan-out session peaked at twelve
  * concurrent agents, and twelve entries rendered in full run past seven hundred characters, which
  * would push the turn count and the heartbeat the card exists to carry off the bottom of a glance.
- * The count leads the line, so nothing about the size of the fan-out is lost to the bound.
+ * The count of what is not named ends the row, so nothing about the size of the fan-out is lost to
+ * the bound.
  */
 const MAX_ROSTER_ENTRIES = 2;
 
@@ -994,14 +1179,18 @@ const MAX_AGENT_TYPE_LENGTH = 32;
  * and the kind is what distinguishes them. The description is model-authored prose from another
  * program and is neutralized here like every other session-sourced field; a task whose description
  * neutralizes to nothing is named by its kind alone rather than by an empty phrase.
+ *
+ * The description is what gives way to `room`, the entry's share of the row, because the kind and
+ * the age are the two parts a reader cannot reconstruct: an entry cut from the right would leave a
+ * task described at length with no way to tell what is running it or how long it has been out.
  */
-function rosterEntry(task: BackgroundTask, now: number): string {
+function rosterEntry(task: BackgroundTask, now: number, room: number): string {
   const kind =
-    task.agentType === null ? task.kind : inertField(task.agentType, MAX_AGENT_TYPE_LENGTH);
-  const described =
-    task.description === null ? "" : inertField(task.description, MAX_TASK_DESCRIPTION_LENGTH);
-  const what = described === "" ? task.kind : described;
-  return `${what} (${kind === "" ? task.kind : kind}) ${span(now - task.since)}`;
+    task.agentType === null ? task.kind : inertBlockField(task.agentType, MAX_AGENT_TYPE_LENGTH);
+  const suffix = ` (${kind === "" ? task.kind : kind}) ${span(now - task.since)}`;
+  const limit = Math.min(MAX_TASK_DESCRIPTION_LENGTH, Math.max(room - [...suffix].length, 0));
+  const described = task.description === null ? "" : inertBlockField(task.description, limit);
+  return `${described === "" ? task.kind : described}${suffix}`;
 }
 
 /**
@@ -1011,50 +1200,96 @@ function rosterEntry(task: BackgroundTask, now: number): string {
  * Newest first, because the entries that fit are the ones a reader has not seen on a previous look;
  * an old agent's line is unchanged from the last time they read the card. The overflow count is what
  * keeps the bound honest, so a reader can tell a two-agent roster from a twelve-agent one that only
- * had room to name two.
+ * had room to name two. It is composed to fit rather than cut to fit: entries are dropped until the
+ * row is inside the block's width and the count grows by what was dropped, so the size of a fan-out
+ * survives a width that cannot name it. The last entry standing gives its description away to the
+ * width rather than being dropped, so a roster says what one of its tasks is whenever the kind and
+ * the age fit at all; one whose fixed parts alone overflow the row is counted, never cut. How many
+ * are outstanding in total is on the state row, which carries that count wherever a state is drawn.
  */
-function rosterLine(view: SessionView, now: number): string | null {
+function rosterRow(view: SessionView, now: number): BlockRow | null {
   const waiting = view.backgroundTasks.length;
   if (waiting === 0) return null;
   const newest = [...view.backgroundTasks].sort((a, b) => b.since - a.since);
-  const shown = newest.slice(0, MAX_ROSTER_ENTRIES).map((task) => rosterEntry(task, now));
-  const overflow = waiting - shown.length;
-  if (overflow > 0) shown.push(`+${overflow} more`);
-  return `Waiting on: ${waiting} ${SEPARATOR} ${shown.join(` ${SEPARATOR} `)}`;
+  const joiner = ` ${SEPARATOR} `;
+  const marker = (count: number): string => (waiting === count ? "" : `${joiner}+${waiting - count}`);
+  const share = (count: number): number =>
+    Math.max(
+      Math.floor((CARD_ROOM - [...marker(count)].length - joiner.length * (count - 1)) / count),
+      0,
+    );
+  const entries = (count: number): string[] =>
+    newest.slice(0, count).map((task) => rosterEntry(task, now, share(count)));
+  // The count is composed after the entries are cut to what it leaves, never cut alongside them: a
+  // row that lost its own overflow count to the width would read as a fan-out of one.
+  const composed = (count: number): string => {
+    const tail = marker(count);
+    const room = Math.max(CARD_ROOM - [...tail].length, 0);
+    return `${fit(entries(count).join(joiner), room)}${tail}`;
+  };
+  // A second entry is drawn only when every named entry fits whole beside it. Two entries sharing a
+  // row this narrow are two descriptions cut to a few characters each, which names more tasks than
+  // it says anything about; one whole entry and a count of the rest says more.
+  const uncut = (count: number): boolean =>
+    entries(count).every(
+      // Against the same entry drawn with no width to give way to, which leaves the description at
+      // its own field cap.
+      (entry, index) => entry === rosterEntry(newest[index], now, Number.MAX_SAFE_INTEGER),
+    );
+  // Every part of an entry is held to its share, the kind and the age suffix included: only the
+  // description gives way to the width, so an entry whose fixed parts alone overflow the share
+  // passes `uncut` while overflowing the row.
+  const withinShare = (count: number): boolean =>
+    entries(count).every((entry) => [...entry].length <= share(count));
+  let count = Math.min(MAX_ROSTER_ENTRIES, waiting);
+  while (count > 1 && ([...composed(count)].length > CARD_ROOM || !withinShare(count) || !uncut(count)))
+    count -= 1;
+  // An entry that cannot be drawn whole is counted rather than cut: an ellipsis through the
+  // parenthetical would drop the kind and the age, the two parts a reader cannot reconstruct,
+  // without saying anything was dropped.
+  if (!withinShare(count)) return { label: CARD_LABELS.waiting, value: `+${waiting}` };
+  return { label: CARD_LABELS.waiting, value: composed(count) };
 }
 
 /**
- * The card's model line: what the session is running now, a standing marker while that is below
- * what it opened with, and the raw context size.
+ * The card's model rows: what the session is running now with its context size, and, while that is
+ * below what it opened with, a second row naming what it came down from.
  *
- * Null for a session no transcript line has reported a model for, which is every session on a host
+ * Empty for a session no transcript line has reported a model for, which is every session on a host
  * whose tailer is off and every session before its first reading: the card then carries exactly the
  * fields it always has.
  *
  * The marker stands for as long as the session is below its opening model rather than firing once
  * at the change, because the cost of a downgrade is duration: a thread that drops model at hour one
  * runs degraded for every hour after, and a field that reads normal at a glance is how that goes
- * unnoticed. The category rides the marker when the downgrade record named one, and its absence is
- * the entitlement path, which carries no category at all.
+ * unnoticed. The category rides the second row when the downgrade record named one, and its absence
+ * is the entitlement path, which carries no category at all. Two rows rather than one sentence
+ * because the block is a fixed width: what a session came down from, and why, does not fit beside
+ * the model it is running, and cutting a row to fit would drop exactly the part that says a session
+ * is degraded.
  */
-function modelLine(view: SessionView): string | null {
-  if (view.model === null) return null;
-  const model = inertField(view.model, MAX_MODEL_NAME_LENGTH);
-  if (model === "") return null;
+function modelRows(view: SessionView): BlockRow[] {
+  if (view.model === null) return [];
+  const model = inertBlockField(view.model, MAX_MODEL_NAME_LENGTH);
+  if (model === "") return [];
   const opening =
-    view.openingModel === null ? "" : inertField(view.openingModel, MAX_MODEL_NAME_LENGTH);
+    view.openingModel === null ? "" : inertBlockField(view.openingModel, MAX_MODEL_NAME_LENGTH);
   const below =
     view.openingModel !== null && opening !== "" && isBelowModel(view.model, view.openingModel);
   const category =
     view.downgrade === null || view.downgrade.category === null
       ? ""
-      : inertField(view.downgrade.category, MAX_MODEL_DETAIL_LENGTH);
-  const marked = below
-    ? `⚠ ${model}, down from ${opening}${category === "" ? "" : ` ${SEPARATOR} flagged ${category}`}`
-    : model;
+      : inertBlockField(view.downgrade.category, MAX_MODEL_DETAIL_LENGTH);
   const context =
-    view.contextTokens === null ? "" : ` ${SEPARATOR} context ${grouped(view.contextTokens)} tokens`;
-  return `Model: ${marked}${context}`;
+    view.contextTokens === null ? "" : ` ${SEPARATOR} ctx ${compactTokens(view.contextTokens)}`;
+  const rows: BlockRow[] = [
+    { label: CARD_LABELS.model, value: `${below ? "⚠ " : ""}${model}${context}` },
+  ];
+  if (below) {
+    const flagged = category === "" ? "" : ` ${SEPARATOR} flagged ${category}`;
+    rows.push({ label: CARD_LABELS.from, value: `${opening}${flagged}` });
+  }
+  return rows;
 }
 
 /**
@@ -1110,31 +1345,50 @@ export function renderModelChange(input: {
 /**
  * The starter message: the thread's detail card, edited in place forever after. Each field named,
  * and no session field that is not one of them.
+ *
+ * The title stays outside the fence and the body goes inside one. That split is what the two
+ * surfaces need: the title is the line the channel's thread list shows, where the glyph, the bold
+ * name, and the state are what a reader picks a thread out by, and Discord draws none of that
+ * inside a block; the body is a table, and a block is the only shape Discord gives that keeps a
+ * column of values under each other.
+ *
+ * The title is also where the card gives way when it runs long, since every line of the body is
+ * already inside the width bound: the name is the one field a session sizes for itself.
  */
 export function renderCard(view: SessionView, state: SurfaceState, now: number): string {
   const since = view.endedAt ?? view.lastHookAt;
-  const model = modelLine(view);
   const label = stateLabel(view, state);
   // No roster on an exited card: the record's last report outlives the session, and a session
-  // that has exited is running nothing, so drawing it would put a waiting-on line with growing
+  // that has exited is running nothing, so drawing it would put a waiting-on row with growing
   // ages under a header that says exited. Guarded here rather than cleared on the ended
   // transitions because the death backstop's exited is derived, never written to the record, so a
   // registry-side clear could not reach it, and a presumed-dead session that wakes gets its
-  // roster line back unchanged.
-  const roster = state === "exited" ? null : rosterLine(view, now);
-  const card = [
-    `${GLYPHS[state]} **${inertText(displayName(view))}** ${SEPARATOR} ${label}`,
-    `Session: ${inertText(view.sessionId)}`,
-    `Host: ${inertText(view.host)}`,
-    `State: ${label}`,
-    ...(model === null ? [] : [model]),
-    toolLine(view),
-    `Turns: ${view.turnCount}`,
-    `Heartbeat: ${heartbeat(Math.max(now - since, 0))}`,
-    // Last, because the card is cut from the end when it runs long: the turn count and the
-    // heartbeat are what the card exists to carry, and the roster is the one line sized by
-    // another program's fan-out.
-    ...(roster === null ? [] : [roster]),
-  ].join("\n");
-  return fit(card, MAX_CARD_LENGTH);
+  // roster row back unchanged.
+  const roster = state === "exited" ? null : rosterRow(view, now);
+  const block = fenced(
+    alignedRows(
+      [
+        {
+          label: CARD_LABELS.session,
+          // Sliced on the visible raw id, then neutralized: sliced after the escape, every escaped
+          // character would spend two of the eight, and two ids differing only past the escapes
+          // would draw one prefix on the surface the operator tells threads apart by.
+          value: inertBlock(sliceCodePoints(inertName(view.sessionId), SHOWN_SESSION_ID)),
+        },
+        { label: CARD_LABELS.host, value: inertBlock(view.host) },
+        { label: CARD_LABELS.state, value: label },
+        ...modelRows(view),
+        toolRow(view),
+        { label: CARD_LABELS.turns, value: String(view.turnCount) },
+        { label: CARD_LABELS.heartbeat, value: heartbeat(Math.max(now - since, 0)) },
+        // Last, because the roster is the one row sized by another program's fan-out, and the
+        // rows above it are what the card exists to carry.
+        ...(roster === null ? [] : [roster]),
+      ],
+      CARD_COLUMN,
+    ),
+  );
+  const title = (name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
+  const room = MAX_CARD_LENGTH - block.length - 1 - title("").length;
+  return `${title(fit(inertText(displayName(view)), Math.max(room, 0)))}\n${block}`;
 }
