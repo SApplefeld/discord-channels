@@ -11,7 +11,8 @@ import type { Registry } from "./registry.ts";
 import { startBroker } from "./index.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
-import { createEchoMemory, createTranscriptTailer } from "./tail.ts";
+import { askedQuestions, createEchoMemory, createTranscriptTailer } from "./tail.ts";
+import { createQuestionDesk } from "./question-desk.ts";
 
 const TOKEN = "5f0c2e4a-0000-4000-8000-000000000001";
 
@@ -136,6 +137,7 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,
+    questionHoldMs: 14_400_000,
     taskNotifications: "brief",
     ...overrides,
   };
@@ -1358,7 +1360,7 @@ test("the tailer learns a path only from a hook post the registry credited", asy
       learn: (sessionId, path) => learned.push({ sessionId, path }),
       allow: () => {},
       suppress: () => {},
-      question: () => {},
+      question: () => true,
     },
   });
 
@@ -1419,7 +1421,7 @@ test("every mirror post reaching a live session reports its verdict: allow on, s
       learn: () => {},
       allow: (sessionId) => allowed.push(sessionId),
       suppress: (sessionId) => suppressed.push(sessionId),
-      question: () => {},
+      question: () => true,
     },
   });
   announce(registry);
@@ -1538,19 +1540,35 @@ function preToolUseBody(overrides: Record<string, unknown> = {}): string {
   });
 }
 
+type Hold = {
+  sessionId: string;
+  questions: readonly AskedQuestion[];
+  questionsInput: readonly unknown[];
+  response: ServerResponse;
+  /** The tailer's report that this post's own alert went out, which gates a new entry. */
+  dispatched: boolean;
+};
+
 /** A handler over the tailer seam, capturing what the question path and its neighbors report. */
-function questionHarness(): {
+function questionHarness(
+  options: { desk?: "accepts" | "refuses"; dispatched?: boolean } = {},
+): {
   handle: ReturnType<typeof createHandler>;
   registry: Registry;
   asked: Array<{ sessionId: string; questions: readonly AskedQuestion[] }>;
   suppressed: string[];
   learned: string[];
   lines: string[];
+  holds: Hold[];
+  /** The seam calls in arrival order, which the hold's airtight-return reasoning depends on. */
+  sequence: string[];
 } {
   const asked: Array<{ sessionId: string; questions: readonly AskedQuestion[] }> = [];
   const suppressed: string[] = [];
   const learned: string[] = [];
   const lines: string[] = [];
+  const holds: Hold[] = [];
+  const sequence: string[] = [];
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   const handle = createHandler({
     registry,
@@ -1565,11 +1583,26 @@ function questionHarness(): {
       learn: (_sessionId, path) => learned.push(path),
       allow: () => {},
       suppress: (sessionId) => suppressed.push(sessionId),
-      question: (sessionId, questions) => asked.push({ sessionId, questions }),
+      question: (sessionId, questions) => {
+        sequence.push("question");
+        asked.push({ sessionId, questions });
+        return options.dispatched ?? true;
+      },
     },
+    ...(options.desk === undefined
+      ? {}
+      : {
+          questionDesk: {
+            hold: (sessionId, questions, questionsInput, response, dispatched) => {
+              sequence.push("hold");
+              holds.push({ sessionId, questions, questionsInput, response, dispatched });
+              return options.desk === "accepts";
+            },
+          },
+        }),
   });
   announce(registry);
-  return { handle, registry, asked, suppressed, learned, lines };
+  return { handle, registry, asked, suppressed, learned, lines, holds, sequence };
 }
 
 test("a credited PreToolUse AskUserQuestion post hands the tailer its bounded questions at emission", async () => {
@@ -1780,6 +1813,303 @@ test("a credited post that does not name the credited session never reaches the 
   );
   assert.equal(asked.length, 1, "the same post naming its own session reaches the seam");
   assert.equal(asked[0]?.sessionId, "session-a");
+});
+
+test("a qualifying question post is held: the desk owns the response and the handler writes nothing", async () => {
+  // The hold itself. The desk gets the bounded questions (its digest source), the payload's own
+  // questions array verbatim (what an answered hold passes back through updatedInput), and the
+  // very response object; the handler's shared send never runs, which is what "no second write
+  // can race the desk's later resolution" means at this seam.
+  const { handle, asked, holds, sequence } = questionHarness({ desk: "accepts" });
+
+  const { response } = fakeResponse();
+  handle(fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }), response);
+  await settled();
+
+  assert.equal(holds.length, 1);
+  assert.equal(holds[0].sessionId, "session-a");
+  assert.deepEqual(
+    holds[0].questionsInput,
+    capturedQuestionInput().questions,
+    "the raw questions array rides to the desk untouched, descriptions and all",
+  );
+  assert.equal(holds[0].questions.length, 1, "the bounded parse rides beside it");
+  assert.equal(holds[0].response, response, "the desk holds the very response object");
+  assert.equal(asked.length, 1, "the thread alert still rides the tailer seam, unchanged");
+  assert.deepEqual(
+    sequence,
+    ["question", "hold"],
+    "the alert seam runs before the hold, so a throw out of it can never land a 500 on a response the desk owns",
+  );
+  assert.equal(response.headersSent, false, "the handler answered nothing");
+});
+
+test("a hold the desk refuses is answered immediately, exactly as a broker without a desk answers", async () => {
+  // The desk-at-capacity direction. The refusal costs nothing but the hold: the alert already
+  // rode the tailer seam, and the response is the liveness answer every other credited post gets.
+  const { handle, asked, holds } = questionHarness({ desk: "refuses" });
+
+  const { status, body } = await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+  );
+
+  assert.equal(holds.length, 1, "the hold was offered and refused");
+  assert.equal(asked.length, 1, "the alert is not the hold's hostage");
+  assert.equal(status, 200);
+  assert.deepEqual(body, { sessionId: "session-a", state: "live" });
+});
+
+test("every gate that keeps a post off the question seam keeps it off the desk too", async () => {
+  // The answered-immediately direction of each hold gate. The held direction is the test above;
+  // here every disqualified post must both skip the desk and still be answered, because an
+  // unanswered response with no desk entry is a hook the session waits on forever.
+  const { handle, holds } = questionHarness({ desk: "accepts" });
+
+  // Mirror-off: the session opted out of having its content leave the console.
+  const mirrorOff = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse", { "x-channel-mirror": "0" }),
+      body: preToolUseBody(),
+    }),
+  );
+  assert.equal(mirrorOff.status, 200);
+
+  // A parse that yields nothing: there is no question to answer from anywhere.
+  const malformed = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse"),
+      body: preToolUseBody({ tool_input: { questions: "not-an-array" } }),
+    }),
+  );
+  assert.equal(malformed.status, 200);
+
+  // The straggler gate: a payload not naming the credited session is not that session asking.
+  const straggler = await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PreToolUse"),
+      body: preToolUseBody({ session_id: undefined }),
+    }),
+  );
+  assert.equal(straggler.status, 200);
+
+  assert.deepEqual(holds, [], "none of these may reach the desk");
+});
+
+test("with no tailer wired, a question post is never held even when a desk is", async () => {
+  // The tail-not-wired gate. A hold is only worth keeping for an alert somebody can see, and
+  // without the tailer seam no alert is ever delivered; index.ts wires the two together, and the
+  // handler holds the same line when a caller wires them apart.
+  const holds: Hold[] = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 64 * 1024,
+    mirror: fakeMirror().mirror,
+    questionDesk: {
+      hold: (sessionId, questions, questionsInput, response, dispatched) => {
+        holds.push({ sessionId, questions, questionsInput, response, dispatched });
+        return true;
+      },
+    },
+  });
+  announce(registry);
+
+  const { status } = await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+  );
+  assert.equal(status, 200, "answered as every credited liveness post is");
+  assert.deepEqual(holds, [], "no tailer, no hold");
+});
+
+test("under the broker's own wiring a question post is answered immediately, never held", async () => {
+  // The whole wiring, over a real bound socket. The broker builds the desk and releases it at
+  // shutdown, but hands the intake no hold seam, so every question post is answered exactly as it
+  // was before the desk existed: a held response can only be ended by an answer, and no route
+  // reaches the desk's resolve until the thread's answer surface exists. This is the pin on that
+  // boundary, and it fails the moment the hold seam is wired ahead of the answer route.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-question-"));
+  const broker = await startBroker(brokerConfig({ stateFile: path.join(dir, "broker-state.json") }));
+
+  try {
+    const base = `http://127.0.0.1:${broker.port}`;
+    const announced = await fetch(`${base}/hook`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...hookHeaders("SessionStart") },
+      body: JSON.stringify({ session_id: "session-a", source: "startup" }),
+    });
+    assert.equal(announced.status, 200);
+
+    const asked = await fetch(`${base}/hook`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...hookHeaders("PreToolUse") },
+      body: preToolUseBody(),
+    });
+    assert.equal(asked.status, 200);
+    assert.deepEqual(
+      await asked.json(),
+      { sessionId: "session-a", state: "live" },
+      "the liveness answer every credited post gets, written by the handler and not by a desk",
+    );
+
+    const tooled = await fetch(`${base}/hook`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...hookHeaders("PostToolUse") },
+      body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo hi" } }),
+    });
+    assert.equal(tooled.status, 200);
+    assert.deepEqual(
+      await tooled.json(),
+      { sessionId: "session-a", state: "live" },
+      "the question post answers exactly as its neighbors do",
+    );
+  } finally {
+    await broker.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A response the question desk can take ownership of: the intake's own write path, plus the
+ * `writableFinished` and socket-event surface a hold reads.
+ */
+function holdableResponse(): { response: ServerResponse; writes: Captured[] } {
+  const writes: Captured[] = [];
+  let status = 0;
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    writableFinished: false,
+    destroyed: false,
+    writeHead(code: number) {
+      status = code;
+      this.headersSent = true;
+      return this;
+    },
+    end(text: string) {
+      this.writableEnded = true;
+      this.writableFinished = true;
+      writes.push({ status, body: text === "" ? null : JSON.parse(text) });
+    },
+    once() {
+      return this;
+    },
+  };
+  return { response: response as unknown as ServerResponse, writes };
+}
+
+/**
+ * The question path composed rather than mocked: the real tailer, which owns the outstanding
+ * digests, and the real desk, which owns the held responses, wired into the handler exactly as
+ * the broker wires them once the hold seam goes in. Every alert this tailer sends lands.
+ */
+function composedQuestionPath(): {
+  handle: ReturnType<typeof createHandler>;
+  tailer: ReturnType<typeof createTranscriptTailer>;
+  desk: ReturnType<typeof createQuestionDesk>;
+  delivered: string[][];
+} {
+  const delivered: string[][] = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const tailer = createTranscriptTailer({
+    liveSessions: () => ["session-a"],
+    deliver: async () => ({ status: "sent" }),
+    deliverPrompt: async () => ({ status: "sent" }),
+    deliverQuestion: async (_sessionId, questions) => {
+      delivered.push(questions.map((entry) => entry.question));
+      return { status: "sent" };
+    },
+    echo: createEchoMemory(),
+  });
+  const desk = createQuestionDesk({
+    holdMs: 14_400_000,
+    // Unref'd: a hold still standing when a test ends must not keep the runner alive for the four
+    // hours a real broker would hold it.
+    setTimer: (callback, ms) => setTimeout(callback, ms).unref(),
+  });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 64 * 1024,
+    mirror: fakeMirror().mirror,
+    tail: {
+      learn: tailer.learn,
+      allow: tailer.allow,
+      suppress: tailer.suppress,
+      question: tailer.question,
+    },
+    questionDesk: { hold: desk.hold },
+  });
+  announce(registry);
+  return { handle, tailer, desk, delivered };
+}
+
+test("a question post whose alert the tailer dropped is answered immediately, never held", async () => {
+  // The hold and the alert answer the same question from two sides, so a hold created behind a
+  // dropped alert is a session parked on a question the operator was never shown: nothing but the
+  // four-hour expiry would ever end it. The tailer drops the alert for a question whose digest is
+  // already outstanding, which is the state a released or lost hold leaves behind while the CLI is
+  // still retrying that very post.
+  const { handle, tailer, delivered } = composedQuestionPath();
+
+  // Taught the same path the post below carries: a path this tailer has not read before starts the
+  // session over, outstanding digests included, and the state under test is the digest standing.
+  tailer.learn("session-a", "C:\\t\\session-a.jsonl");
+  tailer.allow("session-a");
+  tailer.question("session-a", askedQuestions(capturedQuestionInput()));
+  await settled();
+  assert.equal(delivered.length, 1, "the first alert lands and records its digest");
+
+  const repost = holdableResponse();
+  handle(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+    repost.response,
+  );
+  await settled();
+
+  assert.equal(delivered.length, 1, "the repost alerts nobody: its digest is still outstanding");
+  assert.deepEqual(
+    repost.writes,
+    [{ status: 200, body: { sessionId: "session-a", state: "live" } }],
+    "so it is answered immediately rather than parked on a hold nothing would end",
+  );
+});
+
+test("an identical repost attaches to the ask it repeats: one alert, one entry, both answered", async () => {
+  // The composition the pieces are tested apart: the CLI retrying the one ask it is parked on.
+  // The tailer skips the retry's duplicate ping because the first alert is still outstanding, and
+  // the desk attaches the retry to the entry that alert belongs to, so both sockets carry the one
+  // answer when it arrives from the thread.
+  const { handle, desk, delivered } = composedQuestionPath();
+
+  const first = holdableResponse();
+  handle(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+    first.response,
+  );
+  await settled();
+  assert.equal(delivered.length, 1, "the first post alerts");
+  assert.deepEqual(first.writes, [], "and is held, unanswered");
+
+  const retry = holdableResponse();
+  handle(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("PreToolUse"), body: preToolUseBody() }),
+    retry.response,
+  );
+  await settled();
+  assert.equal(delivered.length, 1, "the retry is not a second ping");
+  assert.deepEqual(retry.writes, [], "and is held too, on the first post's entry");
+
+  assert.equal(
+    desk.resolve("session-a", { kind: "response", response: "answered from the thread" }),
+    true,
+    "one entry stands for both posts",
+  );
+  assert.equal(first.writes.length, 1);
+  assert.deepEqual(retry.writes, first.writes, "and its answer reaches both responses");
 });
 
 test("a transcript path is refused rather than truncated, and never a UNC path", () => {

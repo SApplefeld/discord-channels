@@ -60,6 +60,11 @@ export type BrokerConfig = {
   /** How often the tailer polls live sessions' transcripts for new mid-turn text. */
   interimPollMs: number;
   /**
+   * How long the question desk holds a credited AskUserQuestion hook response open for a thread
+   * answer before releasing it to the console picker with a no-decision `{}`.
+   */
+  questionHoldMs: number;
+  /**
    * How a background task's wake prompt reaches a session's thread. When a subagent finishes while
    * its parent session is idle, the harness wakes the session by injecting a prompt that carries
    * the subagent's entire final report, and the mirror would post the whole report into the thread
@@ -98,6 +103,21 @@ const DEFAULT_INTERIM_POLL_MS = 20 * 1000;
 // CHANNEL_INTERIM_MIRROR=off is the honest spelling.
 const MIN_INTERIM_POLL_MS = 1_000;
 const MAX_INTERIM_POLL_MS = 5 * 60 * 1000;
+
+/**
+ * Four hours. Exported because it is a shared contract, not a private default: the installed
+ * fragment's PreToolUse `timeout` must exceed every legal hold so the release is always the
+ * broker's clean `{}` rather than a CLI-side timeout error, and settings-fragment.test.ts pins the
+ * fragment against this value so the two cannot drift apart.
+ */
+export const DEFAULT_QUESTION_HOLD_MS = 4 * 60 * 60 * 1000;
+// A near-zero hold is today's behavior with extra steps; below a second the release would race the
+// alert that makes the hold worth keeping.
+const MIN_QUESTION_HOLD_MS = 1_000;
+// The ceiling is the default on purpose: the fragment pin only holds the default under the
+// installed PreToolUse timeout, so an env override may shorten the hold but never push it past the
+// margin the pin guarantees. Raising this ceiling means raising the fragment timeout with it.
+const MAX_QUESTION_HOLD_MS = DEFAULT_QUESTION_HOLD_MS;
 
 /**
  * How long the relay waits on a silent stream before it presumes the pipe is dead and reconnects.
@@ -266,6 +286,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       MIN_INTERIM_POLL_MS,
       MAX_INTERIM_POLL_MS,
       DEFAULT_INTERIM_POLL_MS,
+    ),
+    questionHoldMs: bounded(
+      env.CHANNEL_QUESTION_HOLD_MS,
+      MIN_QUESTION_HOLD_MS,
+      MAX_QUESTION_HOLD_MS,
+      DEFAULT_QUESTION_HOLD_MS,
     ),
     // Brief by default: the console renders these wake-ups compactly, and a thread louder than
     // the terminal it mirrors is the reported failure. `full` is the escape hatch for an operator

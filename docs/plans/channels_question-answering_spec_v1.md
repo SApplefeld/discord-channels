@@ -113,6 +113,23 @@ logs.
 
 **Interaction responses** are budgeted as their own route-verb bucket beside post and edit.
 
+## Standing Brief Amendments
+
+Folded into every later section's dispatch brief:
+
+- The hold seam ships dark: `createHandler` receives no `questionDesk` until the section that
+  ships the first answer route lights it (Section 2), and the lighting commit updates the
+  activation-boundary comment in `broker/index.ts` and the production-wiring pin in
+  `broker/intake.ts` that currently asserts a question post is answered immediately.
+- When lighting the seam, rate-limit the desk's `refused a retry` log line through the `repeats()`
+  pattern in `broker/tail.ts`: a CLI retrying past the per-entry response cap otherwise logs one
+  unlimited line per attempt for the life of a hold.
+- The desk's as-landed seams (verify signatures before use): `hold(sessionId, digest, questions,
+  response, dispatched)` where `dispatched` is `tail.question()`'s boolean return; entry creation
+  requires a dispatched delivery while a digest-matching attach does not; `release(sessionId,
+  digest?)` releases only on digest match when one is given; `releaseAll(): Promise<void>` flushes
+  before resolving; `onTerminal` is the message-edit seam.
+
 ## Sections of Work
 
 ### 1. The question desk and the held hook
@@ -147,7 +164,10 @@ The message redesign (per-question select menus with descriptions, the fast sing
 button path, the control row), bounded option descriptions in the shared reader,
 `INTERACTION_CREATE` handling in the gateway gated on the operator allowlist, the interaction
 callback client with its own budget bucket, component state accumulation on the desk entry, and
-the terminal-state message edits.
+the terminal-state message edits. This section also lights the hold seam (the first answer route
+ships here), per the Standing Brief Amendments: `createHandler` gains the desk, the activation
+comment and the production-wiring pin flip, and the refused-retry log line takes the `repeats()`
+limiter. The message copy does not mention typed answers until Section 3 ships them.
 
 Files: `broker/discord/render.ts`, `broker/tail.ts` (reader), `broker/routing/gateway.ts`,
 `broker/discord/rest.ts` or a sibling interaction client, `broker/question-desk.ts`,
@@ -255,4 +275,46 @@ Fast path (single single-select question):
 
 ## Chapters
 
-(Appended by executing-work as sections complete.)
+### Chapter 1 - 2026-08-09
+Completed: Section 1: The question desk and the held hook
+Implemented By: implementer-fable (build round), implementer-fable (review-fix round, fresh
+dispatch after a harness restart ended the first agent's context)
+Metrics: 1 full review round (adversarial + blind + security, all at the session tier) plus the
+fix round's red-first evidence; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the round's headline was the blind reviewer's Critical, aimed at the spec
+rather than the code: Section 1 as written wired the hold live while nothing could answer it
+until later sections, so a deployed-alone changeset would park an alerted question unanswerable
+from anywhere for the full hold. Adjudicated as a spec staging gap and fixed by shipping the seam
+dark (desk constructed and fully tested, `createHandler` given no hold seam until Section 2
+lights it beside the first answer route); the activation boundary now rides the Standing Brief
+Amendments block. The fix round resolved a real contradiction between two brief items (hold only
+on a dispatched delivery, versus the composed-retry attach that dedupe makes deliveryless) by
+gating entry creation on dispatch while allowing digest-matching attaches, discriminated by a
+test pair under the same probe. Other review fixes, each red-proven: a per-entry response cap
+(the entry cap bounded entries while identical reposts attached sockets unbounded), digest-scoped
+release (both question paths share one delivery closure, so a session-keyed release let one ask's
+failure end another ask's live hold), release-on-throw, shutdown flushing released bodies before
+`closeAllConnections`, refusing already-dead responses at hold, an override-ceiling config test,
+and a composed intake-level retry test. `questionDelivery` is new exported surface added as the
+smallest testable seam while the desk is dark, and stop()'s flush-before-destroy ordering is
+code-verified only until a live held socket exists (named check riding Section 2's review). The
+verification gates flaked once on first run (a `live` versus `ended` assertion in files this
+section never touched); five subsequent passes green (two full, three isolated), named flake, to
+be pinned if it recurs. Mid-section, the session was silently downgraded off Fable by a
+`model_consent_fallback` (the restart dismissed the credit-consent prompt), discovered during the
+usage-card investigation and reversed by the operator at the console; the build round ran on
+Fable, the fix round on Opus 5, and the finishing reviews will re-cover the section at full
+strength regardless.
+Review Findings: security CONCERNS (1 Major: unbounded per-entry attach, fixed); blind
+CHANGES_REQUIRED (1 Critical: ship dark, fixed; 3 Major: no-dispatch holds, throw path, shutdown
+flush, all fixed; 2 Minor: dead-response guard fixed, digest-scoped release fixed); adversarial
+APPROVED_WITH_CONCERNS (2 Major: cross-ask release fixed, override-ceiling test added; 3 Minor:
+stop-ordering pin riding Section 2, composed retry test added, dead-response guard fixed).
+Security's two Minors: the security-model paragraph rides Section 4 by name, and the
+long-hold-beyond-6-minutes measurement is accepted on the client-gone trigger's self-truing plus
+the free measurement every real parked question provides.
+Stamps: adjudicated 0 unstamped over the section span (the design-time stamps landed in-turn);
+none surfaced at this boundary
+Next: Section 2: The interactive question message and the interaction surface, which also lights
+the hold seam
+Commit Model: Commit-and-Push

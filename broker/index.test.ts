@@ -6,8 +6,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { startBroker } from "./index.ts";
+import type { ServerResponse } from "node:http";
+import { questionDelivery, startBroker } from "./index.ts";
 import type { BrokerConfig } from "./config.ts";
+import type { AskedQuestion } from "./discord/render.ts";
+import { createQuestionDesk } from "./question-desk.ts";
 
 function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile: string | null }): BrokerConfig {
   return {
@@ -25,6 +28,7 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,
+    questionHoldMs: 14_400_000,
     taskNotifications: "brief",
     ...overrides,
   };
@@ -182,6 +186,95 @@ test("a PreToolUse question post rides the /hook route end to end, and its text 
   await new Promise((resolve) => setImmediate(resolve));
   const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
   assert.ok(!logged.includes("SECRET"), `question content must never reach the broker log: ${logged}`);
+});
+
+/** One ask, in the bounded shape both the desk and the delivery wrapper digest. */
+function ask(question: string): AskedQuestion[] {
+  return [{ question, header: "Ship", multiSelect: false, options: ["Yes", "No"] }];
+}
+
+/** The payload's own questions array, which an answered hold passes back verbatim. */
+function askInput(question: string): unknown[] {
+  return [{ question, header: "Ship", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false }];
+}
+
+/** A response the desk can hold: writes captured, socket events accepted, nothing else needed. */
+function heldResponse(): { response: ServerResponse; bodies: unknown[] } {
+  const bodies: unknown[] = [];
+  const response = {
+    writableEnded: false,
+    writableFinished: false,
+    destroyed: false,
+    writeHead() {
+      return this;
+    },
+    end(text: string) {
+      this.writableEnded = true;
+      this.writableFinished = true;
+      bodies.push(JSON.parse(text));
+    },
+    once() {
+      return this;
+    },
+  };
+  return { response: response as unknown as ServerResponse, bodies };
+}
+
+/** A desk with hand-driven timers, so a hold left standing cannot outlive the test run. */
+function deskUnderTest(): ReturnType<typeof createQuestionDesk> {
+  return createQuestionDesk({ holdMs: 14_400_000, setTimer: () => ({}) as NodeJS.Timeout });
+}
+
+test("a question delivery releases the hold for its own ask, and leaves another ask's alone", async () => {
+  // Both question paths, the hook's emission-time alert and the tailer's resolution-time yield,
+  // share one delivery closure, so a failed delivery carries a session id and nothing more. Keyed
+  // on the session alone, one ask's dropped alert would release a different ask's live hold, whose
+  // own alert is up and answerable from the thread.
+  const desk = deskUnderTest();
+  const held = heldResponse();
+  assert.equal(desk.hold("session-a", ask("Ship it?"), askInput("Ship it?"), held.response, true), true);
+
+  const deliver = questionDelivery({
+    deliver: async () => ({ status: "failed", error: "the alert was not written" }),
+    desk,
+  });
+
+  assert.deepEqual(await deliver("session-a", ask("A different question?")), {
+    status: "failed",
+    error: "the alert was not written",
+  });
+  assert.equal(held.bodies.length, 0, "the standing hold is for a different ask, and stands");
+
+  assert.deepEqual(await deliver("session-a", ask("Ship it?")), {
+    status: "failed",
+    error: "the alert was not written",
+  });
+  assert.deepEqual(
+    held.bodies,
+    [{}],
+    "its own ask's dropped alert releases it to the console picker",
+  );
+});
+
+test("a question delivery that throws releases the hold before the throw leaves the wrapper", async () => {
+  // The tailer catches a throw out of the delivery and drops the alert. Without the release on
+  // this path the throw would carry the hold with it: a question alerted nowhere, parked until the
+  // four-hour expiry, with the console showing a tool call that never resolves.
+  const desk = deskUnderTest();
+  const held = heldResponse();
+  desk.hold("session-a", ask("Ship it?"), askInput("Ship it?"), held.response, true);
+
+  const deliver = questionDelivery({
+    deliver: () => Promise.reject(new Error("discord threw mid-write")),
+    desk,
+  });
+
+  await assert.rejects(
+    () => deliver("session-a", ask("Ship it?")),
+    /discord threw mid-write/,
+    "the throw still reaches the tailer, which reports it",
+  );
+  assert.deepEqual(held.bodies, [{}], "and the hold is released on the way out");
 });
 
 test("startBroker exposes the logger it started with", async (t) => {

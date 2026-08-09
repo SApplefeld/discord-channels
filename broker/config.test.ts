@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_QUESTION_HOLD_MS,
   RELAY_READ_TIMEOUT_MS,
   RELAY_REPLY_IDLE_MS,
   REPLY_HEARTBEAT_MS,
@@ -83,6 +84,34 @@ test("the interim mirror knobs default on and sane, and refuse a typo", () => {
   // would turn an over-large value into exactly the busy loop the floor exists to prevent.
   for (const raw of ["999", "0", "-5", "2.5", "soon", "300001", "2147483648"]) {
     assert.throws(() => loadConfig({ CHANNEL_INTERIM_POLL_MS: raw }), /expected an integer/, raw);
+  }
+});
+
+test("the question hold may be shortened by an override, never lengthened past the fragment's margin", () => {
+  // The runtime half of a cross-component contract: the installed PreToolUse timeout exceeds the
+  // default hold by a margin, which is what makes the release always the broker's clean `{}`
+  // rather than a CLI-side timeout error, and the fragment pin holds that margin against the
+  // default alone. An override above the default would carry the hold past the installed timeout
+  // with nothing at runtime reporting it, so the loader refuses one.
+  assert.equal(loadConfig({}).questionHoldMs, DEFAULT_QUESTION_HOLD_MS);
+  assert.equal(loadConfig({ CHANNEL_QUESTION_HOLD_MS: "" }).questionHoldMs, DEFAULT_QUESTION_HOLD_MS);
+  assert.equal(
+    loadConfig({ CHANNEL_QUESTION_HOLD_MS: String(DEFAULT_QUESTION_HOLD_MS) }).questionHoldMs,
+    DEFAULT_QUESTION_HOLD_MS,
+    "the default is the ceiling, and naming it exactly is allowed",
+  );
+  assert.equal(loadConfig({ CHANNEL_QUESTION_HOLD_MS: "60000" }).questionHoldMs, 60_000);
+  assert.equal(loadConfig({ CHANNEL_QUESTION_HOLD_MS: "1000" }).questionHoldMs, 1_000);
+
+  assert.throws(
+    () => loadConfig({ CHANNEL_QUESTION_HOLD_MS: String(DEFAULT_QUESTION_HOLD_MS + 1) }),
+    /expected an integer/,
+    "one millisecond past the default is one millisecond of margin the fragment does not carry",
+  );
+  // The floor and the shapes every numeric knob refuses: below a second the release would race the
+  // alert that makes the hold worth keeping.
+  for (const raw of ["999", "0", "-5", "2.5", "soon"]) {
+    assert.throws(() => loadConfig({ CHANNEL_QUESTION_HOLD_MS: raw }), /expected an integer/, raw);
   }
 });
 

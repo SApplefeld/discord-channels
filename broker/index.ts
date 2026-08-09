@@ -29,7 +29,8 @@ import {
 } from "./security/permission.ts";
 import type { PermissionDesk } from "./security/permission.ts";
 import { loadSenderGate } from "./security/senders.ts";
-import { createEchoMemory, createTranscriptTailer } from "./tail.ts";
+import { createQuestionDesk } from "./question-desk.ts";
+import { createEchoMemory, createTranscriptTailer, questionDigest } from "./tail.ts";
 import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
@@ -49,6 +50,36 @@ export type Broker = {
   logger: Logger;
   stop: () => Promise<void>;
 };
+
+/**
+ * Wraps a question delivery so the alert's own outcome settles the session's hold. The volume
+ * window and the write failure live inside the delivery, which is the only place a dropped alert
+ * is visible, and a hold whose alert nobody saw is a question nobody can answer: any outcome but
+ * a landed alert releases, a throw included, because the throw would otherwise reach the tailer's
+ * catch with the hold still standing.
+ *
+ * The release is checked against this ask's own digest. Both question paths, the hook's
+ * emission-time alert and the tailer's resolution-time yield, share one delivery closure, so a
+ * failure carries only a session id; without the digest one ask's failed delivery would release a
+ * different ask's live, properly alerted hold. A throw is rethrown after the release, so the
+ * tailer's own catch still reports the dropped alert.
+ */
+export function questionDelivery(options: {
+  deliver: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
+  desk: { release: (sessionId: string, digest?: string) => boolean };
+}): (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult> {
+  return async (sessionId, questions) => {
+    const digest = questionDigest(questions);
+    try {
+      const outcome = await options.deliver(sessionId, questions);
+      if (outcome.status !== "sent") options.desk.release(sessionId, digest);
+      return outcome;
+    } catch (error) {
+      options.desk.release(sessionId, digest);
+      throw error;
+    }
+  };
+}
 
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
@@ -178,6 +209,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let tail: TranscriptTailer | null = null;
   let tailTimer: NodeJS.Timeout | null = null;
   let tailInFlight: Promise<void> = Promise.resolve();
+  // The question desk holds a credited question post's hook response open so the answer can ride
+  // back from the thread; every trigger but an answer releases with `{}` to today's behavior, the
+  // console picker. Its terminal-state notifier is the message-edit seam, a no-op until a
+  // thread-message editor is wired to it. Constructed unconditionally, like the relay hub, and
+  // holding nothing until the intake below is given its hold seam.
+  const questionDesk = createQuestionDesk({ holdMs: config.questionHoldMs, log: note });
   // The transcript tailer exists only while both mirror switches are on. Off means not
   // constructed: no transcript is ever opened, no poll timer runs, and the intake gets no seam
   // to learn a path through, so "off" is the absence of the machinery rather than a check
@@ -191,7 +228,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           .map((record) => record.sessionId),
       deliver: (sessionId, text) => outbound.interim(sessionId, text),
       deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
-      deliverQuestion: (sessionId, questions) => deliverQuestion(sessionId, questions),
+      // The release wrapper above. The delivery is read through a closure rather than passed
+      // directly, because `deliverQuestion` is replaced further down once Discord's surfaces
+      // exist, and the tailer is constructed before that.
+      deliverQuestion: questionDelivery({
+        deliver: (sessionId, questions) => deliverQuestion(sessionId, questions),
+        desk: questionDesk,
+      }),
       echo,
       log: note,
       // The pass watchdog's threshold, scaled here because the tailer does not know the poll
@@ -252,6 +295,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
             question: tail.question,
           },
         }),
+    // No `questionDesk` seam, so every question post is answered immediately and nothing is ever
+    // held here. The desk is built and its shutdown release wired, but a held response can only be
+    // ended by an answer, and no route reaches `resolve` until the thread's answer surface exists:
+    // passing the hold seam before then would park a session on a question with no way back. That
+    // seam goes in beside the answer route.
     mirror: {
       enabled: config.mirror,
       maxBytes: config.mirrorMaxBytes,
@@ -514,6 +562,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();
+    // Every held question answers `{}` before the sockets are torn down: a destroyed connection
+    // is a visible hook error inside the session, while the release lands it on the console
+    // picker, which is where a question outliving its broker belongs. Awaited, because the
+    // teardown below destroys sockets and would drop a body still on its way out, arriving inside
+    // the session as exactly the reset the release exists to avoid; the wait is bounded inside the
+    // desk, so a stuck socket delays shutdown by no more than that bound.
+    await questionDesk.releaseAll();
     // Keep-alive sockets would otherwise hold close() open until they time out.
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

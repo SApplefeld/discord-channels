@@ -263,8 +263,13 @@ export type TranscriptTailer = {
    * twice. An alert that lands records a one-shot digest in the entry's bounded outstanding set
    * so the resolution-time transcript yield skips its own copy of the same question; an alert
    * that does not land records nothing, leaving that yield armed as the fallback.
+   *
+   * Reports whether a delivery was dispatched, not whether it landed: the delivery is
+   * fire-and-forget, so the answer is available synchronously, and false names every gate above.
+   * The hold seam reads it, because a hold created for a post that alerted nowhere is a question
+   * parked with nothing to answer it.
    */
-  question: (sessionId: string, questions: readonly AskedQuestion[]) => void;
+  question: (sessionId: string, questions: readonly AskedQuestion[]) => boolean;
   /**
    * Permits a session's transcript to be read, on the session's mirror-on verdict. When the
    * session already has a learned path and no held offset, this is also the moment the baseline
@@ -521,8 +526,13 @@ function lineItems(line: string, sessionId: string): TailItem[] {
  * `askedQuestions`, so the same call digests identically however it arrived. A digest rather
  * than the questions themselves, the echo memory's own rule: no conversation text is held in
  * broker memory past the moment it is posted.
+ *
+ * Exported because the question desk keys its held entries by the same reading, and the alert
+ * wrapper releases a hold by digest: three modules comparing digests across the seam means one
+ * hashing, because a second implementation drifting by a field would turn every cross-module
+ * match into a silent miss.
  */
-function questionDigest(questions: readonly AskedQuestion[]): string {
+export function questionDigest(questions: readonly AskedQuestion[]): string {
   return createHash("sha256").update(JSON.stringify(questions), "utf8").digest("hex");
 }
 
@@ -753,20 +763,21 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     startProbe(sessionId, held);
   }
 
-  function question(sessionId: string, questions: readonly AskedQuestion[]): void {
+  function question(sessionId: string, questions: readonly AskedQuestion[]): boolean {
     // Every gate fails toward silence, the module's own arming rule: an empty parse, a session
     // this tailer has never seen a verdict for, and a suppressed session all contribute nothing.
+    // Each returns false, which is the caller's signal that this post reached nobody.
     // `sessions.get` rather than `entry`, so an unseen session is not given an entry by the act
     // of asking about it.
-    if (questions.length === 0) return;
+    if (questions.length === 0) return false;
     const held = sessions.get(sessionId);
-    if (held === undefined || !held.allowed) return;
+    if (held === undefined || !held.allowed) return false;
     const digest = questionDigest(questions);
     // The CLI retries a hook post it could not land, for hours when it comes to that, so an
     // identical PreToolUse can arrive again while its first alert's digest is still outstanding.
     // A digest already in the set means this exact question already reached the operator, and
     // the repeat is skipped whole rather than pinged twice.
-    if (held.askedDigests.includes(digest)) return;
+    if (held.askedDigests.includes(digest)) return false;
     const epoch = held.epoch;
     // Fire-and-forget from the caller's point of view: the hook intake answers its request
     // without waiting on Discord, and a failed alert is dropped, never retried, exactly as the
@@ -807,6 +818,7 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         );
       }
     })();
+    return true;
   }
 
   function suppress(sessionId: string): void {

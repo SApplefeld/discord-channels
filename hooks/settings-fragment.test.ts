@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT } from "../broker/config.ts";
+import { DEFAULT_PORT, DEFAULT_QUESTION_HOLD_MS } from "../broker/config.ts";
 
 const HOOKS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FRAGMENT_PATH = path.join(HOOKS_DIR, "settings-fragment.json");
@@ -283,12 +283,33 @@ test("PreToolUse is the question alert: matched to AskUserQuestion alone, carryi
   assert.equal(hook.type, "http");
   assert.equal(hook.url, `http://127.0.0.1:${DEFAULT_PORT}/hook`);
   assert.equal(hook.headers?.["X-Channel-Hook-Event"], "PreToolUse");
-  // Bounded on both sides like the mirror timeouts: the post carries content and fires only when
-  // a question opens, so it is not held to the per-tool-call tick's 2s, but it still must not
-  // stall the console's picker behind a slow broker.
+  // Hours, not the mirror band: the broker's question desk holds this hook's response open while
+  // the question is answerable from the thread, and this timeout is how long the CLI will wait
+  // for it. Its floor against the desk's hold is the cross-component pin below; what this test
+  // holds is that the value stays explicit and finite rather than falling to the 600s default,
+  // under which every hold past ten minutes would die as a client-side timeout error.
   assert.ok(
-    typeof hook.timeout === "number" && hook.timeout >= 3 && hook.timeout <= 10,
-    "the question hook's timeout must leave room for the post and still bound the ask",
+    typeof hook.timeout === "number" && hook.timeout > 0,
+    "the question hook's timeout must be explicit; the hold contract is pinned below",
+  );
+});
+
+test("the question hook's timeout clears the desk's hold ceiling with margin", () => {
+  // The cross-component pin between the two halves of the hold contract: the desk (broker side)
+  // releases a held question after at most DEFAULT_QUESTION_HOLD_MS, which is also the ceiling of
+  // the CHANNEL_QUESTION_HOLD_MS override, and the CLI (fragment side) abandons the held response
+  // at this timeout. The margin is what makes every hold end in the broker's clean `{}` release,
+  // measured to render the console picker normally, rather than a client-side timeout error. One
+  // source each side, the desk ceiling imported and the fragment read, so the pin fails if either
+  // moves alone.
+  const fragment = loadFragment();
+  const [hook] = fragment.hooks.PreToolUse[0].hooks;
+  assert.ok(typeof hook.timeout === "number");
+  const marginMs = hook.timeout * 1000 - DEFAULT_QUESTION_HOLD_MS;
+  assert.ok(
+    marginMs >= 60_000,
+    `the fragment timeout must exceed the desk's hold ceiling by at least a minute, ` +
+      `got ${marginMs}ms of margin`,
   );
 });
 

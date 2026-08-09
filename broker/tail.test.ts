@@ -1624,22 +1624,26 @@ test("question() posts through the same delivery seam, gated on the session's mi
     { question: "Which beverage?", header: "Beverage", multiSelect: false, options: ["Coffee", "Tea"] },
   ];
 
-  tailer.question(SESSION, asked); // no verdict seen at all
+  // Each gate reports its silence, because the hold seam holds a question only where an alert
+  // went out: a hold behind a dropped alert is a session parked on a question nobody was shown.
+  assert.equal(tailer.question(SESSION, asked), false); // no verdict seen at all
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(questions, [], "a verdict-unseen session alerts nothing from the hook path");
 
   tailer.allow(SESSION);
   tailer.suppress(SESSION);
-  tailer.question(SESSION, asked); // an explicit mirror-off
+  assert.equal(tailer.question(SESSION, asked), false); // an explicit mirror-off
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(questions, [], "a suppressed session alerts nothing from the hook path");
 
   tailer.allow(SESSION);
-  tailer.question(SESSION, []); // malformed input parses to nothing, and nothing is delivered
+  // Malformed input parses to nothing, and nothing is delivered.
+  assert.equal(tailer.question(SESSION, []), false);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(questions, []);
 
-  tailer.question(SESSION, asked); // the positive control: mirror-on, readable questions
+  // The positive control: mirror-on, readable questions, a delivery dispatched.
+  assert.equal(tailer.question(SESSION, asked), true);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(questions, [asked]);
 });
@@ -1759,9 +1763,13 @@ test("a re-posted identical question is not alerted twice by the hook path", asy
   await tailer.poll();
 
   const asked: AskedQuestion[] = [{ question: "Still there?", header: null, multiSelect: false, options: [] }];
-  tailer.question(SESSION, asked);
+  assert.equal(tailer.question(SESSION, asked), true, "the first post dispatches a delivery");
   await new Promise((resolve) => setImmediate(resolve));
-  tailer.question(SESSION, asked); // the retry of the same post
+  assert.equal(
+    tailer.question(SESSION, asked), // the retry of the same post
+    false,
+    "and the retry reports that it dispatched none, which is what keeps a hold off it",
+  );
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(questions.length, 1, "a re-posted identical question is the same question, not a new alert");
 

@@ -22,7 +22,10 @@
 //     so this post is the only signal that exists while the operator could still act on it. Its
 //     tool_input is parsed with the tailer's own bounded reader and handed to the tailer's
 //     question seam, which owns the mirror-verdict gate and the delivery; everything else about
-//     the event is ordinary liveness.
+//     the event is ordinary liveness. When a question desk is wired, a qualifying question post's
+//     response is not answered here at all: the desk holds it open so the answer can ride back
+//     through the hook response from the session's thread, and every disqualified or refused post
+//     answers immediately, exactly as a broker without a desk answers it.
 //
 // The event name rides in a header rather than the body because two of the three hooks are `http`
 // hooks, whose body is authored by Claude Code and cannot be wrapped. A header is static per hook
@@ -260,13 +263,30 @@ function transcriptPathField(payload: Record<string, unknown>): string | null {
   return path;
 }
 
+/**
+ * The payload's own `questions` array, untouched. Kept beside the bounded parse because an
+ * answered hold passes it back verbatim inside `updatedInput`: Claude Code re-reads the whole tool
+ * input from the hook response, so a rebuilt array would hand the tool an input the session never
+ * wrote. Null whenever there is no array at all, in which case the bounded parse yields nothing
+ * and no hold happens either.
+ */
+function rawQuestions(input: unknown): readonly unknown[] | null {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const questions = (input as Record<string, unknown>)["questions"];
+  return Array.isArray(questions) ? questions : null;
+}
+
 export type IntakeFailure = { status: number; message: string };
 
 export function parseIntake(
   request: IncomingMessage,
   body: string,
 ):
-  | { intake: HookIntake; questions: readonly AskedQuestion[] | null }
+  | {
+      intake: HookIntake;
+      questions: readonly AskedQuestion[] | null;
+      questionsInput: readonly unknown[] | null;
+    }
   | { failure: IntakeFailure }
   | { unwatched: true } {
   const event = header(request, "x-channel-hook-event");
@@ -312,6 +332,12 @@ export function parseIntake(
     questions:
       event === "PreToolUse" && toolName === "AskUserQuestion"
         ? askedQuestions(fields["tool_input"])
+        : null,
+    // The verbatim companion to the bounded parse above, for the question desk's answered
+    // resolution alone; every other consumer keeps reading the bounded form.
+    questionsInput:
+      event === "PreToolUse" && toolName === "AskUserQuestion"
+        ? rawQuestions(fields["tool_input"])
         : null,
     intake: {
       event: event as HookEvent,
@@ -422,9 +448,27 @@ export type HandlerOptions = {
      * Hands a credited PreToolUse AskUserQuestion's bounded questions to the tailer, which owns
      * the mirror-verdict gate, the delivery seam, and the dedupe digest the resolution-time
      * transcript yield consults. Required alongside the other three so a caller cannot wire the
-     * seam and silently leave the emission-time alert unrouted.
+     * seam and silently leave the emission-time alert unrouted. Reports whether a delivery was
+     * dispatched, which the hold seam below reads.
      */
-    question: (sessionId: string, questions: readonly AskedQuestion[]) => void;
+    question: (sessionId: string, questions: readonly AskedQuestion[]) => boolean;
+  };
+  /**
+   * The question desk's hold seam. Optional for the reason the tailer seam is: with no desk wired,
+   * every question post is answered immediately, exactly as a broker without one answers it. A
+   * true return transfers ownership of the response to the desk, and the handler must not write to
+   * it again on any path; false means the desk refused and the handler answers as it always has.
+   * The last argument carries the tailer's report of whether this post's alert was dispatched, so
+   * the desk can hold a question that reached the operator and refuse one that reached nobody.
+   */
+  questionDesk?: {
+    hold: (
+      sessionId: string,
+      questions: readonly AskedQuestion[],
+      questionsInput: readonly unknown[],
+      response: ServerResponse,
+      dispatched: boolean,
+    ) => boolean;
   };
   /**
    * The mirror route's knobs and its seam into the routing layer. Required rather than optional,
@@ -817,9 +861,10 @@ export function createHandler(
       // retries a refused post for hours, a retry can outlive the session that emitted it, and
       // one credited by process token alone would otherwise post a predecessor session's
       // question into the thread of whatever session holds the token now. The suppress half
-      // stays on token evidence alone, its parity with /mirror. The response below is not held
-      // for any of this: the seam returns before delivery, so the session's hook never waits on
-      // Discord.
+      // stays on token evidence alone, its parity with /mirror. The seam itself returns before
+      // delivery, so the session's hook never waits on Discord; what may wait is the response,
+      // which the question desk holds open when the post qualifies, so the answer can arrive
+      // from the thread instead of the console picker.
       if (parsed.intake.event === "PreToolUse" && options.tail !== undefined) {
         const sessionMirror = header(request, "x-channel-mirror");
         if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
@@ -828,7 +873,38 @@ export function createHandler(
           if (parsed.intake.sessionId !== null && parsed.intake.sessionId === record.sessionId) {
             options.tail.allow(record.sessionId);
             if (parsed.questions !== null && parsed.questions.length > 0) {
-              options.tail.question(record.sessionId, parsed.questions);
+              const dispatched = options.tail.question(record.sessionId, parsed.questions);
+              // The hold, behind every gate the alert above is behind (mirror-on, credited,
+              // payload names the credited session, parse yielded questions) plus the desk's own
+              // acceptance. Seam order is load-bearing twice over. The seam call runs first so a
+              // synchronous throw out of it reaches this function's catch while the response is
+              // still the handler's to answer with a 500, never after the desk owns it. The hold
+              // runs before this synchronous stretch yields so it is registered ahead of the
+              // alert's delivery outcome, whose failure path releases the session's hold: the
+              // delivery is asynchronous, so no release can run between these two calls, and a
+              // window-dropped or unwritable alert releases a hold that exists rather than
+              // missing one that does not. A true return ends this request here: the desk owns
+              // the response from handoff onward, and the send below must never race its later
+              // resolution.
+              //
+              // The seam's own report rides along, because the alert's gates are the tailer's:
+              // a post whose alert the tailer dropped (an unseen or suppressed session, a
+              // question already outstanding from an earlier post) has nothing to answer a new
+              // hold, and the desk creates no entry for one. A retry of an ask still held is the
+              // exception the desk makes for itself, and it needs no alert of its own.
+              if (
+                options.questionDesk !== undefined &&
+                parsed.questionsInput !== null &&
+                options.questionDesk.hold(
+                  record.sessionId,
+                  parsed.questions,
+                  parsed.questionsInput,
+                  response,
+                  dispatched,
+                )
+              ) {
+                return;
+              }
             }
           }
         }
