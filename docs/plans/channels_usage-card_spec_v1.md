@@ -547,3 +547,32 @@ whose contract statement would otherwise have been false.
 Stamps: adjudicated 1, stamped 1 (a-model-downgrade-writes-a-structured-transcript-record)
 Next: Section 5: Docs, deploy, and live verify
 Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-09
+Completed: Section 5's documentation. The deploy and the live checks are the operator's and are
+carried into the close-out rather than holding the plan open.
+Implemented By: main session (documentation is main-thread work in this harness)
+Metrics: 0 review rounds (prose only; the finishing pass covers the changeset); 0 escalations
+Decisions / Surprises: operations gained the fleet card and, importantly, why it mirrors a local
+cache rather than running the tool it reads, since that reasoning is what stops a future session
+from "simplifying" the reader into a CLI call that would compete for a request budget already near
+its ceiling. It also gained what a session card now says about the model answering its turns, the
+two forced downgrades and which of them an operator can act on, and what a session is waiting on.
+The architecture carries the same at design altitude, including why the roster is read from the
+harness's own table rather than reconstructed from dispatch events. The security model already
+carried this round's egress clauses, added as each section landed rather than deferred to here.
+The tunables table gained the four knobs these surfaces read.
+One correction rather than an addition: the security model quoted fixed character counts for what
+a card draws of a task description and a tool input, which stopped being true when the card's body
+moved into a fenced block in the concurrent fidelity round. Both are now whatever the block's width
+leaves, which is less than the status route carries rather than more, so the figures were the wrong
+thing to state and the asymmetry is stated instead.
+Operator-pending, carried to the close-out and to the backlog rather than holding this plan open:
+the deploy (the card is off until `CHANNEL_USAGE_CARD` is set and the broker restarted) and the two
+live checks the plan names, the numbers matching a console read and the card aging honestly when
+claude-swap's own consumers are stopped. A third rides from Chapter 3: whether the downgrade
+marker's glyph reads clearly beside the card's own state glyph at a phone's width.
+Review Findings: none new; every section's findings were closed in its own round.
+Stamps: none surfaced at this boundary
+Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push
