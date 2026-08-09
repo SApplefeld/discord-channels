@@ -13,12 +13,15 @@ Created: 2026-08-09
 
 ## Goal
 
-Away from the keyboard, the operator can see what the console sees: one always-there Discord
-thread ("Fleet: Usage") whose first message is a card the broker edits on a cadence, carrying
+Away from the keyboard, the operator can see what the console sees. Two surfaces carry it. One
+always-there Discord thread ("Fleet: Usage") holds a card the broker edits on a cadence, carrying
 each account's 5h / 7d / per-model usage bars with reset times and pace, and one line per live
-session on this host (name, state, minutes since last activity). The blindness this removes is
-recorded operator pain: rate limits and stuck agents are invisible from Discord until a walk
-back to the console.
+session on this host (name, state, minutes since last activity). Each session's own status card
+gains what makes a long quiet stretch legible: the model actually running (with a standing marker
+when a session was forced below the model it opened with), the raw context size, and the subagents
+the session is waiting on. The blindness this removes is recorded operator pain: rate limits,
+silent model downgrades, and a session that looks idle while it is running four agents are all
+invisible from Discord until a walk back to the console.
 
 ## The measured ground (scouted 2026-08-09, file:line evidence in the scout report)
 
@@ -168,7 +171,47 @@ the missing-field case, both directions of the tier knob, the marker's persisten
 absence path. Fixtures come from the captured specimen's shape, with its untrusted strings
 rendered inert like every other transcript-sourced field.
 
-### 4. Docs, deploy, and live verify
+### 4. The subagent roster, and the idle state that is wrong without it
+
+Model: opus
+
+A session whose main thread is waiting on dispatched subagents fires no hooks, so the card's
+hook-driven liveness calls it idle at the moment it is most heavily worked. The operator reads
+that as nothing happening and waits for an update that is hours away. The roster is both the
+missing content and the correction to a state the card currently gets wrong.
+
+**The reading** (measured; see the `a-sessions-subagent-roster-is-readable-from-its-transcript`
+memory). The tailer's line reader gains a fifth allowlisted yield: an assistant `tool_use` named
+`Agent` carries `description` and `subagent_type`; its matching `tool_result` (paired by
+`tool_use_id`) carries `agentId`, which is the roster key; a later line containing
+`<task-notification>` with that id in `<task-id>` ends the run. Outstanding is launched minus
+notified. Pairing a dispatch with its own `tool_result` must not be used as completion: a
+backgrounded dispatch answers at launch, so that reading reports every agent finished instantly.
+Descriptions are operator-authored prose from this session and are rendered inert like every other
+transcript-sourced field.
+
+**The card** carries a roster line per session while anything is outstanding: count, then each
+agent's description, its type, and its age (`⚙ 2 agents · Build Section 2 (implementer-fable) 31m
+· Blind review (blind-reviewer) 4m`), bounded to a few entries with an overflow count. Nothing is
+rendered when the roster is empty.
+
+**The state vocabulary gains the case.** `working`, `needs you`, `idle`, `exited` cannot express
+waiting on agents, which is why the card is wrong today rather than merely thin. A session with an
+outstanding roster renders as working with its agent count rather than idle, in the thread title
+as well as the card, since the title is what survives the mobile thread-list truncation. The
+existing states are unchanged for every session with an empty roster, and the rename budget is
+unaffected because the title already changes on state transitions.
+
+**No start and stop posts in v1.** The roster is a state the operator reads on the card when they
+look, not an event stream; a post per dispatch would be the loudest surface in the thread on a
+fan-out round. A completion that matters already reports itself in the session's own narration.
+
+Files: `broker/tail.ts` (the yield), `broker/registry.ts` (the roster slot and the state
+derivation), `broker/discord/render.ts` (the card line and the title), plus tests. Tests lock the
+launch-versus-completion pairing including the backgrounded-dispatch trap in both directions, the
+empty-roster inertness, the idle-versus-waiting state both ways, and the overflow bound.
+
+### 5. Docs, deploy, and live verify
 
 Model: fable
 Locus: inline
@@ -182,6 +225,11 @@ session-health section tracks a real session end within one refresh, and a sessi
 model and a context figure that match what the console reports for that session.
 
 ## Out of Scope
+
+- Drilling into a running subagent from the thread (the console's own feature): the roster names
+  what is running and for how long, and nothing more.
+- A post per subagent start and stop: the roster is read as state on the card, not streamed as
+  events.
 
 - Invoking claude-swap in any form (the mutation and budget findings; revisit only if passive
   staleness bites).
