@@ -199,3 +199,13 @@ test("the mirror body ceiling is its own knob, wider than the hook cap by defaul
     assert.throws(() => loadConfig({ CHANNEL_MIRROR_MAX_BYTES: raw }), /expected an integer/, raw);
   }
 });
+
+test("the model-change tier knob is off by default and refuses a value it cannot read", () => {
+  // Off is the notice tier, which floors per thread; on is the alert tier, which carries the mention
+  // that reaches a phone. Whether the quiet tier is loud enough is a question live use answers, so
+  // the louder setting has to be an env change rather than a code round.
+  assert.equal(loadConfig({}).modelChangeAlert, false);
+  assert.equal(loadConfig({ CHANNEL_MODEL_CHANGE_ALERT: "on" }).modelChangeAlert, true);
+  assert.equal(loadConfig({ CHANNEL_MODEL_CHANGE_ALERT: "off" }).modelChangeAlert, false);
+  assert.throws(() => loadConfig({ CHANNEL_MODEL_CHANGE_ALERT: "yse" }), /expected one of/);
+});

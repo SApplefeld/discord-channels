@@ -518,6 +518,25 @@ export function redact(record: SessionRecord): PublicSessionRecord {
     lastHookAt: record.lastHookAt,
     lastRelayAt: record.lastRelayAt,
     endedAt: record.endedAt,
+    // The model the session opened with, the one running now, the context size, and the downgrade
+    // record behind a change: session state of the same class as the tool fields above, carrying no
+    // conversation content, published on the same loopback-only route.
+    openingModel: record.openingModel,
+    model: record.model,
+    contextTokens: record.contextTokens,
+    // The nested record is rebuilt field by field for the reason the flat fields are: published
+    // by reference, any field ModelFallback later grows would reach the wire on its own, and this
+    // route publishes only what is named here.
+    downgrade:
+      record.downgrade === null
+        ? null
+        : {
+            cause: record.downgrade.cause,
+            originalModel: record.downgrade.originalModel,
+            fallbackModel: record.downgrade.fallbackModel,
+            category: record.downgrade.category,
+            choice: record.downgrade.choice,
+          },
   };
 }
 

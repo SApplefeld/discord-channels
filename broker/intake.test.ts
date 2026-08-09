@@ -141,6 +141,7 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     taskNotifications: "brief",
     usageCard: false,
     usageCardRefreshMs: 60_000,
+    modelChangeAlert: false,
     usageCacheRoot: null,
     ...overrides,
   };

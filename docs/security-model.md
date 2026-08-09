@@ -37,7 +37,12 @@ connection open. Refusal logging is rate-limited by reason, so a local process c
 with its own refused posts to push earlier evidence of the same behavior out through rotation.
 
 `GET /sessions` withholds `processToken`, and the record is serialized field by field so that a
-field added later has to be published deliberately rather than arriving on its own.
+field added later has to be published deliberately rather than arriving on its own. That route
+publishes the session's model reading beside the rest: the model producing its turns, the model it
+opened with, its live context size, and the detail of a forced downgrade when one applies, each
+named individually rather than spread from the record's own object. Those are model ids, a token
+count, and upstream's own refusal category and consent answer, the same class as the tool-input
+preview this route already carries and holding no conversation text.
 
 ## The process token authenticates reports, never instructions
 
@@ -346,6 +351,22 @@ A prompt reaches the broker over the same loopback route a reply does and is hel
 the per-attachment reply key. A process token is not enough. Without that, any of the subprocesses
 that inherit the token could ring the operator's phone with an approval request of its own devising,
 in the one message they are trained to answer quickly.
+
+**A model change is the third mention-bearing write, and it carries its own window.** A session
+forced off its model mid-run posts one message, on the notice tier by default and on the
+mention-bearing alert tier under `CHANNEL_MODEL_CHANGE_ALERT`. The model it reports is read from
+the session's own transcript, which a token holder can write, so the alert tier would otherwise let
+a line alternating its model string mint one phone-reaching post per poll against the same budget
+permission prompts spend. It therefore rides a per-thread ping and post window of its own, sized
+like the question alert's and separate from it, so the surface reaches a phone without becoming a
+ping primitive. The knob is off by default, which is likelihood rather than severity, and it is a
+notification control alongside the mirror switches rather than a privacy one.
+
+The card's downgrade marker is a report, not an authority. Its direction is decided by matching a
+model name against a known family list, so a crafted model string can be made to rank wrong and a
+forged downgrade can be made to render unmarked. Whoever can do that already writes the whole
+model line, so nothing is gained by guarding it; what matters is that the marker's absence is not
+evidence a session is running the model it opened with.
 
 **The question surface does not meet that bar, and the difference is deliberate.** A held
 `AskUserQuestion` rings the same phone on the process token alone, because its post comes from a

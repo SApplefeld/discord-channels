@@ -123,6 +123,10 @@ export function createSurface(options: SurfaceOptions): Surface {
       turnCount: 0,
       lastHookAt: options.now(),
       endedAt: options.now(),
+      model: null,
+      openingModel: null,
+      contextTokens: null,
+      downgrade: null,
       needsAttention: false,
       lifecycle: "ended",
     };

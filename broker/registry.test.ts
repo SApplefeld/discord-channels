@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRegistry } from "./registry.ts";
-import type { HookIntake, Registry, SessionRecord } from "./registry.ts";
+import type { HookIntake, ModelFallback, Registry, SessionRecord } from "./registry.ts";
 
 const TOKEN = "5f0c2e4a-0000-4000-8000-000000000001";
 
@@ -741,4 +741,289 @@ test("relayClosed ends only the session it names, held by the token that names i
   assert.notEqual(registry.relayClosed(token, "session-a"), null);
   assert.equal(registry.list()[0].state, "ended");
   assert.equal(registry.relayClosed(token, "session-a"), null, "a repeated close is a no-op");
+});
+
+/** A registry holding one live session, with the mutation count the persistence seam would spend. */
+function withSession(): { registry: Registry; sessionId: string; writes: () => number } {
+  let writes = 0;
+  const registry = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    onMutate: () => {
+      writes += 1;
+    },
+  });
+  registry.apply(sessionStart("session-a", "startup"));
+  return { registry, sessionId: "session-a", writes: () => writes };
+}
+
+test("a model change is reported once, not once per poll", () => {
+  const { registry, sessionId, writes } = withSession();
+  const opening = writes();
+
+  assert.deepEqual(
+    registry.noteModel(sessionId, { model: "claude-opus-4-8", contextTokens: 1_000 }),
+    [],
+    "the first sighting names the model the session opened with, which is not a change",
+  );
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-opus-4-8", contextTokens: 2_000 }), []);
+  // Upward is the operator's own switch: announced at once, with nothing attached and no hold.
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 3_000 }), [
+    {
+      sessionId,
+      from: "claude-opus-4-8",
+      to: "claude-fable-5",
+      downgrade: null,
+    },
+  ]);
+  // The polls that follow the change, which arrive every interval for as long as the session runs.
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 4_000 }), []);
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 5_000 }), []);
+
+  const record = registry.list()[0];
+  assert.equal(record.openingModel, "claude-opus-4-8", "the opening model survives every later reading");
+  assert.equal(record.model, "claude-fable-5");
+  assert.equal(record.contextTokens, 5_000);
+  assert.equal(
+    writes() - opening,
+    2,
+    "the context alone is not persisted; only the two model transitions are",
+  );
+});
+
+test("a downgrade record stands until the session returns to the model it opened with", () => {
+  const { registry, sessionId } = withSession();
+  registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 1_000 });
+  registry.noteFallback(sessionId, {
+    cause: "refusal",
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-4-8",
+    category: "cyber",
+    choice: null,
+  });
+  const changes = registry.noteModel(sessionId, { model: "claude-opus-4-8", contextTokens: 2_000 });
+
+  assert.equal(changes.length, 1, "the record-first order announces at the transition");
+  assert.equal(changes[0].downgrade?.category, "cyber", "the change names what upstream flagged");
+  assert.equal(registry.list()[0].downgrade?.cause, "refusal");
+
+  const back = registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 3_000 });
+  assert.deepEqual(back, [
+    {
+      sessionId,
+      from: "claude-opus-4-8",
+      to: "claude-fable-5",
+      downgrade: null,
+    },
+  ]);
+  assert.equal(registry.list()[0].downgrade, null, "the switch-back clears what the marker read");
+});
+
+test("a downgrade arriving before any reading names the model the session opened with", () => {
+  // The entitlement record fires at the top of the session, before a line has named a model: without
+  // its own `originalModel` the next assistant line would seed the opening model from the fallback,
+  // and a session running degraded would render as one that opened that way.
+  const { registry, sessionId } = withSession();
+  const consent: ModelFallback = {
+    cause: "consent",
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-5[1m]",
+    category: null,
+    choice: "cancelled",
+  };
+  registry.noteFallback(sessionId, consent);
+  assert.equal(registry.list()[0].openingModel, "claude-fable-5");
+
+  assert.deepEqual(
+    registry.noteModel(sessionId, { model: "claude-opus-5[1m]", contextTokens: 1_000 }),
+    [{ sessionId, from: "claude-fable-5", to: "claude-opus-5[1m]", downgrade: consent }],
+    "the first reading reports the change the record already made, from the opening model",
+  );
+  const record = registry.list()[0];
+  assert.equal(record.openingModel, "claude-fable-5");
+  assert.equal(record.model, "claude-opus-5[1m]");
+});
+
+test("a reading for a session the registry does not hold unended changes nothing", () => {
+  const { registry, sessionId } = withSession();
+  registry.relayClosed(TOKEN, sessionId);
+
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 1 }), []);
+  registry.noteFallback(sessionId, {
+    cause: "refusal",
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-4-8",
+    category: "cyber",
+    choice: null,
+  });
+  registry.noteModel("no-such-session", { model: "claude-fable-5", contextTokens: 1 });
+
+  const record = registry.list()[0];
+  assert.equal(record.model, null, "an ended record is a tombstone a late line cannot move");
+  assert.equal(record.downgrade, null);
+  assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
+});
+
+/** The refusal record's fields as the reader reduces them, the captured specimen's values. */
+const REFUSAL: ModelFallback = {
+  cause: "refusal",
+  originalModel: "claude-fable-5",
+  fallbackModel: "claude-opus-4-8",
+  category: "cyber",
+  choice: null,
+};
+
+test("both downgrade orders produce the same change and the same card state", () => {
+  // Measured against the captured specimen: on the refusal path the assistant line carrying the
+  // new model lands first and the system record follows about twelve seconds later, while on the
+  // consent path the record leads. The operator must not be able to tell the orders apart from
+  // the thread, so the transition-first order holds its announcement for the record that trails
+  // it, and the record's arrival releases the same change the record-first order reports.
+  const recordFirst = withSession();
+  recordFirst.registry.noteModel(recordFirst.sessionId, { model: "claude-fable-5", contextTokens: 1 });
+  assert.equal(recordFirst.registry.noteFallback(recordFirst.sessionId, REFUSAL), null);
+  const led = recordFirst.registry.noteModel(recordFirst.sessionId, {
+    model: "claude-opus-4-8",
+    contextTokens: 2,
+  });
+
+  const transitionFirst = withSession();
+  transitionFirst.registry.noteModel(transitionFirst.sessionId, {
+    model: "claude-fable-5",
+    contextTokens: 1,
+  });
+  assert.deepEqual(
+    transitionFirst.registry.noteModel(transitionFirst.sessionId, {
+      model: "claude-opus-4-8",
+      contextTokens: 2,
+    }),
+    [],
+    "a downward move with no record holds its announcement for the record that trails it",
+  );
+  const trailed = transitionFirst.registry.noteFallback(transitionFirst.sessionId, REFUSAL);
+
+  assert.deepEqual(led, [
+    {
+      sessionId: recordFirst.sessionId,
+      from: "claude-fable-5",
+      to: "claude-opus-4-8",
+      downgrade: REFUSAL,
+    },
+  ]);
+  assert.deepEqual([trailed], led, "the two orders post one identical message");
+  const [ledRecord] = recordFirst.registry.list();
+  const [trailedRecord] = transitionFirst.registry.list();
+  assert.equal(trailedRecord.openingModel, ledRecord.openingModel);
+  assert.equal(trailedRecord.model, ledRecord.model);
+  assert.deepEqual(trailedRecord.downgrade, ledRecord.downgrade);
+});
+
+test("a session that starts downgraded posts its change, from the opening model", () => {
+  // The consent record fires before any assistant line, so the first reading has no previous model
+  // to diff against. The opening model the record seeded is the honest `from`: without it the one
+  // downgrade an operator away from the keyboard can act on posts no message at all.
+  const { registry, sessionId } = withSession();
+  const consent: ModelFallback = {
+    cause: "consent",
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-5[1m]",
+    category: null,
+    choice: "cancelled",
+  };
+  assert.equal(registry.noteFallback(sessionId, consent), null);
+  assert.deepEqual(
+    registry.noteModel(sessionId, { model: "claude-opus-5[1m]", contextTokens: 1_000 }),
+    [
+      {
+        sessionId,
+        from: "claude-fable-5",
+        to: "claude-opus-5[1m]",
+        downgrade: consent,
+      },
+    ],
+    "the change is reported from the opening model the record seeded",
+  );
+});
+
+test("a transition landing first at session start does not seed the opening model from the fallback", () => {
+  // The measured refusal order at the top of a session: the assistant line naming the fallback
+  // model is the session's first reading, so without the record's own correction the opening model
+  // seeds from the fallback itself and the marker is suppressed for a session that is genuinely
+  // degraded.
+  const { registry, sessionId } = withSession();
+  assert.deepEqual(
+    registry.noteModel(sessionId, { model: "claude-opus-4-8", contextTokens: 1_000 }),
+    [],
+    "the first reading is not a change",
+  );
+  const change = registry.noteFallback(sessionId, REFUSAL);
+  const record = registry.list()[0];
+  assert.equal(record.openingModel, "claude-fable-5", "the record reseeds the mis-seeded opening");
+  assert.equal(record.model, "claude-opus-4-8");
+  assert.deepEqual(
+    change,
+    { sessionId, from: "claude-fable-5", to: "claude-opus-4-8", downgrade: REFUSAL },
+    "the record's arrival is what posts the change the reading could not report",
+  );
+});
+
+test("a stale downgrade record neither rides an unrelated change nor survives a decorated switch-back", () => {
+  const time = clock();
+  const registry = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    now: time.now,
+    fallbackAttachMs: 30_000,
+  });
+  registry.apply(sessionStart("session-a", "startup"));
+  registry.noteModel("session-a", { model: "claude-fable-5", contextTokens: 1 });
+  registry.noteFallback("session-a", REFUSAL);
+  registry.noteModel("session-a", { model: "claude-opus-4-8", contextTokens: 2 });
+
+  // A manual switch to a third model. The standing refusal record describes the move to opus, not
+  // this one, so the change must post plain rather than blaming a safeguard for the operator's own
+  // hand. Downward with no record of its own, it is held for the attach window and released plain.
+  assert.deepEqual(registry.noteModel("session-a", { model: "claude-haiku-4", contextTokens: 3 }), []);
+  time.advance(30_000);
+  assert.deepEqual(registry.dueModelChanges(), [
+    { sessionId: "session-a", from: "claude-opus-4-8", to: "claude-haiku-4", downgrade: null },
+  ]);
+  assert.deepEqual(registry.dueModelChanges(), [], "a released change is not released twice");
+
+  // A switch-back that arrives decorated reaches the opening family without matching its exact
+  // string, and reaching the opening family is what ends the downgrade.
+  const back = registry.noteModel("session-a", { model: "claude-fable-5[1m]", contextTokens: 4 });
+  assert.deepEqual(back, [
+    { sessionId: "session-a", from: "claude-haiku-4", to: "claude-fable-5[1m]", downgrade: null },
+  ]);
+  assert.equal(registry.list()[0].downgrade, null, "reaching the opening family clears the record");
+});
+
+test("a held change is released ahead of the next change, in order", () => {
+  // A model that moves again inside the attach window supersedes the hold: two changes, two
+  // messages, posted in the order they happened rather than the held one silently dropped.
+  const { registry, sessionId } = withSession();
+  registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 1 });
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-opus-4-8", contextTokens: 2 }), []);
+  assert.deepEqual(registry.noteModel(sessionId, { model: "claude-fable-5", contextTokens: 3 }), [
+    { sessionId, from: "claude-fable-5", to: "claude-opus-4-8", downgrade: null },
+    { sessionId, from: "claude-opus-4-8", to: "claude-fable-5", downgrade: null },
+  ]);
+});
+
+test("a session that ends takes its model state with it when the sweep prunes the record", () => {
+  const time = clock();
+  const registry = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    retainTerminalMs: 1_000,
+    now: time.now,
+  });
+  registry.apply(sessionStart("session-a", "startup"));
+  registry.noteModel("session-a", { model: "claude-fable-5", contextTokens: 1_000 });
+  registry.relayClosed(TOKEN, "session-a");
+
+  time.advance(2_000);
+  registry.sweep();
+  assert.deepEqual(registry.list(), [], "nothing accumulates for a session that ended");
 });

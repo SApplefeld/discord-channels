@@ -73,6 +73,14 @@ export type BrokerConfig = {
    */
   taskNotifications: "brief" | "full" | "off";
   /**
+   * Whether a session's model change posts on the alert tier, with the mention that reaches the
+   * operator's phone, rather than on the notice tier. Off by default: a model change is worth
+   * reading rather than worth waking someone for, and whether the quiet tier is loud enough on a
+   * phone is a question only live use answers, so the louder setting is an env change rather than a
+   * code round.
+   */
+  modelChangeAlert: boolean;
+  /**
    * Whether the broker owns a fleet usage card: one thread in the configured channel carrying every
    * account's usage windows and every live session on this host. Off by default, and off is the
    * absence of the machinery rather than a check inside it: no thread is created, no refresh timer
@@ -320,6 +328,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     // the terminal it mirrors is the reported failure. `full` is the escape hatch for an operator
     // who wants the whole report in the thread.
     taskNotifications: taskNotificationMode(env.CHANNEL_TASK_NOTIFICATION),
+    modelChangeAlert: strictFlag(env.CHANNEL_MODEL_CHANGE_ALERT, false),
     // Off by default: the card reads another program's files and opens a thread of its own in the
     // operator's channel, and neither belongs on a host that never asked for it.
     usageCard: strictFlag(env.CHANNEL_USAGE_CARD, false),

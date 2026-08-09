@@ -9,12 +9,12 @@ import { createHandler } from "./intake.ts";
 import { createLogger } from "./log.ts";
 import type { Logger } from "./log.ts";
 import { createRegistry } from "./registry.ts";
-import type { Registry } from "./registry.ts";
+import type { ModelChange, Registry } from "./registry.ts";
 import { loadSessions, saveSessions } from "./persistence.ts";
 import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
-import { renderQuestionNotice } from "./discord/render.ts";
+import { renderModelChange, renderQuestionNotice } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import {
   answerableFromThread,
@@ -31,6 +31,8 @@ import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "./discord/transport.ts";
 import {
   ALERT_WINDOW_MS,
+  MAX_MODEL_CHANGE_ALERTS_PER_WINDOW,
+  MAX_MODEL_CHANGE_PINGS_PER_WINDOW,
   MAX_QUESTION_ALERTS_PER_WINDOW,
   MAX_QUESTION_PINGS_PER_WINDOW,
   createAlertVolume,
@@ -94,6 +96,92 @@ export function questionDelivery(options: {
       options.desk.release(sessionId, digest);
       throw error;
     }
+  };
+}
+
+/**
+ * Posts the one message a session's model change earns, into that session's own thread.
+ *
+ * One message per change rather than one per poll, which is the registry's half: it reports a change
+ * only when the model it holds actually moved, and this posts what it reports. The tier is the
+ * operator's call. The notice tier is the default and floors per thread the way every notice does,
+ * so a session flapping between two models costs one message a minute rather than one a poll; the
+ * alert tier carries the mention that reaches a phone and rides the per-thread volume window below.
+ *
+ * Fire-and-forget, like every other write off this path: it is called from the transcript reader,
+ * which is mid-pass over a batch of lines, and a message that could not be posted costs a change the
+ * operator reads on the card instead. A session with no thread posts nothing at all, which is the
+ * steady state of a broker running without Discord. A write the tier refused (a floored notice, a
+ * refused alert) is logged content-free, because this message is the change's only push signal and
+ * a silent drop would leave nothing saying it never went.
+ */
+export function modelChangeNotice(options: {
+  threadFor: (sessionId: string) => string | null;
+  writer: Pick<ThreadWriter, "notice" | "alert">;
+  /** The operator the alert tier mentions, and the knob that decides whether that tier is used. */
+  operatorId: string;
+  alertTier: boolean;
+  /**
+   * The alert tier's own per-thread volume window, its own instance and never a shared one. The
+   * change is read from a transcript another program writes, so a model string alternating there
+   * can report one change per poll, and with the knob on each change is a mention-bearing write:
+   * the security model's rule for that class is a window of its own, because a write bounded only
+   * by the shared post budget lets a local process park every session on the host. Past the ping
+   * ceiling the alert lands without its mention; past the post ceiling nothing is written and the
+   * drop is logged content-free. The notice tier never consults it: a notice carries no mention
+   * and already floors per thread.
+   */
+  volume: (threadId: string) => "ping" | "quiet" | "drop";
+  log: (message: string) => void;
+}): (change: ModelChange) => void {
+  return (change) => {
+    const threadId = options.threadFor(change.sessionId);
+    if (threadId === null) return;
+    let operatorId: string | null = null;
+    if (options.alertTier) {
+      const level = options.volume(threadId);
+      if (level === "drop") {
+        options.log(
+          `broker: session ${change.sessionId}'s model-change alert is over its window; the message is dropped`,
+        );
+        return;
+      }
+      operatorId = level === "ping" ? options.operatorId : null;
+    }
+    const text = renderModelChange({
+      operatorId,
+      from: change.from,
+      to: change.to,
+      downgrade: change.downgrade,
+    });
+    void (async () => {
+      try {
+        if (options.alertTier) {
+          const posted = await options.writer.alert(threadId, text, operatorId);
+          if (posted.status !== "ok") {
+            options.log(
+              `broker: session ${change.sessionId}'s model-change alert was not written; ` +
+                "the message is dropped, not retried",
+            );
+          }
+        } else {
+          const written = await options.writer.notice(threadId, text);
+          if (!written) {
+            options.log(
+              `broker: session ${change.sessionId}'s model-change notice was floored or refused; ` +
+                "the message is dropped, not retried",
+            );
+          }
+        }
+      } catch {
+        // The message is composed from transcript-sourced model strings, so the error detail is
+        // withheld: it can quote what it failed to post.
+        options.log(
+          `broker: session ${change.sessionId}'s model-change message could not be posted; ` +
+            "the error detail is withheld, it can carry content",
+        );
+      }
+    })();
   };
 }
 
@@ -412,6 +500,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     staleAfterMs: config.staleAfterMs,
     retainTerminalMs: config.retainTerminalMs,
     maxSessions: config.maxSessions,
+    // The hold window for a downward change whose downgrade record trails it: the measured gap is
+    // about twelve seconds of transcript time and the tailer can read the pair on different
+    // passes, so the window spans several poll intervals, floored for a fast poll setting.
+    fallbackAttachMs: Math.max(60_000, config.interimPollMs * 3),
     sessions: loadSessions(config.stateFile),
     // Persisted on every mutation rather than on a timer: a debounce window is a window in which
     // a crash loses a session announcement. A failed write is logged and survived, because the
@@ -526,6 +618,18 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     sessionId: string,
     questions: readonly AskedQuestion[],
   ) => Promise<ReplyResult> = async () => ({ status: "no-thread" });
+  // The model-change message's doorway, mutable for the reason the question alert's is: the tailer
+  // that provokes it is constructed before the Discord block decides whether a channel exists, and
+  // the alert tier needs the sender gate's operator ID, which loads only inside that block. The
+  // poll timer starts before that block finishes, so a change read in the gap would otherwise be
+  // lost outright: the registry's transition is already consumed and reports no second change. One
+  // held slot, latest change wins, because the gap is one startup's width; the Discord block
+  // installs the real doorway and flushes the held change through it. A broker without Discord
+  // never flushes it, which is that broker's steady state for every message.
+  let heldModelChange: ModelChange | null = null;
+  let announceModelChange: (change: ModelChange) => void = (change) => {
+    heldModelChange = change;
+  };
   let tail: TranscriptTailer | null = null;
   let tailTimer: NodeJS.Timeout | null = null;
   let tailInFlight: Promise<void> = Promise.resolve();
@@ -576,6 +680,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // the ask across the two modules, computed from the same bounded parse on both sides.
       answeredAtConsole: (sessionId, questions) =>
         questionDesk.answeredAtConsole(sessionId, questionDigest(questions)),
+      // The session card's model line and the message its changes post. The reading moves the
+      // record whether or not Discord is configured, because the card is rendered from the record;
+      // only the message needs a thread.
+      noteModel: (sessionId, reading) => {
+        for (const change of registry.noteModel(sessionId, reading)) announceModelChange(change);
+      },
+      noteFallback: (sessionId, fallback) => {
+        const change = registry.noteFallback(sessionId, fallback);
+        if (change !== null) announceModelChange(change);
+      },
       echo,
       log: note,
       // The pass watchdog's threshold, scaled here because the tailer does not know the poll
@@ -585,6 +699,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     });
     tail = tailer;
     tailTimer = setInterval(() => {
+      // Held downward changes whose attach window closed post plain before the pass runs: the
+      // hold waits for the downgrade record the pass would read, so its release rides the same
+      // cadence.
+      for (const change of registry.dueModelChanges()) announceModelChange(change);
       // A rejection out of the pass would be fatal under Node 24, taking the hook intake down
       // with the tailer, and the intake is the half that has to keep running. The pass is kept so
       // shutdown can wait for it, the way the Discord refresh's inFlight is below.
@@ -837,6 +955,29 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       await upgrade({ sessionId, threadId, messageId: posted.value.messageId, questions });
       return { status: "sent" };
     };
+    announceModelChange = modelChangeNotice({
+      threadFor: (sessionId) => surface.threadFor(sessionId),
+      writer: steeringWriter,
+      operatorId: gate.operatorId,
+      alertTier: config.modelChangeAlert,
+      // Its own window instance, never the question alert's or the permission desk's: shared
+      // stamps would let one class spend another's slots and push it into drop, the starvation
+      // the damping exists to prevent.
+      volume: createAlertVolume({
+        now: Date.now,
+        pingCeiling: MAX_MODEL_CHANGE_PINGS_PER_WINDOW,
+        postCeiling: MAX_MODEL_CHANGE_ALERTS_PER_WINDOW,
+        windowMs: ALERT_WINDOW_MS,
+      }),
+      log: note,
+    });
+    // The change the pre-doorway hold caught, if the poll timer beat this block to one: released
+    // through the doorway that now exists, so a downgrade landing during startup still posts.
+    if (heldModelChange !== null) {
+      const change = heldModelChange;
+      heldModelChange = null;
+      announceModelChange(change);
+    }
     const interactions = createInteractionRouter({
       gate,
       desk: questionDesk,

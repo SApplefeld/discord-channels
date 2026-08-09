@@ -11,6 +11,97 @@
  */
 export type SessionState = "live" | "stale" | "ended";
 
+/**
+ * What a transcript's assistant line says about the model running the session: the model that
+ * produced the turn, and the live context size its usage block adds up to. Raw tokens rather than a
+ * percentage, because the window is a per-model fact that can move upstream and a rendered
+ * percentage keeps looking authoritative after its denominator rots.
+ */
+export type ModelReading = {
+  model: string;
+  contextTokens: number;
+};
+
+/**
+ * Which of the two forced downgrades upstream recorded. `refusal` is the safeguard path, where a
+ * request was flagged and retried on a lower model; `consent` is the entitlement path, fired when
+ * the session's model requires usage credits. They carry different fields, and a reader keyed to
+ * one misses the other, which is the one an operator away from the keyboard can act on.
+ */
+export type ModelFallbackCause = "refusal" | "consent";
+
+/**
+ * The forced downgrade a transcript system line recorded, reduced to the fields the card and the
+ * change message name. Every string is untrusted content from another program's file, bounded at
+ * the reader and neutralized at the render site.
+ */
+export type ModelFallback = {
+  cause: ModelFallbackCause;
+  /** The model the session was running when the downgrade fired. */
+  originalModel: string;
+  /** The model it was moved to, which is not always a bare id: `claude-opus-5[1m]` is one. */
+  fallbackModel: string;
+  /** The API's refusal category; null on the consent path, which carries none at all. */
+  category: string | null;
+  /** What the operator answered the consent prompt; null when the record carries no answer. */
+  choice: string | null;
+};
+
+/** A session's model changing from one line to the next, and the downgrade record standing for it. */
+export type ModelChange = {
+  sessionId: string;
+  from: string;
+  to: string;
+  downgrade: ModelFallback | null;
+};
+
+/**
+ * The model families this build orders, strongest first. Every comparison here and in the render
+ * layer is on the family rather than on the exact string, because a fallback model arrives
+ * decorated (`claude-opus-5[1m]`) and no version arithmetic is attempted: what is compared is the
+ * direction between two families and nothing finer.
+ */
+const MODEL_FAMILIES: readonly string[] = ["fable", "opus", "sonnet", "haiku"];
+
+/**
+ * Where a model string sits in that order, or null when it names no family this build ranks. The
+ * first family the string contains wins, so a name carrying two of them reads as the stronger.
+ *
+ * Containment is the whole test, and it is a display heuristic rather than an authoritative
+ * degradation signal: a crafted string such as `haiku[fable]` ranks as the stronger family, so a
+ * forged transcript can render a genuine downgrade unmarked. No guard is added, because whoever
+ * writes the model string already writes the whole transcript line, and a check here would lend
+ * the marker an authority its input cannot support.
+ *
+ * Lives here and is imported by the render layer's marker, so what the registry attaches to a
+ * change and what the card draws cannot disagree about what a family is.
+ */
+export function modelRank(model: string): number | null {
+  const lowered = model.toLowerCase();
+  const rank = MODEL_FAMILIES.findIndex((family) => lowered.includes(family));
+  return rank === -1 ? null : rank;
+}
+
+/** True when both names rank and rank the same; two unrankable names are not the same family. */
+function sameFamily(left: string, right: string): boolean {
+  const rank = modelRank(left);
+  return rank !== null && rank === modelRank(right);
+}
+
+/** True when the move from `from` to `to` is downward between two ranked families. */
+function isDowngrade(from: string, to: string): boolean {
+  const fromRank = modelRank(from);
+  const toRank = modelRank(to);
+  return fromRank !== null && toRank !== null && toRank > fromRank;
+}
+
+/** True when `model`'s family is at or above `openingModel`'s, which is what ends a downgrade. */
+function reachesFamily(model: string, openingModel: string): boolean {
+  const rank = modelRank(model);
+  const opened = modelRank(openingModel);
+  return rank !== null && opened !== null && rank <= opened;
+}
+
 export type SessionRecord = {
   sessionId: string;
   /** The GUID the launch wrapper minted for the Claude Code process. Joins hooks to a relay. */
@@ -44,6 +135,30 @@ export type SessionRecord = {
    */
   lastRelayAt: number | null;
   endedAt: number | null;
+  /**
+   * The model this session was first seen running, kept beside the current one for as long as the
+   * record lives. A forced downgrade is a state rather than an instant, because upstream says so:
+   * the refusal record carries `scope: "session"` and the entitlement one says the same in its
+   * prose, so a downgraded session stays downgraded until it is switched back by hand. Holding the
+   * opening model is what lets the card carry a standing marker while the two differ, and clear it
+   * when they agree again. Null until a transcript line reports a model.
+   */
+  openingModel: string | null;
+  /** The model running now, from the most recent transcript line that named one. */
+  model: string | null;
+  /**
+   * The live context size in tokens, as of the most recent line that reported one. Not what a
+   * snapshot restores: a persisted figure would render an hours-old size as current, so a restart
+   * reads null here until the next line reports one.
+   */
+  contextTokens: number | null;
+  /**
+   * The forced downgrade behind the current model, when one was read. Null when the session is
+   * running what it opened with, and null too for a change whose record the reader never saw: the
+   * fallback shape is upstream's and may move, so the marker and the message both compose without
+   * it.
+   */
+  downgrade: ModelFallback | null;
 };
 
 export type HookEvent = "SessionStart" | "PreToolUse" | "PostToolUse" | "Stop";
@@ -75,6 +190,13 @@ export type RegistryOptions = {
   maxSessions?: number;
   /** Injected so a test can drive the stale transition without sleeping. */
   now?: () => number;
+  /**
+   * How long a downward model change with no downgrade record beside it is held before
+   * `dueModelChanges` releases it plain. The measured refusal order writes its record about twelve
+   * seconds after the transition line, and the tailer can read the pair on different passes, so
+   * the caller sizes this in poll intervals. Default 60 seconds.
+   */
+  fallbackAttachMs?: number;
   /** Called after any mutation, with the full record set, so the caller can persist. */
   onMutate?: (sessions: SessionRecord[]) => void;
   sessions?: SessionRecord[];
@@ -100,6 +222,40 @@ export type Registry = {
    * cause reads it here.
    */
   impostorStart: (intake: HookIntake) => boolean;
+  /**
+   * Records what a transcript line said about the model and the context size. Returns the changes
+   * to announce now, and an empty array otherwise: a first sighting over an unseeded opening model
+   * is not a change, and a session polled every twenty seconds reports one message per change
+   * rather than one per poll.
+   *
+   * A downward change with no downgrade record beside it is not returned here: it is held for the
+   * record the measured refusal order writes after the transition line, and released enriched by
+   * `noteFallback` or plain by `dueModelChanges`, so the record-first and transition-first orders
+   * post one identical message. A change that supersedes a held one releases the held change
+   * ahead of itself, which is the one case two changes come back from one reading.
+   *
+   * Only a session the registry still holds unended is written: an ended record is a tombstone the
+   * surfaces paint a final state from, and a line arriving after it cannot move what it says.
+   */
+  noteModel: (sessionId: string, reading: ModelReading) => ModelChange[];
+  /**
+   * Records the forced downgrade a transcript system line reported, replacing any earlier one. A
+   * session whose opening model is not yet known takes it from the record's own `originalModel`,
+   * which is the model it was running when the downgrade fired.
+   *
+   * Returns the change this record's arrival releases for announcement, when there is one: the
+   * held transition it trails, or the change a first reading could not report because the
+   * transition line landed before any other reading. Null when the record only updates state.
+   */
+  noteFallback: (sessionId: string, fallback: ModelFallback) => ModelChange | null;
+  /**
+   * Held changes whose attach window has closed, released plain and exactly once. Polled on the
+   * tailer's own cadence, because the hold exists for a record the tailer reads: a change whose
+   * record never arrives (the fallback shape is upstream's and may move) still posts, without a
+   * cause. A hold whose session has ended is dropped instead, since its thread paints a final
+   * state a change message cannot move.
+   */
+  dueModelChanges: () => ModelChange[];
   /**
    * Marks overdue sessions stale, then prunes terminal records past the retention horizon and
    * evicts down to the record cap. Returns only the records that went stale; a pruned record is
@@ -129,12 +285,37 @@ export type Registry = {
 
 const DEFAULT_RETAIN_TERMINAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SESSIONS = 500;
+const DEFAULT_FALLBACK_ATTACH_MS = 60_000;
 
 export function createRegistry(options: RegistryOptions): Registry {
   const now = options.now ?? Date.now;
   const retainTerminalMs = options.retainTerminalMs ?? DEFAULT_RETAIN_TERMINAL_MS;
   const maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
+  const fallbackAttachMs = options.fallbackAttachMs ?? DEFAULT_FALLBACK_ATTACH_MS;
   const sessions = new Map<string, SessionRecord>();
+
+  /**
+   * Announcement bookkeeping beside a record, never on it and never persisted: a change held for
+   * the downgrade record that trails it, and whether the session's model has ever moved (the
+   * discriminator between an opening model seeded by a real first reading and one mis-seeded by a
+   * fallback's own transition line). In-memory because announcements are the running process's
+   * thread traffic; a restart re-detects everything from fresh readings. Entries are dropped
+   * wherever their record is dropped, so the map is bounded by the record cap.
+   */
+  type ModelSide = {
+    pending: { change: ModelChange; heldAt: number } | null;
+    changed: boolean;
+  };
+  const modelSides = new Map<string, ModelSide>();
+
+  function modelSide(sessionId: string): ModelSide {
+    let held = modelSides.get(sessionId);
+    if (held === undefined) {
+      held = { pending: null, changed: false };
+      modelSides.set(sessionId, held);
+    }
+    return held;
+  }
   for (const record of options.sessions ?? []) sessions.set(record.sessionId, record);
 
   function list(): SessionRecord[] {
@@ -267,8 +448,15 @@ export function createRegistry(options: RegistryOptions): Registry {
       lastHookAt: now(),
       lastRelayAt: null,
       endedAt: null,
+      openingModel: null,
+      model: null,
+      contextTokens: null,
+      downgrade: null,
     };
     sessions.set(sessionId, record);
+    // A fresh record starts fresh announcement bookkeeping: a held change or a changed flag from
+    // a previous run of this session ID describes a model history this record never had.
+    modelSides.delete(sessionId);
     return record;
   }
 
@@ -338,6 +526,130 @@ export function createRegistry(options: RegistryOptions): Registry {
     return record;
   }
 
+  /** The session a transcript reading belongs to, or null when nothing unended holds that ID. */
+  function reading(sessionId: string): SessionRecord | null {
+    const record = sessions.get(sessionId);
+    if (record === undefined || record.state === "ended") return null;
+    return record;
+  }
+
+  function noteModel(sessionId: string, read: ModelReading): ModelChange[] {
+    const record = reading(sessionId);
+    if (record === null) return [];
+    const previous = record.model;
+    record.contextTokens = read.contextTokens;
+    // The context size moves on every turn and is not persisted on its own account, on the same
+    // reasoning relaySeen holds: the snapshot is written whole and synchronously, so a rewrite per
+    // turn would record a figure a restart deliberately drops. The model fields below are the
+    // opposite case, and they call for the write.
+    if (previous === read.model) return [];
+    record.model = read.model;
+    // The first line to name a model names the model the session opened with, for a session whose
+    // downgrade record has not already said what that was.
+    if (record.openingModel === null) record.openingModel = read.model;
+    // Reaching the opening family ends the downgrade the card was marking. Compared on the family
+    // because a switch-back arrives decorated (`claude-fable-5[1m]`), with the exact string kept
+    // for a pair the ranking cannot read.
+    if (record.model === record.openingModel || reachesFamily(record.model, record.openingModel)) {
+      record.downgrade = null;
+    }
+    mutated();
+    const side = modelSide(sessionId);
+    const announcements: ModelChange[] = [];
+    // A model that moved again inside the attach window supersedes the hold: the held change is
+    // released as it stands, ahead of the new one, so both post in order.
+    if (side.pending !== null) {
+      announcements.push(side.pending.change);
+      side.pending = null;
+    }
+    // The change's `from`. A first reading over an opening model a downgrade record seeded is
+    // still a change: the record fired before any assistant line, and without this the one
+    // downgrade an operator away from the keyboard can act on would post no message at all.
+    const from = previous ?? (record.openingModel === read.model ? null : record.openingModel);
+    if (from === null) return announcements;
+    side.changed = true;
+    // The standing record rides a change only when the change's destination is the model the
+    // record says the session fell to: a manual move to a third model is the operator's own hand,
+    // and a message blaming a safeguard for it would be untrue.
+    const downgrade =
+      record.downgrade !== null && sameFamily(read.model, record.downgrade.fallbackModel)
+        ? record.downgrade
+        : null;
+    const change: ModelChange = { sessionId, from, to: read.model, downgrade };
+    // A downward move with no record beside it is held rather than announced: the measured
+    // refusal order writes the record after the transition line, and announcing now would post a
+    // plain message where the record-first order posts the cause. `noteFallback` releases the
+    // hold enriched; `dueModelChanges` releases it plain when no record arrives in the window.
+    if (downgrade === null && isDowngrade(from, read.model)) {
+      side.pending = { change, heldAt: now() };
+      return announcements;
+    }
+    announcements.push(change);
+    return announcements;
+  }
+
+  function noteFallback(sessionId: string, fallback: ModelFallback): ModelChange | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    const side = modelSide(sessionId);
+    record.downgrade = fallback;
+    if (record.openingModel === null) {
+      // The downgrade record names the model the session was running when it fired, which is the
+      // opening model for a session whose first transcript line is the downgrade itself. Without
+      // this the next assistant line would seed the opening model from the fallback model, and a
+      // session that is running degraded would render as one that opened that way.
+      record.openingModel = fallback.originalModel;
+    } else if (
+      !side.changed &&
+      record.model !== null &&
+      record.model === record.openingModel &&
+      sameFamily(record.model, fallback.fallbackModel) &&
+      !sameFamily(fallback.originalModel, fallback.fallbackModel)
+    ) {
+      // The measured refusal order at the top of a session: the transition line was the session's
+      // first reading, so the opening model seeded from the fallback model itself and the marker
+      // would stay suppressed for a session that is genuinely degraded. A session whose model has
+      // ever moved is left alone, because its opening model was seeded by a reading it really ran.
+      record.openingModel = fallback.originalModel;
+    }
+    mutated();
+    if (side.pending !== null && sameFamily(side.pending.change.to, fallback.fallbackModel)) {
+      // The record the hold was waiting for: released with its cause attached, the same change
+      // the record-first order announces.
+      const change: ModelChange = { ...side.pending.change, downgrade: fallback };
+      side.pending = null;
+      return change;
+    }
+    if (
+      !side.changed &&
+      record.model !== null &&
+      record.model !== record.openingModel &&
+      sameFamily(record.model, fallback.fallbackModel)
+    ) {
+      // The transition this record describes landed as the session's first reading, which could
+      // report no change; the record's arrival is what makes it one.
+      side.changed = true;
+      return { sessionId, from: fallback.originalModel, to: record.model, downgrade: fallback };
+    }
+    return null;
+  }
+
+  function dueModelChanges(): ModelChange[] {
+    const at = now();
+    const due: ModelChange[] = [];
+    for (const [sessionId, side] of modelSides) {
+      if (side.pending === null || at - side.pending.heldAt < fallbackAttachMs) continue;
+      const change = side.pending.change;
+      side.pending = null;
+      const record = sessions.get(sessionId);
+      // A tombstone's thread paints a final state a change message cannot move, so its hold is
+      // dropped rather than released.
+      if (record === undefined || record.state === "ended") continue;
+      due.push(change);
+    }
+    return due;
+  }
+
   /** When a terminal record stopped being current, which is what retention is measured from. */
   function terminalSince(record: SessionRecord): number {
     return record.endedAt ?? Math.max(record.lastHookAt, record.lastRelayAt ?? 0);
@@ -352,6 +664,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       if (record.state === "live") continue;
       if (at - terminalSince(record) < retainTerminalMs) continue;
       sessions.delete(record.sessionId);
+      modelSides.delete(record.sessionId);
       removed += 1;
     }
 
@@ -363,6 +676,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       for (const record of terminal) {
         if (sessions.size <= maxSessions) break;
         sessions.delete(record.sessionId);
+        modelSides.delete(record.sessionId);
         removed += 1;
       }
     }
@@ -412,5 +726,17 @@ export function createRegistry(options: RegistryOptions): Registry {
     return record;
   }
 
-  return { apply, subprocessStart, impostorStart, sweep, list, current, relaySeen, relayClosed };
+  return {
+    apply,
+    subprocessStart,
+    impostorStart,
+    noteModel,
+    noteFallback,
+    dueModelChanges,
+    sweep,
+    list,
+    current,
+    relaySeen,
+    relayClosed,
+  };
 }

@@ -15,6 +15,10 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     host: "NEO",
     lastTool: null,
     lastToolInput: null,
+    model: null,
+    openingModel: null,
+    contextTokens: null,
+    downgrade: null,
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,
@@ -105,6 +109,10 @@ test("a view starts without attention until something reports it", () => {
     lastHookAt: NOW,
     lastRelayAt: null,
     endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
   });
 
   assert.equal(narrowed.needsAttention, false);

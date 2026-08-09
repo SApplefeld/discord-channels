@@ -403,3 +403,60 @@ a silent card.
 Stamps: none surfaced at this boundary
 Next: Section 3: The session card's model and context line
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-09
+Completed: Section 3: The session card's model and context line
+Implemented By: implementer-opus (build round), implementer-fable (review-fix round, dispatched
+with the explicit override from this Opus-led session)
+Metrics: 1 full review round (adversarial + blind at fable via the one-tier bump, security at its
+default) plus the fix round's red-first evidence; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the round produced this effort's first genuine Critical, found by tracing
+and confirmed twice by execution. A `system` line's subtype was read through a bare object index,
+so a prototype key (`constructor`, `toString`, `__proto__`) resolved to something that is not
+undefined and passed the guard, storing a downgrade whose cause was a function. `JSON.stringify`
+drops a function-valued field, the next load then failed validation, and `loadSessions` answers a
+malformed record by returning none, so one crafted line in a file this module treats as untrusted
+would discard every session record on the host and with it every Discord thread binding. Two
+independent locks landed: the lookup is guarded, and the snapshot validator now nulls a malformed
+downgrade at field level rather than rejecting the record. The second is the one that removes the
+primitive whatever the source, and it was already written down one function above the defect,
+where the sibling validator's own comment explains why strictness there empties the registry.
+The most instructive finding was a measurement no code reading could have produced. The two
+downgrade paths write their transcript lines in opposite orders: on the refusal path the assistant
+line carrying the new model lands first and the system record follows about twelve seconds later
+(observed twice in the captured specimen), while the consent path leads with the record. The
+implementation and its tests assumed record-first, so on the more common path the transition was
+seen before its reason existed, the message posted with no category, and a session starting
+downgraded seeded its opening model from the fallback itself, permanently hiding the marker the
+feature exists to show. A downward change with no record beside it is now held briefly and released
+either enriched by a record that arrives or plain when the hold expires, so both orders produce one
+identical message; a record trailing a transition reseeds a mis-seeded opening model, guarded so a
+genuine opening is never rewritten.
+Also fixed: a session that starts downgraded now posts its change from the opening model, where the
+silence had been pinned by a passing test asserting it as intended; a stale downgrade no longer
+rides a later manual switch, attaching only when the destination family-matches the record and
+clearing on any move whose family reaches the opening; and model-change alerts take their own
+per-thread window, since the alert tier has no floor by design and this was the third
+mention-bearing write to arrive without one. Minors: the context sum re-checks its total, the
+status route rebuilds the downgrade field by field rather than publishing the object by reference,
+a floored or refused notice logs content-free, and a change read before the Discord doorway is live
+is held rather than lost.
+Adjudicated by the orchestrator: publishing the four fields on the loopback status route is
+in-class and now documented in the security model, alongside the model-change message as the third
+mention-bearing write and the knob as a notification control. Recorded as limits rather than
+defects: the family rank is substring containment, so a crafted model string can render a genuine
+downgrade unmarked and the marker's absence is not evidence; the tailer baselines at the file's
+current size, so a downgrade written before the path is learned is never read; and the model line
+exists only where both mirror switches are on, since reading a suppressed session's transcript for
+the model alone would be a content-safety regression.
+Review Findings: security BLOCK (1 Critical, 2 Major, 4 Minor); blind CHANGES_REQUIRED (3 Major,
+3 Minor); adversarial APPROVED_WITH_CONCERNS (2 Major, 4 Minor). All 13 deduplicated items
+implemented or recorded, items 1 to 6 red-first. One file beyond the section's set:
+`broker/security/permission.ts`, because the new alert window's ceilings belong beside the
+siblings they mirror.
+Named check riding to Section 5's live verify: the model line has never rendered against real
+Discord, and the open question is whether the marker's glyph beside the card's own state glyph
+reads clearly at a phone's width.
+Stamps: none surfaced at this boundary
+Next: Section 4: The subagent roster, and the idle state that is wrong without it
+Commit Model: Commit-and-Push

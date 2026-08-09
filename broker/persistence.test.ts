@@ -31,6 +31,10 @@ function record(sessionId: string): SessionRecord {
     lastHookAt: 2_000,
     lastRelayAt: null,
     endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
   };
 }
 
@@ -225,6 +229,92 @@ test("the registry survives a restart", () => {
 
     const onDisk = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(onDisk.sessions.length, 1, "the snapshot on disk holds the one session");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a snapshot written before the model fields existed loads with them absent, not undefined", () => {
+  // The tolerance `lastToolInput` established: a strict check would empty the whole registry over a
+  // field an older build never wrote, and every session in it would lose the thread its record binds.
+  const { file, cleanup } = scratchFile();
+  try {
+    const older = record("session-a") as Partial<SessionRecord>;
+    delete older.openingModel;
+    delete older.model;
+    delete older.contextTokens;
+    delete older.downgrade;
+    writeFileSync(file, JSON.stringify({ version: 1, sessions: [older] }), "utf8");
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+    assert.deepEqual(logged, []);
+    assert.deepEqual(loaded, [record("session-a")], "absent lands as null, never as undefined");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a persisted downgrade survives a restart and a persisted context size does not", () => {
+  // A downgrade is a state that outlives the process: the tailer rebaselines to the transcript's end
+  // after a restart and never sees that record again, so an unpersisted opening model would be
+  // re-seeded from the fallback and the standing marker would vanish. The context size is the
+  // opposite case, since a figure written hours ago would render as the size a session is running at
+  // right now.
+  const { file, cleanup } = scratchFile();
+  try {
+    const downgraded: SessionRecord = {
+      ...record("session-a"),
+      openingModel: "claude-fable-5",
+      model: "claude-opus-4-8",
+      contextTokens: 61_380,
+      downgrade: {
+        cause: "refusal",
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-4-8",
+        category: "cyber",
+        choice: null,
+      },
+    };
+    saveSessions(file, [downgraded]);
+
+    const loaded = loadSessions(file, { log: () => {} });
+    assert.deepEqual(loaded, [{ ...downgraded, contextTokens: null }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a malformed downgrade nulls that field, never the snapshot around it", () => {
+  // The tolerance is `lastToolInput`'s, applied at field level: a strict check here would be a
+  // whole-snapshot rejection, and one malformed record would empty the registry, costing every
+  // session on the host the Discord thread its record binds it to. A downgrade the file cannot
+  // vouch for renders as no marker, which every surface already draws.
+  const { file, cleanup } = scratchFile();
+  try {
+    const shapes: unknown[] = [
+      { cause: "made-up", originalModel: 4 },
+      {},
+      "refusal",
+      7,
+      { cause: "refusal", originalModel: "claude-fable-5" },
+    ];
+    const records = shapes.map((downgrade, index) => ({
+      ...record(`session-${index}`),
+      downgrade,
+    }));
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, sessions: [...records, record("session-good")] }),
+      "utf8",
+    );
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+    assert.deepEqual(logged, []);
+    assert.equal(loaded.length, shapes.length + 1, "every record survives its neighbor's bad field");
+    for (const held of loaded) assert.equal(held.downgrade, null);
+    assert.deepEqual(loaded[shapes.length], record("session-good"));
   } finally {
     cleanup();
   }

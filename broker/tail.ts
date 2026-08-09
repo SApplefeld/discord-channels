@@ -29,8 +29,13 @@
 // it, which costs at most one poll interval of narration.
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
-import { MAX_OPTION_DESCRIPTION_LENGTH } from "./discord/render.ts";
+import {
+  MAX_MODEL_DETAIL_LENGTH,
+  MAX_MODEL_NAME_LENGTH,
+  MAX_OPTION_DESCRIPTION_LENGTH,
+} from "./discord/render.ts";
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
+import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
 import { sliceCodePoints, withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
@@ -243,6 +248,21 @@ export type TranscriptTailerOptions = {
    * one still waiting there.
    */
   answeredAtConsole: (sessionId: string, questions: readonly AskedQuestion[]) => boolean;
+  /**
+   * Records what an assistant line said about the model running the session and the context it ran
+   * against; the registry's `noteModel`. Called for every line that carries both, so a session's
+   * card tracks the model within a poll of it changing. Nothing here is posted as content, and the
+   * call is synchronous: what it feeds is a record the card is rendered from, not a write to
+   * Discord, and a throw out of it is caught and dropped so the narration behind it still posts.
+   */
+  noteModel?: (sessionId: string, reading: ModelReading) => void;
+  /**
+   * Records the forced downgrade a system line reported; the registry's `noteFallback`. Its own
+   * seam rather than a field of the reading above, because the record arrives on its own line and
+   * names what the reading cannot: which of the two paths forced the change, and what upstream
+   * flagged.
+   */
+  noteFallback?: (sessionId: string, fallback: ModelFallback) => void;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
@@ -396,7 +416,9 @@ function createRepeatLog(
  */
 type TailItem =
   | { kind: "text" | "prompt"; text: string }
-  | { kind: "question"; questions: readonly AskedQuestion[] };
+  | { kind: "question"; questions: readonly AskedQuestion[] }
+  | { kind: "model"; reading: ModelReading }
+  | { kind: "fallback"; fallback: ModelFallback };
 
 /**
  * The most questions one `AskUserQuestion` line contributes, the tool's own ceiling.
@@ -471,10 +493,81 @@ export function askedQuestions(input: unknown): AskedQuestion[] {
   return readable;
 }
 
+/** The three usage figures that add up to the context a turn ran against. */
+const CONTEXT_FIELDS: readonly string[] = [
+  "input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+];
+
 /**
- * What one transcript line contributes, decided by an allowlist and never a denylist. Three line
+ * A model name off a transcript line: stripped of the invisible class, trimmed, and refused whole
+ * when it is empty or past the display bound. Refused rather than truncated, on `renderTaskNotice`'s
+ * reasoning about an id: half a model name names no model, and a line that cannot say which model
+ * ran it says nothing this reader stores.
+ */
+function modelName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = withoutInvisible(value).trim();
+  if (name === "" || [...name].length > MAX_MODEL_NAME_LENGTH) return null;
+  return name;
+}
+
+/**
+ * One of a downgrade record's short words, the refusal category or the consent answer. Absent,
+ * empty once stripped and trimmed, or past its bound all read as null, which renders as the clause
+ * being left off: an entitlement record genuinely carries no category, so absence is a shape this
+ * reader meets rather than a failure.
+ */
+function fallbackDetail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const detail = withoutInvisible(value).trim();
+  if (detail === "" || [...detail].length > MAX_MODEL_DETAIL_LENGTH) return null;
+  return detail;
+}
+
+/**
+ * The context a turn ran against: the three input figures of its usage block, summed. Null unless
+ * every one of them is present as a finite, non-negative number, so a shape that grew a field or
+ * renamed one contributes nothing rather than a total that is quietly short. The per-field
+ * finiteness check keeps `1e999`, which JSON.parse reads as Infinity, out of the sum; the check
+ * on the total is its own lock, because three individually finite figures near the top of the
+ * double range still add to Infinity.
+ */
+function contextTokens(usage: unknown): number | null {
+  if (typeof usage !== "object" || usage === null || Array.isArray(usage)) return null;
+  const fields = usage as Record<string, unknown>;
+  let total = 0;
+  for (const field of CONTEXT_FIELDS) {
+    const value = fields[field];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+    total += value;
+  }
+  if (!Number.isFinite(total)) return null;
+  return total;
+}
+
+/** The two system subtypes that record a forced downgrade, and which path each one is. */
+const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
+  model_refusal_fallback: "refusal",
+  model_consent_fallback: "consent",
+};
+
+/**
+ * What one transcript line contributes, decided by an allowlist and never a denylist. Four line
  * shapes yield anything, and all must first not be a sidechain and must name in `sessionId` the
  * session this transcript was learned for.
+ *
+ * An `assistant` line also yields a model reading when it names a model and its `message.usage`
+ * carries all three context figures. The reading is the card's, not the thread's: nothing about it
+ * is posted as content, and a line missing either half yields no reading while the narration on the
+ * same line is unaffected.
+ *
+ * A `system` line yields a forced downgrade when its `subtype` is one of the two upstream writes
+ * for one and it names both models. `model_refusal_fallback` is the safeguard path and carries an
+ * `apiRefusalCategory`; `model_consent_fallback` is the entitlement path, which carries a `choice`
+ * and no category at all, so a reader keyed to the refusal record's fields would miss the one an
+ * operator can act on.
  *
  * A line yields assistant text when its `type` is `assistant`, its `message.content` is an array,
  * and a block in that array is a `text` block carrying a non-empty string.
@@ -527,9 +620,15 @@ function lineItems(line: string, sessionId: string): TailItem[] {
   if (record["type"] === "assistant") {
     const message = record["message"];
     if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
-    const content = (message as Record<string, unknown>)["content"];
+    const fields = message as Record<string, unknown>;
+    const content = fields["content"];
     if (!Array.isArray(content)) return [];
     const items: TailItem[] = [];
+    const model = modelName(fields["model"]);
+    const context = contextTokens(fields["usage"]);
+    if (model !== null && context !== null) {
+      items.push({ kind: "model", reading: { model, contextTokens: context } });
+    }
     for (const block of content) {
       if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
       const fields = block as Record<string, unknown>;
@@ -543,6 +642,36 @@ function lineItems(line: string, sessionId: string): TailItem[] {
       if (typeof text === "string" && text !== "") items.push({ kind: "text", text });
     }
     return items;
+  }
+  if (record["type"] === "system") {
+    const subtype = record["subtype"];
+    // Object.hasOwn, never a bare index: FALLBACK_CAUSES is a plain object, so a bare lookup
+    // answers prototype keys, and a subtype naming "constructor" or "__proto__" would pass the
+    // undefined guard with a function or Object.prototype as its cause. The declared
+    // Record<string, ...> type is what hides the need for this check: it types every string key
+    // as present, so the compiler reads the guard below as dead while it is the only runtime lock.
+    const cause =
+      typeof subtype === "string" && Object.hasOwn(FALLBACK_CAUSES, subtype)
+        ? FALLBACK_CAUSES[subtype]
+        : undefined;
+    if (cause === undefined) return [];
+    const originalModel = modelName(record["originalModel"]);
+    const fallbackModel = modelName(record["fallbackModel"]);
+    // Both models or nothing: the card and the message are both about the pair, and a record naming
+    // one of them describes a change this reader cannot report faithfully.
+    if (originalModel === null || fallbackModel === null) return [];
+    return [
+      {
+        kind: "fallback",
+        fallback: {
+          cause,
+          originalModel,
+          fallbackModel,
+          category: fallbackDetail(record["apiRefusalCategory"]),
+          choice: fallbackDetail(record["choice"]),
+        },
+      },
+    ];
   }
   if (record["type"] === "attachment") {
     const attachment = record["attachment"];
@@ -618,6 +747,11 @@ type TailEntry = {
    * nothing: what a transcript held before this tailer baselined it is conversation already had,
    * and reading it out would republish it whole into the operator's thread. `suppress` unsets it
    * again, so a later re-allow baselines fresh rather than resuming into a suppressed window.
+   *
+   * The same baseline hides a downgrade record already in the file: a session whose fallback
+   * landed before this tailer learned its path (a broker restarted after the downgrade is the
+   * common case) shows no marker until the next record arrives. Inherent to tailing from now, the
+   * cost of never republishing.
    */
   offset: number | null;
   /**
@@ -969,6 +1103,33 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     for (const line of consumed.split("\n")) {
       if (line === "") continue;
       for (const item of lineItems(line, sessionId)) {
+        // The two card readings are taken first and synchronously: they post nothing, so there is
+        // no await to re-check an epoch across, and each is held to its own try/catch because a
+        // throw escaping here would abandon every chunk behind it in this batch, whose bytes are
+        // already past the offset and cannot be read again. The log line names the session and the
+        // failure and nothing else, the rule every line in this module follows.
+        if (item.kind === "model") {
+          try {
+            options.noteModel?.(sessionId, item.reading);
+          } catch {
+            repeats(
+              `session ${sessionId}'s model reading could not be recorded`,
+              "the reading is dropped; the error detail is withheld, it can carry content",
+            );
+          }
+          continue;
+        }
+        if (item.kind === "fallback") {
+          try {
+            options.noteFallback?.(sessionId, item.fallback);
+          } catch {
+            repeats(
+              `session ${sessionId}'s model downgrade could not be recorded`,
+              "the record is dropped; the error detail is withheld, it can carry content",
+            );
+          }
+          continue;
+        }
         if (item.kind === "question") {
           // The questions the console held this session on, landing here at answer time because
           // Claude Code writes the line when the picker closes. The hook path usually alerted

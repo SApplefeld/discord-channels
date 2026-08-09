@@ -9,6 +9,7 @@ import path from "node:path";
 import type { ServerResponse } from "node:http";
 import {
   createPromptEdits,
+  modelChangeNotice,
   questionCloseOut,
   questionDelivery,
   questionRefresh,
@@ -22,6 +23,7 @@ import type { SessionRecord } from "./registry.ts";
 import { createQuestionDesk } from "./question-desk.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { CallOutcome, DiscordTransport } from "./discord/transport.ts";
+import { createAlertVolume } from "./security/permission.ts";
 import { questionDigest } from "./tail.ts";
 import { createUsageCard } from "./usage/thread.ts";
 import { loadUsageBinding } from "./usage/binding.ts";
@@ -46,6 +48,7 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     taskNotifications: "brief",
     usageCard: false,
     usageCardRefreshMs: 60_000,
+    modelChangeAlert: false,
     usageCacheRoot: null,
     ...overrides,
   };
@@ -371,6 +374,10 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     lastHookAt: Date.now(),
     lastRelayAt: null,
     endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
   };
 
   const posts: string[] = [];
@@ -770,4 +777,192 @@ test("a refused close-out is one bounded line and never the question that failed
     "broker: could not close out session session-a's question message: HTTP 404",
   ]);
   assert.ok(!logged.join("\n").includes("SECRET"), logged.join("\n"));
+});
+
+/** The writer seam the model-change message spends, recording which tier each message took. */
+function tiers() {
+  const notices: { threadId: string; text: string }[] = [];
+  const alerts: { threadId: string; text: string; mentionUserId: string | null }[] = [];
+  return {
+    notices,
+    alerts,
+    writer: {
+      notice: async (threadId: string, text: string) => {
+        notices.push({ threadId, text });
+        return true;
+      },
+      alert: async (threadId: string, text: string, mentionUserId: string | null) => {
+        alerts.push({ threadId, text, mentionUserId });
+        return { status: "ok" as const, value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
+      },
+    },
+  };
+}
+
+const MODEL_CHANGE = {
+  sessionId: "session-a",
+  from: "claude-fable-5",
+  to: "claude-opus-4-8",
+  downgrade: {
+    cause: "refusal" as const,
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-4-8",
+    category: "cyber",
+    choice: null,
+  },
+};
+
+test("a model change posts one message on the notice tier by default", async () => {
+  const { notices, alerts, writer } = tiers();
+  const announce = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer,
+    operatorId: "222222222222222222",
+    alertTier: false,
+    volume: () => "ping" as const,
+    log: () => {},
+  });
+
+  announce(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(notices.length, 1, "one message per change");
+  assert.equal(notices[0].threadId, "thread-1");
+  assert.ok(notices[0].text.includes("flagged cyber"), notices[0].text);
+  assert.ok(!notices[0].text.includes("<@"), "the quiet tier mentions nobody");
+  assert.deepEqual(alerts, []);
+});
+
+test("the knob moves the same change onto the alert tier, with the mention that reaches a phone", async () => {
+  const { notices, alerts, writer } = tiers();
+  const announce = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer,
+    operatorId: "222222222222222222",
+    alertTier: true,
+    volume: () => "ping" as const,
+    log: () => {},
+  });
+
+  announce(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].mentionUserId, "222222222222222222");
+  assert.ok(alerts[0].text.startsWith("<@222222222222222222> "), alerts[0].text);
+  assert.deepEqual(notices, []);
+});
+
+test("a change in a session with no thread posts nothing at all", async () => {
+  const { notices, alerts, writer } = tiers();
+  const announce = modelChangeNotice({
+    threadFor: () => null,
+    writer,
+    operatorId: "222222222222222222",
+    alertTier: false,
+    volume: () => "ping" as const,
+    log: () => {},
+  });
+
+  announce(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(notices, []);
+  assert.deepEqual(alerts, []);
+});
+
+test("the alert tier rides its own per-thread window", async () => {
+  // A transcript is another program's file, so a model string alternating in it can report one
+  // change per poll, and with the knob on each change is a mention-bearing write. The security
+  // model's rule for that class is a window of the write's own: bounded only by the shared post
+  // budget, a token holder could park every session on the host.
+  const { notices, alerts, writer } = tiers();
+  const logs: string[] = [];
+  const volume = createAlertVolume({ now: () => 0, pingCeiling: 1, postCeiling: 2, windowMs: 60_000 });
+  const announce = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer,
+    operatorId: "222222222222222222",
+    alertTier: true,
+    volume,
+    log: (message) => logs.push(message),
+  });
+
+  announce(MODEL_CHANGE);
+  announce(MODEL_CHANGE);
+  announce(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(alerts.length, 2, "past the post ceiling nothing is written");
+  assert.equal(alerts[0].mentionUserId, "222222222222222222");
+  assert.equal(alerts[1].mentionUserId, null, "past the ping ceiling the alert goes quiet");
+  assert.ok(!alerts[1].text.includes("<@"), alerts[1].text);
+  assert.deepEqual(notices, []);
+  assert.equal(logs.length, 1, logs.join("\n"));
+  assert.ok(!logs[0].includes("claude"), "the dropped write's log line carries no model string");
+});
+
+test("a floored or refused model-change write leaves a content-free log line", async () => {
+  // The writer reports failure by value, not only by throw, and this message is the change's only
+  // push signal: a false or non-ok outcome eaten in silence would leave nothing saying it never
+  // went.
+  const logs: string[] = [];
+  const floored = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer: {
+      notice: async () => false,
+      alert: async () => {
+        throw new Error("unused");
+      },
+    },
+    operatorId: "222222222222222222",
+    alertTier: false,
+    volume: () => "ping" as const,
+    log: (message) => logs.push(message),
+  });
+  const refused = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer: {
+      notice: async () => {
+        throw new Error("unused");
+      },
+      alert: async () => ({ status: "failed" as const, error: "over budget", rate: NO_RATE_INFO }),
+    },
+    operatorId: "222222222222222222",
+    alertTier: true,
+    volume: () => "quiet" as const,
+    log: (message) => logs.push(message),
+  });
+
+  floored(MODEL_CHANGE);
+  refused(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(logs.length, 2, logs.join("\n"));
+  assert.ok(!logs.join("\n").includes("claude"), "the log lines carry no model string");
+});
+
+test("a write that throws costs the message and nothing else", async () => {
+  const logs: string[] = [];
+  const announce = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer: {
+      notice: async () => {
+        throw new Error("the thread is gone, and this error quotes claude-fable-5");
+      },
+      alert: async () => {
+        throw new Error("unused");
+      },
+    },
+    operatorId: "222222222222222222",
+    alertTier: false,
+    volume: () => "ping" as const,
+    log: (message) => logs.push(message),
+  });
+
+  assert.doesNotThrow(() => announce(MODEL_CHANGE));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(logs.length, 1, logs.join("\n"));
+  assert.ok(!logs[0].includes("claude-fable-5"), logs[0]);
 });

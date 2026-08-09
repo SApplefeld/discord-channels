@@ -1,6 +1,6 @@
 // The one place the registry's lifecycle vocabulary and the thread-name vocabulary meet, plus the
 // narrowed view of a session that the Discord surfaces are allowed to see.
-import type { SessionRecord } from "../registry.ts";
+import type { ModelFallback, SessionRecord } from "../registry.ts";
 
 /** What a thread name and the status card say about a session. */
 export type SurfaceState = "working" | "needs you" | "idle" | "exited";
@@ -24,6 +24,13 @@ export type SessionView = {
   /** Timestamp of the most recent hook event, which is what the heartbeat and idleness read. */
   lastHookAt: number;
   endedAt: number | null;
+  /** The model running now, and the one the session opened with. Null until a line reported one. */
+  model: string | null;
+  openingModel: string | null;
+  /** The live context size in tokens, rendered raw: the window is a per-model fact that can move. */
+  contextTokens: number | null;
+  /** The forced downgrade behind the current model, when one was read. */
+  downgrade: ModelFallback | null;
   /** True while the session is blocked on a permission verdict. Fed by the permission relay. */
   needsAttention: boolean;
   /** The registry's own lifecycle state, mapped to a surface state by `deriveSurfaceState`. */
@@ -40,6 +47,10 @@ export function toView(record: SessionRecord, needsAttention = false): SessionVi
     turnCount: record.turnCount,
     lastHookAt: record.lastHookAt,
     endedAt: record.endedAt,
+    model: record.model,
+    openingModel: record.openingModel,
+    contextTokens: record.contextTokens,
+    downgrade: record.downgrade,
     needsAttention,
     lifecycle: record.state,
   };

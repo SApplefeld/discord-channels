@@ -112,6 +112,27 @@ export const MAX_QUESTION_PINGS_PER_WINDOW = 1;
 export const MAX_QUESTION_ALERTS_PER_WINDOW = 4;
 
 /**
+ * Distinct model-change alerts one thread may ping with in a window.
+ *
+ * One, because a genuine forced downgrade is rare and its cost is duration, which the session
+ * card's standing marker already carries: a second ping inside a minute adds nothing a person can
+ * act on faster. The ceiling exists because the change is read from a transcript another program
+ * writes, so a model string alternating there can report one change per poll, and with the alert
+ * knob on each change is a mention-bearing write, the class whose rule is a window of its own.
+ * Past it the alert still lands; it stops ringing.
+ */
+export const MAX_MODEL_CHANGE_PINGS_PER_WINDOW = 1;
+
+/**
+ * Model-change alerts one thread may post at all in a window, ping or not.
+ *
+ * Past this the volume can only be the alternating-transcript case, and what is left to protect
+ * is the channel and the post budget the permission prompts share. A dropped alert costs little:
+ * the change stands on the session's card either way.
+ */
+export const MAX_MODEL_CHANGE_ALERTS_PER_WINDOW = 4;
+
+/**
  * Per-thread volume damping for a mention-bearing write: each call spends a slot in the thread's
  * window and answers how loudly the next message may land.
  *

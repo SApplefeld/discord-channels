@@ -28,6 +28,9 @@ import type { AskedQuestion } from "./discord/render.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { ThreadMessenger } from "./discord/transport.ts";
 import { createRegistry } from "./registry.ts";
+import type { ModelFallback, ModelReading } from "./registry.ts";
+import { renderCard } from "./discord/render.ts";
+import { toView } from "./discord/state.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
 import { createThreadWriter } from "./routing/writer.ts";
@@ -156,6 +159,85 @@ function askUserQuestion(
   });
 }
 
+/**
+ * An assistant line carrying the two facts the session card reads: the model that produced the
+ * turn, and the usage block whose three input figures sum to the live context size. The real shape,
+ * with the sibling counters and the nested objects a live line carries, so a reader that summed the
+ * wrong keys would be caught here.
+ */
+function assistantTurn(
+  model: string,
+  usage: Record<string, unknown>,
+  text = "narration beside the reading",
+  sessionId: string = SESSION,
+): string {
+  return line({
+    parentUuid: "00000000-0000-4000-8000-000000000000",
+    isSidechain: false,
+    message: {
+      model,
+      id: "msg_fixture",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text }],
+      stop_reason: null,
+      usage: {
+        output_tokens: 4_253,
+        service_tier: "standard",
+        cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+        ...usage,
+      },
+    },
+    requestId: "req_fixture",
+    type: "assistant",
+    uuid: "00000000-0000-4000-8000-000000000004",
+    timestamp: "2026-08-09T00:00:00.000Z",
+    sessionId,
+    version: "fixture",
+    gitBranch: "main",
+  });
+}
+
+/**
+ * The system line a forced downgrade writes, in the shape the two captured specimens carry.
+ * `fields` replaces whole fields, so a record deviating in one of them is expressed as that one
+ * field; the entitlement specimen carries no `scope` and no category at all, which is why the base
+ * here is the refusal record and the consent case passes its own fields.
+ */
+function modelFallback(
+  subtype: string,
+  fields: Record<string, unknown> = {},
+  sessionId: string = SESSION,
+): string {
+  return line({
+    parentUuid: "00000000-0000-4000-8000-000000000000",
+    isSidechain: false,
+    type: "system",
+    subtype,
+    content: "Fable 5's safeguards flagged this message. Switched to Opus 4.8.",
+    level: "warning",
+    trigger: "refusal",
+    direction: "retry",
+    scope: "session",
+    originalModel: "claude-fable-5",
+    fallbackModel: "claude-opus-4-8",
+    requestId: "req_fixture",
+    apiRefusalCategory: "cyber",
+    apiRefusalExplanation: null,
+    retractedMessageUuids: ["00000000-0000-4000-8000-000000000009"],
+    isMeta: false,
+    uuid: "00000000-0000-4000-8000-000000000005",
+    timestamp: "2026-08-09T00:00:00.000Z",
+    userType: "external",
+    entrypoint: "cli",
+    cwd: "/repo",
+    sessionId,
+    version: "fixture",
+    gitBranch: "main",
+    ...fields,
+  });
+}
+
 function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   const posts: string[] = [];
   const prompts: string[] = [];
@@ -165,6 +247,9 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   /** All kinds in the order the tailer delivered them, which is transcript order. */
   const delivered: string[] = [];
   const logs: string[] = [];
+  /** The card readings the tailer took, in transcript order, as the registry would be given them. */
+  const readings: { sessionId: string; reading: ModelReading }[] = [];
+  const fallbacks: { sessionId: string; fallback: ModelFallback }[] = [];
   const live = new Set<string>([SESSION]);
   const echo = createEchoMemory();
   const tailer = createTranscriptTailer({
@@ -190,12 +275,30 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
       // the alert behind it.
       return false;
     },
+    noteModel: (sessionId, reading) => {
+      readings.push({ sessionId, reading });
+    },
+    noteFallback: (sessionId, fallback) => {
+      fallbacks.push({ sessionId, fallback });
+    },
     echo,
     log: (message) => logs.push(message),
     now: () => 1_000,
     ...overrides,
   });
-  return { tailer, posts, prompts, questions, consoleAnswers, delivered, logs, live, echo };
+  return {
+    tailer,
+    posts,
+    prompts,
+    questions,
+    consoleAnswers,
+    delivered,
+    logs,
+    readings,
+    fallbacks,
+    live,
+    echo,
+  };
 }
 
 test("what a transcript held before it was learned is never republished", async (t) => {
@@ -3026,4 +3129,331 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
   const captured = logs.join("\n");
   assert.ok(!captured.includes("SECRET"), `transcript content leaked into the log: ${captured}`);
   assert.ok(logs.length > 0, "expected content-free lines to prove the logger was live");
+});
+
+test("an assistant line reports the model that ran it and the context its usage adds up to", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, readings } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantTurn("claude-fable-5", {
+      input_tokens: 2,
+      cache_creation_input_tokens: 61_378,
+      cache_read_input_tokens: 120_000,
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(readings, [
+    { sessionId: SESSION, reading: { model: "claude-fable-5", contextTokens: 181_380 } },
+  ]);
+});
+
+test("a line missing the model or any one usage figure reports nothing at all", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, readings, posts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    // The line every existing fixture writes: a model and no usage block at all.
+    assistantText("narration with no usage block") +
+      assistantTurn("claude-fable-5", { cache_read_input_tokens: undefined }, "a missing figure") +
+      assistantTurn(
+        "",
+        { input_tokens: 1, cache_creation_input_tokens: 1, cache_read_input_tokens: 1 },
+        "no model at all",
+      ) +
+      assistantTurn(
+        "claude-fable-5",
+        { input_tokens: "2", cache_creation_input_tokens: 1, cache_read_input_tokens: 1 },
+        "a figure that is not a number",
+      ) +
+      // 1e999 is what JSON.parse reads as Infinity, which would render as a context of Infinity
+      // tokens and never age out of the card.
+      assistantTurn(
+        "claude-fable-5",
+        { input_tokens: 1e999, cache_creation_input_tokens: 1, cache_read_input_tokens: 1 },
+        "a figure that is not finite",
+      ),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(readings, [], "the allowlist yields on the whole shape or on nothing");
+  assert.equal(posts.length, 5, "the narration on those lines still reaches the thread");
+});
+
+test("both forced-downgrade subtypes are read, the entitlement one included", async (t) => {
+  // The entitlement record is the one an operator can act on, and it carries no `scope` and no
+  // category at all: a reader keyed to the refusal record's fields misses it entirely.
+  const file = transcriptFile(t);
+  const { tailer, fallbacks } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    modelFallback("model_refusal_fallback") +
+      modelFallback("model_consent_fallback", {
+        content: "Switched to Opus 5 (1M context) for this session · Fable 5 requires usage credits",
+        trigger: undefined,
+        direction: undefined,
+        scope: undefined,
+        apiRefusalCategory: undefined,
+        apiRefusalExplanation: undefined,
+        retractedMessageUuids: undefined,
+        choice: "cancelled",
+        fallbackModel: "claude-opus-5[1m]",
+        persistedAsDefault: false,
+      }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(fallbacks, [
+    {
+      sessionId: SESSION,
+      fallback: {
+        cause: "refusal",
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-4-8",
+        category: "cyber",
+        choice: null,
+      },
+    },
+    {
+      sessionId: SESSION,
+      fallback: {
+        cause: "consent",
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-5[1m]",
+        category: null,
+        choice: "cancelled",
+      },
+    },
+  ]);
+});
+
+test("an entitlement downgrade carries the marker onto the card, category or no category", async (t) => {
+  // End to end over the seam index.ts wires: the entitlement record names the model the session
+  // opened with, the assistant line behind it names the decorated fallback, and the card says the
+  // session is running below what it opened with for as long as it stays there.
+  const file = transcriptFile(t);
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-tail",
+    sessionId: SESSION,
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+  });
+  const { tailer } = harness({
+    noteModel: (sessionId, reading) => {
+      registry.noteModel(sessionId, reading);
+    },
+    noteFallback: (sessionId, fallback) => registry.noteFallback(sessionId, fallback),
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    modelFallback("model_consent_fallback", {
+      trigger: undefined,
+      direction: undefined,
+      scope: undefined,
+      apiRefusalCategory: undefined,
+      apiRefusalExplanation: undefined,
+      retractedMessageUuids: undefined,
+      choice: "cancelled",
+      fallbackModel: "claude-opus-5[1m]",
+      persistedAsDefault: false,
+    }) +
+      assistantTurn("claude-opus-5[1m]", {
+        input_tokens: 4,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 61_376,
+      }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  const record = registry.list()[0];
+  assert.equal(record.openingModel, "claude-fable-5");
+  assert.equal(record.model, "claude-opus-5[1m]");
+  assert.equal(record.contextTokens, 61_380);
+  assert.match(
+    renderCard(toView(record), "working", 1_000),
+    // The decoration is escaped where the card draws it, like every other transcript-sourced field.
+    /^Model: ⚠ claude-opus-5\\\[1m\\\], down from claude-fable-5 · context 61,380 tokens$/m,
+  );
+});
+
+test("a malformed downgrade record contributes nothing and never throws", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, fallbacks, readings, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    // A subtype this build has never seen, each half of the model pair missing on its own, a record
+    // whose models are not strings, one whose name is too long to be a name, and a line that is not
+    // JSON at all: the shape is upstream's and can move without notice.
+    modelFallback("model_something_new") +
+      modelFallback("model_refusal_fallback", { originalModel: undefined }) +
+      modelFallback("model_refusal_fallback", { fallbackModel: undefined }) +
+      modelFallback("model_refusal_fallback", { originalModel: { name: "claude-fable-5" } }) +
+      modelFallback("model_consent_fallback", { fallbackModel: "m".repeat(200) }) +
+      modelFallback("model_refusal_fallback", { sessionId: OTHER_SESSION }) +
+      modelFallback("model_refusal_fallback", { isSidechain: true }) +
+      "{not json at all\n",
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(fallbacks, []);
+  assert.deepEqual(readings, []);
+  assert.deepEqual(logs, [], "a shape this reader does not admit is silence, not a report");
+});
+
+test("a prototype key is not a downgrade subtype", async (t) => {
+  // The subtype allowlist is a plain object, and a bare index into one answers prototype keys:
+  // `FALLBACK_CAUSES["constructor"]` is a function, not undefined, so without an own-key check a
+  // line naming one of these subtypes would store a ModelFallback whose cause is a function or
+  // Object.prototype, and that value would ride into the registry and the state file.
+  const file = transcriptFile(t);
+  const { tailer, fallbacks, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    modelFallback("constructor") +
+      modelFallback("__proto__") +
+      modelFallback("toString") +
+      modelFallback("valueOf") +
+      modelFallback("hasOwnProperty"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(fallbacks, [], "a prototype key must read as a subtype this build does not know");
+  assert.deepEqual(logs, []);
+});
+
+test("a note that throws costs its own reading and not the narration behind it", async (t) => {
+  // The bytes a pass consumed are already past the offset, so a throw escaping the item loop would
+  // lose every chunk behind it with no way to read them again.
+  const file = transcriptFile(t);
+  const { tailer, posts, logs } = harness({
+    noteModel: () => {
+      throw new Error("the registry exploded on claude-fable-5");
+    },
+    noteFallback: () => {
+      throw new Error("the registry exploded on the downgrade record");
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    modelFallback("model_refusal_fallback") +
+      assistantTurn(
+        "claude-fable-5",
+        { input_tokens: 1, cache_creation_input_tokens: 1, cache_read_input_tokens: 1 },
+        "narration on the line that carried the reading",
+      ) +
+      assistantText("narration behind the reading"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(posts, [
+    "narration on the line that carried the reading",
+    "narration behind the reading",
+  ]);
+  assert.equal(logs.length, 2, logs.join("\n"));
+  assert.ok(!logs.join("\n").includes("claude-fable-5"), logs.join("\n"));
+});
+
+test("the marker stands across the polls that follow the change, not only the one it landed on", async (t) => {
+  // The acceptance is duration: a session below the model it opened with carries the marker for as
+  // long as it stays there, so the passes after the change are where a marker that only fired at the
+  // transition would be seen to have gone.
+  const file = transcriptFile(t);
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-tail",
+    sessionId: SESSION,
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+  });
+  const changes: string[] = [];
+  const { tailer } = harness({
+    noteModel: (sessionId, reading) => {
+      for (const change of registry.noteModel(sessionId, reading)) {
+        changes.push(`${change.from}->${change.to}`);
+      }
+    },
+    // Both seams announce, as the broker wires them: the record-first order releases its change
+    // from noteModel, the transition-first order from noteFallback.
+    noteFallback: (sessionId, fallback) => {
+      const change = registry.noteFallback(sessionId, fallback);
+      if (change !== null) changes.push(`${change.from}->${change.to}`);
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  const turn = (model: string, text: string): string =>
+    assistantTurn(
+      model,
+      { input_tokens: 4, cache_creation_input_tokens: 0, cache_read_input_tokens: 61_376 },
+      text,
+    );
+  const marked = /^Model: ⚠ claude-opus-4-8, down from claude-fable-5 · flagged cyber/m;
+
+  appendFileSync(file, turn("claude-fable-5", "before the downgrade"), "utf8");
+  await tailer.poll();
+  assert.ok(!renderCard(toView(registry.list()[0]), "working", 1_000).includes("down from"));
+
+  appendFileSync(
+    file,
+    modelFallback("model_refusal_fallback") + turn("claude-opus-4-8", "the turn that was retried"),
+    "utf8",
+  );
+  await tailer.poll();
+  assert.match(renderCard(toView(registry.list()[0]), "working", 1_000), marked);
+
+  // The polls that follow, each reading the same model off the lines the session keeps writing.
+  for (const text of ["an hour later", "and later still"]) {
+    appendFileSync(file, turn("claude-opus-4-8", text), "utf8");
+    await tailer.poll();
+    assert.match(renderCard(toView(registry.list()[0]), "working", 1_000), marked);
+  }
+
+  assert.deepEqual(changes, ["claude-fable-5->claude-opus-4-8"], "one change, however many polls");
 });

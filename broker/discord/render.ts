@@ -6,6 +6,8 @@
 // characters) and the renderer owns display safety. Suppressing pings is the transport's half of
 // the same job, via `allowed_mentions`.
 import { isInvisible, sliceCodePoints, withoutInvisible } from "../sanitize.ts";
+import { modelRank } from "../registry.ts";
+import type { ModelFallback } from "../registry.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 
 /**
@@ -264,6 +266,48 @@ const NOTHING = "(none)";
  * which is what the card exists to carry, off the bottom of a glance.
  */
 export const MAX_TOOL_INPUT_PREVIEW = 100;
+
+/**
+ * The most of a model name this renderer carries, in code points. A real model string is a short
+ * id, decorated at most the way `claude-opus-5[1m]` is, so anything longer is not a name worth
+ * showing: the tailer treats one past this bound as absent rather than truncating it, because half
+ * an id names nothing, and the bound is what keeps a crafted one out of the card's own ceiling,
+ * where the final fit() would drop the heartbeat instead.
+ *
+ * Exported because the transcript reader holds transcript-sourced model strings to it: one bound in
+ * one place, so what is stored and what is drawn cannot disagree about what a name is.
+ */
+export const MAX_MODEL_NAME_LENGTH = 64;
+
+/**
+ * The most of a downgrade record's own short words this renderer carries: the refusal category
+ * (measured `cyber`) and the consent answer (measured `cancelled`). Shorter than a model name for
+ * the same reason the id bound exists, and applied at the reader too, where an over-long value
+ * reads as absent.
+ */
+export const MAX_MODEL_DETAIL_LENGTH = 32;
+
+/**
+ * True while `model` runs below the model the session opened with, which is what the card marks.
+ * The rank is the registry's own, so the marker and the downgrade record the registry attaches to
+ * a change cannot disagree about what a family is.
+ *
+ * An unrankable name on either side answers false: the direction is unknown, and a marker drawn on
+ * a guess would tell the operator a session is degraded when it may have been switched up by hand.
+ * Same family answers false too, which is what makes the upward direction, the operator's own
+ * switch-back, render plainly.
+ */
+function isBelowModel(model: string, openingModel: string): boolean {
+  const now = modelRank(model);
+  const opened = modelRank(openingModel);
+  if (now === null || opened === null) return false;
+  return now > opened;
+}
+
+/** A token count with thousands separators, which is what makes a six-figure one readable at a glance. */
+function grouped(value: number): string {
+  return Math.trunc(value).toString().replace(/\B(?=(\d{3})+$)/g, ",");
+}
 
 /**
  * One untrusted prompt field: neutralized, cut to its budget, and told apart from a whole one.
@@ -891,16 +935,102 @@ function toolLine(view: SessionView): string {
 }
 
 /**
- * The starter message: the thread's detail card, edited in place forever after. Six fields, each
- * one named, and no session field that is not one of them.
+ * The card's model line: what the session is running now, a standing marker while that is below
+ * what it opened with, and the raw context size.
+ *
+ * Null for a session no transcript line has reported a model for, which is every session on a host
+ * whose tailer is off and every session before its first reading: the card then carries exactly the
+ * fields it always has.
+ *
+ * The marker stands for as long as the session is below its opening model rather than firing once
+ * at the change, because the cost of a downgrade is duration: a thread that drops model at hour one
+ * runs degraded for every hour after, and a field that reads normal at a glance is how that goes
+ * unnoticed. The category rides the marker when the downgrade record named one, and its absence is
+ * the entitlement path, which carries no category at all.
+ */
+function modelLine(view: SessionView): string | null {
+  if (view.model === null) return null;
+  const model = inertField(view.model, MAX_MODEL_NAME_LENGTH);
+  if (model === "") return null;
+  const opening =
+    view.openingModel === null ? "" : inertField(view.openingModel, MAX_MODEL_NAME_LENGTH);
+  const below =
+    view.openingModel !== null && opening !== "" && isBelowModel(view.model, view.openingModel);
+  const category =
+    view.downgrade === null || view.downgrade.category === null
+      ? ""
+      : inertField(view.downgrade.category, MAX_MODEL_DETAIL_LENGTH);
+  const marked = below
+    ? `⚠ ${model}, down from ${opening}${category === "" ? "" : ` ${SEPARATOR} flagged ${category}`}`
+    : model;
+  const context =
+    view.contextTokens === null ? "" : ` ${SEPARATOR} context ${grouped(view.contextTokens)} tokens`;
+  return `Model: ${marked}${context}`;
+}
+
+/**
+ * The message a model change posts into the session's own thread, on the notice tier by default and
+ * on the alert tier, with the mention that reaches a phone, when the operator's ID is passed.
+ *
+ * The mention is composed here from the operator's own ID and every untrusted field goes through
+ * `inertField`, which escapes the angle brackets Discord's mention syntax lives inside, so the only
+ * mention this message can contain is the one written on this line. `renderQuestionNotice`'s
+ * pattern, and safe for its reason.
+ *
+ * What it carries is what upstream named and no more: the two models, the refusal category when the
+ * record carried one, and the scope, which is the session. A change whose record the reader never
+ * saw composes the same message without those clauses, because the fallback shape is upstream's and
+ * may move, and a change nobody is told about is worse than one described thinly. The entitlement
+ * path names the action that reverses it, since a consent that was dismissed means a session
+ * running on the fallback until someone consents at the console.
+ */
+export function renderModelChange(input: {
+  operatorId: string | null;
+  from: string;
+  to: string;
+  downgrade: ModelFallback | null;
+}): string {
+  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+  const from = inertField(input.from, MAX_MODEL_NAME_LENGTH);
+  const to = inertField(input.to, MAX_MODEL_NAME_LENGTH);
+  const lines = [
+    `${mention}🔀 **Model changed** ${SEPARATOR} now ${to}, was ${from} ${SEPARATOR} for this session`,
+  ];
+  const downgrade = input.downgrade;
+  if (downgrade === null) return lines.join("\n");
+  const original = inertField(downgrade.originalModel, MAX_MODEL_NAME_LENGTH);
+  if (downgrade.cause === "refusal") {
+    const category =
+      downgrade.category === null ? "" : inertField(downgrade.category, MAX_MODEL_DETAIL_LENGTH);
+    lines.push(
+      category === ""
+        ? "A safeguard refusal forced it."
+        : `A safeguard refusal forced it ${SEPARATOR} flagged ${category}.`,
+    );
+    return lines.join("\n");
+  }
+  const choice = downgrade.choice === null ? "" : inertField(downgrade.choice, MAX_MODEL_DETAIL_LENGTH);
+  lines.push(
+    `The session's model requires usage credits and the consent prompt was ` +
+      `${choice === "" ? "not answered" : choice} at the console; consenting there restores ` +
+      `${original === "" ? "it" : original}.`,
+  );
+  return lines.join("\n");
+}
+
+/**
+ * The starter message: the thread's detail card, edited in place forever after. Each field named,
+ * and no session field that is not one of them.
  */
 export function renderCard(view: SessionView, state: SurfaceState, now: number): string {
   const since = view.endedAt ?? view.lastHookAt;
+  const model = modelLine(view);
   const card = [
     `${GLYPHS[state]} **${inertText(displayName(view))}** ${SEPARATOR} ${state}`,
     `Session: ${inertText(view.sessionId)}`,
     `Host: ${inertText(view.host)}`,
     `State: ${state}`,
+    ...(model === null ? [] : [model]),
     toolLine(view),
     `Turns: ${view.turnCount}`,
     `Heartbeat: ${heartbeat(Math.max(now - since, 0))}`,

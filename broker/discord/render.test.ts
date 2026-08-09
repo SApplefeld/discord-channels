@@ -13,6 +13,7 @@ import {
   renderAnswer,
   renderCard,
   renderMirror,
+  renderModelChange,
   renderPermissionRequest,
   renderQuestionNotice,
   renderTaskNotice,
@@ -38,9 +39,47 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     endedAt: null,
     needsAttention: false,
     lifecycle: "live",
+    model: null,
+    openingModel: null,
+    contextTokens: null,
+    downgrade: null,
     ...overrides,
   };
 }
+
+test("the downgrade marker stands on every render, not only the one the change landed on", () => {
+  // The cost of a forced downgrade is duration rather than the instant: an oversight thread that
+  // drops model at hour one runs degraded for every hour after, so the card carries the marker for
+  // as long as the session stays below the model it opened with. Rendered twice, with the context
+  // moved between them the way a later poll moves it, because a marker that only appeared on the
+  // pass the change arrived on would look identical to this at the moment of the change.
+  const downgraded = view({
+    model: "claude-opus-4-8",
+    openingModel: "claude-fable-5",
+    contextTokens: 61_380,
+    downgrade: {
+      cause: "refusal",
+      originalModel: "claude-fable-5",
+      fallbackModel: "claude-opus-4-8",
+      category: "cyber",
+      choice: null,
+    },
+  });
+
+  const marked = /^Model: ⚠ claude-opus-4-8, down from claude-fable-5 · flagged cyber/m;
+  assert.match(renderCard(downgraded, "working", NOW), marked);
+  assert.match(renderCard({ ...downgraded, contextTokens: 120_000 }, "working", NOW), marked);
+
+  // Returning to the opening model clears it, which is how the operator confirms from the thread
+  // that a manual switch-back took effect.
+  const restored = renderCard(
+    { ...downgraded, model: "claude-fable-5", downgrade: null },
+    "working",
+    NOW,
+  );
+  assert.match(restored, /^Model: claude-fable-5 · context 61,380 tokens$/m);
+  assert.ok(!restored.includes("down from"), restored);
+});
 
 test("a thread name puts the glyph first and the state last", () => {
   assert.equal(threadName(view(), "working"), "⚙ neo-intake · working");
@@ -186,6 +225,10 @@ test("the tool line carries what the tool was called with, from the record throu
     lastHookAt: NOW,
     lastRelayAt: null,
     endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
   };
 
   assert.match(renderCard(toView(record), "working", NOW), /^Last tool: Bash · npm test$/m);
@@ -273,6 +316,10 @@ test("neither the view nor the card can carry the process token", () => {
     lastHookAt: NOW,
     lastRelayAt: null,
     endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
   };
 
   const narrowed = toView(record);
@@ -1264,4 +1311,129 @@ test("an empty questions array still composes the alert line, and nothing makes 
     "Q: Ship the migration now?",
     "Options: real label",
   ]);
+});
+
+test("a session no transcript line has reported a model for renders exactly as it always has", () => {
+  // The other direction of the marker test above: the reader is an allowlist, so a session on a
+  // host with no tailer, and one before its first reading, carry the fields the card always had and
+  // no line about a model at all.
+  const plain = renderCard(view(), "working", NOW);
+
+  assert.ok(!plain.includes("Model:"), plain);
+  assert.deepEqual(plain.split("\n").length, 7, plain);
+
+  // A model with no context figure beside it, which is what a restart reads until the next line
+  // reports one, renders the model alone rather than an empty clause.
+  assert.match(
+    renderCard(view({ model: "claude-fable-5", openingModel: "claude-fable-5" }), "working", NOW),
+    /^Model: claude-fable-5$/m,
+  );
+});
+
+test("the marker is drawn on the model family, and never on a direction it cannot read", () => {
+  const marked = (model: string, openingModel: string): boolean =>
+    renderCard(view({ model, openingModel, contextTokens: 10 }), "working", NOW).includes("down from");
+
+  assert.ok(marked("claude-opus-5[1m]", "claude-fable-5"), "a decorated fallback still ranks");
+  assert.ok(marked("claude-haiku-4-5", "claude-sonnet-4-5"));
+  assert.ok(!marked("claude-fable-5", "claude-opus-4-8"), "an upgrade is the operator's own switch");
+  assert.ok(!marked("claude-opus-5[1m]", "claude-opus-4-8"), "one family, no direction to report");
+  assert.ok(!marked("some-other-model", "claude-fable-5"), "an unrankable name is not a downgrade");
+  assert.ok(!marked("claude-opus-4-8", "some-other-model"));
+});
+
+test("an untrusted model string cannot draw a chip or crowd the card", () => {
+  // Model strings and the category come off another program's file, and the card is the surface the
+  // operator reads to tell what a session is doing.
+  const card = renderCard(
+    view({
+      model: "<@123456789012345678>",
+      openingModel: "claude-fable-5",
+      contextTokens: 61_380,
+      downgrade: {
+        cause: "refusal",
+        originalModel: "claude-fable-5",
+        fallbackModel: "<@123456789012345678>",
+        category: "<t:2000000000:R>",
+        choice: null,
+      },
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(!/<@\d+>/.test(card), card);
+  assert.ok(!/<t:\d+:R>/.test(card), card);
+  assert.match(card, /^Heartbeat: /m, "the fields below the model line survive it");
+});
+
+test("a model change message names both models and the session scope", () => {
+  const plain = renderModelChange({
+    operatorId: null,
+    from: "claude-fable-5",
+    to: "claude-opus-4-8",
+    downgrade: null,
+  });
+
+  assert.ok(plain.includes("claude-opus-4-8"), plain);
+  assert.ok(plain.includes("claude-fable-5"), plain);
+  assert.ok(plain.includes("this session"), plain);
+  assert.ok(!plain.includes("<@"), "the notice tier mentions nobody");
+  assert.equal(plain.split("\n").length, 1, "a change with no record read is one plain line");
+});
+
+test("a model change message names the category, or the console action when there is none", () => {
+  const refused = renderModelChange({
+    operatorId: "222222222222222222",
+    from: "claude-fable-5",
+    to: "claude-opus-4-8",
+    downgrade: {
+      cause: "refusal",
+      originalModel: "claude-fable-5",
+      fallbackModel: "claude-opus-4-8",
+      category: "cyber",
+      choice: null,
+    },
+  });
+
+  assert.ok(refused.startsWith("<@222222222222222222> "), refused);
+  assert.ok(refused.includes("flagged cyber"), refused);
+
+  // The entitlement path carries no category at all, and it is the one an operator can act on: the
+  // message says what to do rather than only what happened.
+  const consent = renderModelChange({
+    operatorId: null,
+    from: "claude-fable-5",
+    to: "claude-opus-5[1m]",
+    downgrade: {
+      cause: "consent",
+      originalModel: "claude-fable-5",
+      fallbackModel: "claude-opus-5[1m]",
+      category: null,
+      choice: "cancelled",
+    },
+  });
+
+  assert.ok(consent.includes("usage credits"), consent);
+  assert.ok(consent.includes("cancelled"), consent);
+  assert.ok(consent.includes("consenting there restores claude-fable-5"), consent);
+});
+
+test("a change message composed from a hostile record still mentions only the operator", () => {
+  const message = renderModelChange({
+    operatorId: "222222222222222222",
+    from: "<@999999999999999999>",
+    to: "claude-opus-4-8",
+    downgrade: {
+      cause: "consent",
+      originalModel: "<@888888888888888888>",
+      fallbackModel: "claude-opus-4-8",
+      category: null,
+      choice: "@everyone <t:2000000000:R>",
+    },
+  });
+
+  assert.deepEqual(message.match(/<@\d+>/g), ["<@222222222222222222>"], message);
+  assert.ok(!/<t:\d+:R>/.test(message), message);
+  assert.ok(message.length <= MAX_MESSAGE_LENGTH, message);
 });
