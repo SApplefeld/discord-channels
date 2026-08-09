@@ -205,25 +205,24 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // to hand a session, and a notice would only be noise.
       if (text === "") return;
 
-      // A verdict is consumed as a verdict and nothing else. Forwarding it as chat as well would
-      // hand the model a message the operator wrote for the broker, in the middle of a turn parked
-      // on the very prompt it answers. The pattern is anchored, so ordinary prose that happens to
-      // carry a verdict is not one and falls through to the session below.
+      // A verdict that names a request this thread has open is consumed as a verdict and nothing
+      // else. Forwarding it as chat as well would hand the model a message the operator wrote for
+      // the broker, in the middle of a turn parked on the very prompt it answers. The pattern is
+      // anchored, so ordinary prose that happens to carry a verdict is not one and falls through to
+      // the session below.
+      //
+      // A verdict shape that resolved nothing is not consumed here. The pattern is a word and five
+      // letters, which is also an ordinary English reply, so the message stays in play for the
+      // readings below and is reported as an unknown request only once they have all declined it.
       //
       // A truncated message is never parsed as a verdict: the message the operator actually sent
       // was not one, and the pattern tolerates enough interior whitespace that a cut can land on
       // an exact match, which would approve a tool call on words the full text never said. The cut
       // text flows to the session as chat instead, announced below.
       const verdict = truncated ? null : parseVerdict(text);
-      if (verdict !== null) {
-        await options.permissions.resolve(message.threadId, verdict);
-        return;
-      }
+      if (verdict !== null && (await options.permissions.resolve(message.threadId, verdict))) return;
 
       const record = sessionForThread(options.registry, options.threadFor, message.threadId);
-      // A thread this broker does not own, or one whose session has been pruned. Silence is right:
-      // the operator is talking in some other thread of their own.
-      if (record === null) return;
 
       // A message typed while this session's question is held is that question's answer, in the
       // operator's own words, for the whole ask. It is consumed here and not also delivered, for
@@ -242,7 +241,29 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // the operator sent was longer than what a cut leaves, and injecting the beginning of it
       // would answer the session's question with a sentence that stops mid-thought. The cut text
       // flows on as chat instead, announced, and the question stays held and answerable.
-      if (!truncated && options.questions.answerTyped(record.sessionId, text)) return;
+      //
+      // A verdict shape that resolved no request reaches here and is submitted as the answer it
+      // reads as. The trade this accepts: a genuine verdict whose request was lost, which a broker
+      // restart between the prompt and the answer does, becomes the answer to whatever question the
+      // session is holding. Deliberate, because the request that verdict named is already gone and
+      // no reading of the message can approve anything, while the operator sees exactly what was
+      // submitted in the thread message's own terminal edit.
+      if (record !== null && !truncated && options.questions.answerTyped(record.sessionId, text)) {
+        return;
+      }
+
+      // Nothing else could take it, so the operator is told their answer named no open request.
+      // Ahead of the ended, rate, and delivery branches below: a verdict shape is never handed to a
+      // session as chat, so it can never be one of their delivery failures either, and reporting it
+      // as one would answer a message about permissions with a notice about steering.
+      if (verdict !== null) {
+        await options.permissions.reportUnknownVerdict(message.threadId, verdict);
+        return;
+      }
+
+      // A thread this broker does not own, or one whose session has been pruned. Silence is right:
+      // the operator is talking in some other thread of their own.
+      if (record === null) return;
 
       if (record.state === "ended") {
         log(

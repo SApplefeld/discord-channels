@@ -179,8 +179,18 @@ export type PermissionDesk = {
    * rather than believing a prompt is outstanding when it is not.
    */
   request: (processToken: string, request: PermissionRequest) => Promise<boolean>;
-  /** Applies a verdict typed in a thread, if that thread has a request open under that ID. */
-  resolve: (threadId: string, verdict: Verdict) => Promise<void>;
+  /**
+   * Applies a verdict typed in a thread, if that thread has a request open under that ID. Reports
+   * whether it consumed one, and writes nothing at all when it did not: a message of the verdict
+   * shape is also an ordinary English sentence, so a caller with somewhere else to put one decides
+   * what an unmatched verdict is before the operator is told anything about it.
+   */
+  resolve: (threadId: string, verdict: Verdict) => Promise<boolean>;
+  /**
+   * Tells the operator that a verdict named no open request. Called only once every other reading
+   * of the message has declined it, because it is the reading that ends in a notice.
+   */
+  reportUnknownVerdict: (threadId: string, verdict: Verdict) => Promise<void>;
   /**
    * Sessions with a prompt the operator has not answered. This is what feeds the `needs you` state,
    * and it is the reason the state exists: a session parked on a permission prompt is doing nothing
@@ -315,17 +325,13 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
     async resolve(threadId, verdict) {
       const key = keyFor(threadId, verdict.requestId);
       const entry = open.get(key);
-      if (entry === undefined) {
-        // Stale, already answered, named in the wrong thread, or asked before a broker restart:
-        // this table does not survive one, and the session behind it is not re-prompted. Dropped
-        // rather than matched against anything else open, because a five-letter ID is short enough
-        // to repeat and guessing is how a verdict approves the wrong tool. Answered in the thread
-        // rather than only logged, because from a phone a silent drop reads exactly like an
-        // approval that worked.
-        log(`permission: no request ${verdict.requestId} is open in thread ${threadId}, dropping`);
-        await notice(threadId, unknownVerdictNotice(verdict.requestId));
-        return;
-      }
+      // Stale, already answered, named in the wrong thread, or asked before a broker restart: this
+      // table does not survive one, and the session behind it is not re-prompted. Dropped rather
+      // than matched against anything else open, because a five-letter ID is short enough to repeat
+      // and guessing is how a verdict approves the wrong tool. Nothing is logged or written on the
+      // way out: the message is still whole and still the caller's to read another way, and only
+      // the caller knows whether anything else took it.
+      if (entry === undefined) return false;
       open.delete(key);
 
       const delivered = options.relays.deliver(entry.processToken, {
@@ -341,7 +347,18 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
           ? `permission: request ${verdict.requestId} answered ${what}`
           : `permission: request ${verdict.requestId} answered ${what}, but its session has no relay`,
       );
+      // The entry is consumed either way, so this answered the request even when its session was
+      // gone. Reported as consumed for that reason: it is an answer that was applied, not a message
+      // still looking for a reading.
       if (!delivered) await notice(threadId, unreachableVerdictNotice(verdict.requestId));
+      return true;
+    },
+
+    async reportUnknownVerdict(threadId, verdict) {
+      // Answered in the thread rather than only logged, because from a phone a silent drop reads
+      // exactly like an approval that worked.
+      log(`permission: no request ${verdict.requestId} is open in thread ${threadId}, dropping`);
+      await notice(threadId, unknownVerdictNotice(verdict.requestId));
     },
   };
 }

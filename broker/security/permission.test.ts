@@ -158,10 +158,14 @@ test("a well-formed verdict naming no open request is dropped, not applied to an
   const { desk, sent } = harness();
   await desk.request(TOKEN_A, request({ requestId: "abcde" }));
 
-  await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" });
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" }),
+    false,
+    "an unknown id consumed nothing, and says so",
+  );
   assert.deepEqual(sent.get(TOKEN_A), [], "an unknown id matched nothing at all");
 
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }), true);
   assert.equal((sent.get(TOKEN_A) as RelayEvent[]).length, 1, "the open request still answers");
 });
 
@@ -169,8 +173,12 @@ test("an answered request is consumed, so the same verdict repeated does nothing
   const { desk, sent } = harness();
   await desk.request(TOKEN_A, request());
 
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" });
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }), true);
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" }),
+    false,
+    "the replay found nothing open, which is the same answer an unknown id gets",
+  );
   await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
   assert.deepEqual(
     sent.get(TOKEN_A),
@@ -267,7 +275,11 @@ test("a verdict for a session whose relay has gone is answered in-thread, not th
   const { desk, relays, notices } = harness();
   await desk.request(TOKEN_A, request());
   relays.closeAll();
-  await assert.doesNotReject(() => desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }));
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }),
+    true,
+    "the request was answered, so the message is spent rather than left for another reading",
+  );
   assert.equal(notices().length, 1, "an answer that went nowhere is not reported as success");
   assert.match(notices()[0].text, /no channel connected/);
 });
@@ -300,21 +312,32 @@ test("a verdict for a prompt that never landed is answered rather than silently 
   await desk.request(TOKEN_A, request());
   at += 120_000;
 
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }), false);
   assert.deepEqual(sent.get(TOKEN_A), [], "nothing was approved on the strength of a guess");
+
+  await desk.reportUnknownVerdict(THREAD_A, { requestId: "abcde", behavior: "allow" });
   assert.match(notices()[notices().length - 1].text, /No permission request `abcde` is open/);
 });
 
 test("an unmatched verdict says so in-thread, because silence reads as success from a phone", async () => {
   // The broker restarts at every logon and this table does not survive one, so an answer to a
   // prompt asked before the restart lands here. Dropping it in silence is indistinguishable, on a
-  // phone, from an approval that worked.
-  const { desk, notices, sent } = harness();
-  await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" });
+  // phone, from an approval that worked. The report is its own call: a message of the verdict shape
+  // has other readings, and only a caller that has exhausted them asks for this.
+  const { desk, notices, sent, logged } = harness();
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" }), false);
+  assert.deepEqual(notices(), [], "resolving nothing writes nothing");
+
+  await desk.reportUnknownVerdict(THREAD_A, { requestId: "qrstu", behavior: "allow" });
   assert.deepEqual(sent.get(TOKEN_A), []);
   assert.equal(notices().length, 1);
   assert.match(notices()[0].text, /`qrstu`/);
   assert.match(notices()[0].text, /keyboard/);
+  assert.match(
+    logged.join("\n"),
+    /no request qrstu is open in thread 900000000000000001, dropping/,
+    "the drop is on the record as well as in the thread",
+  );
 });
 
 test("a run of prompts stops ringing but keeps arriving, and is still answerable", async () => {

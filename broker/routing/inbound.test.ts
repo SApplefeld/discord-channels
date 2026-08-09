@@ -40,9 +40,14 @@ const STRANGER = "700000000000000003";
  * A desk that records what it was asked, rather than one that decides. The gate's ordering is only
  * observable from here: whether a stranger's verdict was refused before the pattern ran, or merely
  * refused, is the difference between a call recorded and no call at all.
+ *
+ * `resolves` is whether the desk holds an open request under the id a verdict names. True by
+ * default, the state a verdict is written against; false is a real desk that found nothing open,
+ * which is what leaves the message in play for the paths below the verdict branch.
  */
-function watchedDesk() {
+function watchedDesk(options: { resolves?: boolean } = {}) {
   const resolved: Array<{ threadId: string; verdict: Verdict }> = [];
+  const unknown: Array<{ threadId: string; verdict: Verdict }> = [];
   const requested: string[] = [];
   const desk: PermissionDesk = {
     request: async (processToken) => {
@@ -51,10 +56,14 @@ function watchedDesk() {
     },
     resolve: async (threadId, verdict) => {
       resolved.push({ threadId, verdict });
+      return options.resolves ?? true;
+    },
+    reportUnknownVerdict: async (threadId, verdict) => {
+      unknown.push({ threadId, verdict });
     },
     waiting: () => new Set<string>(),
   };
-  return { desk, resolved, requested };
+  return { desk, resolved, unknown, requested };
 }
 
 function announce(registry: Registry, sessionId: string, processToken = TOKEN): void {
@@ -128,6 +137,8 @@ function harness(
     attachRelay?: boolean;
     now?: () => number;
     questions?: { answerTyped: (sessionId: string, response: string) => boolean };
+    /** Whether the permission desk has an open request for the id a verdict names. */
+    verdictResolves?: boolean;
   } = {},
 ) {
   const now = options.now ?? ((): number => 1_000);
@@ -153,7 +164,7 @@ function harness(
     },
     editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
   };
-  const permissions = watchedDesk();
+  const permissions = watchedDesk({ resolves: options.verdictResolves });
   const typed: string[] = [];
   const router = createInboundRouter({
     registry,
@@ -172,7 +183,16 @@ function harness(
     writer: createThreadWriter({ messenger, now }),
     now,
   });
-  return { registry, relays, router, sent, notices, typed, verdicts: permissions.resolved };
+  return {
+    registry,
+    relays,
+    router,
+    sent,
+    notices,
+    typed,
+    verdicts: permissions.resolved,
+    unknownVerdicts: permissions.unknown,
+  };
 }
 
 function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
@@ -512,7 +532,7 @@ test("a verdict is a verdict even while a question is held, never that question'
   // permission approval typed during a hold approves the tool call it names instead of being eaten
   // as prose the session asked for.
   const question = heldQuestion();
-  const { router, sent, verdicts } = harness({
+  const { router, sent, verdicts, unknownVerdicts } = harness({
     questions: { answerTyped: question.desk.answerTyped },
   });
   question.hold();
@@ -523,10 +543,56 @@ test("a verdict is a verdict even while a question is held, never that question'
   ]);
   assert.equal(question.answered(), false, "the hold is untouched and still answerable");
   assert.deepEqual(sent, []);
+  assert.deepEqual(unknownVerdicts, [], "a verdict the desk consumed is not also reported unknown");
 
   // And the hold is still there to answer, which is what makes the ordering safe rather than lossy.
   await router.deliver(message({ text: "now the beverage" }));
   assert.equal(question.writes.length, 1);
+});
+
+test("a verdict shape the desk had nothing open for answers the held question instead", async () => {
+  // The shape collision this ordering exists for: five letters after a yes or a no is an ordinary
+  // English reply, and "yes merge" typed at a parked question would otherwise be eaten by the
+  // verdict pattern, draw a notice naming a request the operator never typed, and leave the session
+  // parked for the rest of a four-hour hold.
+  const question = heldQuestion();
+  const { router, sent, notices, verdicts, unknownVerdicts } = harness({
+    verdictResolves: false,
+    questions: { answerTyped: question.desk.answerTyped },
+  });
+  question.hold();
+
+  await router.deliver(message({ text: "yes merge" }));
+
+  assert.equal(question.writes.length, 1, "the operator's words reached the question they answered");
+  const body = question.writes[0] as {
+    hookSpecificOutput: { updatedInput: { response: string } };
+  };
+  assert.equal(body.hookSpecificOutput.updatedInput.response, "yes merge");
+  assert.deepEqual(
+    verdicts,
+    [{ threadId: THREAD, verdict: { behavior: "allow", requestId: "merge" } }],
+    "the desk was still offered it first, which is what keeps a real verdict winning",
+  );
+  assert.deepEqual(unknownVerdicts, [], "nothing named a request the operator never typed");
+  assert.deepEqual(notices, []);
+  assert.deepEqual(sent, [], "an answer is spent on the question, never delivered as steering");
+});
+
+test("a verdict shape with nothing open and no question held is still reported unknown", async () => {
+  // The path a mistyped or post-restart verdict takes. Silence here reads, from a phone, exactly
+  // like an approval that worked, so the report is what the fall-through above must not cost.
+  const { router, sent, unknownVerdicts } = harness({ verdictResolves: false });
+
+  await router.deliver(message({ text: "no there" }));
+  assert.deepEqual(unknownVerdicts, [
+    { threadId: THREAD, verdict: { behavior: "deny", requestId: "there" } },
+  ]);
+  assert.deepEqual(sent, [], "a verdict shape is never handed to the model as chat");
+
+  // And in a thread with no session behind it at all, where there is no question path to try.
+  await router.deliver(message({ threadId: "900000000000000099", text: "no there" }));
+  assert.equal(unknownVerdicts.length, 2);
 });
 
 test("a cut message is never a partial answer, and flows on as the announced chat it is", async () => {
