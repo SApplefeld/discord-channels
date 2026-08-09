@@ -11,8 +11,12 @@ import type { SessionView, SurfaceState } from "./state.ts";
 /**
  * Glyph first, because the channel's thread list truncates hard on mobile and the actionable bit
  * has to survive truncation.
+ *
+ * Exported because the fleet card's session rows draw the same state vocabulary as the thread
+ * titles: one table, so a state cannot carry one glyph in the channel list and another on the card
+ * a reader is comparing it against.
  */
-const GLYPHS: Record<SurfaceState, string> = {
+export const GLYPHS: Record<SurfaceState, string> = {
   working: "⚙",
   "needs you": "⏸",
   idle: "✅",
@@ -472,8 +476,18 @@ export function renderQuestionNotice(input: {
   return lines.join("\n");
 }
 
-/** The label a session is known by. A session launched without the wrapper carries no name. */
-function displayName(view: SessionView): string {
+/**
+ * The label a session is known by. A session launched without the wrapper carries no name.
+ *
+ * Exported because every surface that names a session has to name it the same way: the thread
+ * title, the session's own card, and the fleet card's session rows all read this one fallback, so
+ * a session with no name cannot be "session 0f3c9d21" on one surface and blank on another.
+ *
+ * The output is stripped but not escaped, unlike the neutralizers above it: a thread name renders no
+ * markdown, which is the surface this was written for. A caller composing it into message content
+ * has to put it through `inertText` or `inertField` first, or a session names itself in bold.
+ */
+export function displayName(view: SessionView): string {
   const named = view.name === null ? "" : inertName(view.name);
   // The session ID is a payload field from the same untrusted process as the name, so the fallback
   // is neutralized before it is cut rather than after: a slice of raw text can end mid-override.

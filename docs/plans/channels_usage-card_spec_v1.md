@@ -296,4 +296,57 @@ sections, mirror-never-poll, backlog deferred).
 
 ## Chapters
 
-(Appended by executing-work as sections complete.)
+### Chapter 1 - 2026-08-09
+Completed: Section 1: The cache reader and card renderer
+Implemented By: implementer-opus (build round), implementer-fable (review-fix round, then the
+roll-forward adjudication on the same agent's context)
+Metrics: 1 full review round (adversarial + blind + security, all at the session tier) plus two
+fix passes; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the review round's two strongest findings both came from reading outside
+this repository. The adversarial reviewer opened claude-swap's own Python and found the
+`ahead of pace` annotation missing entirely, which the spec names in its Goal, and brought back
+the upstream algorithm so the card cannot disagree with the console: a seven-day period, elapsed
+measured against the fetch time rather than now, suppressed for a day after a reset, and a
+fifteen-point threshold, on the weekly and per-model rows only. The same source settled the
+implementer's own flagged uncertainty in both directions: `backoffUntil` is an epoch instant, so
+a presence test rendered a backing-off warning for a state upstream considers expired, while
+`lastError` as a presence test is correct because success clears it. The blind reviewer found by
+probe that account keys round-tripped through `Number` and back through `String`, so one account
+could render twice and consume two slots while another was read under the wrong key or dropped.
+Security found the freshness guard defeating itself: a finiteness check before a seconds-to-
+milliseconds multiply that reintroduces infinity, rendering arbitrarily stale numbers as just
+now. Both non-security reviewers independently found the same asymmetry, an available reading
+with zero accounts rendering a bare heading with no reason where the unavailable path explains
+itself.
+Adjudicated by the orchestrator: the spec contradicted itself on a window whose reset has passed,
+where mirroring the last-written percentage collides with matching the console. Resolved toward
+the roll-forward and the Approach amended to say so: advancing a boundary the cache's own reset
+instant declares reads the data rather than manufacturing freshness, and the alternative fails in
+the expensive direction, telling the operator they are out of headroom against a window that
+already reset. The security model's account of what crosses to Discord now names the card's
+account identity, corporate on two of three hosts, beside what the reader deliberately leaves
+unread in that directory.
+The verification is the part worth keeping: the renderer was checked differentially against
+upstream's own summary function driven through claude-swap's interpreter, 230 rows with 90 of
+them rolled windows, 0 mismatched. An earlier grid's nine mismatches were root-caused rather than
+waved off, to a microsecond ISO round-trip putting upstream's gap 238 nanoseconds past a
+suppression boundary the card lands exactly on; the agent also caught and reported a bug in its
+own harness that had reported every row mismatched. Accounts order ascending, which a receipt
+from three upstream call sites shows is the rotation array's own order, so the deviation is
+recorded rather than re-litigated. Deliberate: the cache's own countdown and clock strings are
+never read, because they were computed at fetch time and drift, which the live file proved by
+carrying a countdown eleven minutes stale.
+Review Findings: adversarial CHANGES_REQUIRED (1 Critical, 5 Major, 6 Minor); blind
+CHANGES_REQUIRED (3 Major, 8 Minor); security CONCERNS (0 Critical, 4 Minor). All 19
+deduplicated items fixed, items 1 to 5 red-first. Accepted with justification: the exported
+reason member renamed rather than reworded, since the value is itself the loggable word; the
+floored modulus left untested as documented defensive correctness the caller cannot reach; the
+footer's age anchored to the data rather than the clock, so a quiet fleet spends no edit; and a
+maxed per-model row taking the warning glyph over the pace marker, mirroring upstream.
+Named check riding to Section 5's live verify: the roll counts missed periods against now while
+pace measures elapsed against the fetch time, which is upstream's own split, mirrored
+deliberately; the differential covers it at a ninety-second gap between the two clocks and not at
+a gap wide enough to straddle a boundary by itself.
+Stamps: adjudicated 0 unstamped over the section span; none surfaced
+Next: Section 2: The card thread lifecycle and wiring
+Commit Model: Commit-and-Push
