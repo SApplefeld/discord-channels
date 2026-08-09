@@ -231,3 +231,30 @@ cannot close without them), and a live confirmation that the post-answer transcr
 Stamps: adjudicated 1, stamped 1 (claude-code-channel-and-hook-facts)
 Next: Section 3: docs, deploy, and live re-verify
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-09
+Completed: Section 3: docs, deploy, and live re-verify
+Implemented By: main session (docs at b07b839; deploy ran before this session via the install
+update plus broker restart)
+Metrics: 0 review rounds this section (docs and verification; the finishing pass covers the
+effort); 0 NEEDS_CONTEXT; 0 escalations
+Decisions / Surprises: the live re-verify closed with thread-level receipts rather than operator
+recollection. The operator's morning report ("it alerts me immediately") supplied the ask-time
+half; the resolution half came from reading the session's own thread over REST: 34 messages,
+exactly one question alert (11:13:55Z, posted the same second the picker opened and confirmed on
+the operator's phone while the picker was still open), and zero further alerts after the picker
+resolved, so the emission-digest dedupe held against the resolution-time transcript yield. The
+resolution observed was a dismissal rather than an answer, which is a stricter case than the
+acceptance asked for (the withheld line lands either way). Convergent bonus evidence from the
+same morning's probe work: a session launched without the wrapper fired the new PreToolUse hook
+and the intake dropped it tokenless with one log line, the no-watch fail direction working as
+designed. The alert's readability and the absence of any remote answer path were reported by the
+operator as the next round's work; that round is specced and open as
+channels_question-answering_spec_v1.md.
+Review Findings: the two named checks riding from Chapter 2 closed: the security model and
+operations docs landed at b07b839, and the post-answer transcript line's input digest-matching
+the emission payload is confirmed by the live thread showing no duplicate alert.
+Stamps: none this section
+Next: the whole-effort finishing pass (QA verification, finishing reviews, docs curation,
+archive)
+Commit Model: Commit-and-Push
