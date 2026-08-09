@@ -1,7 +1,8 @@
 # Channels: the tailer blackout
 
-Status: Open
+Status: In Progress
 Commit Model: Commit-and-Push
+Fable Spend: standing (Fable-led session)
 
 ## Related
 
@@ -10,81 +11,70 @@ Commit Model: Commit-and-Push
   level and delivered 7.5 hours late in the live check that closes it, which reopens the work as
   this round.
 
-## The defect, with the evidence that survived the first forensics pass
+## The mechanism, as Section 1's forensics confirmed it
 
-During the prior effort's close-out on session `24f852b6` (broker at commit f8afb7d, bound
-2026-08-08T23:39:01Z), the transcript tailer went silently dark for that session: narration posted
-at 23:40:57 and 23:41:37 and then never again, through a 33-minute stretch that dispatched five
-subagents and a quiet 4-minute stretch after them; an `AskUserQuestion` `tool_use` line written at
-00:14:14 was alerted at 07:40:31, the same second the picker's resolution wrote the next
-transcript lines. The operator's other session, updated the same day, alerted correctly, so the
-feature works in the simple case.
+There was no tailer blackout. The confirmed account (evidence in Chapter 1 and the project memory
+`an-open-askuserquestions-line-is-withheld-from-the-transcript`):
 
-Constraints established by direct measurement (full detail and evidence in the project memory
-`the-tailer-can-black-out-silently-for-a-subagent-heavy-session`):
+- **The assistant line carrying an open `AskUserQuestion` is not written to the transcript while
+  the picker is open.** Proof is byte order against the append-only file: lines stamped 00:41,
+  00:49, and 07:40:31 sit at lower offsets than the question line stamped 00:14:14, so that line
+  was physically written at 07:40:31, the second the operator answered. A transcript line's
+  `timestamp` is emission time, not write time; the first forensics pass sorted by timestamp and
+  manufactured the "7.5-hour-late tailer" narrative from that error.
+- **The tailer was healthy through the whole window.** The "dark 33 minutes" contained one
+  assistant text block total, and it was delivered nine seconds after it was written, appended by
+  coalescing edit into the 23:41:37 Discord message where a content-prefix scan could not see it.
+  Every alert observed live that night, across both sessions, was a post-answer alert because the
+  question lines landed at answer time.
+- **Both candidate mechanisms are killed.** Path flapping: a captured subagent `PostToolUse`
+  payload carries the parent's own transcript path (the subagent identity rides in separate
+  `agent_id`/`agent_type` fields), so `learn()` is never taught a subagent path. Wedged pass: the
+  broker's timers, Discord writes, and tailer deliveries ran normally all night; the 03:08-07:41
+  log silence was an idle fleet (zero sleep/wake events exist in the machine's System log).
+- Two real but secondary observations: oversized subagent-completion `PostToolUse` posts bounced
+  off the intake's size cap all evening (`hook refused` lines, retried by the CLI for ~3 hours),
+  and the flush is lazy rather than strictly resolution-gated (one question asked while its turn
+  was actively writing narration landed pre-answer and alerted ~70s before its answer).
 
-- Zero log lines explain any of it: no `tail:` line at all after the restart, no routing drops for
-  the session, no staleness transitions. The system failed invisibly, which violates its own
-  dead-paths-are-visible principle regardless of the mechanism.
-- The question line was newline-terminated when written; the whole-line rule did not hold it.
-- The session stayed live all night (relay-attached sessions are exempt from the staleness sweep;
-  `lastRelayAt` ticked throughout), so the tailer's live set held it and the poll timer had every
-  opportunity.
-- Per-poll growth stayed under `MAX_TAIL_READ_BYTES` and no single line exceeded it (no `outgrew`
-  lines, and the largest real lines were ~50 KB).
-- No hook fired between 00:14:05 and 07:40:31, so the path and offset the tailer held at 00:14:05
-  stood unchanged all night; whatever they were, twenty-second passes against them delivered
-  nothing for 7.5 hours and then delivered.
-
-## Candidate mechanisms, to be confirmed or killed by Section 1 before anything is fixed
-
-1. **Path flapping from subagent hooks.** Hypothesis: a subagent's tool calls fire `PostToolUse`
-   under the parent's `session_id` while carrying the subagent's own
-   `<sessionId>\subagents\agent-*.jsonl` as `transcript_path`. `broker/tail.ts`'s `learn()` reads
-   any path change as a relearn: epoch bump, offset dropped, silent rebaseline at the new file's
-   current end. Continuous flapping between the agent file and the main file would skip everything
-   written between flaps, with no log line, which matches the dark subagent stretch exactly. It
-   does not by itself explain the overnight stall (no hooks fired overnight, so no flapping), nor
-   the delivery landing at the resolution second.
-2. **A poll pass that never settles.** `poll()` answers a concurrent call with the running pass and
-   starts no new one; a pass wedged on any await (one session's hung read, a delivery await inside
-   an ordering chain that never resolves) silences the tailer for every session, forever, with no
-   log line saying so. What would have released such a wedge at exactly 07:40:31 is unexplained,
-   which is the main reason this stays a candidate rather than a conclusion.
-
-Neither candidate cleanly explains the exact-second delivery, so Section 1 exists.
+The consequence: **no tailer patch can alert a quietly parked question**, because the data does
+not exist on disk until the answer. The timely signal is upstream's `PreToolUse` hook for
+`AskUserQuestion` (changelog 2.1.85, which also allows answering via `updatedInput`), pending live
+confirmation that it fires on an interactive session on this host.
 
 ## Sections of Work
 
-### 1. Instrumented reproduction
+### 1. Forensic identification of the mechanism (complete)
 
 Model: fable
-Locus: inline (the repro drives live sessions, restarts, and thread reads only the main session
-can safely coordinate)
+Locus: inline
 
-Reproduce the blackout with the mechanism observable, before any fix:
+As planned, this section was an instrumented reproduction. As executed, no instrumentation was
+needed: the mechanism was named from artifacts that already existed. What ran, each observation
+captured rather than inferred:
 
-- Capture one real subagent `PostToolUse` payload from a wrapped session (the `tools/dump-hook.ps1`
-  harness exists for this; register the capture against a scratch settings scope or a dedicated
-  probe session, never the live user settings by accident, per the
-  `a-test-that-drives-an-installer-can-install` memory). The single load-bearing fact: does its
-  `transcript_path` name the subagent's `agent-*.jsonl` under the parent's `session_id`? That
-  confirms or kills candidate 1 in one observation.
-- Add temporary (or permanent, if cheap) tailer observability sufficient to watch the live state:
-  at minimum a rate-limited debug line or debug endpoint exposing, per session, the learned path's
-  stem, the held offset, the allowed flag, and the epoch, plus a pass watchdog that logs when a
-  poll pass has been running longer than several intervals. The watchdog is wanted permanently
-  regardless of mechanism: it is the visibility line the blackout lacked.
-- Drive a wrapped session through a subagent-dispatching stretch and watch the state: a flapping
-  path stem confirms candidate 1; a pass-age counter that never resets confirms candidate 2;
-  anything else is the real mechanism.
+- A scratch-settings headless probe captured a real subagent `PostToolUse` payload: it carries the
+  parent's `session_id` and the parent's own transcript path, with the subagent identity in
+  separate `agent_id`/`agent_type` fields. Candidate 1's premise killed in one observation, as
+  specified.
+- Byte-offset timelines of the blackout session's transcript (a scratch script, `timeline.mjs`)
+  proved the question line was written at resolution, not at emission, and that the "dark stretch"
+  contained almost no assistant text at all.
+- The broker log across the window showed the intake refusing oversized hook posts all evening and
+  an idle-fleet silence from 03:08, not a wedge; Discord thread reads over REST confirmed every
+  delivery the transcript owed, including the one narration chunk hidden inside a coalescing edit.
 
-Acceptance: the blackout mechanism is named with a captured observation, not an inference, and the
-Chapter records the discriminating evidence.
+Acceptance met: the mechanism is named with captured observations (byte order, a captured payload,
+the log, and the thread), and Chapter 1 records the discriminating evidence.
 
 ### 2. The fix the mechanism earns, plus the two hardenings already justified
 
 Model: fable
+
+> **Pending redesign.** Section 1's findings invalidate this section's premise: there is no tailer
+> mechanism to fix, and the fix the confirmed mechanism earns is a `PreToolUse` hook path for
+> `AskUserQuestion`, gated on a live interactive probe. The redesign is in front of the operator
+> now (Chapter 1 records the findings); this section's text is rewritten once ratified.
 
 - Fix the confirmed mechanism from Section 1.
 - Regardless of mechanism, two hardenings are already evidence-backed: `learn()` refuses a taught
@@ -112,3 +102,40 @@ Locus: inline
   alert reached the phone.
 
 ## Chapters
+
+### Chapter 1 - 2026-08-09
+Completed: Section 1: Forensic identification of the mechanism
+Implemented By: main session
+Metrics: 0 review rounds (read-only forensics; no code changed); 0 NEEDS_CONTEXT; 0 escalations;
+advisor off
+Decisions / Surprises: the effort's founding premise died under evidence. The discriminating find
+is byte order against the append-only transcript: lines stamped 00:41, 00:49, and 07:40:31 sit at
+lower offsets than the `AskUserQuestion` line stamped 00:14:14, so Claude Code wrote the question
+line at answer time and the tailer alerted within a second of the line existing. The first
+forensics pass had sorted by `timestamp`, which is emission time, not write time. Candidate 1
+(subagent path flapping) was killed by a captured subagent `PostToolUse` payload carrying the
+parent's own transcript path; candidate 2 (wedged pass) by the broker's visibly healthy night
+(live card-edit and refusal chatter until an idle fleet went quiet at 03:08; zero sleep events in
+the System log). The "missing" narration chunk was found delivered inside a coalescing edit of an
+earlier Discord message (edited_timestamp 00:10:31, nine seconds after the text was written); the
+operator's three overnight Discord messages were the buffered `queue-operation` neighbors that
+made the byte-order proof possible. Convergent discovery: upstream changelog 2.1.85 added
+`PreToolUse` for `AskUserQuestion` (with `updatedInput` answering), found in the operator's fresh
+`D:\Claude-Code` clone before the forensics began; it is the only timely alert path and the fix
+direction Section 2's redesign now proposes. Secondary observations for later rounds: subagent
+completion `PostToolUse` payloads (67-327KB) bounce off the intake size cap and the CLI retries
+them for hours; the flush is lazy rather than strictly resolution-gated, so pre-answer alerts can
+happen but are never guaranteed. Records corrected in the same session: the
+`the-tailer-can-black-out-silently-for-a-subagent-heavy-session` memory retired and superseded by
+`an-open-askuserquestions-line-is-withheld-from-the-transcript`; the transcript-shape memory
+gained the append-order-versus-timestamp rule; the backlog's "no hook runs for that tool,
+upstream-blocked" entry rewritten around 2.1.85. The archived prior plan's contrary claim
+("flushed at emission") stays as append-only history.
+Review Findings: none (no code changed; the finishing pass covers the round)
+Stamps: adjudicated 4, stamped 1 (claude-code-transcript-jsonl-shape); the blackout memory was
+corrected and superseded rather than stamped; three operator-tier reads
+(claude-code-file-permission-rules, claude-code-permission-deny-rules,
+azure-cli-under-armed-sp-on-windows) skipped as not applied to this work
+Next: Section 2, pending the operator's ratification of the redesign (PreToolUse alert path gated
+on the interactive probe, plus which hardenings survive)
+Commit Model: Commit-and-Push

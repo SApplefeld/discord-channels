@@ -30,12 +30,14 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   because the clean fix, a single monotonic arrival counter that survives eviction, would make any
   ID-less arrival anywhere end every in-flight run's coalescing. Growing the fleet is the trigger to
   take that trade.
-- Answering a console question from the thread, if Claude Code ever grows an extension point for
-  it. Today the thread only alerts that an `AskUserQuestion` picker is open: no hook runs for that
-  tool, nothing observes it, and the channel permission protocol's verdict vocabulary is
-  `allow | deny` alone, so there is nothing to carry an option choice back. The shape wanted is
-  "whatever the operator types in the thread becomes the picker's Other answer", which needs
-  upstream support before any of it is buildable.
+- Answering a console question from the thread. The upstream extension point exists: since Claude
+  Code 2.1.85, `PreToolUse` runs for `AskUserQuestion`, and a hook can answer the question outright
+  by returning `updatedInput` alongside `permissionDecision: "allow"` (upstream changelog; firing
+  on a live interactive session on this host is pending the tailer-blackout round's probe). The
+  shape wanted is "whatever the operator types in the thread becomes the picker's answer": the
+  broker holds the hook request open, alerts the thread, and answers with the operator's reply,
+  with the console picker as the timeout fallback. Needs its own design round once the probe
+  confirms; the channel permission protocol's `allow | deny` vocabulary is unaffected either way.
 - Spoiler-collapsed background-task reports, behind `CHANNEL_TASK_NOTIFICATION=full`. The default
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without
