@@ -94,17 +94,46 @@ instance, wiring in `broker/index.ts`. A Discord-less or knob-off broker constru
 Tests: rebind-over-restart from state, no-edit-when-unchanged, budget refusal handling (skip,
 retry next tick), knob-off inertness both directions.
 
-### 3. Docs, deploy, and live verify
+### 3. The session card's model and context line
+
+Model: opus
+
+The per-session status card (the thread's own first message, not the fleet card) gains one line
+carrying the session's live model and raw context size, read from the transcript lines the tailer
+already polls: `message.model`, and `input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens` from `message.usage` (both measured; see the
+`transcript-lines-carry-model-and-context-size` memory). Rendered raw, never as a percentage: the
+1M window is a per-model fact that can change upstream without notice, and the raw count needs no
+denominator to be honest.
+
+A model change mid-session also posts one line to the thread, on the steering writer's notice
+tier rather than the alert tier (no mention): a session switching models is an event the operator
+cannot otherwise see from Discord, and the case that motivated it is a security-advisory review
+whose overseeing model was swapped out. The card line itself carries whatever the latest line
+says.
+
+Files: `broker/tail.ts` (the extraction, extending the existing line reader by allowlist),
+`broker/discord/render.ts` (the card line), `broker/registry.ts` if the pair needs a record slot,
+plus tests. The reader stays an allowlist: a line missing either field renders the card exactly
+as today, and no new content reaches a log line.
+
+Acceptance: a card for a session whose transcript carries the fields shows model and raw context;
+a session missing them renders as today; a model change posts exactly one notice and updates the
+card; the extraction never throws on a malformed line. Tests lock both directions of the
+missing-field case and the one-notice-per-change rule.
+
+### 4. Docs, deploy, and live verify
 
 Model: fable
 Locus: inline
 
-`docs/architecture.md` (the new surface in the component map), `docs/operations.md` (reading the
-card, the staleness semantics, the knob), `docs/security-model.md` (what the reader opens, what
-never leaves the machine: one clause). Deploy to SCOTT (env knob on, broker restart, elevated
-hand). Live verify: the card appears, matches a console `cswap` read, ages honestly when
-claude-swap consumers are off, and the session-health section tracks a real session end within
-one refresh.
+`docs/architecture.md` (the new surface in the component map, and the session card's new line),
+`docs/operations.md` (reading the card, the staleness semantics, the knob, what a model-change
+notice means), `docs/security-model.md` (what the reader opens, what never leaves the machine:
+one clause). Deploy to SCOTT (env knob on, broker restart, elevated hand). Live verify: the card
+appears, matches a console `cswap` read, ages honestly when claude-swap consumers are off, the
+session-health section tracks a real session end within one refresh, and a session card shows a
+model and a context figure that match what the console reports for that session.
 
 ## Out of Scope
 
