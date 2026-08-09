@@ -206,14 +206,31 @@ ride, so a crafted transcript cannot starve the approval channel through it. The
 most one Discord message, naming how many further questions wait at the console when the content
 would not fit, so the mention and the alert line always survive.
 
-**What a token holder gains is a second door to a capability it already had, not a new one.** The
-broker's scheduled task runs as the operator at limited integrity, the same account a token-holding
-subprocess runs as, so making the broker perform the read confers no privilege. Such a process can
-already read any of the operator's files and post arbitrary text to the thread through the mirror
-route. A forged `PreToolUse` question post is the same class: it is credited only against the
-session its token holds, it must name that session in its own payload to reach the question seam
-at all, it alerts only into that session's own thread, and it spends that thread's own
-question window first. Through the tailer it costs one additional forged `/mirror` post to arm the session, and what
+**A forged question post is mostly a second door to a capability a token holder already had, with
+one exception named below.** The broker's scheduled task runs as the operator at limited
+integrity, the same account a token-holding subprocess runs as, so making the broker perform the
+read confers no privilege. Such a process can already read any of the operator's files and post
+arbitrary text to the thread through the mirror route. A forged `PreToolUse` question post is
+credited only against the session its token holds, it must name that session in its own payload
+to reach the question seam at all, it alerts only into that session's own thread, and it spends
+that thread's own question window first.
+
+**The exception, accepted deliberately: a forged question elicits, and its answer returns to the
+forger.** A held question is answered by writing the operator's choice back down the very HTTP
+request the `PreToolUse` post opened, so whoever sent that post receives the answer. A local
+process holding the token can therefore ring the operator's phone with a question of its own
+devising, rendered exactly like a real one, and read back what the operator submits: an option
+label it chose the wording of, or, on the typed path, the operator's free text verbatim. This is
+a real elicitation primitive and it is not held to the reply-key bar the section below sets for
+permission prompts, because the hook is fired by a CLI that holds no reply key and putting one in
+the hook's headers would only mint another secret every subprocess inherits.
+
+It is accepted on its blast radius rather than on its difficulty. The attacker is already code
+running as the operator, which already reads every file the operator owns; what the primitive
+adds is what is not on disk, an answer from the operator's own head. Narrowing it would cost the
+feature its point, so the residual is recorded here rather than engineered around, and the
+operator's own signal is the same one every other forged surface leaves: a question in a thread
+that no session at the console is actually parked on. Through the tailer it costs one additional forged `/mirror` post to arm the session, and what
 it can aim at is bounded twice over: the path must pass validation below, and a line yields text only
 when its own recorded session ID matches the session the path was learned for, so another registered
 session's transcript yields nothing.
@@ -329,6 +346,14 @@ A prompt reaches the broker over the same loopback route a reply does and is hel
 the per-attachment reply key. A process token is not enough. Without that, any of the subprocesses
 that inherit the token could ring the operator's phone with an approval request of its own devising,
 in the one message they are trained to answer quickly.
+
+**The question surface does not meet that bar, and the difference is deliberate.** A held
+`AskUserQuestion` rings the same phone on the process token alone, because its post comes from a
+CLI that holds no reply key. The two surfaces are held apart by what an answer can do rather than
+by who may ask: a verdict approves a real pending tool call, so it is bound to a key a subprocess
+cannot inherit and to the request id it names, while a question's answer is text handed back to
+whoever asked, which is why the forged-question residual above is recorded as elicitation and not
+as approval. A forged question cannot approve anything, and a forged verdict cannot be sent.
 
 **A channel event reaches the model at the keyboard's standing.** The relay's instructions describe
 the sender gate rather than commanding trust: a message is delivered only after the broker has

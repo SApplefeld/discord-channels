@@ -39,10 +39,22 @@ initiative.
 Two things the console shows reach no hook payload at all: what the model writes *between* tool
 calls, and a message the operator types while the model is mid-turn, which the harness queues and
 injects without a `UserPromptSubmit` ever firing. The transcript tailer below is what recovers
-both. The third console-only surface, the multiple-choice question an `AskUserQuestion` call parks
-the session on, reaches the broker at the moment it is asked, through a `PreToolUse` hook whose
-payload carries the full question; its transcript line is written only when the picker is
-answered, so the tailer's reading of it is the resolution-time fallback, not the timely signal.
+both. The third such surface, the multiple-choice question an `AskUserQuestion` call parks the
+session on, is no longer console-only: it reaches the broker at the moment it is asked, through a
+`PreToolUse` hook whose payload carries the full question, and that hook's own HTTP request is
+held open so the answer can travel back down it. Its transcript line is written only when the
+picker resolves, so the tailer's reading of it is the resolution-time fallback and the signal that
+the console answered, not the timely alert.
+
+**The question desk** (`broker/question-desk.ts`) owns that held request. One entry per session,
+holding the questions, a digest of them, the responses of any identical reposts the CLI retried,
+and an expiry timer; a bounded ring remembers the last few closed asks so a console answer can
+still rewrite a thread message whose entry is gone. Five triggers end a hold and exactly one wins:
+an answer from the thread responds with the operator's choices, while a release, an expiry, a dead
+client socket, and a broker shutdown all respond with a body that renders the console picker
+normally. Every direction but the first is today's behavior, which is the fail direction the whole
+surface is built around: a lost hold must never eat a question. While a hold stands the console
+renders no picker at all, so the thread is the only place the question exists.
 
 ## Components
 
@@ -147,11 +159,24 @@ compatibility story. A digest lives exactly as long as the byte offset it was re
 at one copy per question: the set holds at most 8 and drops whole whenever the offset does (a
 newly taught path, a mirror-off suppression), because a digest outliving the resolution line it
 waits for would consume a later identical question's only alert. The preserved fail direction is
-at most one duplicate ping, never a silent question. The question alert takes its own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
+at most one duplicate ping, never a silent question. That same yield is what tells the desk a
+question was answered at the console, so a thread message whose question the operator answered at
+the keyboard stops asking for an answer already given; a yield that reports such a flip posts no
+alert of its own, because the flipped message is the report. The question alert takes its own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
 way a permission prompt does, under its own per-thread ping/quiet/drop window (1 mention and 4
 posts per thread per minute, a window deliberately separate from the permission prompt's own), so
 a session parked on a picker reaches a phone without a long narration run ahead of it and without
-becoming a ping primitive for whatever can write transcript lines. The file's position is
+becoming a ping primitive for whatever can write transcript lines. That alert then upgrades in
+place: one edit turns the notice into the interactive message, a select per question carrying the
+option descriptions the console picker shows, buttons instead when the ask is a single question of
+at most four options, and a control row to send or to hand the question back to the console. A
+press arrives as an `INTERACTION_CREATE` gateway event, passes the same one-account allowlist every
+inbound message passes before it touches any state, and resolves against an opaque
+server-minted entry reference rather than anything the press itself carries, so what a press can
+submit is only a label the session's own tool call offered. An ask the bounded reader could not
+carry whole is refused the thread path and released to the console instead, because the caps that
+merely truncated a notice would, on an answering surface, drop a question from the answer map
+while the session still asked it. The file's position is
 taken the moment a session is both allowed to be read and has a learned path, whichever of the two
 arrives second, by a probe that reads its size and no content: what the transcript already held is
 never republished into the thread, and the turn's opening chunk, written seconds after the mirror-on

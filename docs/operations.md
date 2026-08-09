@@ -150,18 +150,34 @@ transcript, but Claude Code writes that line only when the picker is answered, s
 alert arrives at answer time, which tells you what was asked but not that anything is waiting:
 
 ```
-@you ❓ Waiting on you at the console · a question is open
-Q: Commit model: Commit model for this effort?
-Options: Commit-and-Push · Review-Only · Branch-and-PR
+@you ❓ Waiting on you · 2 questions · answer here or at the console
+
+**1. Commit model** · Commit model for this effort?
+**2. Sections** · Which sections ship first? *(pick any)*
+[ select ]  [ select ]
+[ Send answers ]  [ Answer at console ]
+
+_Typing a reply here answers in your own words instead._
 ```
 
-The alert cannot be answered from the thread: the broker does not yet answer the picker (Claude
-Code's `PreToolUse` hook can carry an answer back, and
-[`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md) is
-the open plan for that round), so the
-alert's job is to tell you the session is parked and what it is asking. Anything you type in the
-thread is delivered to the session as ordinary steering when its turn resumes, not as the
-picker's answer.
+**Answer it from the thread.** Pick from a question's menu, or tap a button when the ask is a
+single question with a handful of options, then Send; a single-question ask sends on the one tap.
+Typing a reply instead answers the whole ask in your own words. Whichever way you answer, the
+session takes it as your answer at the picker and carries on, and the message rewrites itself to
+show what was submitted.
+
+**Answer it at the console instead** by tapping Answer at console, which releases the question and
+renders the picker at the keyboard within a second or so. That is also what happens on its own if
+nothing answers within the hold: the question falls back to the console picker, and the thread
+message says so. Until then the console shows the tool call thinking rather than a picker, because
+a held question renders none.
+
+A question you answer at the console flips its thread message to say so, so a message that still
+shows live controls is a question still waiting. Two windows are worth knowing. A message typed in
+the moment between the alert landing and its controls appearing is taken as the answer even though
+the controls were not up yet. And a message that happens to read as a permission verdict, a yes or
+no followed by exactly five letters, is treated as a verdict first: it becomes the question's
+answer only when no permission request is waiting for it.
 
 One question raises one alert: the ask-time post records a digest that the answer-time transcript
 read recognizes and skips. That memory is deliberately short-lived, so a mirror toggled off and
