@@ -25,7 +25,12 @@ function fakeMessenger(outcomes: Array<CallOutcome<{ messageId: string }>> = [])
 }
 
 function fakeEditMessenger(outcomes: Array<CallOutcome<null>> = []) {
-  const edits: Array<{ threadId: string; messageId: string; text: string }> = [];
+  const edits: Array<{
+    threadId: string;
+    messageId: string;
+    text: string;
+    components?: readonly unknown[];
+  }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async () => ({ status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO }),
     editInThread: async (input) => {
@@ -143,7 +148,10 @@ test("an alert carries the one user it may mention and shares the bucket", async
   let now = 1_000;
   const writer = createThreadWriter({ messenger, now: () => now });
 
-  assert.equal(await writer.alert(THREAD, "<@700000000000000002> permission needed", "700000000000000002"), true);
+  assert.equal(
+    (await writer.alert(THREAD, "<@700000000000000002> permission needed", "700000000000000002")).status,
+    "ok",
+  );
   assert.deepEqual(posts, [
     {
       threadId: THREAD,
@@ -153,14 +161,14 @@ test("an alert carries the one user it may mention and shares the bucket", async
   ]);
 
   assert.equal(
-    await writer.alert(THREAD, "second", "700000000000000002"),
-    false,
+    (await writer.alert(THREAD, "second", "700000000000000002")).status,
+    "rate-limited",
     "the bucket the replies and notices spend is the bucket this spends",
   );
   assert.equal(posts.length, 1);
 
   now += 5_000;
-  assert.equal(await writer.alert(THREAD, "third", "700000000000000002"), true);
+  assert.equal((await writer.alert(THREAD, "third", "700000000000000002")).status, "ok");
   assert.equal(posts.length, 2, "back to back alerts are allowed once the bucket refills");
 });
 
@@ -183,6 +191,25 @@ test("an edit goes out when there is room in the edit bucket", async () => {
 
   assert.equal(edited.status, "ok");
   assert.deepEqual(edits, [{ threadId: THREAD, messageId: "msg-42", text: "updated line" }]);
+});
+
+test("an edit carries components only when the caller named them, and an empty list strips them", async () => {
+  // The asymmetry is the whole point: a PATCH omitting the field leaves the message's rows alone,
+  // so an edit that only rewrites text must not send one, and `[]` is the only way a resolved
+  // question's message loses the buttons that answered it.
+  const { messenger, edits } = fakeEditMessenger();
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+  const row = { type: 1 as const, components: [] };
+
+  await writer.edit(THREAD, "msg-42", "text only");
+  await writer.edit(THREAD, "msg-42", "with rows", [row]);
+  await writer.edit(THREAD, "msg-42", "rows stripped", []);
+
+  assert.deepEqual(edits, [
+    { threadId: THREAD, messageId: "msg-42", text: "text only" },
+    { threadId: THREAD, messageId: "msg-42", text: "with rows", components: [row] },
+    { threadId: THREAD, messageId: "msg-42", text: "rows stripped", components: [] },
+  ]);
 });
 
 test("an edit bucket emptied by an edit 429 refuses the next edit without touching the messenger", async () => {

@@ -14,6 +14,7 @@ import { usableWaitMs } from "../discord/adapter.ts";
 import { createBudget } from "../discord/budget.ts";
 import type { Budget } from "../discord/budget.ts";
 import { inertMessage } from "../discord/render.ts";
+import type { ActionRow } from "../discord/question-message.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 
 /**
@@ -38,24 +39,39 @@ export type ThreadWriter = {
    * the other three share, and folding one route's headers into the other's budget would let an
    * edit's headroom clear a block a post 429 earned, or an edit 429 silence replies and notices
    * that were never refused.
+   *
+   * `components` replaces the message's rows, and `[]` is what strips them; left off, the rows the
+   * message already carries are untouched, which is what an edit rewriting only text means.
    */
-  edit: (threadId: string, messageId: string, text: string) => Promise<CallOutcome<null>>;
+  edit: (
+    threadId: string,
+    messageId: string,
+    text: string,
+    components?: readonly ActionRow[],
+  ) => Promise<CallOutcome<null>>;
   /**
    * Posts a broker-authored notice, at most one per thread per floor interval. Returns true when it
    * was written. A dropped notice is not retried: the next message provokes the next one.
    */
   notice: (threadId: string, text: string) => Promise<boolean>;
   /**
-   * Posts a message that mentions one user, or nobody when the caller passes null. Returns true
-   * when it was written.
+   * Posts a message that mentions one user, or nobody when the caller passes null.
    *
    * The same bucket as `reply` and `notice`, deliberately: this is the write that reaches a phone,
    * so a flood of them is the loudest failure available here, and it is bounded by the budget
    * rather than exempted from it. It carries no per-thread floor, because unlike a notice it is the
    * only thing a waiting session can be answered through, and one silently dropped is a parked
    * session.
+   *
+   * Reports the outcome and the id the post landed under, exactly as `reply` does, because an alert
+   * is now a message that gets edited: a question alert grows the components that answer it and is
+   * rewritten when the hold ends, and the id is the only handle on the message either write has.
    */
-  alert: (threadId: string, text: string, mentionUserId: string | null) => Promise<boolean>;
+  alert: (
+    threadId: string,
+    text: string,
+    mentionUserId: string | null,
+  ) => Promise<CallOutcome<{ messageId: string | null }>>;
 };
 
 export type ThreadWriterOptions = {
@@ -149,11 +165,23 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
     });
   }
 
-  function edit(threadId: string, messageId: string, text: string): Promise<CallOutcome<null>> {
+  function edit(
+    threadId: string,
+    messageId: string,
+    text: string,
+    components?: readonly ActionRow[],
+  ): Promise<CallOutcome<null>> {
     return withBudget(editBudget, "an edit", threadId, async () => {
       const body = neutralize(text);
       if (body === null) return emptyMessageFailure();
-      return options.messenger.editInThread({ threadId, messageId, text: body });
+      // The field is left off entirely rather than sent as undefined, so an edit that only rewrites
+      // text cannot silently strip the rows the message already carries.
+      return options.messenger.editInThread({
+        threadId,
+        messageId,
+        text: body,
+        ...(components === undefined ? {} : { components }),
+      });
     });
   }
 
@@ -173,9 +201,6 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
       return true;
     },
 
-    async alert(threadId, text, mentionUserId) {
-      const outcome = await post(threadId, text, mentionUserId ?? undefined);
-      return outcome.status === "ok";
-    },
+    alert: (threadId, text, mentionUserId) => post(threadId, text, mentionUserId ?? undefined),
   };
 }

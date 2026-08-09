@@ -29,9 +29,10 @@
 // it, which costs at most one poll interval of narration.
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
-import type { AskedQuestion } from "./discord/render.ts";
+import { MAX_OPTION_DESCRIPTION_LENGTH } from "./discord/render.ts";
+import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
-import { withoutInvisible } from "./sanitize.ts";
+import { sliceCodePoints, withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
 import type { Sketch } from "./similarity.ts";
 
@@ -357,10 +358,20 @@ function createRepeatLog(
     log(`tail: ${reason} (${detail})`);
     state.set(reason, { windowStart: at, suppressed: 0 });
     if (state.size <= MAX_REPEAT_KEYS) return;
-    for (const [key, kept] of state) {
-      // Only a closed window with nothing counted against it: an entry still owing a repeat count
-      // is what the next line of its reason reports, and dropping it would lose that count.
-      if (kept.suppressed === 0 && at - kept.windowStart >= REPEAT_WINDOW_MS) state.delete(key);
+    // Oldest closed window first, and whatever it still owes is written on the way out. A reason
+    // carries a session id, so an entry left in the map because it owes a count is one only that
+    // same session could ever flush, and a session that went away never will: the map would then
+    // grow by one for the life of the process. Open windows are left alone, where the count riding
+    // on the next line of a reason is still the reason's to report.
+    const closed = [...state]
+      .filter(([, kept]) => at - kept.windowStart >= REPEAT_WINDOW_MS)
+      .sort(([, left], [, right]) => left.windowStart - right.windowStart);
+    for (const [key, kept] of closed) {
+      if (state.size <= MAX_REPEAT_KEYS) return;
+      if (kept.suppressed > 0) {
+        log(`tail: ${key} occurred ${kept.suppressed} more time(s) in the last ${REPEAT_WINDOW_MS}ms`);
+      }
+      state.delete(key);
     }
   };
 }
@@ -375,8 +386,14 @@ type TailItem =
   | { kind: "text" | "prompt"; text: string }
   | { kind: "question"; questions: readonly AskedQuestion[] };
 
-/** The most questions one `AskUserQuestion` line contributes, the tool's own ceiling. */
-const MAX_QUESTIONS_PER_ASK = 4;
+/**
+ * The most questions one `AskUserQuestion` line contributes, the tool's own ceiling.
+ *
+ * Exported because the interactive message spends one Discord action row per question out of a
+ * budget of five, so this bound and that budget are one constraint held in two modules: a pin over
+ * the pair fails the moment either moves alone.
+ */
+export const MAX_QUESTIONS_PER_ASK = 4;
 
 /** The most option labels one question contributes, the tool's own ceiling. */
 const MAX_OPTIONS_PER_QUESTION = 4;
@@ -395,8 +412,12 @@ const MAX_OPTIONS_PER_QUESTION = 4;
  * blank line never yields), is skipped whole. The `header` and each option `label` are read on
  * that same stripped-then-trimmed test, so no field admitted here renders as absent later,
  * `multiSelect` is read strictly (anything but `true` reads false), and at most the first four
- * option entries contribute their `label`, descriptions dropped: the notice this feeds is a
- * glance that sends the operator to the console, not a copy of the picker.
+ * option entries contribute their `label` and their `description`. The description is the one
+ * field bounded here rather than at a render site: the label is the string an answer is submitted
+ * as, so it is held verbatim, while nothing reads a description but a display surface with a hard
+ * field limit, and cutting it at the reader keeps an unbounded one out of the held entries and the
+ * digests taken over them. A description that is absent, or empty once the invisible class is
+ * stripped and the rest trimmed, reads as null and renders as absent.
  */
 export function askedQuestions(input: unknown): AskedQuestion[] {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
@@ -410,12 +431,21 @@ export function askedQuestions(input: unknown): AskedQuestion[] {
     if (typeof question !== "string" || withoutInvisible(question).trim() === "") continue;
     const header = fields["header"];
     const rawOptions = fields["options"];
-    const options: string[] = [];
+    const options: AskedOption[] = [];
     if (Array.isArray(rawOptions)) {
       for (const option of rawOptions.slice(0, MAX_OPTIONS_PER_QUESTION)) {
         if (typeof option !== "object" || option === null || Array.isArray(option)) continue;
-        const label = (option as Record<string, unknown>)["label"];
-        if (typeof label === "string" && withoutInvisible(label).trim() !== "") options.push(label);
+        const fields = option as Record<string, unknown>;
+        const label = fields["label"];
+        if (typeof label !== "string" || withoutInvisible(label).trim() === "") continue;
+        const description = fields["description"];
+        options.push({
+          label,
+          description:
+            typeof description === "string" && withoutInvisible(description).trim() !== ""
+              ? sliceCodePoints(description, MAX_OPTION_DESCRIPTION_LENGTH)
+              : null,
+        });
       }
     }
     readable.push({

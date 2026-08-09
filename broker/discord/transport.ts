@@ -4,6 +4,7 @@
 // scarce resource this design is built around and Discord's real one for a thread rename is
 // undocumented. Nothing above this interface knows about HTTP, discord.js, or a token; nothing
 // below it knows about sessions or states.
+import type { ActionRow } from "./question-message.ts";
 
 /**
  * What one call learned about its bucket. All times are milliseconds, converted at the adapter:
@@ -98,10 +99,47 @@ export type ThreadMessenger = {
      */
     mentionUserId?: string;
   }) => Promise<CallOutcome<{ messageId: string | null }>>;
-  /** Rewrites a message this bot posted into the thread. Never re-posts it. */
+  /**
+   * Rewrites a message this bot posted into the thread. Never re-posts it.
+   *
+   * `components` replaces the message's rows whole, and an empty array is the only way to take
+   * rows off a message: a PATCH that omits the field leaves the existing ones in place, so a
+   * resolved question's message would keep buttons that answer a hold that has ended. Typed by the
+   * one module that builds rows, imported for its type alone, so the shape a caller composes and
+   * the shape that reaches the wire cannot drift.
+   */
   editInThread: (input: {
     threadId: string;
     messageId: string;
+    text: string;
+    components?: readonly ActionRow[];
+  }) => Promise<CallOutcome<null>>;
+};
+
+/**
+ * The interaction callback: how a component press is answered.
+ *
+ * Its own surface beside `ThreadMessenger`, and its own rate bucket at every caller, because
+ * `POST /interactions/{id}/{token}/callback` is a different Discord route from the message verbs and
+ * reports its limits independently. A callback is also time-bounded in a way a message write is
+ * not: Discord gives three seconds before the operator's client reports the interaction as failed,
+ * so nothing here is queued or retried.
+ */
+export type InteractionResponder = {
+  /**
+   * Acknowledges a component press without changing the message: the deferred message update. What
+   * follows it, an edit or nothing at all, is the caller's own decision, so one acknowledgement
+   * covers a selection that only accumulates and one that resolves the whole ask.
+   */
+  acknowledge: (input: { interactionId: string; token: string }) => Promise<CallOutcome<null>>;
+  /**
+   * Answers with a message only the operator who pressed can see. What an incomplete Send and a
+   * press against an ask that is no longer open are told: both are answers to that one person and
+   * neither belongs in the thread.
+   */
+  ephemeral: (input: {
+    interactionId: string;
+    token: string;
     text: string;
   }) => Promise<CallOutcome<null>>;
 };

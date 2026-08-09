@@ -5,8 +5,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import type { AskedQuestion } from "./discord/render.ts";
-import { MAX_HELD_QUESTIONS, MAX_RESPONSES_PER_ENTRY, createQuestionDesk } from "./question-desk.ts";
-import type { QuestionTerminalState } from "./question-desk.ts";
+import {
+  MAX_HELD_QUESTIONS,
+  MAX_REPEAT_KEYS,
+  MAX_RESPONSES_PER_ENTRY,
+  createQuestionDesk,
+} from "./question-desk.ts";
+import type { QuestionTerminalDetail, QuestionTerminalState } from "./question-desk.ts";
 import { questionDigest } from "./tail.ts";
 
 // SECRET- prefixed like the intake's question fixtures: the no-content-in-logs assertions grep for
@@ -20,7 +25,10 @@ function ask(question: string = QUESTION): AskedQuestion[] {
       question,
       header: "Beverage",
       multiSelect: false,
-      options: ["SECRET-Coffee", "SECRET-Tea"],
+      options: [
+        { label: "SECRET-Coffee", description: "SECRET-the classic" },
+        { label: "SECRET-Tea", description: "SECRET-gentler" },
+      ],
     },
   ];
 }
@@ -125,19 +133,30 @@ function fakeTimers(): {
   };
 }
 
-function harness(options: { onTerminal?: (sessionId: string, state: QuestionTerminalState) => void } = {}) {
+function harness(
+  options: {
+    onTerminal?: (sessionId: string, state: QuestionTerminalState) => void;
+    now?: () => number;
+  } = {},
+) {
   const timers = fakeTimers();
   const logged: string[] = [];
   const terminals: Array<{ sessionId: string; state: QuestionTerminalState }> = [];
+  const details: QuestionTerminalDetail[] = [];
   const desk = createQuestionDesk({
     holdMs: 14_400_000,
     log: (message) => logged.push(message),
     onTerminal:
-      options.onTerminal ?? ((sessionId, state) => terminals.push({ sessionId, state })),
+      options.onTerminal ??
+      ((sessionId, state, detail) => {
+        terminals.push({ sessionId, state });
+        details.push(detail);
+      }),
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
+    ...(options.now === undefined ? {} : { now: options.now }),
   });
-  return { desk, timers, logged, terminals };
+  return { desk, timers, logged, terminals, details };
 }
 
 test("an answered hold responds with the measured allow shape, questions passed back verbatim", () => {
@@ -508,6 +527,238 @@ test("a throw out of the terminal-state notifier never crosses the response seam
   assert.doesNotThrow(() => desk.release("session-a"));
   assert.deepEqual(writes[0].body, {}, "the response is answered before the notifier runs");
   assert.ok(!logged.join("\n").includes("SECRET"), logged.join("\n"));
+});
+
+test("an alert noted on an entry hands back the id its components are addressed by", () => {
+  // The ordering the whole answer path rests on: the alert is posted before the hold exists, so the
+  // id every component carries is handed back when the post's own round trip lands.
+  const { desk } = harness();
+  const { response } = heldResponse();
+  desk.hold("session-a", ask(), askInput(), response, true);
+
+  assert.equal(
+    desk.noteAlert("session-a", questionDigest(ask("SECRET-a different question")), {
+      threadId: "thread-1",
+      messageId: "msg-1",
+    }),
+    null,
+    "another ask's alert names an entry this session does not hold",
+  );
+  const entryId = desk.noteAlert("session-a", questionDigest(ask()), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+  assert.equal(desk.noteAlert("session-b", questionDigest(ask()), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  }), null, "a session holding nothing has no entry to note an alert on");
+
+  const entry = desk.entry(entryId);
+  assert.deepEqual(entry?.alert, { threadId: "thread-1", messageId: "msg-1" });
+  assert.equal(entry?.sessionId, "session-a");
+  assert.deepEqual(entry?.selections, [[]], "one empty selection per question in the ask");
+});
+
+test("an entry id is unguessable, unique per entry, and dead the moment the hold ends", () => {
+  const { desk } = harness();
+  const ids = new Set<string>();
+  for (let index = 0; index < 8; index += 1) {
+    const session = `session-${String(index)}`;
+    desk.hold(session, ask(), askInput(), heldResponse().response, true);
+    const id = desk.noteAlert(session, questionDigest(ask()), {
+      threadId: "thread-1",
+      messageId: `msg-${String(index)}`,
+    });
+    assert.ok(id !== null);
+    assert.match(id, /^[0-9a-f]{12}$/, "an opaque token, derived from nothing about the ask");
+    ids.add(id);
+  }
+  assert.equal(ids.size, 8, "no two entries share an id");
+
+  const [first] = [...ids];
+  desk.release("session-0");
+  assert.equal(desk.entry(first), null, "a released entry's id names nothing");
+  assert.equal(desk.releaseEntry(first), false);
+  assert.deepEqual(desk.submit(first), { kind: "gone" });
+  assert.equal(desk.select(first, 0, [0]), null);
+});
+
+test("every terminal state carries the ask's own message and what was submitted", () => {
+  // The message-edit seam: the editor is handed where the alert landed, the ask it drew, and the
+  // answers to render, because a message that resolved has to say so and drop its components.
+  const { desk, timers, details } = harness();
+  const answered = heldResponse();
+  desk.hold("session-a", ask(), askInput(), answered.response, true);
+  desk.noteAlert("session-a", questionDigest(ask()), { threadId: "thread-1", messageId: "msg-1" });
+  const answers = { [QUESTION]: "SECRET-Coffee" };
+  desk.resolve("session-a", { kind: "answers", answers });
+
+  assert.equal(details.length, 1);
+  assert.deepEqual(details[0].alert, { threadId: "thread-1", messageId: "msg-1" });
+  assert.deepEqual(details[0].questions, ask());
+  assert.deepEqual(details[0].answers, { kind: "answers", answers });
+
+  // Every release state carries the same detail with no answers: the message still has to be
+  // rewritten, and what it says is that the console has the question now.
+  const expired = heldResponse();
+  desk.hold("session-b", ask(), askInput(), expired.response, true);
+  desk.noteAlert("session-b", questionDigest(ask()), { threadId: "thread-2", messageId: "msg-2" });
+  timers.fire();
+  assert.deepEqual(details[1].alert, { threadId: "thread-2", messageId: "msg-2" });
+  assert.equal(details[1].answers, null);
+
+  // An entry whose alert never landed reports a null alert rather than a guess: there is no
+  // message to edit, and inventing one would rewrite something else in the thread.
+  const unposted = heldResponse();
+  desk.hold("session-c", ask(), askInput(), unposted.response, true);
+  unposted.close();
+  assert.equal(details[2].alert, null);
+});
+
+test("a select records what the ask offered, and Send answers in the measured vocabulary", () => {
+  // The desk's half of the answer path: positions in, labels out, and the map keyed by the exact
+  // question text the payload carried.
+  const { desk } = harness();
+  const multi: AskedQuestion[] = [
+    ...ask(),
+    {
+      question: "SECRET-which sections?",
+      header: "Sections",
+      multiSelect: true,
+      options: [
+        { label: "SECRET-Desk", description: null },
+        { label: "SECRET-Message", description: null },
+      ],
+    },
+  ];
+  const { response, writes } = heldResponse();
+  desk.hold("session-a", multi, askInput(), response, true);
+  const entryId = desk.noteAlert("session-a", questionDigest(multi), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+
+  assert.deepEqual(desk.submit(entryId), { kind: "incomplete", questionNumber: 1 });
+  desk.select(entryId, 0, [1]);
+  assert.deepEqual(desk.submit(entryId), { kind: "incomplete", questionNumber: 2 });
+  desk.select(entryId, 1, [0, 1]);
+  // The last report of a question replaces the one before it: a select reports its whole selection
+  // on every change.
+  desk.select(entryId, 1, [1]);
+
+  assert.deepEqual(desk.submit(entryId), { kind: "answered" });
+  assert.deepEqual(
+    (writes[0].body as { hookSpecificOutput: { updatedInput: { answers: unknown } } })
+      .hookSpecificOutput.updatedInput.answers,
+    { [QUESTION]: "SECRET-Tea", "SECRET-which sections?": ["SECRET-Message"] },
+  );
+});
+
+test("the refused-retry line is rate-limited, unlike every other line here", () => {
+  // A CLI retrying past the per-entry cap posts for the life of a four-hour hold, and one line an
+  // attempt would push every other line out of the log through rotation.
+  let at = 1_000;
+  const { desk, logged } = harness({ now: () => at });
+  for (let index = 0; index < MAX_RESPONSES_PER_ENTRY; index += 1) {
+    desk.hold("session-a", ask(), askInput(), heldResponse().response, true);
+  }
+
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(desk.hold("session-a", ask(), askInput(), heldResponse().response, false), false);
+  }
+  assert.equal(
+    logged.filter((line) => line.includes("refused a retry")).length,
+    1,
+    "the first is written at once and the rest of the window is counted",
+  );
+
+  at += 60_000;
+  assert.equal(desk.hold("session-a", ask(), askInput(), heldResponse().response, false), false);
+  assert.ok(
+    logged.some((line) => line.includes("occurred 4 more time(s)")),
+    logged.join("\n"),
+  );
+});
+
+test("a question asked as a prototype key answers under its own key", () => {
+  // Question text is untrusted conversation content and the answers map is keyed by it verbatim, so
+  // `__proto__` is a key every plain object already answers with its prototype: assigned onto one,
+  // the answer becomes no property at all and the session is handed a map missing the question it
+  // asked.
+  const { desk } = harness();
+  const proto = ask("__proto__");
+  const { response, writes } = heldResponse();
+  desk.hold("session-a", proto, askInput("__proto__"), response, true);
+  const entryId = desk.noteAlert("session-a", questionDigest(proto), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+
+  desk.select(entryId, 0, [0]);
+  assert.deepEqual(desk.submit(entryId), { kind: "answered" });
+
+  const answers = (
+    writes[0].body as { hookSpecificOutput: { updatedInput: { answers: Record<string, unknown> } } }
+  ).hookSpecificOutput.updatedInput.answers;
+  assert.ok(Object.hasOwn(answers, "__proto__"), JSON.stringify(answers));
+  assert.equal(Object.getOwnPropertyDescriptor(answers, "__proto__")?.value, "SECRET-Coffee");
+});
+
+test("an entry already carrying an alert keeps the message its components live on", () => {
+  // A second delivery for the same ask (the tailer's resolution-time yield racing the hook's own
+  // alert inside the digest window) would otherwise repoint the entry at its newer notice, and the
+  // terminal state would rewrite that one while the first message kept live components forever.
+  const { desk } = harness();
+  const { response } = heldResponse();
+  desk.hold("session-a", ask(), askInput(), response, true);
+  const digest = questionDigest(ask());
+
+  const first = desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-1" });
+  assert.ok(first !== null);
+  assert.equal(
+    desk.noteAlert("session-a", digest, { threadId: "thread-1", messageId: "msg-2" }),
+    null,
+    "the second alert names no entry to draw on: this one is already drawn",
+  );
+  assert.deepEqual(desk.entry(first)?.alert, { threadId: "thread-1", messageId: "msg-1" });
+});
+
+test("the repeat-log map stays bounded even when every reason still owes a count", () => {
+  // The reasons carry session ids, so a session that trips the response cap twice and goes away
+  // leaves an entry owing a count that only another call for that same session would ever flush.
+  // Swept oldest-first once the map is over its bound, and the owed count rides out with the key.
+  let at = 1_000;
+  const { desk, logged } = harness({ now: () => at });
+  const trip = (session: string): void => {
+    for (let index = 0; index <= MAX_RESPONSES_PER_ENTRY; index += 1) {
+      desk.hold(session, ask(), askInput(), heldResponse().response, true);
+    }
+    // Twice past the cap: the first refusal is written and the second is counted against the
+    // window, which is the state that pins an entry in the map.
+    desk.hold(session, ask(), askInput(), heldResponse().response, true);
+    desk.release(session);
+  };
+  for (let index = 0; index <= MAX_REPEAT_KEYS; index += 1) trip(`session-${String(index)}`);
+
+  // Every window is closed by now, so the sweep the last reason triggers has the whole map to
+  // choose from, and it takes the oldest.
+  at += 60_000;
+  trip("session-last");
+
+  assert.ok(
+    logged.some((line) => line.includes("session-0,") && line.includes("occurred 1 more time(s)")),
+    "the swept key's owed count is flushed rather than dropped with it",
+  );
+  const before = logged.length;
+  trip("session-0");
+  assert.deepEqual(
+    logged.slice(before).filter((line) => line.includes("session-0,") && line.includes("occurred")),
+    [],
+    "session-0 is gone from the map, so its next refusal opens a fresh window owing nothing",
+  );
 });
 
 test("no log line ever carries question content, whatever the trigger", () => {

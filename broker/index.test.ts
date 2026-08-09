@@ -7,10 +7,20 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
-import { questionDelivery, startBroker } from "./index.ts";
+import {
+  createPromptEdits,
+  questionCloseOut,
+  questionDelivery,
+  questionRefresh,
+  questionUpgrade,
+  startBroker,
+} from "./index.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import { createQuestionDesk } from "./question-desk.ts";
+import { NO_RATE_INFO } from "./discord/transport.ts";
+import type { CallOutcome } from "./discord/transport.ts";
+import { questionDigest } from "./tail.ts";
 
 function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile: string | null }): BrokerConfig {
   return {
@@ -190,7 +200,17 @@ test("a PreToolUse question post rides the /hook route end to end, and its text 
 
 /** One ask, in the bounded shape both the desk and the delivery wrapper digest. */
 function ask(question: string): AskedQuestion[] {
-  return [{ question, header: "Ship", multiSelect: false, options: ["Yes", "No"] }];
+  return [
+    {
+      question,
+      header: "Ship",
+      multiSelect: false,
+      options: [
+        { label: "Yes", description: null },
+        { label: "No", description: null },
+      ],
+    },
+  ];
 }
 
 /** The payload's own questions array, which an answered hold passes back verbatim. */
@@ -287,4 +307,316 @@ test("startBroker exposes the logger it started with", async (t) => {
 
   broker.logger.info("probe line from the test");
   assert.match(readFileSync(logFile, "utf8"), /probe line from the test/);
+});
+
+test("a terminal hold rewrites its own message and strips the components that answered it", async () => {
+  // The message-edit half of the seam the desk's notifier is. Buttons left on a message whose hold
+  // has ended are a tap that reports a failure and changes nothing, so every state edits and every
+  // edit sends the empty component list that takes them off.
+  const edits: Array<{
+    threadId: string;
+    messageId: string;
+    text: string;
+    components: readonly unknown[];
+  }> = [];
+  const logged: string[] = [];
+  const closeOut = questionCloseOut({
+    edit: async (threadId, messageId, text, components) => {
+      edits.push({ threadId, messageId, text, components });
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+    settled: createPromptEdits().settled,
+    log: (message) => logged.push(message),
+  });
+
+  closeOut("session-a", "answered", {
+    entryId: "a1b2c3d4e5f6",
+    alert: { threadId: "thread-1", messageId: "msg-1" },
+    questions: ask("Ship it?"),
+    answers: { kind: "answers", answers: { "Ship it?": "Yes" } },
+  });
+  closeOut("session-a", "expired", {
+    entryId: "a1b2c3d4e5f6",
+    alert: { threadId: "thread-1", messageId: "msg-2" },
+    questions: ask("Ship it?"),
+    answers: null,
+  });
+  // An entry whose alert never landed has no message to aim at, and aiming at anything else would
+  // rewrite some other message in the thread.
+  closeOut("session-a", "released", {
+    entryId: "a1b2c3d4e5f6",
+    alert: null,
+    questions: ask("Ship it?"),
+    answers: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(edits.length, 2);
+  assert.deepEqual(
+    edits.map((edit) => edit.components),
+    [[], []],
+    "every terminal edit strips the components",
+  );
+  assert.deepEqual(edits[0].text.split("\n"), [
+    "✅ **Answered from the thread**",
+    "**Ship** · Yes",
+  ]);
+  assert.match(edits[1].text, /^❓ \*\*Question closed\*\* · the hold expired/);
+  assert.deepEqual(logged, [], "an edit that landed says nothing");
+});
+
+const OPERATOR = "700000000000000002";
+
+/** One landed Discord edit, as the upgrade and close-out tests read them back. */
+type Edit = { messageId: string; text: string; components: readonly unknown[] };
+
+/**
+ * The alert-then-upgrade sequence over a real desk, with the close-out wired to the same barrier
+ * the broker wires it to, so the two edits race here exactly as they race in production.
+ */
+function upgradeUnderTest(input: {
+  questions: AskedQuestion[];
+  questionsInput: unknown[];
+  edit?: (components: readonly unknown[]) => Promise<CallOutcome<null>>;
+}) {
+  const landed: Edit[] = [];
+  const logged: string[] = [];
+  const drawing = createPromptEdits();
+  const write = async (
+    _threadId: string,
+    messageId: string,
+    text: string,
+    components: readonly unknown[],
+  ): Promise<CallOutcome<null>> => {
+    const outcome = await (input.edit ?? (async () => OK))(components);
+    landed.push({ messageId, text, components });
+    return outcome;
+  };
+  const desk = createQuestionDesk({
+    holdMs: 14_400_000,
+    setTimer: () => ({}) as NodeJS.Timeout,
+    onTerminal: questionCloseOut({ edit: write, settled: drawing.settled, log: (line) => logged.push(line) }),
+  });
+  const held = heldResponse();
+  assert.equal(
+    desk.hold("session-a", input.questions, input.questionsInput, held.response, true),
+    true,
+  );
+  const upgrade = questionUpgrade({
+    desk,
+    edit: write,
+    drawing,
+    operatorId: OPERATOR,
+    log: (line) => logged.push(line),
+  });
+  return { desk, upgrade, landed, logged, bodies: held.bodies, drawing, write };
+}
+
+const OK: CallOutcome<null> = { status: "ok", value: null, rate: NO_RATE_INFO };
+
+test("a landed notice becomes the interactive prompt the hold is answered through", async () => {
+  const questions = ask("Ship it?");
+  const { upgrade, landed, bodies, desk } = upgradeUnderTest({
+    questions,
+    questionsInput: askInput("Ship it?"),
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+
+  assert.equal(landed.length, 1);
+  assert.equal(landed[0].messageId, "msg-1");
+  assert.ok(landed[0].components.length > 0, "the components are what the upgrade is for");
+  assert.deepEqual(bodies, [], "and the hold still stands, waiting on a tap");
+  assert.equal(desk.entry("not-an-entry"), null, "and only its own opaque id reaches it");
+});
+
+test("a second notice for an ask already drawn is left as the notice it was posted as", async () => {
+  // Both question paths can alert one ask: the hook's own emission-time post and the tailer's
+  // resolution-time yield inside the digest window. Drawing the second would leave the first
+  // message's components live over a hold whose terminal state rewrites a different message.
+  const questions = ask("Ship it?");
+  const { upgrade, landed, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: askInput("Ship it?"),
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-2", questions });
+
+  assert.deepEqual(
+    landed.map((edit) => edit.messageId),
+    ["msg-1"],
+    "the ask keeps the one message its components live on",
+  );
+  assert.deepEqual(bodies, [], "and the hold stands: a second notice is not a reason to release");
+});
+
+test("a notice with no message id to edit releases the hold instead of parking it", async () => {
+  const questions = ask("Ship it?");
+  const { upgrade, landed, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: askInput("Ship it?"),
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: null, questions });
+
+  assert.deepEqual(landed, [], "there is no message to draw on, and no alert is noted on the entry");
+  assert.deepEqual(bodies, [{}], "the no-decision body, which renders the console picker");
+});
+
+test("an ask the reader did not carry whole releases the hold rather than answering for it", async () => {
+  // The answers map is built over the bounded parse and the session reads it against the input it
+  // wrote, so an ask the reader cut is one the thread cannot answer faithfully.
+  const questions = ask("Ship it?");
+  const { upgrade, landed, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: [...askInput("Ship it?"), { question: "and then?", options: [{ label: "Yes" }] }],
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+
+  assert.deepEqual(landed, [], "the plain notice stands, and it already says the console has it");
+  assert.deepEqual(bodies, [{}]);
+});
+
+test("an upgrade Discord refuses releases the hold and reports it once", async () => {
+  const questions = ask("Ship it?");
+  const { upgrade, landed, logged, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: askInput("Ship it?"),
+    edit: async (components) =>
+      components.length > 0
+        ? { status: "failed", error: "HTTP 400", rate: NO_RATE_INFO }
+        : OK,
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(bodies, [{}], "a readable message with no controls over a four-hour hold is worse");
+  assert.deepEqual(logged, [
+    "broker: session session-a's question kept the plain notice and released its hold: HTTP 400",
+  ]);
+  assert.equal(landed.length, 2, "the refused upgrade, then the close-out the release fires");
+  assert.deepEqual(landed[1].components, [], "which rewrites the notice and carries no components");
+});
+
+test("a hold that ends under the upgrade edit is closed out after it, never beneath it", async () => {
+  // Both edits aim at the one message, and the close-out is fire-and-forget, so nothing but the
+  // ordering keeps the upgrade from landing last and putting live components back over a hold that
+  // has already answered its session.
+  const questions = ask("Ship it?");
+  const harness = upgradeUnderTest({
+    questions,
+    questionsInput: askInput("Ship it?"),
+    edit: async (components) => {
+      if (components.length === 0) return OK;
+      // The hold ends while this edit is on the wire, which is the whole of the race.
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.desk.release("session-a");
+      await new Promise((resolve) => setImmediate(resolve));
+      return OK;
+    },
+  });
+
+  await harness.upgrade({
+    sessionId: "session-a",
+    threadId: "thread-1",
+    messageId: "msg-1",
+    questions,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    harness.landed.map((edit) => edit.components.length > 0),
+    [true, false],
+    "the prompt lands, and the close-out that strips it lands after",
+  );
+});
+
+test("a redraw for an entry the desk no longer holds is never issued", async () => {
+  // The view a redraw draws from was read before the callback was answered, so the hold can end
+  // under it: the message would go back to a live prompt over a session that has already moved on.
+  const questions = ask("Ship it?");
+  const desk = deskUnderTest();
+  const held = heldResponse();
+  desk.hold("session-a", questions, askInput("Ship it?"), held.response, true);
+  const entryId = desk.noteAlert("session-a", questionDigest(questions), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+  const view = desk.entry(entryId);
+  assert.ok(view !== null);
+
+  const landed: Edit[] = [];
+  const logged: string[] = [];
+  const refresh = questionRefresh({
+    desk,
+    drawing: createPromptEdits(),
+    edit: async (_threadId, messageId, text, components) => {
+      landed.push({ messageId, text, components });
+      return OK;
+    },
+    operatorId: OPERATOR,
+    log: (line) => logged.push(line),
+  });
+
+  await refresh(view);
+  assert.equal(landed.length, 1, "the entry is live, so the redraw goes out");
+
+  desk.release("session-a");
+  await refresh(view);
+  assert.equal(landed.length, 1, "and the stale view redraws nothing at all");
+});
+
+test("a redraw Discord refuses is one bounded line and never the question that failed to draw", async () => {
+  const questions = ask("SECRET-ship it?");
+  const desk = deskUnderTest();
+  desk.hold("session-a", questions, askInput("SECRET-ship it?"), heldResponse().response, true);
+  const entryId = desk.noteAlert("session-a", questionDigest(questions), {
+    threadId: "thread-1",
+    messageId: "msg-1",
+  });
+  assert.ok(entryId !== null);
+  const view = desk.entry(entryId);
+  assert.ok(view !== null);
+
+  const logged: string[] = [];
+  const refresh = questionRefresh({
+    desk,
+    drawing: createPromptEdits(),
+    edit: async () => ({ status: "rate-limited", rate: NO_RATE_INFO }),
+    operatorId: OPERATOR,
+    log: (line) => logged.push(line),
+  });
+
+  await refresh(view);
+
+  assert.deepEqual(logged, [
+    "broker: could not redraw session session-a's question message: rate limited",
+  ]);
+  assert.ok(!logged.join("\n").includes("SECRET"), logged.join("\n"));
+});
+
+test("a refused close-out is one bounded line and never the question that failed to render", async () => {
+  const logged: string[] = [];
+  const closeOut = questionCloseOut({
+    edit: async () => ({ status: "failed", error: "HTTP 404", rate: NO_RATE_INFO }),
+    settled: createPromptEdits().settled,
+    log: (message) => logged.push(message),
+  });
+
+  closeOut("session-a", "expired", {
+    entryId: "a1b2c3d4e5f6",
+    alert: { threadId: "thread-1", messageId: "msg-1" },
+    questions: ask("SECRET-ship it?"),
+    answers: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(logged, [
+    "broker: could not close out session session-a's question message: HTTP 404",
+  ]);
+  assert.ok(!logged.join("\n").includes("SECRET"), logged.join("\n"));
 });

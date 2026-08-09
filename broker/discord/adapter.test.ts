@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_RUN_WAIT_MS } from "../routing/outbound.ts";
-import { MAX_USABLE_WAIT_MS, createDiscordTransport } from "./adapter.ts";
+import { MAX_USABLE_WAIT_MS, createDiscordTransport, createInteractionResponder } from "./adapter.ts";
 import type { RawRequest, RawResult } from "./adapter.ts";
 import { createBudget } from "./budget.ts";
 
@@ -328,4 +328,67 @@ test("a rejected token is a fatal failure, not one to retry", async () => {
 
   assert.equal(outcome.status, "failed");
   assert.equal(outcome.status === "failed" ? outcome.fatal : undefined, true);
+});
+
+test("an edit forwards the rows it was given, and sends no components field without them", async () => {
+  // The field's absence is load-bearing: a PATCH that omits it leaves the message's existing rows
+  // in place, which is what an edit rewriting only text means, while `[]` is what strips them.
+  const { sent, transport } = transportWith(() => respond(null));
+  const row = { type: 1 as const, components: [] };
+
+  await transport.editInThread({ threadId: "thread-1", messageId: "msg-1", text: "text only" });
+  await transport.editInThread({
+    threadId: "thread-1",
+    messageId: "msg-1",
+    text: "with rows",
+    components: [row],
+  });
+  await transport.editInThread({
+    threadId: "thread-1",
+    messageId: "msg-1",
+    text: "rows stripped",
+    components: [],
+  });
+
+  assert.deepEqual(
+    sent.map((call) => call.body.components),
+    [undefined, [row], []],
+  );
+  assert.ok(!("components" in sent[0].body), "the field is left off entirely, never sent undefined");
+});
+
+test("an interaction callback answers on its own route, deferred or ephemeral", async () => {
+  // Its own route and therefore its own rate bucket, which is why the caller budgets it apart from
+  // every message write. Type 6 acknowledges without touching the message; type 4 with the
+  // ephemeral flag answers the one person who pressed.
+  const sent: Sent[] = [];
+  const responder = createInteractionResponder(async (input) => {
+    sent.push(input);
+    return respond(null);
+  });
+
+  await responder.acknowledge({ interactionId: "interaction-1", token: "SECRET-token" });
+  await responder.ephemeral({
+    interactionId: "interaction-2",
+    token: "SECRET-token",
+    text: "Question 2 is not answered yet.",
+  });
+
+  assert.deepEqual(
+    sent.map((call) => `${call.method} ${call.route}`),
+    [
+      "POST /interactions/interaction-1/SECRET-token/callback",
+      "POST /interactions/interaction-2/SECRET-token/callback",
+    ],
+  );
+  assert.deepEqual(sent[0].body, { type: 6 });
+  assert.deepEqual(sent[1].body, {
+    type: 4,
+    data: {
+      content: "Question 2 is not answered yet.",
+      allowed_mentions: { parse: [] },
+      // EPHEMERAL and SUPPRESS_EMBEDS: visible to the presser alone, and never unfurling a link.
+      flags: 68,
+    },
+  });
 });

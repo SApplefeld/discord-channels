@@ -1188,10 +1188,11 @@ test("a trailing partial line waits for its newline and then posts exactly once"
   assert.equal(posts.length, 2, "the completed line posts exactly once");
 });
 
-test("an AskUserQuestion call yields its questions, bounded and parsed, descriptions dropped", async (t) => {
+test("an AskUserQuestion call yields its questions, bounded and parsed, descriptions and all", async (t) => {
   // The real measured shape: 1 to 4 questions, each with a header, a multiSelect flag, and 2 to 4
-  // options carrying a label and a description. The description never rides along, the header of
-  // the second entry is genuinely absent, and the parse is structured data rather than text.
+  // options carrying a label and a description. The description rides along bounded, an absent one
+  // reads as null, the header of the second entry is genuinely absent, and the parse is structured
+  // data rather than text.
   const file = transcriptFile(t);
   const { tailer, questions, posts } = harness();
   tailer.learn(SESSION, file);
@@ -1207,14 +1208,14 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
           header: "Timing",
           multiSelect: false,
           options: [
-            { label: "Ship now (Recommended)", description: "SECRET-description-dropped" },
-            { label: "Wait for the window", description: "SECRET-description-dropped-too" },
+            { label: "Ship now (Recommended)", description: "the backup is an hour out" },
+            { label: "Wait for the window", description: "d".repeat(400) },
           ],
         },
         {
           question: "Which hosts get the change?",
           multiSelect: true,
-          options: [{ label: "NEO" }, { label: "TRINITY" }],
+          options: [{ label: "NEO" }, { label: "TRINITY", description: "  " }],
         },
       ],
     }),
@@ -1228,13 +1229,24 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
         question: "Ship the migration now or wait for the backup window?",
         header: "Timing",
         multiSelect: false,
-        options: ["Ship now (Recommended)", "Wait for the window"],
+        options: [
+          { label: "Ship now (Recommended)", description: "the backup is an hour out" },
+          // Bounded at the reader, at Discord's own ceiling on the field it renders in: nothing
+          // reads a description but a display surface, and the whole message is refused when one
+          // field is over its limit.
+          { label: "Wait for the window", description: "d".repeat(100) },
+        ],
       },
       {
         question: "Which hosts get the change?",
         header: null,
         multiSelect: true,
-        options: ["NEO", "TRINITY"],
+        options: [
+          // Absent, and present-but-blank, both read as absent: a description that renders as
+          // nothing is a description the call did not carry.
+          { label: "NEO", description: null },
+          { label: "TRINITY", description: null },
+        ],
       },
     ],
   ]);
@@ -1425,7 +1437,7 @@ test("option labels are bounded to the first four entries, unreadable ones skipp
   );
   await tailer.poll();
   assert.deepEqual(
-    questions.map((asked) => asked.map((entry) => entry.options)),
+    questions.map((asked) => asked.map((entry) => entry.options.map((option) => option.label))),
     [[["one", "two"], ["a", "b", "c", "d"], [], []]],
   );
 });
@@ -1621,7 +1633,15 @@ test("question() posts through the same delivery seam, gated on the session's mi
   // both, and a session with no verdict seen, or a suppressed one, contributes silence.
   const { tailer, questions } = harness();
   const asked: AskedQuestion[] = [
-    { question: "Which beverage?", header: "Beverage", multiSelect: false, options: ["Coffee", "Tea"] },
+    {
+      question: "Which beverage?",
+      header: "Beverage",
+      multiSelect: false,
+      options: [
+        { label: "Coffee", description: null },
+        { label: "Tea", description: null },
+      ],
+    },
   ];
 
   // Each gate reports its silence, because the hold seam holds a question only where an alert

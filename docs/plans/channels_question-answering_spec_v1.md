@@ -318,3 +318,47 @@ none surfaced at this boundary
 Next: Section 2: The interactive question message and the interaction surface, which also lights
 the hold seam
 Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-09
+Completed: Section 2: The interactive question message and the interaction surface
+Implemented By: implementer-fable (build round, then the review-fix round on a fresh dispatch)
+Metrics: 1 full review round (adversarial + blind + security, all at the session tier) plus the
+fix round's red-first evidence; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the round's most valuable finding was a fail direction that inverted
+without any code changing: `MAX_QUESTIONS_PER_ASK` and the per-question option cap were written
+to bound a glance notice, where truncation cost nothing because the operator went to the console
+and saw everything. Bounding the answering surface, the same constants mean a dropped question
+yields an `answers` map that does not cover the `questions` array passed back verbatim, and a
+dropped option is an answer the operator cannot give and cannot see was omitted. The fix refuses
+the thread-answer path for any ask the reader did not carry whole, releasing to the notice and
+the console picker. Three reviewers independently converged on the button-label ceiling (80 for a
+button, 100 for a select option; the fast path bounded both at 100), which would have silently
+disabled thread answering for the common single-question ask, and the test that should have
+caught it asserted the wrong bound so it could not fail. All three also caught the `__proto__`
+question text, which security confirmed by execution: the answer vanishes from the map and the
+terminal render then throws inside a notifier that swallows it, leaving a message that never
+closes out with components that look live. Post-await edits could re-install live components over
+a resolved hold at two sites; fixed with an ordering barrier rather than the prescribed
+re-run-the-closeout (the implementer's reasoned deviation: a replay needs a terminal state and an
+answers map nothing carries once the entry is gone, spends three edits to the barrier's two, and
+still leaves a window). The implementer's own "no test can reach these lines" claim was rejected
+with receipts by the adversarial reviewer: the module establishes the extraction pattern twice, so
+the three seam-light-up branches were untested rather than untestable, and they are now extracted
+and pinned. Bonus fix taken in the main session and flagged: `broker/tail.ts` carried the
+byte-identical unbounded repeat-log sweep the desk's fix corrected, same failure mode and a
+different key space; reverting it is the one hunk in `tail.ts`'s `repeats()`. Security cleared the
+new inbound surface: the allowlist gate sits ahead of every read, write, and state change; entry
+ids are 48-bit CSPRNG never derived from content, with every index re-resolved server-side; there
+is no path from a Discord press to arbitrary text in `updatedInput`; and the label-escape split
+(components strip but do not escape, content-bound fields escape) is correct.
+Review Findings: blind CHANGES_REQUIRED (4 Major, 6 Minor); adversarial CHANGES_REQUIRED (4
+Major, 5 Minor); security CONCERNS (0 Major, 6 Minor). All 16 deduplicated findings fixed, 6 of
+them red-first. Riding as named checks: `min_values: 0` is the claim most likely wrong (nothing
+proves Discord emits an interaction on a deselect-all rather than refusing it client-side), so
+the live walk includes a deliberate clear-then-repick; the uncached-thread drop log has no test
+because the discord.js-loading gateway module has no test file; and items 7 to 16 were tested
+after their fixes rather than red-first.
+Stamps: adjudicated 1, stamped 1 (claude-code-channel-and-hook-facts)
+Next: Section 3: Typed free-form answers and console-answer cleanup, which also adds the
+answered-at-console terminal state Section 2 deliberately left without a producer
+Commit Model: Commit-and-Push

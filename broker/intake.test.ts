@@ -1625,7 +1625,12 @@ test("a credited PreToolUse AskUserQuestion post hands the tailer its bounded qu
           question: "Test question: which beverage should power this morning's session?",
           header: "Beverage",
           multiSelect: false,
-          options: ["Coffee (Recommended)", "Tea", "Water", "Energy drink"],
+          options: [
+            { label: "Coffee (Recommended)", description: "The classic. Reliable caffeine delivery." },
+            { label: "Tea", description: "Gentler ramp-up, wide variety, lower jitter risk." },
+            { label: "Water", description: "Hydration-first strategy. Zero caffeine, zero regrets." },
+            { label: "Energy drink", description: "Maximum throughput now, possible crash later." },
+          ],
         },
       ],
     },
@@ -1926,12 +1931,13 @@ test("with no tailer wired, a question post is never held even when a desk is", 
   assert.deepEqual(holds, [], "no tailer, no hold");
 });
 
-test("under the broker's own wiring a question post is answered immediately, never held", async () => {
-  // The whole wiring, over a real bound socket. The broker builds the desk and releases it at
-  // shutdown, but hands the intake no hold seam, so every question post is answered exactly as it
-  // was before the desk existed: a held response can only be ended by an answer, and no route
-  // reaches the desk's resolve until the thread's answer surface exists. This is the pin on that
-  // boundary, and it fails the moment the hold seam is wired ahead of the answer route.
+test("under the broker's own wiring a question post is held, then released to the console", async () => {
+  // The whole wiring, over a real bound socket, and the pin on the activation boundary: the broker
+  // hands the intake its hold seam, so a credited question post is no longer answered by the
+  // handler at all. What answers it here is the desk, because this broker has no Discord
+  // configured: the alert reaches no thread, and the delivery wrapper releases the hold it names by
+  // digest, so the response is the no-decision `{}` that renders the console picker. That whole
+  // round trip, hold and release, is what the body below proves.
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-question-"));
   const broker = await startBroker(brokerConfig({ stateFile: path.join(dir, "broker-state.json") }));
 
@@ -1952,8 +1958,8 @@ test("under the broker's own wiring a question post is answered immediately, nev
     assert.equal(asked.status, 200);
     assert.deepEqual(
       await asked.json(),
-      { sessionId: "session-a", state: "live" },
-      "the liveness answer every credited post gets, written by the handler and not by a desk",
+      {},
+      "the desk answered this one, with the no-decision body that renders the console picker",
     );
 
     const tooled = await fetch(`${base}/hook`, {
@@ -1965,7 +1971,7 @@ test("under the broker's own wiring a question post is answered immediately, nev
     assert.deepEqual(
       await tooled.json(),
       { sessionId: "session-a", state: "live" },
-      "the question post answers exactly as its neighbors do",
+      "every post beside it still gets the handler's own liveness answer",
     );
   } finally {
     await broker.stop();

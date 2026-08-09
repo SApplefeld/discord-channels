@@ -12,14 +12,20 @@ import { createRegistry } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { loadSessions, saveSessions } from "./persistence.ts";
 import { loadDiscordConfig } from "./discord/config.ts";
-import { createDiscordTransport } from "./discord/adapter.ts";
+import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { renderQuestionNotice } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
+import {
+  answerableFromThread,
+  renderQuestionOutcome,
+  renderQuestionPrompt,
+} from "./discord/question-message.ts";
+import type { ActionRow } from "./discord/question-message.ts";
 import { toView } from "./discord/state.ts";
 import { loadBindings, saveBindings } from "./discord/bindings.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
-import type { ThreadMessenger } from "./discord/transport.ts";
+import type { CallOutcome, ThreadMessenger } from "./discord/transport.ts";
 import {
   ALERT_WINDOW_MS,
   MAX_QUESTION_ALERTS_PER_WINDOW,
@@ -30,10 +36,17 @@ import {
 import type { PermissionDesk } from "./security/permission.ts";
 import { loadSenderGate } from "./security/senders.ts";
 import { createQuestionDesk } from "./question-desk.ts";
+import type {
+  QuestionAlert,
+  QuestionEntryView,
+  QuestionTerminalDetail,
+  QuestionTerminalState,
+} from "./question-desk.ts";
 import { createEchoMemory, createTranscriptTailer, questionDigest } from "./tail.ts";
 import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
+import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
 import { createRelayRoutes } from "./routing/http.ts";
@@ -78,6 +91,237 @@ export function questionDelivery(options: {
       options.desk.release(sessionId, digest);
       throw error;
     }
+  };
+}
+
+/**
+ * The desk's terminal-state notifier, as the message edit it performs.
+ *
+ * Every trigger rewrites the ask's own thread message and strips its components, because a message
+ * whose buttons answer a hold that has ended is a tap that reports a failure and changes nothing.
+ * An entry whose alert never landed has no message to rewrite and edits nothing: there is no id to
+ * aim at, and aiming at anything else would rewrite another message in the thread.
+ *
+ * Fire-and-forget by construction, because the notifier is called on the response path: the held
+ * response is already answered by the time this runs, so an edit that cannot be made costs a stale
+ * message rather than a stuck session, and the desk's own guard keeps a throw out of that path
+ * either way.
+ */
+export function questionCloseOut(options: {
+  edit: (
+    threadId: string,
+    messageId: string,
+    text: string,
+    components: readonly ActionRow[],
+  ) => Promise<CallOutcome<null>>;
+  /**
+   * The prompt edits still on the wire for this entry. Waited on before the close-out is written,
+   * because both aim at the one message and this one has to be the last: a prompt edit that landed
+   * after would put components back on a message whose hold has already ended.
+   */
+  settled: (entryId: string) => Promise<void>;
+  log: (message: string) => void;
+}): (sessionId: string, state: QuestionTerminalState, detail: QuestionTerminalDetail) => void {
+  return (sessionId, state, detail) => {
+    const alert = detail.alert;
+    if (alert === null) return;
+    const answers = detail.answers;
+    const content = renderQuestionOutcome({
+      state,
+      questions: detail.questions,
+      answers: answers !== null && answers.kind === "answers" ? answers.answers : null,
+      response: answers !== null && answers.kind === "response" ? answers.response : null,
+    });
+    void (async () => {
+      await options.settled(detail.entryId);
+      const outcome = await options.edit(alert.threadId, alert.messageId, content, []);
+      if (outcome.status === "ok") return;
+      // The state and the transport's error class only: the message this failed to write renders
+      // question text, and conversation content never appears in the broker log at any level.
+      options.log(
+        `broker: could not close out session ${sessionId}'s question message: ` +
+          (outcome.status === "rate-limited" ? "rate limited" : outcome.error),
+      );
+    })().catch(() => {
+      options.log(
+        "broker: closing out a question message failed; the error detail is withheld, " +
+          "it can carry content",
+      );
+    });
+  };
+}
+
+/**
+ * The prompt edits still on the wire, one per held entry, and the order the terminal edit takes
+ * behind them.
+ *
+ * Two writers aim at a held ask's one message: the edits that draw it as a live prompt, and the
+ * close-out that rewrites it once the hold has ended. The close-out is fire-and-forget off the
+ * response path, so without an order between them a prompt edit issued a moment earlier lands a
+ * moment later and puts live components back over a hold that has already answered its session,
+ * where every tap is then a failure the operator has no way to read. `draw` registers each prompt
+ * edit under its entry and `settled` is what the close-out waits on, so the close-out is always the
+ * last write a message takes. The map holds an entry only while one of those edits is in flight.
+ */
+export type PromptEdits = {
+  /** Runs one prompt edit for an entry, registered so a close-out for it waits behind. */
+  draw: <Result>(entryId: string, run: () => Promise<Result>) => Promise<Result>;
+  /** Resolves once nothing is drawing that entry's message, whether or not the drawing worked. */
+  settled: (entryId: string) => Promise<void>;
+};
+
+export function createPromptEdits(): PromptEdits {
+  const inFlight = new Map<string, Promise<unknown>>();
+  return {
+    draw(entryId, run) {
+      // Started before it is registered, and nothing between the two lines yields: `run` reads the
+      // entry and issues its edit synchronously, so a close-out firing from here on either finds
+      // this edit registered or has not been provoked yet.
+      const running = run();
+      inFlight.set(entryId, running);
+      const forget = (): void => {
+        if (inFlight.get(entryId) === running) inFlight.delete(entryId);
+      };
+      running.then(forget, forget);
+      return running;
+    },
+    settled: (entryId) => {
+      const running = inFlight.get(entryId);
+      if (running === undefined) return Promise.resolve();
+      // A failed drawing is still a finished one, and the close-out's own edit is what reports a
+      // refusal: this wait carries no outcome and never rejects.
+      const done = (): void => {};
+      return running.then(done, done);
+    },
+  };
+}
+
+/**
+ * Turns the notice a question's alert landed as into the interactive message that answers it, or
+ * releases the hold so the question lands on today's behavior.
+ *
+ * The notice is posted first and the components follow it by edit, because the entry id every
+ * component is addressed by does not exist until the hold does, and the hold is created after the
+ * delivery starts: the intake calls the alert seam before the hold seam, since the hold is gated on
+ * whether that alert went out. What the ordering buys is that the post's own round trip is the wait
+ * the hold is created in, so by the time Discord answers, the desk either holds this ask or never
+ * will.
+ *
+ * Every branch but the upgrade releases the hold, and all of them land on today's behavior, an
+ * alerted phone and a console picker: a post that came back with no message id has nothing to edit,
+ * an ask this thread cannot answer faithfully would be parked behind components that never finish
+ * or answer with a map the session cannot read, and a refused upgrade would leave a readable
+ * message with no controls above a four-hour hold, which is the one outcome worse than no hold at
+ * all. The one branch that releases nothing is the ask the desk no longer holds, where there is
+ * nothing left to release.
+ */
+export function questionUpgrade(options: {
+  desk: {
+    held: (sessionId: string, digest: string) => QuestionEntryView | null;
+    release: (sessionId: string, digest?: string) => boolean;
+    noteAlert: (sessionId: string, digest: string, alert: QuestionAlert) => string | null;
+  };
+  edit: (
+    threadId: string,
+    messageId: string,
+    text: string,
+    components: readonly ActionRow[],
+  ) => Promise<CallOutcome<null>>;
+  drawing: PromptEdits;
+  operatorId: string;
+  log: (message: string) => void;
+}): (input: {
+  sessionId: string;
+  threadId: string;
+  messageId: string | null;
+  questions: readonly AskedQuestion[];
+}) => Promise<void> {
+  return async ({ sessionId, threadId, messageId, questions }) => {
+    const digest = questionDigest(questions);
+    const entry = options.desk.held(sessionId, digest);
+    // Nothing is held for this ask, so there is nothing to upgrade and nothing to release: the
+    // notice stands as the alert it is.
+    if (entry === null) return;
+    if (messageId === null || !answerableFromThread(entry.questions, entry.questionsInput)) {
+      // Released before the alert is noted on the entry, so the terminal state has no message to
+      // rewrite: the notice already in the thread carries the question whole and says it is
+      // waiting at the console, which is exactly what happened.
+      options.desk.release(sessionId, digest);
+      return;
+    }
+    // The read that decides the edit is safe to make: the entry is live and carries no message yet,
+    // and nothing between here and the edit yields, so the edit cannot be issued for an ask that
+    // ended in between. What can end under the edit is handled by the ordering `drawing` keeps.
+    const entryId = options.desk.noteAlert(sessionId, digest, { threadId, messageId });
+    if (entryId === null) return;
+    const prompt = renderQuestionPrompt({
+      operatorId: options.operatorId,
+      entryId,
+      questions,
+      selections: questions.map(() => []),
+    });
+    const upgraded = await options.drawing.draw(entryId, () =>
+      options.edit(threadId, messageId, prompt.content, prompt.components),
+    );
+    if (upgraded.status === "ok") return;
+    // The release's own terminal edit rewrites this message: the alert is on the entry by now, so
+    // what the operator ends up reading is the closed-out line naming the console, not the notice
+    // this edit failed to replace.
+    options.desk.release(sessionId, digest);
+    options.log(
+      `broker: session ${sessionId}'s question kept the plain notice and released its hold: ` +
+        (upgraded.status === "rate-limited" ? "rate limited" : upgraded.error),
+    );
+  };
+}
+
+/**
+ * Redraws a held ask's own message so the operator sees the selections the desk has accumulated.
+ *
+ * A select reports its whole selection back to Discord, but the client rebuilds the menu from the
+ * message, so an ask whose message is never rewritten shows the placeholder again after every
+ * choice. Rendered with the operator's own ID whatever tier the alert was posted under, because an
+ * edit resolves no mention at all: the transport names none, so the pill renders and pings nobody.
+ *
+ * The view arrives from a read taken before the press was acknowledged, so the entry it describes
+ * can have ended since. Read again here, and the edit is issued only for an entry the desk still
+ * holds under the same id: a redraw over a resolved hold is live components above a session that
+ * has already moved on.
+ */
+export function questionRefresh(options: {
+  desk: { entry: (entryId: string) => QuestionEntryView | null };
+  edit: (
+    threadId: string,
+    messageId: string,
+    text: string,
+    components: readonly ActionRow[],
+  ) => Promise<CallOutcome<null>>;
+  drawing: PromptEdits;
+  operatorId: string;
+  log: (message: string) => void;
+}): (entry: QuestionEntryView) => Promise<void> {
+  return async (entry) => {
+    const outcome = await options.drawing.draw(entry.id, async () => {
+      const live = options.desk.entry(entry.id);
+      if (live === null || live.alert === null) return null;
+      const prompt = renderQuestionPrompt({
+        operatorId: options.operatorId,
+        entryId: live.id,
+        questions: live.questions,
+        selections: live.selections,
+      });
+      const { threadId, messageId } = live.alert;
+      return options.edit(threadId, messageId, prompt.content, prompt.components);
+    });
+    if (outcome === null || outcome.status === "ok") return;
+    // The state and the transport's error class only: the message this failed to write renders
+    // question text, and conversation content never appears in the broker log at any level. A
+    // failed redraw costs a menu showing its placeholder rather than the operator's own choice,
+    // because the selection is already recorded on the desk.
+    options.log(
+      `broker: could not redraw session ${entry.sessionId}'s question message: ` +
+        (outcome.status === "rate-limited" ? "rate limited" : outcome.error),
+    );
   };
 }
 
@@ -185,16 +429,20 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // nothing about routing.
   const steeringWriter: ThreadWriter = {
     reply: (threadId, text) => writer.reply(threadId, text),
-    edit: (threadId, messageId, text) => writer.edit(threadId, messageId, text),
+    // Every argument forwarded, the components included: this wrapper only adds the narration
+    // clear to the posting verbs, and a parameter dropped here would strip the rows off every
+    // question message that goes through it while type-checking clean.
+    edit: (threadId, messageId, text, components) =>
+      writer.edit(threadId, messageId, text, components),
     notice: async (threadId, text) => {
       const written = await writer.notice(threadId, text);
       if (written) outbound.endNarration(threadId);
       return written;
     },
     alert: async (threadId, text, mentionUserId) => {
-      const written = await writer.alert(threadId, text, mentionUserId);
-      if (written) outbound.endNarration(threadId);
-      return written;
+      const posted = await writer.alert(threadId, text, mentionUserId);
+      if (posted.status === "ok") outbound.endNarration(threadId);
+      return posted;
     },
   };
   // The question alert's doorway, mutable for the same reason `threadFor` is: the tailer is
@@ -211,10 +459,26 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let tailInFlight: Promise<void> = Promise.resolve();
   // The question desk holds a credited question post's hook response open so the answer can ride
   // back from the thread; every trigger but an answer releases with `{}` to today's behavior, the
-  // console picker. Its terminal-state notifier is the message-edit seam, a no-op until a
-  // thread-message editor is wired to it. Constructed unconditionally, like the relay hub, and
-  // holding nothing until the intake below is given its hold seam.
-  const questionDesk = createQuestionDesk({ holdMs: config.questionHoldMs, log: note });
+  // console picker. Constructed unconditionally, like the relay hub: without Discord the hold is
+  // created and released within the alert's own failure path, which is today's behavior reached by
+  // a longer road.
+  //
+  // The terminal-state notifier is the message-edit seam. Every trigger rewrites the ask's own
+  // thread message and strips its components, because a message whose buttons answer a hold that
+  // has ended is a tap that reports a failure and changes nothing. It is fire-and-forget: the
+  // response is already answered when this runs, and an edit that cannot be made costs a stale
+  // message rather than a stuck session.
+  const drawing = createPromptEdits();
+  const questionDesk = createQuestionDesk({
+    holdMs: config.questionHoldMs,
+    log: note,
+    onTerminal: questionCloseOut({
+      edit: (threadId, messageId, text, components) =>
+        steeringWriter.edit(threadId, messageId, text, components),
+      settled: drawing.settled,
+      log: note,
+    }),
+  });
   // The transcript tailer exists only while both mirror switches are on. Off means not
   // constructed: no transcript is ever opened, no poll timer runs, and the intake gets no seam
   // to learn a path through, so "off" is the absence of the machinery rather than a check
@@ -295,11 +559,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
             question: tail.question,
           },
         }),
-    // No `questionDesk` seam, so every question post is answered immediately and nothing is ever
-    // held here. The desk is built and its shutdown release wired, but a held response can only be
-    // ended by an answer, and no route reaches `resolve` until the thread's answer surface exists:
-    // passing the hold seam before then would park a session on a question with no way back. That
-    // seam goes in beside the answer route.
+    // The hold seam. A qualifying question post's response is held open here rather than answered,
+    // so the answer can ride back from the thread through the components the alert grows; every
+    // post the desk refuses, and every gate ahead of it, is answered immediately exactly as a
+    // broker without a desk answers it. Safe to wire because the answer route exists: the alert's
+    // own delivery either upgrades the message to one that can answer the hold or releases it, and
+    // the interaction route resolves it from a tap.
+    questionDesk: { hold: questionDesk.hold },
     mirror: {
       enabled: config.mirror,
       maxBytes: config.mirrorMaxBytes,
@@ -358,10 +624,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
     };
-    const transport = createDiscordTransport({
-      channelId: discord.channelId,
-      request: createRestRequest(discord.token),
-    });
+    // One HTTP client for every Discord write this broker makes, the message routes and the
+    // interaction callback alike. Sharing the client shares no budget: each surface holds its own
+    // `Budget` instance, because the routes report their rate limits independently.
+    const request = createRestRequest(discord.token);
+    const transport = createDiscordTransport({ channelId: discord.channelId, request });
     messenger = transport;
     const surface = createSurface({
       transport,
@@ -457,6 +724,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       postCeiling: MAX_QUESTION_ALERTS_PER_WINDOW,
       windowMs: ALERT_WINDOW_MS,
     });
+    const upgrade = questionUpgrade({
+      desk: questionDesk,
+      edit: (threadId, messageId, text, components) =>
+        steeringWriter.edit(threadId, messageId, text, components),
+      drawing,
+      operatorId: gate.operatorId,
+      log: note,
+    });
     deliverQuestion = async (sessionId, questions) => {
       const threadId = surface.threadFor(sessionId);
       if (threadId === null) return { status: "no-thread" };
@@ -465,13 +740,30 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         return { status: "failed", error: "question alerts are over their window" };
       }
       const mention = volume === "ping" ? gate.operatorId : null;
-      const written = await steeringWriter.alert(
+      const posted = await steeringWriter.alert(
         threadId,
         renderQuestionNotice({ operatorId: mention, questions }),
         mention,
       );
-      return written ? { status: "sent" } : { status: "failed", error: "the alert was not written" };
+      if (posted.status !== "ok") return { status: "failed", error: "the alert was not written" };
+      await upgrade({ sessionId, threadId, messageId: posted.value.messageId, questions });
+      return { status: "sent" };
     };
+    const interactions = createInteractionRouter({
+      gate,
+      desk: questionDesk,
+      responder: createInteractionResponder(request),
+      refresh: questionRefresh({
+        desk: questionDesk,
+        edit: (threadId, messageId, text, components) =>
+          steeringWriter.edit(threadId, messageId, text, components),
+        drawing,
+        operatorId: gate.operatorId,
+        log: note,
+      }),
+      now: Date.now,
+      log: note,
+    });
     const inbound = createInboundRouter({
       registry,
       relays,
@@ -495,6 +787,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         outbound.noteThreadMessage(message.threadId, message.messageId);
         return inbound.deliver(message);
       },
+      onInteraction: (interaction) => interactions.deliver(interaction),
       log: note,
     });
     // Awaited: a login failure belongs to startup, where it is reported, rather than surfacing

@@ -14,6 +14,7 @@
 //
 // This module's standing rule, shared with the tailer: no question content in any log line, ever.
 // Log lines carry session IDs, counts, and states; never a question, an option, or an answer.
+import { randomBytes } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import type { AskedQuestion } from "./discord/render.ts";
 import { questionDigest } from "./tail.ts";
@@ -49,6 +50,16 @@ export const MAX_RESPONSES_PER_ENTRY = 4;
  */
 const SHUTDOWN_FLUSH_MS = 1_000;
 
+/**
+ * How long a run of the same rate-limited log reason is aggregated before its next flush.
+ *
+ * The refused-retry line is the one line here a client can drive without limit: a CLI retrying past
+ * an entry's response cap writes one per attempt for the life of a four-hour hold, which would push
+ * every other line out through rotation. Local rather than shared with the tailer's limiter or the
+ * intake's, the same rule those two follow: each layer holds its own log seam.
+ */
+const REPEAT_WINDOW_MS = 60_000;
+
 /** How a hold ended, for the terminal-state notifier. */
 export type QuestionTerminalState = "answered" | "released" | "expired" | "client-gone" | "shutdown";
 
@@ -61,6 +72,50 @@ export type QuestionTerminalState = "answered" | "released" | "expired" | "clien
 export type QuestionAnswers =
   | { kind: "answers"; answers: Readonly<Record<string, string | readonly string[]>> }
   | { kind: "response"; response: string };
+
+/**
+ * Where a held entry's alert is, once one has been posted for it. The thread message this names is
+ * the one every terminal state edits, and the one the components that answer the hold live on.
+ */
+export type QuestionAlert = { threadId: string; messageId: string };
+
+/**
+ * A held entry as the answering surface reads it: the opaque id its components are addressed by,
+ * the ask itself, and the selections accumulated against it so far.
+ *
+ * Selections are the option labels the operator has chosen, one list per question in the ask's own
+ * order, empty where nothing is chosen yet. Labels rather than positions, because a label is what
+ * an answer is submitted as, and the two must not be able to disagree about which option was meant.
+ */
+export type QuestionEntryView = {
+  id: string;
+  sessionId: string;
+  questions: readonly AskedQuestion[];
+  /**
+   * The payload's own `questions` array, verbatim. Read beside the bounded parse above by the
+   * surface that decides whether this ask can be answered from the thread at all: the two are the
+   * same ask only when the reader carried it whole, and an answered hold builds its map over the
+   * parse while the session reads that map against this.
+   */
+  questionsInput: readonly unknown[];
+  selections: ReadonlyArray<readonly string[]>;
+  alert: QuestionAlert | null;
+};
+
+/** What a submit from the thread did. An incomplete one names the question still unanswered. */
+export type QuestionSubmission =
+  | { kind: "answered" }
+  | { kind: "incomplete"; questionNumber: number }
+  | { kind: "gone" };
+
+/** The entry detail the terminal notifier needs to edit the ask's own message. */
+export type QuestionTerminalDetail = {
+  entryId: string;
+  alert: QuestionAlert | null;
+  questions: readonly AskedQuestion[];
+  /** What an answered hold submitted; null under every other terminal state. */
+  answers: QuestionAnswers | null;
+};
 
 export type QuestionDesk = {
   /**
@@ -103,6 +158,45 @@ export type QuestionDesk = {
    */
   release: (sessionId: string, digest?: string) => boolean;
   /**
+   * The entry a session holds for one ask, or null when it holds none for that digest. The read
+   * the alert path takes before it decides what to draw: the ask may have been replaced, released,
+   * or refused while the notice was on its way to Discord.
+   */
+  held: (sessionId: string, digest: string) => QuestionEntryView | null;
+  /**
+   * Records where the alert for a session's held ask landed, and reports that entry's opaque id so
+   * the caller can address its components. Null when the session holds no entry for that digest,
+   * and null again when the entry already carries an alert: an entry has exactly one message its
+   * components live on, and repointing it would strand the components already drawn on the first.
+   */
+  noteAlert: (sessionId: string, digest: string, alert: QuestionAlert) => string | null;
+  /** The held entry an opaque component id names, or null when nothing holds it any longer. */
+  entry: (entryId: string) => QuestionEntryView | null;
+  /**
+   * Records the options chosen for one question of a held ask, replacing whatever that question
+   * held before: a select reports its whole selection on every change, so the last report is the
+   * answer. Option positions rather than labels cross this seam, and the entry resolves them
+   * against its own copy of the ask, so a forged or stale position selects nothing rather than
+   * submitting a label the picker never offered.
+   */
+  select: (
+    entryId: string,
+    questionIndex: number,
+    optionIndexes: readonly number[],
+  ) => QuestionEntryView | null;
+  /**
+   * Answers the entry from the thread with what it has accumulated. An ask with a question still
+   * unanswered submits nothing and names that question, because a partial answer would commit the
+   * session to picks the operator did not make.
+   */
+  submit: (entryId: string) => QuestionSubmission;
+  /**
+   * Releases the entry an opaque component id names, so the console picker renders: the
+   * Answer-at-console button. Digest-checked through the entry itself, so a stale id whose ask has
+   * been replaced releases nothing.
+   */
+  releaseEntry: (entryId: string) => boolean;
+  /**
    * Releases every held entry with `{}`, then waits, briefly and boundedly, for those bodies to
    * reach the wire. Shutdown's half: the socket teardown that follows destroys connections, and a
    * body still buffered when its socket is destroyed is dropped, which the session sees as a
@@ -115,12 +209,19 @@ export type QuestionDeskOptions = {
   /** How long an entry is held before the desk's own timer releases it. */
   holdMs: number;
   log?: (message: string) => void;
+  /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
+  now?: () => number;
   /**
    * Told each entry's terminal state once, after the response is answered (or found unanswerable).
-   * This is the message-edit seam: a no-op until a thread-message editor is wired to it, and the
-   * desk never lets a throw out of it reach the response path.
+   * This is the message-edit seam: the detail carries where the ask's own message is and what was
+   * submitted, so the editor rewrites that message and strips its components. The desk never lets a
+   * throw out of it reach the response path.
    */
-  onTerminal?: (sessionId: string, state: QuestionTerminalState) => void;
+  onTerminal?: (
+    sessionId: string,
+    state: QuestionTerminalState,
+    detail: QuestionTerminalDetail,
+  ) => void;
   /** Injected so a test drives expiry without sleeping. */
   setTimer?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearTimer?: (timer: NodeJS.Timeout) => void;
@@ -128,10 +229,23 @@ export type QuestionDeskOptions = {
 
 type HeldEntry = {
   /**
+   * The opaque token every component that answers this entry is addressed by. Minted at random per
+   * entry, never derived from the session, the digest, or the ask: a `custom_id` travels to
+   * Discord and back through anyone who can see the message, so it must name nothing and predict
+   * nothing. It is a lookup key into this map and is meaningless once the entry is gone.
+   */
+  id: string;
+  /**
    * The tailer's own digest of the bounded parse, so a retry attaches to the ask it repeats and a
    * digest-checked release matches the ask it was asked about.
    */
   digest: string;
+  /** The bounded parse, which the answering surface draws and resolves option positions against. */
+  questions: readonly AskedQuestion[];
+  /** The labels chosen so far, one list per question in the ask's order. */
+  selections: string[][];
+  /** Where this ask's alert landed, once one has; null until the post comes back with an id. */
+  alert: QuestionAlert | null;
   /**
    * The payload's own `questions` array, verbatim. An answered hold passes it back inside
    * `updatedInput`, because Claude Code re-reads the whole tool input from the response and a
@@ -143,15 +257,105 @@ type HeldEntry = {
   timer: NodeJS.Timeout;
 };
 
+/**
+ * How many rate-limited reasons are held before the closed ones are swept. A reason carries a
+ * session id, so without the sweep the map would grow by one entry per session this desk ever
+ * refused a retry for.
+ */
+export const MAX_REPEAT_KEYS = 64;
+
+/**
+ * Rate-limits a repeating log line by its reason, which carries the session and the cause and
+ * nothing that varies per repeat.
+ *
+ * The first of a reason is written at once; a repeat inside the window is counted, and the count
+ * rides on the next line that window admits. The same shape the tailer's limiter has, held locally
+ * for the same reason it holds one: each layer owns its own log seam.
+ */
+function createRepeatLog(
+  log: (message: string) => void,
+  now: () => number,
+): (reason: string) => void {
+  const state = new Map<string, { windowStart: number; suppressed: number }>();
+  return (reason) => {
+    const at = now();
+    const entry = state.get(reason);
+    if (entry !== undefined && at - entry.windowStart < REPEAT_WINDOW_MS) {
+      entry.suppressed += 1;
+      return;
+    }
+    if (entry !== undefined && entry.suppressed > 0) {
+      log(
+        `question desk: ${reason} occurred ${String(entry.suppressed)} more time(s) in the last ` +
+          `${String(REPEAT_WINDOW_MS)}ms`,
+      );
+    }
+    log(`question desk: ${reason}`);
+    state.set(reason, { windowStart: at, suppressed: 0 });
+    if (state.size <= MAX_REPEAT_KEYS) return;
+    // Oldest closed window first, and whatever it still owes is written on the way out. A reason
+    // carries a session id, so an entry left in the map because it owes a count is one only that
+    // same session could ever flush, and a session that tripped the cap and went away never will:
+    // the map would then grow by one for the life of the process. The open windows are left alone,
+    // where the count riding on the next line of a reason is still the reason's to report.
+    const closed = [...state]
+      .filter(([, kept]) => at - kept.windowStart >= REPEAT_WINDOW_MS)
+      .sort(([, left], [, right]) => left.windowStart - right.windowStart);
+    for (const [key, kept] of closed) {
+      if (state.size <= MAX_REPEAT_KEYS) return;
+      if (kept.suppressed > 0) {
+        log(
+          `question desk: ${key} occurred ${String(kept.suppressed)} more time(s) in the last ` +
+            `${String(REPEAT_WINDOW_MS)}ms`,
+        );
+      }
+      state.delete(key);
+    }
+  };
+}
+
 export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
   const log = options.log ?? ((): void => {});
+  const now = options.now ?? Date.now;
   const setTimer = options.setTimer ?? setTimeout;
   const clearTimer = options.clearTimer ?? clearTimeout;
   const held = new Map<string, HeldEntry>();
+  // Where a component id lands. A second map rather than a scan of `held`, because every
+  // interaction arrives holding an id and nothing else, and both maps are written and cleared
+  // together in `settle` and in the close watcher.
+  const byId = new Map<string, string>();
+  const repeats = createRepeatLog(log, now);
 
-  function notifyTerminal(sessionId: string, state: QuestionTerminalState): void {
+  function view(entry: HeldEntry, sessionId: string): QuestionEntryView {
+    return {
+      id: entry.id,
+      sessionId,
+      questions: entry.questions,
+      questionsInput: entry.questionsInput,
+      // Copied rather than handed over: a view is what the answering surface renders from, and the
+      // entry goes on accumulating behind it, so a shared array would redraw a message from
+      // selections that arrived after the read it is drawing.
+      selections: entry.selections.map((chosen) => [...chosen]),
+      alert: entry.alert,
+    };
+  }
+
+  /** The held entry a component id names, with the session it belongs to. */
+  function located(entryId: string): { sessionId: string; entry: HeldEntry } | null {
+    const sessionId = byId.get(entryId);
+    if (sessionId === undefined) return null;
+    const entry = held.get(sessionId);
+    if (entry === undefined || entry.id !== entryId) return null;
+    return { sessionId, entry };
+  }
+
+  function notifyTerminal(
+    sessionId: string,
+    state: QuestionTerminalState,
+    detail: QuestionTerminalDetail,
+  ): void {
     try {
-      options.onTerminal?.(sessionId, state);
+      options.onTerminal?.(sessionId, state, detail);
     } catch {
       // The detail is discarded unread: the notifier edits a message that renders question text,
       // and a throw out of it can quote that text.
@@ -188,16 +392,27 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
    * written is the exactly-once guard: a second trigger, however it races in (an answer landing
    * during expiry, a release crossing a close), finds nothing held and resolves nothing.
    */
-  function settle(sessionId: string, state: QuestionTerminalState, body: unknown | null): boolean {
+  function settle(
+    sessionId: string,
+    state: QuestionTerminalState,
+    body: unknown | null,
+    answers: QuestionAnswers | null = null,
+  ): boolean {
     const entry = held.get(sessionId);
     if (entry === undefined) return false;
     held.delete(sessionId);
+    byId.delete(entry.id);
     clearTimer(entry.timer);
     if (body !== null) {
       for (const response of entry.responses) respond(sessionId, response, body);
     }
     log(`question desk: session ${sessionId}'s question hold ended: ${state}`);
-    notifyTerminal(sessionId, state);
+    notifyTerminal(sessionId, state, {
+      entryId: entry.id,
+      alert: entry.alert,
+      questions: entry.questions,
+      answers,
+    });
     return true;
   }
 
@@ -250,10 +465,58 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
       entry.responses.splice(at, 1);
       if (entry.responses.length > 0) return;
       held.delete(sessionId);
+      byId.delete(entry.id);
       clearTimer(entry.timer);
       log(`question desk: session ${sessionId}'s held response closed before resolution`);
-      notifyTerminal(sessionId, "client-gone");
+      notifyTerminal(sessionId, "client-gone", {
+        entryId: entry.id,
+        alert: entry.alert,
+        questions: entry.questions,
+        answers: null,
+      });
     });
+  }
+
+  /**
+   * The answered trigger, shared by the resolve seam and the thread's own Send: one place composes
+   * the measured allow body, so the two cannot come to disagree about the wire shape.
+   */
+  function resolveHold(sessionId: string, answers: QuestionAnswers): boolean {
+    const entry = held.get(sessionId);
+    if (entry === undefined) return false;
+    // The measured wire shape: a 2xx whose hookSpecificOutput allows the call and rewrites its
+    // input skips the picker entirely, and the turn proceeds showing the injected answers as the
+    // operator's picks. `response` replaces the per-question answers whole.
+    const updatedInput =
+      answers.kind === "answers"
+        ? { questions: entry.questionsInput, answers: answers.answers }
+        : { questions: entry.questionsInput, response: answers.response };
+    return settle(
+      sessionId,
+      "answered",
+      {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          updatedInput,
+        },
+      },
+      answers,
+    );
+  }
+
+  /** The release trigger, shared by the session-keyed seam and the Answer-at-console button. */
+  function releaseHold(sessionId: string, digest?: string): boolean {
+    const entry = held.get(sessionId);
+    if (entry === undefined) return false;
+    if (digest !== undefined && entry.digest !== digest) {
+      log(
+        `question desk: session ${sessionId}'s hold is for a different ask than the release ` +
+          "names; the hold stands",
+      );
+      return false;
+    }
+    return settle(sessionId, "released", {});
   }
 
   return {
@@ -273,8 +536,11 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
       const existing = held.get(sessionId);
       if (existing !== undefined && existing.digest === digest) {
         if (existing.responses.length >= MAX_RESPONSES_PER_ENTRY) {
-          log(
-            `question desk: refused a retry for session ${sessionId}, its hold already carries ` +
+          // Rate-limited, unlike every other line here: a CLI retrying past this cap posts for the
+          // life of the hold, and one line per attempt would push every other line out of the log
+          // through rotation.
+          repeats(
+            `refused a retry for session ${sessionId}, its hold already carries ` +
               `${String(MAX_RESPONSES_PER_ENTRY)} responses`,
           );
           return false;
@@ -311,41 +577,106 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
         settle(sessionId, "expired", {});
       }, options.holdMs);
       watch(sessionId, response);
-      held.set(sessionId, { digest, questionsInput, responses: [response], timer });
+      // Six random bytes, which is the whole of what a component id has to be: unguessable enough
+      // that an id cannot be composed for an entry the operator was never shown, and short enough
+      // that four segments of it stay well inside Discord's 100-character custom_id field.
+      const id = randomBytes(6).toString("hex");
+      held.set(sessionId, {
+        id,
+        digest,
+        questions,
+        selections: questions.map(() => []),
+        alert: null,
+        questionsInput,
+        responses: [response],
+        timer,
+      });
+      byId.set(id, sessionId);
       return true;
     },
 
-    resolve(sessionId, answers) {
+    resolve: resolveHold,
+
+    held(sessionId, digest) {
       const entry = held.get(sessionId);
-      if (entry === undefined) return false;
-      // The measured wire shape: a 2xx whose hookSpecificOutput allows the call and rewrites its
-      // input skips the picker entirely, and the turn proceeds showing the injected answers as the
-      // operator's picks. `response` replaces the per-question answers whole.
-      const updatedInput =
-        answers.kind === "answers"
-          ? { questions: entry.questionsInput, answers: answers.answers }
-          : { questions: entry.questionsInput, response: answers.response };
-      return settle(sessionId, "answered", {
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "allow",
-          updatedInput,
-        },
-      });
+      return entry === undefined || entry.digest !== digest ? null : view(entry, sessionId);
     },
 
-    release(sessionId, digest) {
+    noteAlert(sessionId, digest, alert) {
       const entry = held.get(sessionId);
-      if (entry === undefined) return false;
-      if (digest !== undefined && entry.digest !== digest) {
+      if (entry === undefined || entry.digest !== digest) return null;
+      if (entry.alert !== null) {
+        // A second alert for the ask this entry already carries one for: the tailer's
+        // resolution-time yield landing inside the digest window while the hook's own alert is up.
+        // Repointing the entry would leave the first message's components live over a hold whose
+        // terminal state now rewrites a different message, so the newer post is left as the plain
+        // notice it was written as.
         log(
-          `question desk: session ${sessionId}'s hold is for a different ask than the release ` +
-            "names; the hold stands",
+          `question desk: session ${sessionId}'s question already has a message it is answered ` +
+            "through; the newer notice stands as one",
         );
-        return false;
+        return null;
       }
-      return settle(sessionId, "released", {});
+      entry.alert = alert;
+      return entry.id;
     },
+
+    entry(entryId) {
+      const found = located(entryId);
+      return found === null ? null : view(found.entry, found.sessionId);
+    },
+
+    select(entryId, questionIndex, optionIndexes) {
+      const found = located(entryId);
+      if (found === null) return null;
+      const asked = found.entry.questions[questionIndex];
+      if (asked === undefined) return null;
+      // Positions resolved against the entry's own copy of the ask, and a position naming no
+      // option contributes nothing: what is stored is a label the ask really offered, which is what
+      // keeps a stale or forged component from submitting an answer the picker never showed.
+      const labels = optionIndexes
+        .map((at) => asked.options[at]?.label)
+        .filter((label): label is string => label !== undefined);
+      // A select reports its whole selection on every change, so the last report replaces the
+      // question's answer rather than adding to it.
+      found.entry.selections[questionIndex] = asked.multiSelect ? labels : labels.slice(0, 1);
+      return view(found.entry, found.sessionId);
+    },
+
+    submit(entryId) {
+      const found = located(entryId);
+      if (found === null) return { kind: "gone" };
+      const { entry, sessionId } = found;
+      for (const [at] of entry.questions.entries()) {
+        // Named in the operator's own numbering, which is what the message shows: a partial answer
+        // would commit the session to picks nobody made, so the ask waits instead.
+        if (entry.selections[at].length === 0) return { kind: "incomplete", questionNumber: at + 1 };
+      }
+      // Keyed by the question text the payload carried, verbatim, and valued with the labels the ask
+      // itself declared: the measured vocabulary Claude Code reads answers back in.
+      //
+      // Built on no prototype at all, because the keys are untrusted conversation content: on a
+      // plain object a question asked as `__proto__` assigns nothing, so the answer would vanish
+      // from the body and the reader would find the prototype where a label belongs. An ask whose
+      // questions collide in this map never reaches the thread, which `answerableFromThread` is
+      // what decides.
+      const answers = Object.create(null) as Record<string, string | readonly string[]>;
+      for (const [at, asked] of entry.questions.entries()) {
+        const chosen = entry.selections[at];
+        answers[asked.question] = asked.multiSelect ? [...chosen] : chosen[0];
+      }
+      return resolveHold(sessionId, { kind: "answers", answers })
+        ? { kind: "answered" }
+        : { kind: "gone" };
+    },
+
+    releaseEntry(entryId) {
+      const found = located(entryId);
+      if (found === null) return false;
+      return releaseHold(found.sessionId, found.entry.digest);
+    },
+
+    release: releaseHold,
 
     async releaseAll() {
       // Collected before the settles, because settling empties the map: these are the responses

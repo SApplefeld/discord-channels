@@ -71,6 +71,32 @@ export function inertName(value: string): string {
   return visible(value);
 }
 
+/**
+ * Untrusted text for a message component's label or description, bounded to what that field
+ * accepts.
+ *
+ * The third escape beside `inertText` and `inertName`, and the distinction is what the surface
+ * renders. A component's label and description are plain text: Discord draws no markdown and
+ * resolves no chip inside them, so the markdown escape would reach the operator as a visible
+ * backslash in front of every underscore and asterisk an option label contains. What is stripped is
+ * the invisible class, which can reorder or hide text with no visual trace on any surface, and the
+ * length, because Discord refuses the whole message when one field is over its field limit.
+ */
+export function inertLabel(value: string, limit: number): string {
+  return fit(visible(value), limit);
+}
+
+/**
+ * Untrusted text for a line of message content, escaped and bounded.
+ *
+ * The pairing `inertLabel` is not: content is markdown, so a field composed into it goes through
+ * the full escape, and the bound is applied to the escaped text because that is what the reader
+ * sees and what the message's budget is spent on.
+ */
+export function inertField(value: string, limit: number): string {
+  return fit(inertText(value), limit);
+}
+
 /** Discord's ceiling on a message, less room for the cut marker this renderer adds. */
 export const MAX_MESSAGE_LENGTH = 1_900;
 
@@ -333,7 +359,28 @@ export function renderTaskNotice(text: string): string {
  */
 const MAX_QUESTION_LENGTH = 500;
 const MAX_QUESTION_HEADER_LENGTH = 100;
-const MAX_OPTION_LABEL_LENGTH = 100;
+export const MAX_OPTION_LABEL_LENGTH = 100;
+
+/**
+ * Room for an option's description, Discord's own ceiling on a select option's description field.
+ * A message carrying one field over its limit is refused whole, so the cap is a wire requirement
+ * rather than a readability choice.
+ */
+export const MAX_OPTION_DESCRIPTION_LENGTH = 100;
+
+/**
+ * One option of an `AskUserQuestion` question: the label the answer is given as, and the short
+ * gloss the tool wrote beside it. Both are untrusted conversation content.
+ *
+ * The label is held verbatim, because it is the string an answer is submitted as and Claude Code
+ * matches it against the option the call declared; a bounded copy would submit an answer the picker
+ * never offered. The description is bounded at the reader, since nothing reads it but a display
+ * surface with a hard field limit, and null when the call carried none.
+ */
+export type AskedOption = {
+  label: string;
+  description: string | null;
+};
 
 /**
  * One question an `AskUserQuestion` call is holding a session on: bounded structured data parsed
@@ -348,8 +395,8 @@ export type AskedQuestion = {
   /** The tool's short topic label for the question; null when the call carried none. */
   header: string | null;
   multiSelect: boolean;
-  /** The option labels, in the tool's order; descriptions never ride along. */
-  options: readonly string[];
+  /** The options, in the tool's order. */
+  options: readonly AskedOption[];
 };
 
 /** What a cut notice ends with, naming how many questions the console holds beyond the cut. */
@@ -365,9 +412,17 @@ function moreQuestionsTail(count: number): string {
  * the same notice with no mention at all: the quiet tier for a thread already pinged past a
  * person's reading pace.
  *
- * Unlike the permission prompt, this message asks for nothing in the thread: no remote answer
- * path exists for a question, so it says a session is parked on a console-only picker and carries
- * enough of the question for the operator to decide whether it is worth the walk.
+ * Unlike the permission prompt, this message asks for nothing in the thread: it carries enough of
+ * the question for the operator to decide what to do about it, and nothing to do it with. It is
+ * what every question gets first, and what a question the thread cannot answer keeps; the
+ * interactive message `renderQuestionPrompt` draws replaces it by edit once the components that
+ * answer the hold exist.
+ *
+ * The headline names no surface, because at the moment this is composed there is none to name. A
+ * held `PreToolUse` hook response blinds the console for as long as it is held, so a notice
+ * pointing at a console picker is untrue for exactly the window this message is the only thing in
+ * the thread; and the paths that leave this notice standing all release the hold, which renders
+ * that picker a moment later. Saying a question is open is true under both.
  *
  * The whole notice is bound to one message, because the per-field cuts alone cannot do that: four
  * questions at their caps compose past four thousand units, and leaving the overflow to the
@@ -391,9 +446,7 @@ export function renderQuestionNotice(input: {
   questions: readonly AskedQuestion[];
 }): string {
   const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
-  const lines = [
-    `${mention}❓ **Waiting on you at the console** ${SEPARATOR} a question is open`,
-  ];
+  const lines = [`${mention}❓ **Waiting on you** ${SEPARATOR} a question is open`];
   let used = lines[0].length;
   for (const [index, asked] of input.questions.entries()) {
     const header = asked.header === null ? "" : fit(inertText(asked.header), MAX_QUESTION_HEADER_LENGTH);
@@ -401,7 +454,7 @@ export function renderQuestionNotice(input: {
     const suffix = asked.multiSelect ? " (multi-select)" : "";
     const held = [`Q: ${prefix}${fit(inertText(asked.question), MAX_QUESTION_LENGTH)}${suffix}`];
     const labels = asked.options
-      .map((label) => fit(inertText(label), MAX_OPTION_LABEL_LENGTH))
+      .map((option) => fit(inertText(option.label), MAX_OPTION_LABEL_LENGTH))
       .filter((label) => label !== "");
     if (labels.length > 0) held.push(`Options: ${labels.join(` ${SEPARATOR} `)}`);
     // Each line costs its own length plus the newline that joins it. The tail's room is reserved

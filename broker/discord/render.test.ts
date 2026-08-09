@@ -18,7 +18,7 @@ import {
   renderTaskNotice,
   threadName,
 } from "./render.ts";
-import type { AskedQuestion } from "./render.ts";
+import type { AskedOption, AskedQuestion } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
@@ -1128,17 +1128,25 @@ function asked(overrides: Partial<AskedQuestion> = {}): AskedQuestion {
   };
 }
 
+/** Options as the notice cares about them: labels, with the descriptions the notice never draws. */
+function labelled(...labels: string[]): AskedOption[] {
+  return labels.map((label) => ({ label, description: null }));
+}
+
 test("a question notice leads with the mention and draws each question with its options", () => {
   const text = renderQuestionNotice({
     operatorId: OPERATOR,
     questions: [
-      asked({ header: "Timing", multiSelect: true, options: ["Now", "After the backup"] }),
-      asked({ question: "Which hosts get the change?", options: ["NEO", "TRINITY"] }),
+      asked({ header: "Timing", multiSelect: true, options: labelled("Now", "After the backup") }),
+      asked({ question: "Which hosts get the change?", options: labelled("NEO", "TRINITY") }),
     ],
   });
 
   assert.deepEqual(text.split("\n"), [
-    `<@${OPERATOR}> ❓ **Waiting on you at the console** · a question is open`,
+    // The headline names no surface: a held hook response renders no console picker, so a notice
+    // pointing at one is untrue for exactly the window this message is the thread's only copy of
+    // the question.
+    `<@${OPERATOR}> ❓ **Waiting on you** · a question is open`,
     "Q: Timing: Ship the migration now? (multi-select)",
     "Options: Now · After the backup",
     "Q: Which hosts get the change?",
@@ -1166,7 +1174,7 @@ test("nothing a session writes into a question can mention anyone or restructure
       asked({
         question: "approve <@999999999999999999> **now**?",
         header: "# Urgent",
-        options: ["<@123> ping", "> quoted line", "@everyone"],
+        options: labelled("<@123> ping", "> quoted line", "@everyone"),
       }),
     ],
   });
@@ -1187,7 +1195,7 @@ test("long question fields are cut visibly and the mention line survives any len
       asked({
         question: "q".repeat(600),
         header: "h".repeat(150),
-        options: ["o".repeat(150), "kept whole"],
+        options: labelled("o".repeat(150), "kept whole"),
       }),
     ],
   });
@@ -1203,10 +1211,10 @@ test("a null operator composes the quiet notice with no mention anywhere", () =>
   // but neither the composed text nor (at the call site) the transport whitelist names anyone.
   const text = renderQuestionNotice({
     operatorId: null,
-    questions: [asked({ header: "Timing", options: ["Now", "Later"] })],
+    questions: [asked({ header: "Timing", options: labelled("Now", "Later") })],
   });
 
-  assert.ok(text.startsWith("❓ **Waiting on you at the console**"), text);
+  assert.ok(text.startsWith("❓ **Waiting on you**"), text);
   assert.ok(!text.includes("<@"), text);
 });
 
@@ -1218,7 +1226,7 @@ test("four maximal questions compose one message, cut with a tail naming what th
     question: "q".repeat(600),
     header: "h".repeat(150),
     multiSelect: true,
-    options: ["o".repeat(150), "p".repeat(150), "r".repeat(150), "s".repeat(150)],
+    options: labelled("o".repeat(150), "p".repeat(150), "r".repeat(150), "s".repeat(150)),
   });
   const text = renderQuestionNotice({
     operatorId: OPERATOR,
@@ -1242,7 +1250,7 @@ test("an empty questions array still composes the alert line, and nothing makes 
   // pass down with it.
   assert.equal(
     renderQuestionNotice({ operatorId: OPERATOR, questions: [] }),
-    `<@${OPERATOR}> ❓ **Waiting on you at the console** · a question is open`,
+    `<@${OPERATOR}> ❓ **Waiting on you** · a question is open`,
   );
 
   // A header and labels of nothing but invisible characters neutralize to nothing and render as
@@ -1250,7 +1258,7 @@ test("an empty questions array still composes the alert line, and nothing makes 
   const invisible = String.fromCharCode(0x200b, 0x202e);
   const text = renderQuestionNotice({
     operatorId: OPERATOR,
-    questions: [asked({ header: invisible, options: [invisible, "real label"] })],
+    questions: [asked({ header: invisible, options: labelled(invisible, "real label") })],
   });
   assert.deepEqual(text.split("\n").slice(1), [
     "Q: Ship the migration now?",

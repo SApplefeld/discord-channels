@@ -6,6 +6,7 @@
 import type {
   CallOutcome,
   DiscordTransport,
+  InteractionResponder,
   RateLimitObservation,
   ThreadMessenger,
 } from "./transport.ts";
@@ -172,6 +173,56 @@ function classify(result: RawResult): CallOutcome<unknown> {
   return { status: "ok", value: result.body, rate };
 }
 
+/**
+ * Interaction callback types, from Discord's own numbering: 4 is a message the caller composes and
+ * 6 acknowledges a component press leaving the message as it is.
+ */
+const CHANNEL_MESSAGE_WITH_SOURCE = 4;
+const DEFERRED_MESSAGE_UPDATE = 6;
+
+/** EPHEMERAL. A message flagged with it is visible only to the user whose press provoked it. */
+const EPHEMERAL = 64;
+
+/**
+ * The interaction callback route, implemented against the same injected HTTP client every other
+ * write here uses.
+ *
+ * Separate from `createDiscordTransport` because it is a separate rate surface and its caller
+ * budgets it separately: a callback and a message write report their limits independently, so a
+ * budget folding them together would let one route's headroom clear the other's block. The route
+ * takes the interaction's own id and token rather than a channel, and the token is a credential for
+ * that one interaction, so it is never logged.
+ */
+export function createInteractionResponder(request: RawRequest): InteractionResponder {
+  async function callback(
+    interactionId: string,
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<CallOutcome<null>> {
+    const answered = classify(
+      await request({
+        route: `/interactions/${interactionId}/${token}/callback`,
+        method: "POST",
+        body,
+      }),
+    );
+    return answered.status === "ok" ? { status: "ok", value: null, rate: answered.rate } : answered;
+  }
+
+  return {
+    acknowledge: ({ interactionId, token }) =>
+      callback(interactionId, token, { type: DEFERRED_MESSAGE_UPDATE }),
+
+    ephemeral: ({ interactionId, token, text }) =>
+      callback(interactionId, token, {
+        type: CHANNEL_MESSAGE_WITH_SOURCE,
+        // The same two suppressions every write in this file carries. The text is broker-composed,
+        // but the flags are a property of the route rather than of one message's provenance.
+        data: { content: text, allowed_mentions: NO_MENTIONS, flags: EPHEMERAL | SUPPRESS_EMBEDS },
+      }),
+  };
+}
+
 export type AdapterOptions = {
   /** The host's channel. Every thread this broker owns is opened in it. */
   channelId: string;
@@ -282,11 +333,15 @@ export function createDiscordTransport(
     // the channel. It carries the same two suppressions every write in this file does, for the same
     // reason: the text being replaced in is Claude's own output, steered by whatever arrived from
     // Discord, and no more trusted than a session name.
-    editInThread: async ({ threadId, messageId, text }): Promise<CallOutcome<null>> => {
+    editInThread: async ({ threadId, messageId, text, components }): Promise<CallOutcome<null>> => {
       const edited = await write(`/channels/${threadId}/messages/${messageId}`, "PATCH", {
         content: text,
         allowed_mentions: NO_MENTIONS,
         flags: SUPPRESS_EMBEDS,
+        // Sent only when the caller named rows, an empty array included: an omitted field leaves
+        // the message's existing rows alone, which is what an edit that is only rewriting text
+        // means, while `[]` is what takes them off.
+        ...(components === undefined ? {} : { components }),
       });
       return edited.status === "ok" ? { status: "ok", value: null, rate: edited.rate } : edited;
     },

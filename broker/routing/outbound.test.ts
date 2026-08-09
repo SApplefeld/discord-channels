@@ -318,8 +318,8 @@ test("a rate-limit block earned by mirror volume does not drop an alert", async 
   );
 
   assert.equal(
-    await writer.alert(THREAD, "permission prompt", null),
-    true,
+    (await writer.alert(THREAD, "permission prompt", null)).status,
+    "ok",
     "the alert path must still post while the mirror bucket is blocked",
   );
   assert.deepEqual(
@@ -2284,7 +2284,7 @@ test("a rate-limited refusal that reports no wait is sat out blind", async () =>
     },
     edit: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
     notice: async () => true,
-    alert: async () => true,
+    alert: async () => ({ status: "ok", value: { messageId: null }, rate: NO_RATE_INFO }),
   };
   const router = routerFor({
     registry,
@@ -2376,7 +2376,7 @@ test("a wait that is not a finite number is sat out blind rather than acted on",
       },
       edit: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
       notice: async () => true,
-      alert: async () => true,
+      alert: async () => ({ status: "ok", value: { messageId: null }, rate: NO_RATE_INFO }),
     };
     const router = routerFor({
       registry,

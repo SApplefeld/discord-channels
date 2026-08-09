@@ -295,7 +295,7 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
         // same way; the phone just stops ringing for a run nobody could keep up with anyway.
         volume === "ping" ? options.operatorId : null,
       );
-      if (!posted) {
+      if (posted.status !== "ok") {
         // Nothing is held open for a prompt the operator never saw. Holding it would make this
         // request ID deduplicate against a message that does not exist, so every later attempt at
         // the same prompt would return without trying, and the session would stay parked in
