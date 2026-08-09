@@ -106,28 +106,41 @@ cache_creation_input_tokens` from `message.usage` (both measured; see the
 1M window is a per-model fact that can change upstream without notice, and the raw count needs no
 denominator to be honest.
 
-**A safeguard downgrade is read, not inferred.** A mid-session model change writes a `system`
-line with `subtype: "model_refusal_fallback"` carrying `originalModel`, `fallbackModel`,
-`apiRefusalCategory` (measured `cyber` on the specimen), `retractedMessageUuids`, and the console's
-own warning prose, with a matching `fallback` content block on the assistant line at the
-transition (measured; see the `a-model-downgrade-writes-a-structured-transcript-record` memory).
-The tailer's line reader gains this shape as a fourth allowlisted yield. Nothing is guessed: the
-report names the category upstream named and no more, and `apiRefusalExplanation` rides only when
-upstream populates it.
+**A downgrade is read, not inferred, and there are two of them.** A mid-session model change
+writes a `system` line whose subtype names the cause (measured; see the
+`a-model-downgrade-writes-a-structured-transcript-record` memory), with a matching `fallback`
+content block on the assistant line at the transition. `model_refusal_fallback` is the safeguard
+path: `originalModel`, `fallbackModel`, `apiRefusalCategory` (measured `cyber`),
+`retractedMessageUuids`, `scope: "session"`, and the console's own warning prose.
+`model_consent_fallback` is the entitlement path, fired when the session's model requires usage
+credits: `originalModel`, `fallbackModel` (measured `claude-opus-5[1m]`, so a model string is not
+always a bare id), `choice` (measured `cancelled`), and `persistedAsDefault`, with no `scope` or
+category at all. The tailer's line reader gains this shape as a fourth allowlisted yield and must
+handle both subtypes; a reader keying only on the refusal record's fields misses the entitlement
+downgrade entirely, which is the one an operator can act on. Nothing is guessed: the report names
+what upstream named and no more.
 
-**It is a state, because upstream says so.** The record carries `scope: "session"`, which is the
+**It is a state, because upstream says so.** The refusal record carries `scope: "session"`, the
 machine-readable form of the operator's observation that a downgraded session stays downgraded
-until it is switched back by hand. The cost is duration rather than the instant: an oversight
+until it is switched back by hand; the entitlement downgrade behaves the same way and says so in
+its prose ("for this session"). The cost is duration rather than the instant: an oversight
 thread that drops model at hour one runs degraded for every hour after. So the session record
 keeps the model first seen for the session beside the current one, and while they differ the card
 carries a standing marker (`⚠ claude-opus-4-8, down from claude-fable-5 · flagged cyber`) rather
 than a field that reads normal at a glance. Returning to the opening model clears the marker,
 which is how the operator confirms from the thread that a manual switch-back took effect.
 
-Direction is distinguished by a fixed rank (fable, opus, sonnet, haiku): a downgrade carries the
-marker, an upgrade renders plainly and clears it. On this fleet the safeguard fallback is the only
-thing that forces a mid-session change and it is always downward from Fable, so the upward
-direction is the operator's own action and needs no alarm.
+Direction is distinguished by a fixed rank (fable, opus, sonnet, haiku), compared on the model
+family rather than the exact string, since a fallback model can arrive decorated
+(`claude-opus-5[1m]`). A downgrade carries the marker, an upgrade renders plainly and clears it.
+Both forced paths are downward from Fable, so the upward direction is the operator's own action
+and needs no alarm.
+
+**The entitlement downgrade names the action that reverses it.** Its `choice` field distinguishes
+a consent the operator accepted from one that was dismissed, and a dismissed consent means a
+standing authorization to spend credits has not taken effect: the session runs on the fallback
+until someone consents at the console. That is the one downgrade an operator away from the keyboard
+can actually act on, so its message says what to do rather than only what happened.
 
 **The change also posts one message,** on the steering writer's notice tier by default and
 switchable to the alert tier (with the operator mention that reaches the phone) by a config knob,
