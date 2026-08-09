@@ -36,11 +36,13 @@ whether or not the model cooperates, and the `Stop` payload already carries
 is therefore structural, and the `reply` tool remains for what the model wants to say on its own
 initiative.
 
-Three things the console shows reach no hook payload at all: what the model writes *between* tool
-calls, a message the operator types while the model is mid-turn, which the harness queues and
-injects without a `UserPromptSubmit` ever firing, and the multiple-choice question an
-`AskUserQuestion` call parks the session on, which fires no hook of any kind. The transcript tailer
-below is what recovers all three.
+Two things the console shows reach no hook payload at all: what the model writes *between* tool
+calls, and a message the operator types while the model is mid-turn, which the harness queues and
+injects without a `UserPromptSubmit` ever firing. The transcript tailer below is what recovers
+both. The third console-only surface, the multiple-choice question an `AskUserQuestion` call parks
+the session on, reaches the broker at the moment it is asked, through a `PreToolUse` hook whose
+payload carries the full question; its transcript line is written only when the picker is
+answered, so the tailer's reading of it is the resolution-time fallback, not the timely signal.
 
 ## Components
 
@@ -136,9 +138,12 @@ for the next pass. Three line shapes contribute anything, and all must be non-si
 carrying the session ID the path was learned for: a `text` content block on an `assistant` line is
 one interim chunk, a `queued_command` attachment recording a human-origin prompt is one mid-turn
 typed message, delivered in transcript order among the chunks around it, and a `tool_use` block
-naming `AskUserQuestion` is one open-question alert, because no hook fires for that tool and the
-transcript is the only place outside the console the question exists. The question alert takes its
-own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
+naming `AskUserQuestion` is one open-question alert. That transcript line exists only once the
+picker is answered, so this yield is the fallback behind the `PreToolUse` hook post that alerts
+the same question at emission; a bounded per-session set of outstanding digests lets the yield
+recognize and skip a question the hook path already alerted, and a session whose installed hooks
+predate the `PreToolUse` entry still alerts here, at answer time, which is that host's
+compatibility story. The question alert takes its own delivery path: it posts through the steering writer's alert tier, mentioning the operator the
 way a permission prompt does, under its own per-thread ping/quiet/drop window (1 mention and 4
 posts per thread per minute, a window deliberately separate from the permission prompt's own), so
 a session parked on a picker reaches a phone without a long narration run ahead of it and without

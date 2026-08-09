@@ -142,9 +142,12 @@ next session to start rather than the ones already running.
 ## When a session asks you a question
 
 A session can park itself on a multiple-choice question at the console (the `AskUserQuestion`
-picker), and no hook fires for that tool, so the question would otherwise be invisible from the
-thread. The transcript tailer recognizes the call in the session's transcript and posts one alert
-into the thread, mentioning you:
+picker). For a session whose hooks include the `PreToolUse` question entry (any session started
+after the install that added it), the broker is told the moment the question is asked and posts
+one alert into the thread within seconds, while the picker is still open, mentioning you. For a
+session on an older hook set, the transcript tailer still recognizes the call in the session's
+transcript, but Claude Code writes that line only when the picker is answered, so the fallback
+alert arrives at answer time, which tells you what was asked but not that anything is waiting:
 
 ```
 @you ❓ Waiting on you at the console · a question is open
@@ -152,14 +155,16 @@ Q: Commit model: Commit model for this effort?
 Options: Commit-and-Push · Review-Only · Branch-and-PR
 ```
 
-The alert cannot be answered from the thread: no extension point in Claude Code can answer the
-picker, so the alert's job is to tell you the session is parked and what it is asking, within one
-poll interval of the ask. Anything you type in the thread is delivered to the session as ordinary
-steering when its turn resumes, not as the picker's answer.
+The alert cannot be answered from the thread: the broker does not yet answer the picker (Claude
+Code's `PreToolUse` hook can carry an answer back, and the backlog holds that round), so the
+alert's job is to tell you the session is parked and what it is asking. Anything you type in the
+thread is delivered to the session as ordinary steering when its turn resumes, not as the
+picker's answer.
 
-The alert rides the transcript tailer, so it lands only where mid-turn narration does: a host with
-`CHANNEL_INTERIM_MIRROR` or `CHANNEL_MIRROR` off, and a session launched with `-NoMirror`, get no
-alert at all and the question stays visible only at the console. It rides the same unfloored
+Both alert sources ride the tailer's question seam and its mirror-verdict gate, so alerts land
+only where mid-turn narration does: a host with `CHANNEL_INTERIM_MIRROR` or `CHANNEL_MIRROR` off,
+and a session launched with `-NoMirror`, get no alert at all, at ask time or answer time, and the
+question stays visible only at the console. The alert rides the same unfloored
 writer tier as a permission prompt, with its own per-thread window:
 **1 mention and 4 posts per thread per minute**. Past the mention ceiling the alert still posts
 but stops pinging; past the post ceiling it is dropped and the log says so. A real session asks
@@ -259,6 +264,14 @@ transcript text:
   still shows the question.
 - `tail: session <id>'s transcript pass failed (...)`: the file could not be opened or read this
   pass; the next pass tries again.
+- `tail: session <id> was taught a transcript path whose filename is not its own session id (...)`:
+  a hook post tried to teach the tailer a path whose filename stem is not the session's id, which
+  no real transcript has; the path is refused and the entry keeps its prior path. If this ever
+  appears for a healthy session, Claude Code has changed how it names transcripts, and that
+  session's narration and fallback question alerts are dark until the pin is revisited.
+- `tail: a poll pass is still running past the watchdog threshold (...)`: one poll pass has been
+  running for several poll intervals, which means a wedge somewhere in a read or a delivery;
+  without this line the only symptom would be narration quietly stopping for every session.
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
   aggregated into one summary line rather than logged once per poll.
 

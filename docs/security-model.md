@@ -132,13 +132,19 @@ a local process park every session on the host by spending it first, turning phi
 ## The transcript is read, not posted
 
 Everything above describes content that reaches Discord because a session posted it. The transcript
-tailer is the one stream that reaches Discord because the broker went and read it. Three things the
-console shows are carried by no hook payload: the text a model writes between tool calls, a
+tailer is the one stream that reaches Discord because the broker went and read it. Two things the
+console shows are carried by no hook payload: the text a model writes between tool calls, and a
 message the operator types while the model is mid-turn, which the harness queues and injects without
-firing the hook the mirror rides, and the question an `AskUserQuestion` call parks the session on,
-which fires no hook at all. So `broker/tail.ts` polls the session's own transcript file, the
-JSONL Claude Code appends beside every session, and publishes all three: the assistant text blocks
-it finds, the queued lines carrying a message a human typed, and the open-question alert.
+firing the hook the mirror rides. So `broker/tail.ts` polls the session's own transcript file, the
+JSONL Claude Code appends beside every session, and publishes both, plus a third yield: an
+`AskUserQuestion` `tool_use` line becomes an open-question alert. That third yield is a fallback.
+The question's timely signal is a `PreToolUse` hook post on `/hook`, matched to `AskUserQuestion`
+alone, whose payload carries the question's conversation text and whose entry therefore carries
+the per-session mirror switch header; the intake reads that header exactly as `/mirror` reads a
+verdict, hands the bounded parse to the tailer's question seam, and the seam alerts only a
+session whose mirror-on verdict it holds. The transcript line for an open question is written
+only at resolution, which is why the emission-time hook post is the one signal that exists while
+the operator can still act on it.
 
 That inverts the direction a mirror switch has to fail in, and the design accounts for it.
 Everywhere else, suppression means the hooks post nothing, so an absent signal means absent content.
@@ -174,9 +180,13 @@ hook-carried prompt and the extracted one, so the two cannot answer differently 
 message.
 
 **The question alert is the second mention-bearing write, so its volume is bounded the way the
-permission prompt's is, by a window of its own.** Its trigger is a transcript line, which anything
-that can arm the tailer and append to the file can mint, so without a ceiling it would hand a
-token-holding local process an unbounded phone-ping primitive paced only by the poll interval.
+permission prompt's is, by a window of its own.** It has two triggers, a credited `PreToolUse`
+post at emission and a transcript line at resolution, and anything that can post with the process
+token or arm the tailer and append to the file can mint either, so without a ceiling it would
+hand a token-holding local process an unbounded phone-ping primitive. Both triggers end in the
+one delivery closure and the one window, deduplicated by a bounded per-session set of outstanding
+question digests, so the double path cannot double-spend the ceilings, and a digest is recorded
+only for an alert that landed, so a dropped emission alert leaves the resolution fallback armed.
 Each thread gets 1 mention and 4 posts per 60 seconds: past the first, the alert posts without
 mentioning; past the fourth, it is dropped and one rate-limited, content-free log line says so.
 The window's stamps are deliberately separate from the permission prompt's window, because shared
@@ -191,7 +201,9 @@ would not fit, so the mention and the alert line always survive.
 broker's scheduled task runs as the operator at limited integrity, the same account a token-holding
 subprocess runs as, so making the broker perform the read confers no privilege. Such a process can
 already read any of the operator's files and post arbitrary text to the thread through the mirror
-route. Through the tailer it costs one additional forged `/mirror` post to arm the session, and what
+route. A forged `PreToolUse` question post is the same class: it is credited only against the
+session its token holds, alerts only into that session's own thread, and spends that thread's own
+question window first. Through the tailer it costs one additional forged `/mirror` post to arm the session, and what
 it can aim at is bounded twice over: the path must pass validation below, and a line yields text only
 when its own recorded session ID matches the session the path was learned for, so another registered
 session's transcript yields nothing.
@@ -356,7 +368,8 @@ and both apply it:
   as a snowflake at load. The only mention syntax in either message is composed by the renderer
   from that ID. Content still cannot produce one. The question alert additionally carries its own
   per-thread ping/quiet/drop window, described under the transcript section below, because its
-  trigger is a transcript line rather than a relay request held to the reply key.
+  triggers, a credited hook post and a transcript line, are mintable by a token holder rather
+  than held to the reply key the way a relay request is.
 - **The log file.** Untrusted fields pass through the same neutralization before they land, so a
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 

@@ -336,11 +336,12 @@ const MAX_QUESTION_HEADER_LENGTH = 100;
 const MAX_OPTION_LABEL_LENGTH = 100;
 
 /**
- * One question an `AskUserQuestion` call is holding a session on: bounded structured data the
- * transcript tailer reads off the session's own transcript, because no hook fires for that tool
- * and the console's picker is otherwise invisible from the thread. Defined here rather than in the
- * tailer, the `MirrorKind` pattern: this renderer owns the vocabulary it knows how to draw, and
- * the tailer imports the type alone. Every string in it is untrusted conversation content.
+ * One question an `AskUserQuestion` call is holding a session on: bounded structured data parsed
+ * from the question's `PreToolUse` hook post at emission, or from the session's own transcript at
+ * resolution, both through the tailer's one bounded reader, because the console's picker is
+ * otherwise invisible from the thread. Defined here rather than in the tailer, the `MirrorKind`
+ * pattern: this renderer owns the vocabulary it knows how to draw, and the tailer imports the
+ * type alone. Every string in it is untrusted conversation content.
  */
 export type AskedQuestion = {
   question: string;
