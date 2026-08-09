@@ -35,6 +35,7 @@ function record(sessionId: string): SessionRecord {
     model: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
   };
 }
 
@@ -201,6 +202,7 @@ test("the registry survives a restart", () => {
       toolName: null,
       toolInput: null,
       transcriptPath: null,
+      backgroundTasks: null,
     });
     first.apply({
       event: "PostToolUse",
@@ -211,6 +213,7 @@ test("the registry survives a restart", () => {
       toolName: "Bash",
       toolInput: "npm test",
       transcriptPath: null,
+      backgroundTasks: null,
     });
 
     // A fresh process reading the file the previous one left behind.
@@ -315,6 +318,107 @@ test("a malformed downgrade nulls that field, never the snapshot around it", () 
     assert.equal(loaded.length, shapes.length + 1, "every record survives its neighbor's bad field");
     for (const held of loaded) assert.equal(held.downgrade, null);
     assert.deepEqual(loaded[shapes.length], record("session-good"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("a roster survives a restart with its first-sighting stamps", () => {
+  // The table is authoritative and replaced wholesale at the next Stop, so a persisted roster is
+  // bounded rather than accumulating: a stale one shows visibly old ages and self-corrects the
+  // moment the session reports again, while dropping it would read a session as idle for the whole
+  // remaining fan-out after a mid-fan-out restart, which is the defect the roster exists to fix. A
+  // roster whose session never comes back is bounded by the surfaces' own death backstop.
+  const { file, cleanup } = scratchFile();
+  try {
+    const tasks = [
+      {
+        id: "one",
+        kind: "subagent" as const,
+        description: "Grooming S6 implementation",
+        agentType: "implementer-fable",
+        since: 1_000,
+      },
+      { id: "build", kind: "shell" as const, description: null, agentType: null, since: 2_000 },
+    ];
+    saveSessions(file, [{ ...record("session-a"), backgroundTasks: tasks }]);
+
+    const loaded = loadSessions(file, { log: () => {} });
+    assert.deepEqual(loaded, [{ ...record("session-a"), backgroundTasks: tasks }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a malformed roster is dropped at field level, and costs its neighbours nothing", () => {
+  // The roster answers for itself here rather than in the record validator, where any clause is a
+  // whole-snapshot rejection that would cost every session on the host its thread binding.
+  const { file, cleanup } = scratchFile();
+  try {
+    const good = { id: "kept", kind: "subagent", description: null, agentType: null, since: 1_000 };
+    const shapes: Array<{ held: unknown; expected: unknown[] }> = [
+      { held: "one agent", expected: [] },
+      { held: 7, expected: [] },
+      { held: null, expected: [] },
+      { held: [{ nothing: "recognizable" }], expected: [] },
+      // A readable entry survives its malformed neighbours inside the one array.
+      {
+        held: [
+          good,
+          { id: "no-stamp", kind: "subagent", description: null, agentType: null, since: "soon" },
+          { id: "bad-kind", kind: "process", description: null, agentType: null, since: 1_000 },
+          { id: 7, kind: "shell", description: null, agentType: null, since: 1_000 },
+        ],
+        expected: [good],
+      },
+    ];
+    const records = shapes.map((shape, index) => ({
+      ...record(`session-${index}`),
+      backgroundTasks: shape.held,
+    }));
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, sessions: [...records, record("session-good")] }),
+      "utf8",
+    );
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+
+    assert.deepEqual(logged, []);
+    assert.equal(loaded.length, shapes.length + 1);
+    for (const [index, shape] of shapes.entries()) {
+      assert.deepEqual(loaded[index].backgroundTasks, shape.expected, `shape ${index}`);
+    }
+    assert.deepEqual(loaded[shapes.length], record("session-good"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("a restored roster is capped at the intake's own entry ceiling", () => {
+  // The state file is an ordinary file anything running as this user can rewrite, so a table read
+  // back from it is held to the same entry cap the wire is.
+  const { file, cleanup } = scratchFile();
+  try {
+    const oversized = Array.from({ length: 40 }, (_, index) => ({
+      id: `task-${index}`,
+      kind: "subagent",
+      description: null,
+      agentType: null,
+      since: 1_000,
+    }));
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        sessions: [{ ...record("session-a"), backgroundTasks: oversized }],
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessions(file, { log: () => {} });
+    assert.equal(loaded[0].backgroundTasks.length, 32);
   } finally {
     cleanup();
   }

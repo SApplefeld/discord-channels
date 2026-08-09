@@ -1,6 +1,6 @@
 // The one place the registry's lifecycle vocabulary and the thread-name vocabulary meet, plus the
 // narrowed view of a session that the Discord surfaces are allowed to see.
-import type { ModelFallback, SessionRecord } from "../registry.ts";
+import type { BackgroundTask, ModelFallback, SessionRecord } from "../registry.ts";
 
 /** What a thread name and the status card say about a session. */
 export type SurfaceState = "working" | "needs you" | "idle" | "exited";
@@ -31,6 +31,8 @@ export type SessionView = {
   contextTokens: number | null;
   /** The forced downgrade behind the current model, when one was read. */
   downgrade: ModelFallback | null;
+  /** The work the session is waiting on, in the table's own order. Empty when it waits on nothing. */
+  backgroundTasks: readonly BackgroundTask[];
   /** True while the session is blocked on a permission verdict. Fed by the permission relay. */
   needsAttention: boolean;
   /** The registry's own lifecycle state, mapped to a surface state by `deriveSurfaceState`. */
@@ -51,6 +53,7 @@ export function toView(record: SessionRecord, needsAttention = false): SessionVi
     openingModel: record.openingModel,
     contextTokens: record.contextTokens,
     downgrade: record.downgrade,
+    backgroundTasks: record.backgroundTasks,
     needsAttention,
     lifecycle: record.state,
   };
@@ -74,6 +77,12 @@ export type StateThresholds = {
  *   stopped waiting for one.
  * - Attention wins over the two live states. It is the one state that is waiting on a person, so
  *   it is worth a rename even mid-flap.
+ * - An outstanding roster is `working`, whatever the hook clock says and whether the record is live
+ *   or stale. A session whose main thread is blocked on dispatched agents fires no hooks at all
+ *   while it waits, so hook recency measures the wait rather than the work, and both branches below
+ *   would read the busiest sessions as the quietest. It sits under attention and under the death
+ *   backstop: a session waiting on a person is waiting on a person whatever its agents are doing,
+ *   and a roster is a report from the last turn rather than evidence the process is still alive.
  * - `live` splits on hook recency: traffic within `idleAfterMs` is `working`, anything older is
  *   `idle`. Hooks are the only activity signal the broker has.
  * - `stale` renders `idle` until the backstop fires. Staleness means no hook traffic and no relay
@@ -97,6 +106,7 @@ export function deriveSurfaceState(
     return "exited";
   }
   if (view.needsAttention) return "needs you";
+  if (view.backgroundTasks.length > 0) return "working";
   if (view.lifecycle === "stale") return "idle";
   return now - view.lastHookAt <= thresholds.idleAfterMs ? "working" : "idle";
 }

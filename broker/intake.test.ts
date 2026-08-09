@@ -193,6 +193,7 @@ function announce(registry: Registry): void {
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 }
 
@@ -356,6 +357,7 @@ test("a refused takeover is logged under its own reason, not counted into a beni
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   // The cover traffic first: unroutable posts under a token no session holds, which open the
@@ -739,6 +741,7 @@ test("a per-session suppression is logged with the session id, never content", a
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   const secret = "SECRET-suppressed-prompt";
@@ -1269,11 +1272,12 @@ test("the broker serves a real request on a bound loopback port", async () => {
     assert.equal(body.sessions[0].toolCount, 1);
 
     // Over the cap on a real socket, where draining mid-stream could have reset the connection
-    // before the response was written.
+    // before the response was written. The /hook ceiling is floored at the mirror route's, so the
+    // body has to clear that bound to reach the drain.
     const oversized = await fetch(`${base}/hook`, {
       method: "POST",
       headers: { "content-type": "application/json", ...hookHeaders("PostToolUse") },
-      body: JSON.stringify({ tool_name: "Bash", padding: "x".repeat(128 * 1024) }),
+      body: JSON.stringify({ tool_name: "Bash", padding: "x".repeat(512 * 1024) }),
     });
     assert.equal(oversized.status, 202, "an oversized liveness post is drained and dropped, not refused");
     assert.deepEqual(await oversized.json(), { ignored: true });
@@ -2150,4 +2154,147 @@ test("a transcript path is refused rather than truncated, and never a UNC path",
 
   assert.equal(parse("C:\\t\\a.jsonl"), "C:\\t\\a.jsonl");
   assert.equal(parse("C:/t/a.jsonl"), "C:/t/a.jsonl");
+});
+
+test("a Stop payload's task table is read entry by entry", () => {
+  // The captured shape, verbatim from a live Stop payload.
+  const parsed = parseIntake(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("Stop") }),
+    JSON.stringify({
+      background_tasks: [
+        {
+          id: "abca61cde3386c2e7",
+          type: "subagent",
+          status: "running",
+          description: "Sleep 90s then reply DONE",
+          agent_type: "general-purpose",
+        },
+        { id: "b12", type: "shell", status: "running", command: "npm test", description: "the suite" },
+      ],
+    }),
+  );
+
+  assert.ok("intake" in parsed);
+  assert.deepEqual(parsed.intake.backgroundTasks, [
+    {
+      id: "abca61cde3386c2e7",
+      kind: "subagent",
+      description: "Sleep 90s then reply DONE",
+      agentType: "general-purpose",
+    },
+    { id: "b12", kind: "shell", description: "the suite", agentType: null },
+  ]);
+});
+
+test("a table this payload said nothing readable about leaves the roster alone", () => {
+  const tasks = (body: unknown): unknown => {
+    const parsed = parseIntake(
+      fakeRequest("127.0.0.1", { headers: hookHeaders("Stop") }),
+      JSON.stringify(body),
+    );
+    assert.ok("intake" in parsed);
+    return parsed.intake.backgroundTasks;
+  };
+
+  // Not an array at all: unreadable, so nothing is claimed about the table and the roster stands.
+  assert.equal(tasks({ background_tasks: "one agent" }), null);
+  assert.equal(tasks({ background_tasks: { id: "one" } }), null);
+  // An explicit null is a claim of nothing rather than a claim of emptiness, so it preserves too.
+  assert.equal(tasks({ background_tasks: null }), null);
+  // Absent and empty both mean the session is waiting on nothing, which clears the roster.
+  assert.deepEqual(tasks({}), []);
+  assert.deepEqual(tasks({ background_tasks: [] }), []);
+});
+
+test("only a Stop reports a table; every other event says nothing about one", () => {
+  for (const event of ["SessionStart", "PostToolUse", "PreToolUse"]) {
+    const parsed = parseIntake(
+      fakeRequest("127.0.0.1", { headers: hookHeaders(event) }),
+      JSON.stringify({
+        session_id: "session-a",
+        background_tasks: [{ id: "one", type: "subagent" }],
+      }),
+    );
+    assert.ok("intake" in parsed);
+    assert.equal(parsed.intake.backgroundTasks, null, event);
+  }
+});
+
+test("a malformed entry contributes nothing while the rest of the table still lands", () => {
+  const parsed = parseIntake(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("Stop") }),
+    JSON.stringify({
+      background_tasks: [
+        "a bare string",
+        ["id", "one"],
+        null,
+        { type: "subagent", description: "no id at all" },
+        { id: "kindless", description: "no type at all" },
+        { id: "unknown-kind", type: "daemon" },
+        // A prototype name, which a lookup keyed by the value would resolve to something that is
+        // not undefined; compared against the two kinds by name, it is simply not one of them.
+        { id: "prototype", type: "constructor" },
+        { id: "x".repeat(65), type: "subagent", description: "an id that identifies nothing" },
+        { id: "kept", type: "subagent", description: "the one real entry" },
+        { id: "kept", type: "shell", description: "a second entry under the same id" },
+      ],
+    }),
+  );
+
+  assert.ok("intake" in parsed);
+  assert.deepEqual(parsed.intake.backgroundTasks, [
+    { id: "kept", kind: "subagent", description: "the one real entry", agentType: null },
+  ]);
+});
+
+test("a table's entries are capped and its strings are normalized like every payload string", () => {
+  const parsed = parseIntake(
+    fakeRequest("127.0.0.1", { headers: hookHeaders("Stop") }),
+    JSON.stringify({
+      background_tasks: [
+        {
+          id: "loud",
+          type: "subagent",
+          description: `grooming\u001b[31m ${"x".repeat(400)}`,
+          agent_type: { nested: "general-purpose" },
+        },
+        ...Array.from({ length: 64 }, (_, index) => ({ id: `t${index}`, type: "shell" })),
+      ],
+    }),
+  );
+
+  assert.ok("intake" in parsed);
+  const tasks = parsed.intake.backgroundTasks;
+  assert.ok(tasks !== null);
+  assert.equal(tasks.length, 32, "the entry count is capped");
+  assert.equal(tasks[0].description?.length, 256);
+  assert.ok(!tasks[0].description?.includes("\u001b"), tasks[0].description ?? "");
+  assert.equal(tasks[0].agentType, null, "a nested value is not a string and is not stored");
+});
+
+test("no roster content reaches a log line", async () => {
+  const lines: string[] = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 64 * 1024,
+    log: { info: () => {}, warn: (line) => lines.push(line), error: (line) => lines.push(line) },
+    mirror: { enabled: false, maxBytes: 1024, deliver: async () => undefined },
+  });
+  const secret = "grooming the shareholder ledger";
+
+  // Dropped, because no session holds this token: the drop path is the one that logs.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({
+        session_id: "session-a",
+        background_tasks: [{ id: "one", type: "subagent", description: secret }],
+      }),
+    }),
+  );
+
+  assert.ok(lines.length > 0, "expected the drop to be logged at all");
+  assert.ok(!lines.join("\n").includes(secret), lines.join("\n"));
 });

@@ -34,6 +34,7 @@ function announce(registry: Registry, sessionId: string, processToken = TOKEN): 
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 }
 

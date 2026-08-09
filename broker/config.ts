@@ -16,10 +16,13 @@ export type BrokerConfig = {
   sweepIntervalMs: number;
   /**
    * Hard cap on a body posted to the /hook liveness route. That route is nearly content-free: of
-   * the payload it is posted, it keeps the session's identity, its tool's name, and one bounded
-   * preview of that tool's input, which the status card renders. Anything larger is drained and
-   * dropped with a 202 rather than refused, since a refusal is a visible error inside the session
-   * whose hook posted it; nothing over the cap is ever assembled or parsed.
+   * the payload it is posted, it keeps the session's identity, its tool's name, one bounded
+   * preview of that tool's input, and the Stop payload's task table, which the status card
+   * renders. Anything larger is drained and dropped with a 202 rather than refused, since a
+   * refusal is a visible error inside the session whose hook posted it; nothing over the cap is
+   * ever assembled or parsed. The wiring floors the /hook ceiling at `mirrorMaxBytes` below,
+   * because both routes receive the same Stop payload and only the /hook copy carries the roster;
+   * this knob on its own governs the relay routes.
    */
   maxBodyBytes: number;
   /**

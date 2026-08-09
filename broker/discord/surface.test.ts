@@ -107,6 +107,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     openingModel: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,
@@ -265,6 +266,47 @@ test("flapping between working and idle inside the dwell window spends at most o
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: resumed })]);
   assert.equal(calls.renames.length, 1, "a state already painted is not repainted");
+});
+
+test("an agent count change is damped like any other rename, so a drain coalesces", async () => {
+  // The dwell keys on the composed title, not on the derived state: the agent count rides the
+  // title, so a fan-out draining a step per Stop would otherwise spend a rename per step out of
+  // the same budget an urgent needs-you rename has to come out of.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  const agents = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `agent-${index}`,
+      kind: "subagent" as const,
+      description: null,
+      agentType: null,
+      since: START,
+    }));
+
+  // The thread opens working and stays settled well past the dwell window.
+  await surface.tick([view({ lastHookAt: time.now() })]);
+  time.advance(DWELL_MS + 1_000);
+  let seen = time.now();
+  await surface.tick([view({ lastHookAt: seen })]);
+  assert.deepEqual(names(calls), [], "the opened title already says working");
+
+  // A fan-out lands: the derived state is unchanged, the composed title is not.
+  await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(3) })]);
+  assert.equal(calls.renames.length, 0, "a count that just appeared has not settled");
+
+  // The fan-out drains a step inside the dwell window.
+  time.advance(DWELL_MS / 2);
+  seen = time.now();
+  await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(2) })]);
+  assert.equal(calls.renames.length, 0, "each step re-stamps the dwell rather than renaming");
+
+  // The remaining pair holds past the dwell window, which is what earns the one rename.
+  time.advance(DWELL_MS);
+  seen = time.now();
+  await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(2) })]);
+  assert.deepEqual(names(calls), ["⚙ neo-intake · working · 2 tasks"]);
 });
 
 test("one thread's exhausted rename budget does not hold up another thread", async () => {

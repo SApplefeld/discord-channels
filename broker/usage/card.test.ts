@@ -40,6 +40,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     openingModel: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
     turnCount: 4,
     lastHookAt: NOW - 2 * MINUTE,
     endedAt: null,

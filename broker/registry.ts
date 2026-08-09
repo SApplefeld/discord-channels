@@ -47,6 +47,53 @@ export type ModelFallback = {
   choice: string | null;
 };
 
+/**
+ * What kind of work a background task is. `subagent` is a dispatched agent running inside the
+ * session's own process; `shell` is a backgrounded command. Both are invisible work: the session's
+ * main thread fires no hooks while it waits on either.
+ */
+export type BackgroundTaskKind = "subagent" | "shell";
+
+/**
+ * One entry of the harness's own task table, as a `Stop` payload reports it. Every string is
+ * untrusted, model-authored text from another program, bounded at the reader and neutralized at the
+ * render site.
+ */
+export type BackgroundTaskReading = {
+  id: string;
+  kind: BackgroundTaskKind;
+  /** The prose the dispatching model wrote for the task; null when the entry carried none. */
+  description: string | null;
+  /** The agent type a subagent runs as; null on a shell task and on a subagent without one. */
+  agentType: string | null;
+};
+
+/**
+ * Ceiling on the entries kept from one reported table. A measured fan-out session peaked at twelve
+ * concurrent, so this leaves room for the real case several times over while keeping a crafted
+ * table from growing a session record without limit. Entries past it are dropped, not refused: the
+ * count the card renders is the count of what was kept.
+ *
+ * Exported beside the roster types because two readers hold tables to it, the wire intake and the
+ * persistence load, and a bound that lived in one of them could drift from the other's.
+ */
+export const MAX_BACKGROUND_TASKS = 32;
+
+/**
+ * Longest task id kept, shared by the same two readers. An id is a short token, so a longer one
+ * identifies nothing worth storing, and treating it as absent rather than truncating it keeps two
+ * distinct tasks from being read as one under a shared truncated id, which is what the roster's
+ * own carry-forward keys on.
+ */
+export const MAX_BACKGROUND_TASK_ID_LENGTH = 64;
+
+/**
+ * A task on a session's roster: what the table reported, plus when this broker first saw the entry,
+ * which is what the card ages it from. The payload carries no start time of its own, so the age is
+ * measured from first sighting and carried forward while the same id keeps appearing.
+ */
+export type BackgroundTask = BackgroundTaskReading & { since: number };
+
 /** A session's model changing from one line to the next, and the downgrade record standing for it. */
 export type ModelChange = {
   sessionId: string;
@@ -159,6 +206,16 @@ export type SessionRecord = {
    * it.
    */
   downgrade: ModelFallback | null;
+  /**
+   * The work this session is waiting on, as its last `Stop` reported it. Replaced wholesale by each
+   * report and never merged, so a task that has left the harness's table cannot survive on the card;
+   * an empty roster is a session waiting on nothing.
+   *
+   * This is the only signal the broker has for a session whose main thread is blocked on dispatched
+   * agents: that session fires no hooks at all while it waits, so its hook-driven liveness would
+   * otherwise read as idle at the moment it is most heavily worked.
+   */
+  backgroundTasks: BackgroundTask[];
 };
 
 export type HookEvent = "SessionStart" | "PreToolUse" | "PostToolUse" | "Stop";
@@ -179,6 +236,11 @@ export type HookIntake = {
    * in-memory map, never stored on a SessionRecord, never persisted, and never published.
    */
   transcriptPath: string | null;
+  /**
+   * The session's in-flight work as this payload reported it, or null when the payload said nothing
+   * about it. Null leaves the roster standing; an empty array clears it.
+   */
+  backgroundTasks: readonly BackgroundTaskReading[] | null;
 };
 
 export type RegistryOptions = {
@@ -452,6 +514,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       model: null,
       contextTokens: null,
       downgrade: null,
+      backgroundTasks: [],
     };
     sessions.set(sessionId, record);
     // A fresh record starts fresh announcement bookkeeping: a held change or a changed flag from
@@ -479,6 +542,30 @@ export function createRegistry(options: RegistryOptions): Registry {
     const keyed = sessions.get(intake.sessionId);
     if (!keyed || keyed.processToken !== intake.processToken) return null;
     return keyed;
+  }
+
+  /**
+   * The roster a report replaces the previous one with.
+   *
+   * Membership is wholesale: what comes back is exactly the reported table, so a task that has left
+   * it is gone rather than lingering, which is the whole reason the report is trusted over anything
+   * reconstructed from dispatch events. What survives a replacement is the first-sighting time of an
+   * entry that is still there, because the table carries no start time of its own and re-stamping a
+   * task on every turn would render an hour-old agent as a fresh one forever. The carry-forward
+   * keys on the id and the kind together: ids are the harness's to mint, so one reused across kinds
+   * names a different task, and keying on the id alone would hand it a dead task's age.
+   */
+  function taskKey(task: BackgroundTaskReading): string {
+    return `${task.kind}:${task.id}`;
+  }
+
+  function adoptTasks(
+    previous: readonly BackgroundTask[],
+    reported: readonly BackgroundTaskReading[],
+  ): BackgroundTask[] {
+    const at = now();
+    const since = new Map(previous.map((task) => [taskKey(task), task.since]));
+    return reported.map((task) => ({ ...task, since: since.get(taskKey(task)) ?? at }));
   }
 
   function apply(intake: HookIntake): SessionRecord | null {
@@ -509,6 +596,13 @@ export function createRegistry(options: RegistryOptions): Registry {
       }
     } else if (intake.event === "Stop") {
       record.turnCount += 1;
+      // An empty report is as load-bearing as a populated one: a session that has finished its
+      // agents reports an empty table, and a roster only replaced when there is something to
+      // replace it with would hold that session at working for the rest of its life. Null is the
+      // one report that changes nothing, and it means the payload said nothing readable at all.
+      if (intake.backgroundTasks !== null) {
+        record.backgroundTasks = adoptTasks(record.backgroundTasks, intake.backgroundTasks);
+      }
     }
     // PreToolUse moves neither counter: it fires at the moment AskUserQuestion opens its picker,
     // and the same call's completion still arrives as a PostToolUse that does the tool

@@ -10,7 +10,15 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { ModelFallback, ModelFallbackCause, SessionRecord, SessionState } from "./registry.ts";
+import { MAX_BACKGROUND_TASKS, MAX_BACKGROUND_TASK_ID_LENGTH } from "./registry.ts";
+import type {
+  BackgroundTask,
+  BackgroundTaskKind,
+  ModelFallback,
+  ModelFallbackCause,
+  SessionRecord,
+  SessionState,
+} from "./registry.ts";
 import { clean } from "./sanitize.ts";
 
 const FORMAT_VERSION = 1;
@@ -84,6 +92,52 @@ function fallbackOrNull(value: unknown): ModelFallback | null {
   };
 }
 
+const TASK_KINDS: readonly BackgroundTaskKind[] = ["subagent", "shell"];
+
+/**
+ * A persisted roster, kept entry by entry: an entry the file cannot vouch for whole contributes
+ * nothing, while the rest of the table still lands, and a field that is not an array at all is an
+ * empty roster. Field-level tolerance rather than a clause in the record validator, on
+ * `fallbackOrNull`'s reasoning: any clause there is a whole-snapshot rejection.
+ *
+ * The roster is restored, first-sighting stamps included, where the context size beside it is
+ * dropped, because the two age differently. The table is authoritative and replaced wholesale by
+ * the session's next `Stop`, so a restored roster is bounded rather than accumulating: a stale one
+ * shows visibly old ages and corrects itself the moment the session reports again, and one whose
+ * session never comes back is bounded by the surfaces' own death backstop. Dropping it instead
+ * would read a session as idle for the whole remaining fan-out after a mid-fan-out restart, which
+ * is exactly the blindness the roster exists to remove. The bounds are the wire intake's own,
+ * imported so the two readers cannot drift: the state file is an ordinary file anything running as
+ * this user can rewrite.
+ */
+function tasksOrEmpty(value: unknown): BackgroundTask[] {
+  if (!Array.isArray(value)) return [];
+  const tasks: BackgroundTask[] = [];
+  for (const entry of value) {
+    if (tasks.length >= MAX_BACKGROUND_TASKS) break;
+    if (!isRecord(entry)) continue;
+    if (typeof entry.id !== "string" || entry.id.length > MAX_BACKGROUND_TASK_ID_LENGTH) continue;
+    if (typeof entry.kind !== "string" || !TASK_KINDS.includes(entry.kind as BackgroundTaskKind)) {
+      continue;
+    }
+    if (!optionalString(entry.description) || !optionalString(entry.agentType)) continue;
+    if (!isFiniteNumber(entry.since)) continue;
+    const id = clean(entry.id);
+    if (id === "") continue;
+    // A string that cleans to nothing lands as null, the same answer the wire's own reader gives.
+    const description = typeof entry.description === "string" ? clean(entry.description) : "";
+    const agentType = typeof entry.agentType === "string" ? clean(entry.agentType) : "";
+    tasks.push({
+      id,
+      kind: entry.kind as BackgroundTaskKind,
+      description: description === "" ? null : description,
+      agentType: agentType === "" ? null : agentType,
+      since: entry.since as number,
+    });
+  }
+  return tasks;
+}
+
 // Every numeric field is checked for finiteness, not merely for being a number: JSON.parse turns
 // 1e999 into Infinity, and an infinite lastHookAt would hold a record out of every staleness sweep.
 function isFiniteNumber(value: unknown): boolean {
@@ -113,8 +167,9 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     absentOrString(value.openingModel) &&
     absentOrString(value.model) &&
     absentOrNumber(value.contextTokens)
-    // `downgrade` is deliberately unvalidated here: it is the one nested field, and cleanRecord
-    // nulls a malformed one at field level rather than letting it reject the snapshot whole.
+    // `downgrade` and `backgroundTasks` are deliberately unvalidated here: they are the nested
+    // fields, and cleanRecord reduces a malformed one at field level (to null and to the readable
+    // entries) rather than letting it reject the snapshot whole.
   );
 }
 
@@ -147,6 +202,10 @@ function cleanRecord(record: SessionRecord): SessionRecord {
     // Absent, null, and malformed all land as null: the validator above vouches for every other
     // field of the record, and this one answers for itself.
     downgrade: fallbackOrNull(record.downgrade),
+    // Restored entry by entry, stamps included; tasksOrEmpty above says why, and answering for
+    // itself here is what keeps it out of the validator above, where any clause is a
+    // whole-snapshot rejection that would cost every session on the host its thread binding.
+    backgroundTasks: tasksOrEmpty(record.backgroundTasks),
   };
 }
 

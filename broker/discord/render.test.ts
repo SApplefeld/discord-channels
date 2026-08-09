@@ -23,7 +23,7 @@ import type { AskedOption, AskedQuestion } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
-import type { SessionRecord } from "../registry.ts";
+import type { BackgroundTask, SessionRecord } from "../registry.ts";
 
 const NOW = 1_000_000;
 
@@ -43,6 +43,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     openingModel: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
     ...overrides,
   };
 }
@@ -229,6 +230,7 @@ test("the tool line carries what the tool was called with, from the record throu
     model: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
   };
 
   assert.match(renderCard(toView(record), "working", NOW), /^Last tool: Bash · npm test$/m);
@@ -320,6 +322,7 @@ test("neither the view nor the card can carry the process token", () => {
     model: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
   };
 
   const narrowed = toView(record);
@@ -1436,4 +1439,139 @@ test("a change message composed from a hostile record still mentions only the op
   assert.deepEqual(message.match(/<@\d+>/g), ["<@222222222222222222>"], message);
   assert.ok(!/<t:\d+:R>/.test(message), message);
   assert.ok(message.length <= MAX_MESSAGE_LENGTH, message);
+});
+
+function agent(id: string, overrides: Partial<BackgroundTask> = {}): BackgroundTask {
+  return {
+    id,
+    kind: "subagent",
+    description: `Grooming ${id} implementation`,
+    agentType: "implementer-fable",
+    since: NOW - 35 * 60_000,
+    ...overrides,
+  };
+}
+
+test("a session waiting on agents says so on the card and in the title", () => {
+  const waiting = view({
+    backgroundTasks: [
+      agent("S6"),
+      agent("ladder", {
+        description: "PR ladder fix round three",
+        agentType: "implementer-opus",
+        since: NOW - 62 * 60_000,
+      }),
+    ],
+  });
+
+  const card = renderCard(waiting, "working", NOW);
+  assert.ok(card.includes("Waiting on: 2"), card);
+  assert.ok(card.includes("Grooming S6 implementation (implementer-fable) 35m"), card);
+  assert.ok(card.includes("PR ladder fix round three (implementer-opus) 1h 2m"), card);
+  assert.ok(!card.includes("more"), "two entries need no overflow count");
+  // The count rides the state on both surfaces, since the four states cannot say waiting on agents
+  // and the title is what survives the thread list's truncation on a phone. The word is "tasks"
+  // because the count covers shell tasks too.
+  assert.ok(card.includes("State: working · 2 tasks"), card);
+  assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 2 tasks");
+  // The roster sits below the turn count and the heartbeat, because the card is cut from the end
+  // when it runs long and those are the lines the card exists to carry.
+  assert.ok(card.indexOf("Waiting on:") > card.indexOf("Heartbeat:"), card);
+});
+
+test("a shell task renders beside a subagent, since both are invisible work", () => {
+  const waiting = view({
+    backgroundTasks: [
+      agent("build", {
+        kind: "shell",
+        description: "npm test on the integration suite",
+        agentType: null,
+        since: NOW - 4 * 60_000,
+      }),
+    ],
+  });
+
+  const card = renderCard(waiting, "working", NOW);
+  assert.ok(card.includes("Waiting on: 1"), card);
+  assert.ok(card.includes("npm test on the integration suite (shell) 4m"), card);
+  assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 1 task");
+});
+
+test("a session waiting on nothing carries no roster line and no count", () => {
+  const card = renderCard(view(), "working", NOW);
+
+  assert.ok(!card.includes("Waiting on"), card);
+  assert.ok(card.includes("State: working"), card);
+  assert.ok(!/tasks?/.test(card), card);
+  assert.equal(threadName(view(), "working"), "⚙ neo-intake · working");
+  // An idle or exited session is drawn exactly as it always was, roster or not.
+  assert.equal(threadName(view(), "idle"), "✅ neo-intake · idle");
+});
+
+test("an exited session's card carries no roster line", () => {
+  // The roster is what the harness reported it was running, and an exited session is running
+  // nothing: the record's last report outlives the session, so drawing it would put a waiting-on
+  // line with ages growing on every re-render under a header that says exited.
+  const card = renderCard(view({ backgroundTasks: [agent("S6")] }), "exited", NOW);
+
+  assert.ok(!card.includes("Waiting on"), card);
+  assert.equal(threadName(view({ backgroundTasks: [agent("S6")] }), "exited"), "⚠ neo-intake · exited");
+});
+
+test("a twelve-agent fan-out names a few and counts the rest", () => {
+  // Measured against a real fan-out session: 50 dispatches over its life, peak 12 concurrent. A
+  // roster rendered in full at that width runs past 700 characters and crowds out everything else
+  // the card carries.
+  const fleet = Array.from({ length: 12 }, (_, index) =>
+    agent(`task-${index}`, { since: NOW - (index + 1) * 60_000 }),
+  );
+
+  const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
+  const roster = card.split("\n").find((line) => line.startsWith("Waiting on:")) ?? "";
+
+  assert.ok(roster.startsWith("Waiting on: 12 · "), roster);
+  assert.ok(roster.includes("+10 more"), roster);
+  assert.ok(roster.includes("1m"), "the newest entries are the ones named");
+  assert.ok(!roster.includes("12m"), "and the oldest are left to the count");
+  assert.ok(roster.length < 300, `the roster line stays a line: ${roster.length}`);
+  assert.ok(card.includes("Turns: 14"), "the rest of the card survives a full fan-out");
+  assert.ok(card.includes("Heartbeat:"), card);
+  assert.ok(card.length <= MAX_CARD_LENGTH, card);
+});
+
+test("a hostile task description is drawn as text, and cannot draw a chip or a heading", () => {
+  const card = renderCard(
+    view({
+      backgroundTasks: [
+        agent("hostile", {
+          description: "<@222222222222222222> **done** <t:2000000000:R>",
+          agentType: "# not a heading",
+        }),
+      ],
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(!/<@\d+>/.test(card), card);
+  assert.ok(!/<t:\d+:R>/.test(card), card);
+  assert.ok(card.includes(String.raw`\*\*done\*\*`), card);
+  assert.ok(card.includes(String.raw`\#`), card);
+  assert.ok(card.length <= MAX_CARD_LENGTH, card);
+});
+
+test("a task with nothing to say about itself is named by its kind", () => {
+  const card = renderCard(
+    view({
+      backgroundTasks: [
+        agent("blank", { description: "   ", agentType: "   ", since: NOW }),
+        agent("absent", { description: null, agentType: null, since: NOW - 60_000 }),
+      ],
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(card.includes("subagent (subagent) 0m"), card);
+  assert.ok(card.includes("subagent (subagent) 1m"), card);
 });

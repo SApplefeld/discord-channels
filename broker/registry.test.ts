@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRegistry } from "./registry.ts";
-import type { HookIntake, ModelFallback, Registry, SessionRecord } from "./registry.ts";
+import type {
+  BackgroundTaskReading,
+  HookIntake,
+  ModelFallback,
+  Registry,
+  SessionRecord,
+} from "./registry.ts";
 
 const TOKEN = "5f0c2e4a-0000-4000-8000-000000000001";
 
@@ -27,6 +33,7 @@ function sessionStart(sessionId: string, source: string | null, name = "neo-inta
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   };
 }
 
@@ -45,6 +52,7 @@ function postToolUse(
     toolName,
     toolInput,
     transcriptPath: null,
+    backgroundTasks: null,
   };
 }
 
@@ -58,6 +66,7 @@ function stop(processToken = TOKEN): HookIntake {
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   };
 }
 
@@ -122,6 +131,7 @@ test("a tool event carrying an input but no name moves neither", () => {
     toolName: null,
     toolInput: "rm -rf /",
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   assert.equal(sessions.list()[0].lastTool, "Read");
@@ -426,6 +436,7 @@ test("a PreToolUse event is liveness alone: it stamps and revives, and moves no 
     toolName: "AskUserQuestion",
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   assert.ok(record);
@@ -580,6 +591,7 @@ test("a live session is never evicted to hold the cap", () => {
       toolName: null,
       toolInput: null,
       transcriptPath: null,
+      backgroundTasks: null,
     });
   }
 
@@ -666,6 +678,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   const stolen = registry.apply({
@@ -677,6 +690,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   assert.equal(stolen, null, "the takeover is refused, not merged");
@@ -702,6 +716,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
   registry.relayClosed(first, "session-a");
 
@@ -714,6 +729,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
   assert.notEqual(reused, null);
   assert.equal(registry.current(second)?.processToken, second);
@@ -731,6 +747,7 @@ test("relayClosed ends only the session it names, held by the token that names i
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
 
   assert.equal(registry.relayClosed("another-token", "session-a"), null, "not this token's to end");
@@ -1026,4 +1043,106 @@ test("a session that ends takes its model state with it when the sweep prunes th
   time.advance(2_000);
   registry.sweep();
   assert.deepEqual(registry.list(), [], "nothing accumulates for a session that ended");
+});
+
+/** A `Stop` carrying the harness's own task table, as the payload reports it. */
+function stopWithTasks(tasks: readonly BackgroundTaskReading[] | null): HookIntake {
+  return { ...stop(), backgroundTasks: tasks };
+}
+
+function task(id: string, overrides: Partial<BackgroundTaskReading> = {}): BackgroundTaskReading {
+  return {
+    id,
+    kind: "subagent",
+    description: `work ${id}`,
+    agentType: "general-purpose",
+    ...overrides,
+  };
+}
+
+test("each report replaces the roster whole, and a table that empties clears it", () => {
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  registry.apply(sessionStart("session-a", "startup"));
+
+  registry.apply(stopWithTasks([task("one"), task("two")]));
+  assert.deepEqual(
+    byId(registry.list(), "session-a").backgroundTasks.map((held) => held.id),
+    ["one", "two"],
+  );
+
+  registry.apply(stopWithTasks([task("two")]));
+  assert.deepEqual(
+    byId(registry.list(), "session-a").backgroundTasks.map((held) => held.id),
+    ["two"],
+    "a task that left the table is gone rather than merged forward",
+  );
+
+  registry.apply(stopWithTasks([]));
+  assert.deepEqual(
+    byId(registry.list(), "session-a").backgroundTasks,
+    [],
+    "and a session reporting no tasks at all is waiting on nothing",
+  );
+});
+
+test("a task keeps the moment it was first seen for as long as it is reported", () => {
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  registry.apply(sessionStart("session-a", "startup"));
+  registry.apply(stopWithTasks([task("one")]));
+  const first = byId(registry.list(), "session-a").backgroundTasks[0].since;
+
+  time.advance(40 * 60_000);
+  registry.apply(stopWithTasks([task("one"), task("two")]));
+
+  const held = byId(registry.list(), "session-a").backgroundTasks;
+  assert.equal(held[0].since, first, "an agent running forty minutes is not forty minutes younger");
+  assert.equal(held[1].since, time.now(), "and one first seen now is stamped now");
+});
+
+test("an id reused by the other kind is a new task, not the dead one's age", () => {
+  // The carry-forward keys on id and kind together: ids are the harness's to mint, so a shell
+  // task arriving under an id a finished subagent once held is different work, and inheriting the
+  // subagent's first-sighting stamp would render it as having run since before it existed.
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  registry.apply(sessionStart("session-a", "startup"));
+  registry.apply(stopWithTasks([task("one")]));
+
+  time.advance(40 * 60_000);
+  registry.apply(stopWithTasks([task("one", { kind: "shell", agentType: null })]));
+
+  const held = byId(registry.list(), "session-a").backgroundTasks;
+  assert.equal(held[0].since, time.now(), "the reused id is stamped at its own first sighting");
+});
+
+test("a payload that says nothing about the table leaves the roster standing", () => {
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  registry.apply(sessionStart("session-a", "startup"));
+  registry.apply(stopWithTasks([task("one")]));
+
+  // What a malformed `background_tasks` reduces to at the intake, and what every event but Stop
+  // carries. Clearing on it would erase a live roster on an unreadable field.
+  registry.apply(stopWithTasks(null));
+  registry.apply(postToolUse("Bash"));
+
+  assert.deepEqual(
+    byId(registry.list(), "session-a").backgroundTasks.map((held) => held.id),
+    ["one"],
+  );
+});
+
+test("a restored session starts with no roster, since nothing here saw its tasks start", () => {
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  registry.apply(sessionStart("session-a", "startup"));
+  registry.apply(stopWithTasks([task("one")]));
+
+  // A /clear replaces the session under the same token, and the replacement is a session no table
+  // has reported anything about yet.
+  registry.apply(sessionStart("session-b", "clear"));
+
+  assert.deepEqual(byId(registry.list(), "session-b").backgroundTasks, []);
 });

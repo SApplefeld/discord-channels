@@ -19,6 +19,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     openingModel: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,
@@ -27,6 +28,14 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     ...overrides,
   };
 }
+
+const AGENT = {
+  id: "abca61cde3386c2e7",
+  kind: "subagent" as const,
+  description: "Sleep 90s then reply DONE",
+  agentType: "general-purpose",
+  since: NOW - 35 * 60_000,
+};
 
 test("a live session splits on how recently a hook arrived", () => {
   assert.equal(deriveSurfaceState(view(), NOW, WINDOWS), "working");
@@ -93,6 +102,35 @@ test("attention outranks working and idle", () => {
   );
 });
 
+test("a session waiting on agents is working, however long its hooks have been silent", () => {
+  // The defect this case exists for: a main thread blocked on dispatched agents fires no hooks, so
+  // hook recency alone calls the session idle at the moment it is most heavily worked.
+  const waiting = view({ backgroundTasks: [AGENT], lastHookAt: NOW - 10 * IDLE_AFTER_MS });
+
+  assert.equal(deriveSurfaceState(waiting, NOW, WINDOWS), "working");
+  assert.equal(
+    deriveSurfaceState({ ...waiting, lifecycle: "stale" }, NOW, WINDOWS),
+    "working",
+    "and a roster outranks the staleness sweep, which measures the same silence",
+  );
+  assert.equal(
+    deriveSurfaceState({ ...waiting, backgroundTasks: [] }, NOW, WINDOWS),
+    "idle",
+    "while the same session waiting on nothing is idle exactly as before",
+  );
+});
+
+test("a roster does not outrank a person or a death", () => {
+  const waiting = view({ backgroundTasks: [AGENT], lastHookAt: NOW - EXITED_AFTER_MS });
+
+  assert.equal(
+    deriveSurfaceState({ ...waiting, needsAttention: true, lifecycle: "live" }, NOW, WINDOWS),
+    "needs you",
+  );
+  assert.equal(deriveSurfaceState({ ...waiting, lifecycle: "ended" }, NOW, WINDOWS), "exited");
+  assert.equal(deriveSurfaceState({ ...waiting, lifecycle: "stale" }, NOW, WINDOWS), "exited");
+});
+
 test("a view starts without attention until something reports it", () => {
   const narrowed = toView({
     sessionId: "session-a",
@@ -113,6 +151,7 @@ test("a view starts without attention until something reports it", () => {
     model: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
   });
 
   assert.equal(narrowed.needsAttention, false);

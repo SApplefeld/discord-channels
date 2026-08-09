@@ -129,6 +129,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     openingModel: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,

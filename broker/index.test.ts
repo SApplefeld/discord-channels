@@ -73,6 +73,60 @@ test("a bind failure is written to the log file, not just rejected silently", as
   assert.match(logged, new RegExp(String(first.port)));
 });
 
+test("a Stop past the /hook knob still lands its roster, at the mirror route's own bound", async (t) => {
+  // Only a Stop carries the roster, and the Stop payload also carries the turn's whole final
+  // assistant message, so the longest turns are the ones that would drop their table on the /hook
+  // ceiling and leave a waiting-on line standing over a session that has gone idle. The wiring
+  // floors the /hook ceiling at the mirror route's, which already accepts this same payload.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-hook-ceiling-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const broker = await startBroker(
+    config({
+      stateFile: path.join(dir, "state.json"),
+      logFile: null,
+      maxBodyBytes: 1024,
+      mirrorMaxBytes: 64 * 1024,
+    }),
+  );
+  t.after(() => broker.stop());
+
+  const headers = (event: string) => ({
+    "content-type": "application/json",
+    "x-channel-hook-event": event,
+    "x-channel-process-token": "5f0c2e4a-0000-4000-8000-00000000cafe",
+  });
+  const announced = await fetch(`http://127.0.0.1:${broker.port}/hook`, {
+    method: "POST",
+    headers: headers("SessionStart"),
+    body: JSON.stringify({ session_id: "session-ceiling", source: "startup" }),
+  });
+  assert.equal(announced.status, 200);
+
+  const stopped = await fetch(`http://127.0.0.1:${broker.port}/hook`, {
+    method: "POST",
+    headers: headers("Stop"),
+    body: JSON.stringify({
+      session_id: "session-ceiling",
+      last_assistant_message: "x".repeat(8_000),
+      background_tasks: [
+        { id: "agent-1", type: "subagent", description: "one live agent", agent_type: "general-purpose" },
+      ],
+    }),
+  });
+  assert.equal(stopped.status, 200, "the post fits the floored ceiling and is credited");
+
+  const listed = await fetch(`http://127.0.0.1:${broker.port}/sessions`);
+  const { sessions } = (await listed.json()) as {
+    sessions: Array<{ sessionId: string; backgroundTasks: Array<{ id: string }> }>;
+  };
+  const held = sessions.find((session) => session.sessionId === "session-ceiling");
+  assert.ok(held);
+  assert.deepEqual(
+    held.backgroundTasks.map((task) => task.id),
+    ["agent-1"],
+  );
+});
+
 /**
  * Drives one broker with the given switches: announces a session whose transcript_path names a
  * file that does not exist, then watches the log for the tailer's own `tail:` line, which is the
@@ -378,6 +432,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     model: null,
     contextTokens: null,
     downgrade: null,
+    backgroundTasks: [],
   };
 
   const posts: string[] = [];

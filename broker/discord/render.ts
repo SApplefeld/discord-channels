@@ -7,7 +7,7 @@
 // the same job, via `allowed_mentions`.
 import { isInvisible, sliceCodePoints, withoutInvisible } from "../sanitize.ts";
 import { modelRank } from "../registry.ts";
-import type { ModelFallback } from "../registry.ts";
+import type { BackgroundTask, ModelFallback } from "../registry.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 
 /**
@@ -539,6 +539,24 @@ export function displayName(view: SessionView): string {
 }
 
 /**
+ * The state as a reader sees it, which for a session waiting on dispatched work is the state plus
+ * how many tasks it is waiting on.
+ *
+ * The count rides the state rather than sitting elsewhere on the card because the four states
+ * cannot express waiting on agents at all: without it a session blocked on a fan-out reads as
+ * ordinary work, and the operator has no way to tell a turn that is thinking from one that is
+ * waiting on eleven agents. It is counted rather than listed here so the thread title, which mobile
+ * truncates hard, carries the fact in the few characters that survive. The word is "tasks" rather
+ * than "agents" because the count covers both kinds the table reports, and a session waiting on
+ * two backgrounded shells is not waiting on two agents.
+ */
+function stateLabel(view: SessionView, state: SurfaceState): string {
+  const waiting = view.backgroundTasks.length;
+  if (state !== "working" || waiting === 0) return state;
+  return `${state} ${SEPARATOR} ${waiting} task${waiting === 1 ? "" : "s"}`;
+}
+
+/**
  * `<glyph> <session-name> <separator> <state>`.
  *
  * The name is what gets shortened when the whole thing is too long: the glyph and the state are
@@ -546,7 +564,7 @@ export function displayName(view: SessionView): string {
  */
 export function threadName(view: SessionView, state: SurfaceState): string {
   const prefix = `${GLYPHS[state]} `;
-  const suffix = ` ${SEPARATOR} ${state}`;
+  const suffix = ` ${SEPARATOR} ${stateLabel(view, state)}`;
   const room = MAX_THREAD_NAME_LENGTH - prefix.length - suffix.length;
   return `${prefix}${fit(displayName(view), room)}${suffix}`;
 }
@@ -935,6 +953,77 @@ function toolLine(view: SessionView): string {
 }
 
 /**
+ * A duration in the compact form the cards share: `44m`, `3h 44m`, `4d 6h`. Two units at most,
+ * because the third never changes a decision and a card is read at a glance on a phone, and a space
+ * between the two because that is what stays legible at phone width.
+ *
+ * Exported and read by both cards, so a duration cannot be spelled one way on a session's own card
+ * and another on the fleet card a reader is comparing it against.
+ */
+export function span(ms: number): string {
+  const minutes = Math.floor(Math.max(ms, 0) / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/**
+ * How many roster entries the card names before it falls back to a count.
+ *
+ * Small, and structurally rather than cosmetically so: a measured fan-out session peaked at twelve
+ * concurrent agents, and twelve entries rendered in full run past seven hundred characters, which
+ * would push the turn count and the heartbeat the card exists to carry off the bottom of a glance.
+ * The count leads the line, so nothing about the size of the fan-out is lost to the bound.
+ */
+const MAX_ROSTER_ENTRIES = 2;
+
+/** The most of a task's own prose the card carries, on `MAX_TOOL_INPUT_PREVIEW`'s reasoning. */
+const MAX_TASK_DESCRIPTION_LENGTH = 60;
+
+/** The most of an agent type the card carries. A real one is a short id, as a model name is. */
+const MAX_AGENT_TYPE_LENGTH = 32;
+
+/**
+ * One roster entry: what the task is, what kind of thing is running it, and how long it has been
+ * outstanding.
+ *
+ * The parenthetical is the agent type where the harness reported one, because that is what tells a
+ * reader which of a fan-out's agents this is, and the kind itself otherwise. A shell task renders
+ * exactly like a subagent: a long-running background command is the same class of invisible work,
+ * and the kind is what distinguishes them. The description is model-authored prose from another
+ * program and is neutralized here like every other session-sourced field; a task whose description
+ * neutralizes to nothing is named by its kind alone rather than by an empty phrase.
+ */
+function rosterEntry(task: BackgroundTask, now: number): string {
+  const kind =
+    task.agentType === null ? task.kind : inertField(task.agentType, MAX_AGENT_TYPE_LENGTH);
+  const described =
+    task.description === null ? "" : inertField(task.description, MAX_TASK_DESCRIPTION_LENGTH);
+  const what = described === "" ? task.kind : described;
+  return `${what} (${kind === "" ? task.kind : kind}) ${span(now - task.since)}`;
+}
+
+/**
+ * The card's roster line: how much work is outstanding, the newest few entries, and a count of the
+ * rest. Null for a session waiting on nothing, which is every session between fan-outs.
+ *
+ * Newest first, because the entries that fit are the ones a reader has not seen on a previous look;
+ * an old agent's line is unchanged from the last time they read the card. The overflow count is what
+ * keeps the bound honest, so a reader can tell a two-agent roster from a twelve-agent one that only
+ * had room to name two.
+ */
+function rosterLine(view: SessionView, now: number): string | null {
+  const waiting = view.backgroundTasks.length;
+  if (waiting === 0) return null;
+  const newest = [...view.backgroundTasks].sort((a, b) => b.since - a.since);
+  const shown = newest.slice(0, MAX_ROSTER_ENTRIES).map((task) => rosterEntry(task, now));
+  const overflow = waiting - shown.length;
+  if (overflow > 0) shown.push(`+${overflow} more`);
+  return `Waiting on: ${waiting} ${SEPARATOR} ${shown.join(` ${SEPARATOR} `)}`;
+}
+
+/**
  * The card's model line: what the session is running now, a standing marker while that is below
  * what it opened with, and the raw context size.
  *
@@ -1025,15 +1114,27 @@ export function renderModelChange(input: {
 export function renderCard(view: SessionView, state: SurfaceState, now: number): string {
   const since = view.endedAt ?? view.lastHookAt;
   const model = modelLine(view);
+  const label = stateLabel(view, state);
+  // No roster on an exited card: the record's last report outlives the session, and a session
+  // that has exited is running nothing, so drawing it would put a waiting-on line with growing
+  // ages under a header that says exited. Guarded here rather than cleared on the ended
+  // transitions because the death backstop's exited is derived, never written to the record, so a
+  // registry-side clear could not reach it, and a presumed-dead session that wakes gets its
+  // roster line back unchanged.
+  const roster = state === "exited" ? null : rosterLine(view, now);
   const card = [
-    `${GLYPHS[state]} **${inertText(displayName(view))}** ${SEPARATOR} ${state}`,
+    `${GLYPHS[state]} **${inertText(displayName(view))}** ${SEPARATOR} ${label}`,
     `Session: ${inertText(view.sessionId)}`,
     `Host: ${inertText(view.host)}`,
-    `State: ${state}`,
+    `State: ${label}`,
     ...(model === null ? [] : [model]),
     toolLine(view),
     `Turns: ${view.turnCount}`,
     `Heartbeat: ${heartbeat(Math.max(now - since, 0))}`,
+    // Last, because the card is cut from the end when it runs long: the turn count and the
+    // heartbeat are what the card exists to carry, and the roster is the one line sized by
+    // another program's fan-out.
+    ...(roster === null ? [] : [roster]),
   ].join("\n");
   return fit(card, MAX_CARD_LENGTH);
 }

@@ -493,3 +493,57 @@ reads clearly at a phone's width.
 Stamps: none surfaced at this boundary
 Next: Section 4: The subagent roster, and the idle state that is wrong without it
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-09
+Completed: Section 4: The subagent roster, and the idle state that is wrong without it
+Implemented By: implementer-opus (build round), implementer-fable (review-fix round, dispatched
+with the explicit override this Opus-led session's spend header authorizes)
+Metrics: 1 full review round (adversarial and blind at fable via the one-tier bump, security at
+its default) plus the fix round's red-first evidence; 0 NEEDS_CONTEXT; 0 escalations; advisor off
+Decisions / Surprises: the round's defining moment was two reviewers reaching opposite conclusions
+on whether the roster survives a restart, which the orchestrator adjudicated toward persisting it.
+The adversarial reviewer read the section's own ruled-out paragraph as forbidding it; that
+paragraph governs reconstructing a roster from transcript dispatch events, where ghosts accumulate
+because completions can never arrive, while this table is authoritative and replaced wholesale, so
+a persisted copy is bounded rather than accumulating. The failures decide it: a stale roster after
+a restart shows visibly old ages and self-corrects at the next report, where dropping it makes a
+session read idle for the whole remaining fan-out after a mid-fan-out restart, which is the defect
+this section exists to fix, reopened at every restart.
+Two reviewers independently found the same Major from opposite directions, and it falsified a
+sentence of the spec rather than a line of the code: putting the task count in the thread title
+made every count change a rename, because the dwell timer re-stamped only on a state change while
+the surface compares the whole composed title. Adversarial found the drain case, security found
+the hostile case of a token holder alternating its reported table, and both land on the same
+victim, since an urgent parked-session rename bypasses the dwell but not the budget. The damper now
+keys on the composed name, which coalesces a drain and closes the hostile door with one change; the
+spec paragraph is corrected and says so.
+Also fixed: an exited session's card carried a waiting-on line whose ages grew for work that no
+longer existed, fixed at the render seam because the backstop's exited state is derived rather than
+written, so a registry-side clear could not reach it; and an oversized `Stop` post, which this host
+refuses in ordinary operation, now cost the roster-clearing report as well as a liveness tick, so
+the `/hook` ceiling is floored at the bound its sibling route already carries for the same payload
+rather than a new posture being invented. Minors: the roster line moved below the turn count and
+the heartbeat, since a long card is cut from its end; the label reads tasks rather than agents,
+because a background shell is not an agent; an explicit JSON null now preserves the roster where
+only an empty array clears it; and the first-sighting carry-forward keys on kind and id together.
+The security reviewer corrected a premise in the orchestrator's own brief: task descriptions never
+reach the thread title, which carries only a state word and an integer, so no escaping was added
+where none is needed.
+Recorded as limits rather than defects: a table that is present but not an array preserves the
+roster, so a token holder can pin its own card at a waiting state, bounded by the exited backstop
+and inside the accepted risk that a token holder distorts its own status; a long-lived background
+shell holds a session at working for as long as it runs, which is the invisible work the roster
+exists to show; and a restart reseeds nothing now that stamps persist.
+Process note, second instance and therefore a pattern rather than a slip: the orchestrator's blind
+dispatch again carried diff-describing framing, which the reviewer named and disregarded before
+reviewing the diff alone. The correction is to the dispatch template, not to the output: a blind
+brief carries the base ref, the changed-file list, and only lenses that would read identically for
+any diff in this repository.
+Review Findings: adversarial APPROVED_WITH_CONCERNS (2 Major, 4 Minor); blind
+APPROVED_WITH_CONCERNS (5 Minor); security CONCERNS (2 Major, 2 Minor). All 10 deduplicated items
+implemented or recorded, items 1 to 4 red-first. Two files beyond the section's set, both forced:
+the broker's wiring, where the raised ceiling is passed, and a comment-only correction in config
+whose contract statement would otherwise have been false.
+Stamps: adjudicated 1, stamped 1 (a-model-downgrade-writes-a-structured-transcript-record)
+Next: Section 5: Docs, deploy, and live verify
+Commit Model: Commit-and-Push

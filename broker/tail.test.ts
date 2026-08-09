@@ -2219,6 +2219,7 @@ function integration(t: TestContext) {
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
   const posts: string[] = [];
   const edits: string[] = [];
@@ -3258,6 +3259,7 @@ test("an entitlement downgrade carries the marker onto the card, category or no 
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
   const { tailer } = harness({
     noteModel: (sessionId, reading) => {
@@ -3409,6 +3411,7 @@ test("the marker stands across the polls that follow the change, not only the on
     toolName: null,
     toolInput: null,
     transcriptPath: null,
+    backgroundTasks: null,
   });
   const changes: string[] = [];
   const { tailer } = harness({

@@ -74,8 +74,17 @@ type ThreadState = {
   /** What the thread title and the card actually say, as far as an accepted call reported. */
   renderedName: string | null;
   renderedCard: string | null;
-  /** The state most recently derived, and when it last changed. Together they are the dwell. */
+  /** The state most recently derived, for the paths that reason about it rather than the title. */
   desired: SurfaceState;
+  /**
+   * The title most recently composed, and when it last changed. Together they are the dwell, and
+   * it keys on the whole composed name rather than on the state because the agent count rides the
+   * title: a fan-out draining a step per turn holds the state at working while changing the name
+   * every step, and a dwell that only saw the state would spend a rename per step out of the same
+   * budget an urgent needs-you rename has to come out of. Re-stamping on any name change makes a
+   * drain coalesce into the renames that settle; the card still carries every count as it moves.
+   */
+  desiredName: string | null;
   desiredSince: number;
   archived: boolean;
   /**
@@ -127,6 +136,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       openingModel: null,
       contextTokens: null,
       downgrade: null,
+      backgroundTasks: [],
       needsAttention: false,
       lifecycle: "ended",
     };
@@ -142,6 +152,9 @@ export function createSurface(options: SurfaceOptions): Surface {
       renderedName: binding.title,
       renderedCard: null,
       desired: "working",
+      // Null, so the first pass stamps the dwell with whatever name it composes: a restart has no
+      // idea what the session has been doing, and a fresh stamp is the conservative read.
+      desiredName: null,
       desiredSince: options.now(),
       archived: binding.archived,
       abandoned: false,
@@ -378,6 +391,7 @@ export function createSurface(options: SurfaceOptions): Surface {
 
   function entryFor(view: SessionView, state: SurfaceState): ThreadState {
     const now = options.now();
+    const name = threadName(view, state);
     let entry = threads.get(view.sessionId);
     if (entry === undefined) {
       entry = {
@@ -386,6 +400,7 @@ export function createSurface(options: SurfaceOptions): Surface {
         renderedName: null,
         renderedCard: null,
         desired: state,
+        desiredName: name,
         desiredSince: now,
         archived: false,
         // A session first seen already exited never had a thread and is not getting one. Ended
@@ -400,8 +415,12 @@ export function createSurface(options: SurfaceOptions): Surface {
       threads.set(view.sessionId, entry);
     }
     entry.lastView = view;
-    if (state !== entry.desired) {
-      entry.desired = state;
+    entry.desired = state;
+    // The dwell stamp: any change to the composed title restarts it, a state transition and a
+    // count change alike, so refreshName's settled check below always measures how long the name
+    // it is about to paint has held.
+    if (name !== entry.desiredName) {
+      entry.desiredName = name;
       entry.desiredSince = now;
     }
     return entry;
@@ -454,6 +473,8 @@ export function createSurface(options: SurfaceOptions): Surface {
     entry.lastView = view;
     if (entry.desired !== "exited") {
       entry.desired = "exited";
+      // Kept coherent with entryFor's stamping, though exited is urgent and never waits the dwell.
+      entry.desiredName = threadName(view, "exited");
       entry.desiredSince = options.now();
     }
 

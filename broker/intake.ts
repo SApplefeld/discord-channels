@@ -49,7 +49,15 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { FLAG_FALSE } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import type { Logger } from "./log.ts";
-import type { HookEvent, HookIntake, Registry, SessionRecord } from "./registry.ts";
+import { MAX_BACKGROUND_TASKS, MAX_BACKGROUND_TASK_ID_LENGTH } from "./registry.ts";
+import type {
+  BackgroundTaskKind,
+  BackgroundTaskReading,
+  HookEvent,
+  HookIntake,
+  Registry,
+  SessionRecord,
+} from "./registry.ts";
 import type { MirrorKind } from "./routing/outbound.ts";
 import { clean } from "./sanitize.ts";
 import { askedQuestions } from "./tail.ts";
@@ -230,6 +238,63 @@ function toolInputPreview(payload: Record<string, unknown>): string | null {
   return null;
 }
 
+/** The two kinds of background work the harness's table reports, and the only two kept. */
+const BACKGROUND_TASK_KINDS: readonly BackgroundTaskKind[] = ["subagent", "shell"];
+
+/**
+ * The session's in-flight work, as the `Stop` payload's own task table reports it.
+ *
+ * Three answers, and they are not interchangeable. `null` is "this payload said nothing about the
+ * table", which leaves whatever the session last reported standing: it covers every event but
+ * `Stop`, an explicit JSON `null` (a claim of nothing rather than a claim of emptiness), and a
+ * `background_tasks` that is not an array at all, where the shape is unreadable and inventing an
+ * empty table from it would erase a live roster. An empty array is "the table is empty", which a
+ * session that has finished its agents really reports, and it clears the roster, as does an absent
+ * field, which is how a harness with no table to report at all shapes its payload. A populated
+ * array replaces it.
+ *
+ * What the preserve path concedes, recorded rather than guarded: a token holder can pin its own
+ * card at a waiting state by reporting one populated table and then garbage forever, since nothing
+ * readable ever replaces the roster. That is bounded by the surfaces' exited backstop, and it sits
+ * inside the accepted risk docs/security-model.md already records, that a token holder can distort
+ * its own session's status.
+ *
+ * Per entry the discipline is the one every other payload field takes: an entry that is not an
+ * object, carries no usable id, or names a kind outside the two above contributes nothing, while
+ * the rest of the table still lands. `type` is compared against a list rather than used as a
+ * lookup key, so a prototype name resolves to nothing. `status` is deliberately unread: the table
+ * is what the harness is running, so filtering on a status vocabulary this broker does not own
+ * would drop live work on a value upstream is free to rename. A repeated id keeps its first entry,
+ * since the roster is keyed by id and a duplicate would otherwise count twice.
+ */
+function backgroundTasks(payload: Record<string, unknown>): readonly BackgroundTaskReading[] | null {
+  const value = payload["background_tasks"];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const tasks: BackgroundTaskReading[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (tasks.length >= MAX_BACKGROUND_TASKS) break;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+    const fields = entry as Record<string, unknown>;
+    const id = payloadString(fields, "id");
+    if (id === null || id.length > MAX_BACKGROUND_TASK_ID_LENGTH || seen.has(id)) continue;
+    const kind = payloadString(fields, "type");
+    if (kind === null || !BACKGROUND_TASK_KINDS.includes(kind as BackgroundTaskKind)) continue;
+    seen.add(id);
+    tasks.push({
+      id,
+      kind: kind as BackgroundTaskKind,
+      // Model-authored prose, bounded here by the same cleaner every other payload string takes
+      // and neutralized again at the render site. `command` is not read: a shell task's own
+      // description says what it is, and the command is the unbounded field.
+      description: payloadString(fields, "description"),
+      agentType: payloadString(fields, "agent_type"),
+    });
+  }
+  return tasks;
+}
+
 /**
  * Longest transcript path accepted. Well past the longest real one observed on this machine (206
  * characters) and past the classic Windows MAX_PATH, so a deep checkout still fits; what it
@@ -357,6 +422,10 @@ export function parseIntake(
       // transcriptPathField). It is used only as an argument to a read: the tailer holds it in
       // memory and nothing persists or publishes it.
       transcriptPath: transcriptPathField(fields),
+      // Read from `Stop` alone, because that is the event whose payload carries the table. Every
+      // other event says nothing about the roster and leaves it exactly as the last turn reported
+      // it, which is what null means here.
+      backgroundTasks: event === "Stop" ? backgroundTasks(fields) : null,
     },
   };
 }
@@ -537,6 +606,17 @@ export function redact(record: SessionRecord): PublicSessionRecord {
             category: record.downgrade.category,
             choice: record.downgrade.choice,
           },
+    // The roster, rebuilt entry by entry for the reason the downgrade record is: published by
+    // reference, any field a task later grows would reach the wire on its own. What it carries is
+    // the same class as `lastToolInput` above, a bounded preview of what the session is working on,
+    // on the same loopback-only route.
+    backgroundTasks: record.backgroundTasks.map((task) => ({
+      id: task.id,
+      kind: task.kind,
+      description: task.description,
+      agentType: task.agentType,
+      since: task.since,
+    })),
   };
 }
 
@@ -781,7 +861,10 @@ export function createHandler(
         // assistant message, so the longest turns are the ones that push a liveness post past this
         // ceiling, and a refusal there is a visible error inside the session at the end of exactly
         // those turns. What the drop costs is one tick of the status card, which the next hook post
-        // supplies. The count is logged; the body is not, and nothing here has parsed it.
+        // supplies, and, when the drop was a Stop, the roster that only a Stop carries: the
+        // previous table stands until the next turn end reports one, which is why the wiring
+        // floors this route's ceiling at the mirror route's, where the same payload already fits.
+        // The count is logged; the body is not, and nothing here has parsed it.
         refusals.warn(
           "hook post over the size cap",
           `${read.droppedBytes} bytes dropped unread`,

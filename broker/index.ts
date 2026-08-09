@@ -739,7 +739,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
 
   const hooks = createHandler({
     registry,
-    maxBodyBytes: config.maxBodyBytes,
+    // Floored at the mirror route's ceiling: both routes receive the same Stop payload, and only
+    // the /hook copy carries the roster, so a Stop that fits /mirror but is drained here would
+    // leave a waiting-on line standing over a session that has gone idle until its next turn end.
+    // The ceiling is a denial-of-service control, and this raises one route to a bound the sibling
+    // route already carries rather than inventing a new posture; the relay routes above keep the
+    // unfloored knob, since no relay body grows with a turn.
+    maxBodyBytes: Math.max(config.maxBodyBytes, config.mirrorMaxBytes),
     log: logger,
     // The question seam rides beside the other three: both question paths, this hook-fed one and
     // the tailer's own transcript yield, end in the one deliverQuestion closure below, so they

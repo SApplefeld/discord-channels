@@ -23,7 +23,14 @@
 // `../discord/render.ts`'s escaping, which is where display safety lives for every surface this
 // broker draws, and the glyphs and the session label come from that same module so the card and the
 // thread title cannot disagree about what a session is called or what state it is in.
-import { GLYPHS, MAX_CARD_LENGTH, displayName, heartbeat, inertField } from "../discord/render.ts";
+import {
+  GLYPHS,
+  MAX_CARD_LENGTH,
+  displayName,
+  heartbeat,
+  inertField,
+  span,
+} from "../discord/render.ts";
 import { deriveSurfaceState } from "../discord/state.ts";
 import type { SessionView, StateThresholds, SurfaceState } from "../discord/state.ts";
 import type { UsageAccount, UsageReading, UsageUnavailableReason, UsageWindow } from "./cache.ts";
@@ -78,19 +85,6 @@ const UNAVAILABLE: Record<UsageUnavailableReason, string> = {
   oversized: "the usage cache is larger than this reader will open",
   malformed: "the usage cache does not parse",
 };
-
-/**
- * A duration in the card's compact form: `44m`, `3h 44m`, `4d 6h`. Two units at most, because the
- * third never changes a decision and the card is read at a glance on a phone, and a space between
- * the two because that is what stays legible at phone width.
- */
-function span(ms: number): string {
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
-  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-}
 
 /**
  * ` · resets 3h 44m` for a window that carries a reset time, and nothing at all for one that does
