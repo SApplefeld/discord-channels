@@ -190,10 +190,33 @@ backgrounded dispatch answers at launch, so that reading reports every agent fin
 Descriptions are operator-authored prose from this session and are rendered inert like every other
 transcript-sourced field.
 
-**The card** carries a roster line per session while anything is outstanding: count, then each
-agent's description, its type, and its age (`⚙ 2 agents · Build Section 2 (implementer-fable) 31m
-· Blind review (blind-reviewer) 4m`), bounded to a few entries with an overflow count. Nothing is
-rendered when the roster is empty.
+**Concurrency is the normal case, and the roster is an inference rather than a fact.** Measured
+against a real fan-out session: 50 dispatches, peak 12 concurrent, and a naive launched-minus-
+notified reading claiming 14 outstanding hours after the fact. Two corrections, both measured:
+
+- **Scope to the session instance.** A transcript spans instances (the `session_id` field on each
+  line, distinct from the conversation's `sessionId`), and a restart strands every agent the
+  previous instance launched: their completions never arrive, so they haunt the roster forever.
+  Instance scoping cut the same reading from 14 to 7.
+- **Bound by age, and say what is known.** Even inside one instance an agent can be outstanding
+  because it died, was stopped, or its notification never landed. Past a bound the entry is
+  rendered as unconfirmed rather than dropped or asserted, because both silent alternatives lie in
+  a different direction. The roster line therefore reads as dispatched-and-not-reported-back, which
+  is what the transcript actually establishes.
+
+**The card** carries a roster line per session while anything is outstanding: the count, then the
+newest few entries with description, type, and age, then an overflow count (`⚙ 7 agents ·
+Grooming S6 implementation (implementer-fable) 35m · PR ladder fix round three (implementer-opus)
+62m · +5 more`). A full roster rendered in full runs past 700 characters at twelve entries, which
+would crowd every other thing the card carries, so the bound is structural rather than cosmetic.
+Nothing is rendered when the roster is empty.
+
+**One unverified candidate worth a probe before building:** a `Stop` hook payload carries a
+`background_tasks` field, which may or may not enumerate live subagents (it is documented in the
+project memory as present, never as containing agents). If it does, it is an authoritative live
+roster from the harness itself, arriving on a route the broker already receives, and it would
+replace the age-bound inference for the timely case. Probe it first; the transcript reading stays
+as the fallback either way, since it is the only source that survives a broker restart.
 
 **The state vocabulary gains the case.** `working`, `needs you`, `idle`, `exited` cannot express
 waiting on agents, which is why the card is wrong today rather than merely thin. A session with an
@@ -209,7 +232,9 @@ fan-out round. A completion that matters already reports itself in the session's
 Files: `broker/tail.ts` (the yield), `broker/registry.ts` (the roster slot and the state
 derivation), `broker/discord/render.ts` (the card line and the title), plus tests. Tests lock the
 launch-versus-completion pairing including the backgrounded-dispatch trap in both directions, the
-empty-roster inertness, the idle-versus-waiting state both ways, and the overflow bound.
+instance-scoping rule (an agent launched by a previous instance never appears), the age bound's
+unconfirmed rendering, the empty-roster inertness, the idle-versus-waiting state both ways, and
+the overflow bound at a twelve-agent fan-out.
 
 ### 5. Docs, deploy, and live verify
 
