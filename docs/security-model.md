@@ -40,7 +40,12 @@ with its own refused posts to push earlier evidence of the same behavior out thr
 field added later has to be published deliberately rather than arriving on its own. That route
 publishes the session's model reading beside the rest: the model producing its turns, the model it
 opened with, its live context size, and the detail of a forced downgrade when one applies, each
-named individually rather than spread from the record's own object. Those are model ids, a token
+named individually rather than spread from the record's own object. It publishes the session's
+background-task roster the same way, entry by entry: the harness's own table of the subagents and
+background commands a session is waiting on, each carrying an id, a kind, and a description the
+model wrote. The card cuts a description to sixty characters where this route carries the bounded
+two hundred and fifty six the intake kept, which is the same asymmetry the tool-input preview
+already has. Those are model ids, a token
 count, and upstream's own refusal category and consent answer, the same class as the tool-input
 preview this route already carries and holding no conversation text.
 
@@ -74,13 +79,15 @@ where the mirror posts unless a verdict says not to, because the broker reads tr
 itself and an absent signal there cannot be allowed to mean publish. See "The transcript is read,
 not posted" below.
 
-What neither switch reaches is the bounded tool-input preview on the status card. It rides the
-identity-and-activity path rather than the mirror, so a `-NoMirror` session still shows what its
-last tool was called with, and that preview travels further than the card: it is a field of the
-session record, so it is written to the registry snapshot on disk and published by `GET /sessions`
-alongside every other record field. Its content is a shell command line, a file path, a URL, a
-search pattern, or a tool's free-text description, capped at 256 characters. A session the operator
-marked no-mirror discloses that much of itself on all three surfaces.
+What neither switch reaches is the bounded tool-input preview on the status card, or the
+background-task roster beside it. Both ride the identity-and-activity path rather than the mirror,
+so a `-NoMirror` session still shows what its last tool was called with and what it is waiting on,
+and both travel further than the card: they are fields of the session record, so they are written
+to the registry snapshot on disk and published by `GET /sessions` alongside every other record
+field. The preview's content is a shell command line, a file path, a URL, a search pattern, or a
+tool's free-text description; the roster's is the description the model gave each subagent it
+dispatched. Both are capped at 256 characters per field. A session the operator marked no-mirror
+discloses that much of itself on all three surfaces.
 
 That also makes an environment variable a privacy control surface, alongside the files below:
 anything that can set `CHANNEL_SESSION_MIRROR` for a session influences whether that session is

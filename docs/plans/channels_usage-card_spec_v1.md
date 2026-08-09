@@ -227,18 +227,51 @@ and the knowledge that pairing a dispatch with its own `tool_result` reports eve
 agent as finished at launch.
 
 **The card** carries a roster line per session while anything is outstanding: the count, then the
-newest few entries with description, type, and age, then an overflow count (`⚙ 7 agents ·
+newest few entries with description, type, and age, then an overflow count (`⚙ 7 tasks ·
 Grooming S6 implementation (implementer-fable) 35m · PR ladder fix round three (implementer-opus)
 62m · +5 more`). A full roster rendered in full runs past 700 characters at twelve entries, which
 would crowd every other thing the card carries, so the bound is structural rather than cosmetic.
-Nothing is rendered when the roster is empty.
+The line sits below the turn count and the heartbeat, because a card that runs long is cut from
+its end and those are what the card exists to carry. Nothing is rendered when the roster is empty,
+and nothing is rendered for a session that has exited, whose roster describes work that no longer
+exists.
+
+**The roster survives a restart** (decided 2026-08-09, where two reviewers reached opposite
+conclusions). It is persisted with its first-sighting stamps and restored. The ruled-out paragraph
+above forbids reconstructing a roster from transcript dispatch events, where ghosts accumulate
+because completions can never arrive; this table is authoritative and replaced wholesale at the
+next report, so a persisted roster is bounded rather than accumulating. The two failures decide it:
+a stale roster after a restart shows visibly old ages and self-corrects at the next report, while
+dropping it makes a session read idle for the whole remaining fan-out after a mid-fan-out restart,
+which is the defect this section exists to fix, reopened at every restart. Whatever is persisted is
+tolerated at field level on load, never validated in a way that could reject the whole snapshot.
 
 **The state vocabulary gains the case.** `working`, `needs you`, `idle`, `exited` cannot express
 waiting on agents, which is why the card is wrong today rather than merely thin. A session with an
-outstanding roster renders as working with its agent count rather than idle, in the thread title
+outstanding roster renders as working with its task count rather than idle, in the thread title
 as well as the card, since the title is what survives the mobile thread-list truncation. The
-existing states are unchanged for every session with an empty roster, and the rename budget is
-unaffected because the title already changes on state transitions.
+existing states are unchanged for every session with an empty roster.
+
+**The rename damper moves with the count** (corrected 2026-08-09; this paragraph previously claimed
+the rename budget was unaffected because the title already changes on state transitions, which is
+false and was caught in review). The surface diffs the whole composed title, so a count in the
+title makes every count change a rename trigger, while the dwell timer re-stamps only when the
+derived state changes: a settled session would rename on every step of a fan-out draining, and a
+token holder alternating its reported table would drive one rename per report. The victim is the
+same either way, because an urgent `needs you` rename bypasses the dwell but not the budget, so an
+exhausted bucket delays the operator's only passive signal that a session is parked. The damper
+therefore keys on the rendered name rather than on the state, which coalesces a drain and closes
+the same door on a hostile table.
+
+**The limits this surface carries, recorded so they are not read as defects.** A table that is
+present but not an array leaves the roster standing, so a token holder can pin its own card at a
+waiting state by reporting one populated table and then garbage; it is bounded by the exited
+backstop and sits inside the accepted risk that a token holder can distort its own status. An
+oversized `Stop` post is drained and dropped, which now costs the roster-clearing report as well as
+the liveness tick, so the route's ceiling is raised to the one its sibling route already carries
+for the same payload. And a long-lived background shell holds its session at working for as long as
+it runs, which is the same class of invisible work the roster exists to show rather than a
+misreport.
 
 **No start and stop posts in v1.** The roster is a state the operator reads on the card when they
 look, not an event stream; a post per dispatch would be the loudest surface in the thread on a
