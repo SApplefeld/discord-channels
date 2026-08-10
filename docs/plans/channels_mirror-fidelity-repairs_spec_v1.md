@@ -199,7 +199,41 @@ longer than the line bound is cut rather than wrapping; a crafted goal text cann
 mention pill, a chip, or markdown. Tests cover each direction, including the drop-on-idle rule that
 substitutes for an unobservable clear.
 
-### 6. A mirrored table becomes an aligned block
+### 6. A long reply cannot post twice
+
+Model: opus
+
+The turn's closing text reached the operator's thread twice, whole, once from the Stop mirror and
+once from the tailer. Confirmed from a live host's log rather than reasoned: no partial-run line and
+no dedup drop line exists anywhere in the window, so neither path suppressed the other and both
+posted.
+
+**The window is the cause.** Both paths record their echo digest only after a successful post, and a
+long reply posts as several paced messages, so the recording lands seconds after the check. The
+tailer polls, finds no digest, and begins posting; the mirror arrives mid-flight, finds no digest
+because the tailer has not finished, and posts its own copy. Discord's own timestamps show the
+mirror first, which is the opposite of the order the checks ran in, and is why the shape is hard to
+read from the outside.
+
+**Record-on-sent is not simply wrong, which is the trap.** It exists so a refused post cannot poison
+the memory and leave the reply appearing nowhere at all, and that reasoning holds for a single short
+message where the window is milliseconds. It stops holding for the most expensive message of the
+turn, where the window is seconds wide.
+
+So close the window without reintroducing the poison: reserve the digest when a delivery is
+dispatched, so the other path sees a claim rather than a gap, and release the reservation if the run
+lands nothing at all, so the text is still owed to whichever path can post it. A run that lands
+anything keeps the digest, since the operator has the text. Where a path skips because of a
+reservation it reports the same outcome it reports today for a match, because the text is on its way
+by the other route.
+
+Acceptance: two paths racing over one long reply post it once, whichever checks first; a run that
+lands nothing releases its claim and the other path posts; a run that lands part of a reply keeps
+its claim and is not duplicated; and the existing orderings the echo memory already handles keep
+their current behavior. Tests drive both orderings with a delivery that resolves slowly, which is
+the shape no current test has, plus the zero-landed release both ways.
+
+### 7. A mirrored table becomes an aligned block
 
 Model: opus
 
@@ -233,7 +267,7 @@ with cut cells; a table that cannot fit the message ceiling mirrors as raw text;
 or chip can be manufactured by cell content. Tests lock each of those directions and pin the
 escaping order (neutralize, then pad).
 
-### 7. Docs and live verify
+### 8. Docs and live verify
 
 Model: opus
 Locus: inline
