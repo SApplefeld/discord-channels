@@ -55,7 +55,11 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   2. Read both cards on a phone and confirm neither costs a horizontal drag. The width bound counts
      code points, while a glyph-led line can draw one column wider, so this is the check the bound
      itself cannot make. The downgrade marker's glyph beside the state glyph is read in the same
-     pass.
+     pass. In the same look, confirm the fleet card's bars draw as unbroken lines rather than dashed
+     runs: whether consecutive U+2014 glyphs tile is a property of the client's font, and the swap
+     is one constant, `BAR_GLYPH` in `broker/usage/card.ts`, with `─` (U+2500) as the named
+     alternative. The card's new shape (bold labels, bars, whole-dollar spends) is
+     [`archive/plans/channels_fleet-card-layout_spec_v1.md`](archive/plans/channels_fleet-card-layout_spec_v1.md).
   3. Compare the fleet card's numbers against a console `cswap status` within one refresh. This
      cannot be run from a session at all: `cswap` mutates the cache under test and spends the shared
      budget of roughly 28 requests per hour per account.
@@ -87,6 +91,15 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   deploy a keyboard trip on 2026-08-08; the corrected `claude-sessions-on-scott-run-elevated`
   memory carries the failure matrix). The task's own elevation is exactly what the startup script
   can use to clear the port safely, under the same proof discipline, never by name.
+
+- Two invisible-character residues in the shared sanitizer, from the fleet-card round's security
+  review, both display-spoofing at worst with no syntax reachable. U+0085 (NEL) survives
+  `visible()` in `broker/discord/render.ts` (above 0x1F so `isInvisible` passes it, and JS `\s`
+  does not match it), so a client that treats NEL as a line break could visually split a bold
+  label; U+061C (Arabic Letter Mark) is missing from the invisible class in `broker/sanitize.ts`
+  (LRM/RLM and the bidi overrides are covered, ALM is not), so it can invisibly influence display
+  order in a label with RTL text. Fix is one range each in `isInvisible` plus a test; the class is
+  shared with the path that carries text to the model, so sweep both consumers when changing it.
 
 ## Snapshots
 

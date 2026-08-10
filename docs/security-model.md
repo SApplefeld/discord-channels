@@ -414,7 +414,11 @@ as approval. A forged question cannot approve anything, and a forged verdict can
 
 **The fleet card sends account identity.** Its per-account label is the account's own email
 address, falling back to its organization name, read from claude-swap's `sequence.json` beside the
-usage cache and rendered inert like every other untrusted field. Two of the three hosts are
+usage cache. It is the one field on that card drawn outside a fence: the bold line above an
+account's block is live markdown, so the label takes the full neutralization the session card's own
+title takes rather than the lighter fenced-field escape, and a crafted address therefore draws no
+mention pill, no heading, and no fence delimiter, and cannot close the emphasis it sits
+inside. Two of the three hosts are
 organization-owned, so those labels are corporate identities, and they cross to Discord under
 Discord's retention the way every other surface's content does. What the card does not carry is
 anything from the credentials directory that sits beside the files it reads: the reader opens

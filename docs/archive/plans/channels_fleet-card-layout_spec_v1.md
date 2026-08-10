@@ -1,6 +1,6 @@
 # Channels: the fleet card's per-account layout
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: fable-tier reviewer bumps only, dispatched with the explicit override from this
 Opus-led session; overage onto usage credits approved 2026-08-09
@@ -8,9 +8,9 @@ Created: 2026-08-09
 
 ## Related
 
-- [channels_usage-card_spec_v1.md](../archive/plans/channels_usage-card_spec_v1.md): the round that
+- [channels_usage-card_spec_v1.md](channels_usage-card_spec_v1.md): the round that
   built the fleet card. This round changes only how it is drawn.
-- [channels_mirror-fidelity-repairs_spec_v1.md](../archive/plans/channels_mirror-fidelity-repairs_spec_v1.md):
+- [channels_mirror-fidelity-repairs_spec_v1.md](channels_mirror-fidelity-repairs_spec_v1.md):
   the round that gave the session status card the heading-plus-fence shape this round copies.
 
 ## Goal
@@ -25,6 +25,10 @@ one block per account, one more pair for the sessions.
 The layout is the operator's, specified against a live screenshot.
 
 ## The shape
+
+Superseded in part by section 4, which was specified against this shape once it had shipped: the
+`###` headings became bold lines, the word `resets` and the spend limit were dropped, and a bar now
+leads each row. Section 4's own geometry block is the authoritative mock.
 
 ```
 # 📊 Fleet: Usage
@@ -314,4 +318,38 @@ stays true; archive and README archive-index hits are history by design).
 Review Findings: deferred to the finishing pass's docs-curator by design
 Stamps: none surfaced (covered by this session's Chapter 3 sweep)
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-10
+Completed: finishing pass; effort closed
+Implemented By: main session (orchestrating qa-verifier, security-reviewer, adversarial-reviewer,
+docs-curator)
+Metrics: 4 finishing agents; 0 Critical, 0 Major across both finishing reviews; advisor off
+Decisions / Surprises: QA PASS on every criterion of all four sections, with two operator-only
+items carried to the backlog (phone-font bar tiling, live Discord render walk). QA's first full-suite
+run hit one failure in broker/tail.test.ts ("a mirror run that landed nothing after the tailer
+deferred still gets the text posted"), confirmed flake: passed standalone (109/109) and on a clean
+full-suite rerun; the file predates this changeset. Security review over the whole changeset: CLEAR.
+Its two Minors are justified-not-fixed: both need write access to the ACL-hardened broker.env, which
+security-model.md classes as operator-equivalent compromise, and the reused-HostName gap is parity
+rather than asymmetry, since the reuse path mirrors each parameter's own declared contract and
+-HostName declares only non-empty, so tightening the file path alone would diverge from what a bound
+argument accepts. Final adversarial review: APPROVED_WITH_CONCERNS, four Minors: three doc
+inaccuracies fixed in this pass (operations.md's Port-required overclaim, the cents wording, a
+supersession note over the spec's pre-bar opening mock) and one accepted documented edge (a marked
+spend with an unknown currency code can still be cut; live cache is USD-only, the legend gate
+contains the fallout). Docs-curator drift: D1-D4 all class deviation, docs updated to the as-built
+facts (architecture.md no longer flattens the two cards into one heading shape; security-model.md
+names the label's real neutralization instead of "like every other untrusted field"; the
+"one place outside a fence" claim scoped to the fleet card since the session card's title is
+another; the malformed-value refusal scoped to IDs and port since HostName carries no pattern). D5,
+the one mistake-classed item, adjudicated with evidence rather than a stop: install.md claimed the
+one-command install prompts for the token, but a re-run deliberately reuses the hardened token, a
+behavior this spec's own Section 2 cites as the precedent for identity reuse, so the code is
+confirmed intentional and the doc clause was fixed. Curator hygiene items: the archive pass below
+covers the plan index; the U+2014 tiling check and the sanitizer residues (U+0085, U+061C) are
+routed to docs/backlog.md as active items.
+Review Findings: recorded above; nothing blocked
+Stamps: none surfaced (memq unstamped clean at the finishing sweep)
+Next: none; archived via curating-docs in this same close-out
 Commit Model: Commit-and-Push

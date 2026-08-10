@@ -266,8 +266,8 @@ ceiling. Reading the cache costs nothing and mutates nothing, and the reader ope
 files, uses no field of either as a path, and leaves the failure detail of a failed poll unread,
 because an authentication error is where a token would appear.
 
-The card is drawn as a bold label over a fenced block per account, and the label is the one place
-an untrusted string lands outside a fence: a bold line is live markdown, where a crafted account
+The card is drawn as a bold label over a fenced block per account, and the label is the one field
+on this card that lands outside a fence: a bold line is live markdown, where a crafted account
 name could otherwise draw a mention pill, a heading, a fence delimiter, or close the emphasis it
 sits inside, so the label takes the same full-markdown neutralization the session card's title takes
 rather than the lighter escape a fenced field needs.
@@ -322,8 +322,11 @@ budget a parked session's own title needs.
 ## What the cards are made of
 
 Both cards draw their bodies inside fenced monospace blocks so their columns line up at a glance,
-with headings outside the fences where Discord still renders them. The width they pad to is one
-shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46 columns, and it is a
+with each block's own label outside the fence where Discord still renders it. The two cards label a
+section differently. The session card uses a `###` heading; the fleet card uses a bold paragraph
+line, because Discord puts a margin above a heading and a card carrying one section per account
+pays that margin three or four times, which is air spent instead of numbers. The width they pad to
+is one shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46 columns, and it is a
 phone's constraint rather than a taste: a code block scrolls sideways on a phone rather than
 wrapping, so a card wider than its bound costs a drag to read, which is worse than the ragged lines
 the fence replaced.

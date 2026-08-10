@@ -65,7 +65,8 @@ unelevated invocation from the repository root:
 install\Install-All.ps1 -HostName SCOTT -ChannelId <channel id> -AllowedUserId <your user id>
 ```
 
-It prompts for the bot token (or takes `-BotTokenFile`, same rules as below), runs
+It prompts for the bot token on a first install (or takes `-BotTokenFile`, same rules as below); a
+re-run reuses the hardened token from the last install without prompting. It runs
 `Install-Host.ps1` in-process, registers this checkout as a plugin marketplace and installs the
 relay plugin through the `claude` CLI, then raises exactly one UAC prompt for
 `Install-Elevated.ps1`, which registers the broker's scheduled task, writes the managed-settings
@@ -75,7 +76,7 @@ launches a watched session with `cchat <session-name>`. Every piece is idempoten
 moving the checkout or rotating a token. The three identity arguments are needed on the first
 install only: a re-run reads `-HostName`, `-ChannelId`, `-AllowedUserId`, and `-Port` back from the
 `broker.env` the last install wrote, announces each reused value as it picks it up, and refuses a
-malformed value on disk naming the key. An argument you supply always wins, which is how a host is
+malformed ID or port on disk naming the key. An argument you supply always wins, which is how a host is
 rebound to a different channel.
 
 Step 1 stays manual either way (it is Discord's web console), and a host still runs the per-host

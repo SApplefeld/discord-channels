@@ -248,11 +248,16 @@ age of its numbers. Inside the block, one row per window: a bar of up to fifteen
 far through its budget the window is, the percentage, then the reset countdown or the spend amount.
 Any usage at all draws at least one cell, so an empty bar always means a true zero, even beside a
 trace that rounds to `0%`. A spend of a thousand and up is drawn whole; below that it keeps its
-cents. A row can end in one marker: `(^)` on a weekly window ahead of pace (the same rule
+cents when it has any. A row can end in one marker: `(^)` on a weekly window ahead of pace (the same rule
 claude-swap's own console applies), `(!)` on any window at or above 90%, and the warning wins when
 both apply. The key to the markers is drawn at the foot only when a marker is on the card. Live
 sessions get one more label-and-block pair, omitted when nothing is running, and a card that runs
 out of room names what it dropped rather than ending mid-thought.
+
+The bar's filled cells are drawn in one named constant, `BAR_GLYPH` in `broker/usage/card.ts`,
+currently `—` (U+2014). That is a typographic character rather than a box-drawing one, so whether
+consecutive cells tile into an unbroken line or leave hairline gaps between them is a property of
+the font the reading client draws with. `─` (U+2500) is the swap on a client that leaves gaps.
 
 The card reads claude-swap's own local files and never runs it. That is deliberate: the usage
 endpoint behind claude-swap allows roughly thirty requests an hour per account, shared across every
@@ -562,12 +567,13 @@ them all, and `broker/config.ts`'s `DEFAULT_PORT` with them.
 
 ## Upgrading a host
 
-Re-run `install\Install-All.ps1` from the repository root with no identity arguments. `-HostName`,
-`-ChannelId`, `-AllowedUserId`, and `-Port` are needed on a first install and read back from the
-`broker.env` the last install wrote on every one after it, so picking up new hooks is one command
+Re-run `install\Install-All.ps1` from the repository root with no identity arguments. The three
+identity arguments (`-HostName`, `-ChannelId`, `-AllowedUserId`) are needed on a first install,
+`-Port` is optional with a default, and all four are read back from the `broker.env` the last
+install wrote on every one after it, so picking up new hooks is one command
 rather than a trip to the Discord console. Each reused value is announced as it is picked up, which
 is how a run from the wrong checkout shows itself before anything is provisioned, and a malformed
-value on disk is refused naming the key and the file. An argument you do supply always wins, which
+ID or port on disk is refused naming the key and the file. An argument you do supply always wins, which
 is how a host is rebound to a different channel. `Install-Host.ps1` run on its own still takes its
 arguments explicitly.
 
