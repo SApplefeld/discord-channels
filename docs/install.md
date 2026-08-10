@@ -104,7 +104,8 @@ refuses a port that disagrees rather than moving one copy and silently disconnec
 The installer:
 
 - writes `broker.env` and the token file under `%LOCALAPPDATA%\sapplefeld-channels\`, outside the
-  repository,
+  repository, keeping any allowlisted key already in `broker.env` that this run does not itself set,
+  so a knob tuned by hand survives a re-install,
 - substitutes this checkout's absolute path into the `SessionStart` hook and merges every hook the
   fragment declares, plus the relay's one reply-tool permission rule, into your user-level
   `~/.claude/settings.json`,

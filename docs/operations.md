@@ -91,11 +91,12 @@ and says limits should not be hard-coded, so the broker reads the rate-limit res
 adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
 because a rename landing ten minutes late paints a state that stopped being true. The card underneath
 is edited in a far looser bucket and carries the detail. The card opens with a heading naming the
-session and its state, then a fenced block of fields (host, session, state, model, context size,
-heartbeat), then one fenced block per thing the session has to say about itself: the goal it is
-working toward, the tool it last ran and what that tool was called with, and the subagents and
-background commands it is waiting on. A section with nothing to show is left out rather than drawn
-empty, so a quiet session is a short card.
+session and its state, then a fenced block of fields (host, session, state, model, context size, a
+`From` row while the session is running below the model it opened with, and heartbeat), then one
+fenced block per thing the session has to say about itself: the goal it is working toward, the tool
+it last ran and what that tool was called with, and the subagents and background commands it is
+waiting on. A section with nothing to show is left out rather than drawn empty, so a quiet session
+is a short card.
 
 ## The channel's pins, and threads that put themselves away
 
@@ -110,15 +111,20 @@ that the older pin route answers `Missing Permissions` when the newer permission
 missing, so that error names the wrong cause. Without the grant nothing breaks: a refused pin writes
 one log line and every other surface behaves exactly as it does without the feature.
 
-Two costs come from Discord rather than from here. A channel holds at most fifty pins, and at the
-ceiling the oldest live sessions keep theirs rather than an older session being evicted for a newer
-one. And pinning writes a system line into the channel while unpinning writes none, so a host that
-starts many sessions pays a line per session.
+Two costs come from Discord rather than from here. A channel holds at most fifty pins in total, the
+ones you added by hand included, and the broker budgets its cards against what is left rather than
+against all fifty; at the ceiling the oldest live sessions keep theirs rather than an older session
+being evicted for a newer one, and one log line says how many were left unpinned. And pinning writes
+a system line into the channel while unpinning writes none, so a host that starts many sessions pays
+a line per session.
 
 Separately, an exited session's thread archives itself unless the host turns that off. An archived
 thread leaves the active list but is not destroyed: it stays readable and searchable, and posting in
 it revives it. That matters because the session that exited wrongly is the one worth reading
-afterward.
+afterward. A session that was only presumed dead and then comes back is picked up again on both
+sides: posting revives the thread on Discord, and the broker drops the archived flag the moment that
+session stops reading exited, so its card and its title resume being maintained and it is archived
+again at its real exit.
 
 ## What a session is trying to finish
 
@@ -251,9 +257,11 @@ fetch time and drift. A weekly or per-model window whose reset has already passe
 period it is in now, at zero, which is what the console shows for the same window: the alternative
 would report you out of headroom against a window that has actually reset.
 
-The card is edited only when its rendered text changes. A fleet with a running reset changes about
-once a minute as the countdowns tick, and one with no running reset and no session activity goes
-quiet entirely.
+The card is edited only when its rendered text changes, which is not the same as a quiet fleet
+costing nothing. Ages and countdowns are drawn to the minute below a day and to the hour beyond it,
+so the honest steady state is about one edit a minute for as long as anything on the card is under
+a day old, and the card genuinely settles only once every reading and session line has aged past
+that mark.
 
 ## What a session card says about its model
 
@@ -288,8 +296,10 @@ A session whose main thread is blocked on dispatched subagents fires no hooks at
 this the card called it idle at the moment it was working hardest. The harness reports its own
 table of in-flight work at every turn end, and the card carries it: the count in the thread title,
 where a phone's truncation eats everything else, and the tasks themselves with their ages on the
-card. At any fan-out you are likely to see, every task is named. A card only ever omits one when the
-message ceiling forces it, and then it keeps the oldest and counts the rest as `+N more`, for two
+card. At any fan-out you are likely to see, every task is named. A card omits one only when the
+message ceiling forces it, which is the bound that decides in practice, since each entry takes two
+rows: the card starts from at most twenty-four entries and drops them one at a time until the whole
+message fits. What it keeps is the oldest, counting the rest as `+N more`, for two
 reasons: the longest-running task is the one most likely to be stuck and so the most worth reading,
 and keeping the oldest holds each entry in the same position as a fan-out grows, where keeping the
 newest would reshuffle the list under you. Long-running background commands ride the same line,
@@ -432,6 +442,17 @@ and permission prompts untouched. A rejection out of the whole poll pass, which 
 should never produce, logs as `broker: a transcript poll pass failed; the error detail is withheld,
 it can carry content`.
 
+Two `routing:` lines report the one case where the deduplication above and a transport failure meet.
+A path claims the turn's closing text when it starts posting, so the other path drops its own copy;
+if that run then lands nothing at all, nothing else is still carrying the text, and the run goes
+again once. `routing: the mirrored reply from session <id> landed nothing (...) with the other path
+already deferred to it; its one retry posted N of M messages` is that retry working, and the thread
+has the text. `routing: the <mirrored reply|interim narration> from session <id> reached the thread
+by neither path` is the one to act on: the retry failed too, the text reached the thread nowhere,
+and the console holds its only copy. It is rarer than the duplicate it replaced, since it needs a
+race and a total transport failure rather than a race alone, but it is the expensive direction and a
+repeat of it is a defect rather than noise.
+
 One further `routing:` line costs a message rather than a header. `routing: the queued prompt from
 session <id> was dropped, it is the operator's own channel message echoed back to the thread it was
 posted in` is the check that keeps a message you typed in the thread from arriving back in it a
@@ -461,6 +482,15 @@ Everything below lives in `broker.env` and takes effect when the broker restarts
 applied: `Start-Broker.ps1` reads the file against an allowlist and skips anything else with a
 warning, because write access to that file would otherwise be arbitrary environment injection into
 the process that reads the bot token.
+
+A key you set by hand survives the next install. The installer merges rather than rewriting the file
+from its own fixed list, preserving any key already there that is on the same allowlist and that the
+install does not itself carry a value for. Anything off the allowlist is not preserved, which is the
+same bound that keeps the file from being an injection surface.
+
+Every boolean knob reads one vocabulary: `1`, `true`, `yes`, and `on` mean on, and `0`, `false`,
+`no`, and `off` mean off, in any case. An empty value means the default, and anything else is
+refused by name rather than guessed at.
 
 | Setting | Default | What it decides |
 |---|---|---|

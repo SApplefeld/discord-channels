@@ -79,9 +79,10 @@ Four pieces per host, plus an installer.
   `claude/channel` and `claude/channel/permission`, exposes a `reply` tool, and holds one HTTP
   stream open to the broker for the life of the process.
 - **Broker** (`broker/`). The per-host daemon. It owns the bot token, one Discord gateway
-  connection, the session registry, the thread bindings, the three Discord surfaces, and a poll loop
-  (`broker/tail.ts`) that tails each live session's own transcript file for mid-turn narration. It
-  runs as a scheduled task at logon.
+  connection, the session registry, the thread bindings, every Discord surface (a session's thread
+  name, its status card, the messages written into it, the fleet usage card's own thread, and the
+  channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live session's own
+  transcript file for mid-turn narration. It runs as a scheduled task at logon.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
   and the scheduled task. The same directory holds the operator's repair path, `Repair-Broker.ps1`,
@@ -96,12 +97,14 @@ listener.
 1. **Identity and activity, session to broker.** `POST /hook` takes a `SessionStart`, `PostToolUse`,
    or `Stop` payload with the event name, the process token, and the session name in headers. The
    registry turns those into a session record: session ID, name, host, source, last tool, a bounded
-   preview of that tool's input (the card's `Last tool` row), tool count, turn
-   count, and last-seen timestamp. Every credited post also teaches the transcript tailer where that
-   session's transcript file lives, without adding the path to the record itself. A `SessionStart`
-   with `source: "clear"` supersedes the prior record for that token rather than mutating it. `GET
-   /sessions` publishes the registry for debugging, with the process token and the transcript path
-   both withheld.
+   preview of that tool's input (the card's Tool block), tool count, turn count, last-seen
+   timestamp, the model and context figures the tailer reads off the transcript, the completion goal
+   it reads the same way, and the roster of in-flight subagents and background commands a `Stop`
+   payload carries. Every credited post also teaches the transcript tailer where that session's
+   transcript file lives, without adding the path to the record itself. A `SessionStart` with
+   `source: "clear"` supersedes the prior record for that token rather than mutating it. `GET
+   /sessions` publishes the registry for debugging, with the process token and the goal withheld
+   field by field and the transcript path never on the record to begin with.
 2. **Conversation, session to broker.** `POST /mirror` is the one content-bearing route, dedicated
    rather than folded into `/hook` so the larger ceiling and the log-suppression rule hold in one
    place. It takes a `UserPromptSubmit` or `Stop` payload under the same three identity headers plus
@@ -121,8 +124,9 @@ listener.
 4. **Discord inbound.** A gateway message is gated on the sender's user ID, then either resolved as
    a permission verdict or handed to the session bound to that thread.
 5. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
-   thread names, the starter-message card, and any reply, mirrored message, or notice waiting to be
-   written. Mirror posts spend their own rate-limit budget rather than the one permission prompts
+   thread names, the starter-message card, any reply, mirrored message, or notice waiting to be
+   written, the archiving of an exited session's thread, and, chained after that pass, the channel's
+   pin list. Mirror posts spend their own rate-limit budget rather than the one permission prompts
    spend, so a reply arriving as twenty messages cannot starve the alert a parked session waits on.
    Posts are ordered per thread, so a turn's reply, the prompt after it, a mid-turn narration chunk,
    a mid-turn typed message, and a reply-tool call reach the thread in the order the broker received
@@ -134,7 +138,13 @@ listener.
    follows.
 
 The registry persists to a JSON file on every mutation, and the thread bindings persist beside it,
-so a restart at logon rebinds existing threads rather than opening duplicates.
+so a restart at logon rebinds existing threads rather than opening duplicates. Two fields do not
+survive that round trip, and for the same reason: a live reading restored from a snapshot would draw
+as current. The goal is never written at all, since only the card reads it and nothing restores it;
+the context size is written and dropped on load, so a woken card carries the model without a figure
+beside it until the next transcript line reports one. The roster is the deliberate exception,
+restored with its first-sighting stamps, because the harness replaces it wholesale at the session's
+next `Stop` and dropping it would read a mid-fan-out restart as an idle session.
 
 ## Mid-turn narration
 
@@ -265,9 +275,10 @@ unknown rather than as fresh. The pace marker mirrors claude-swap's own rule con
 verified differentially against that tool's own renderer, because a marker on one surface and not
 the other reads as a bug in whichever the operator trusts less.
 
-The card is edited only when its rendered body differs from what was posted, so a fleet with
-nothing moving spends nothing; a running reset ticks the countdowns about once a minute, which is
-the real steady state. Each failure keeps the card honest rather than silent: an unreadable cache
+The card is edited only when its rendered body differs from what was posted, which bounds the cost
+rather than removing it: ages and countdowns are drawn to the minute below a day, so about one edit
+a minute is the real steady state and the card settles only once everything it draws has aged past
+that mark. Each failure keeps the card honest rather than silent: an unreadable cache
 redraws the last good numbers under a marker so their age goes on climbing, each Discord route
 carries its own refusal count with a decay so one refused verb cannot abandon the others, and a
 pass arriving while one is on the wire is handed the live one, which is what lets shutdown wait for
@@ -286,6 +297,11 @@ Two upstream records force a downgrade and they carry different fields: a safegu
 category and a session scope, while an entitlement fallback names a consent answer and neither of
 those. A reader keyed to the first sees nothing on the second, which is the one an operator can act
 on, so both are read.
+
+What the session is trying to finish rides the same card, read from the `/goal` command in the same
+transcript. Its end is the unobservable half, since a goal that completes need not write anything,
+so the card drops the line the moment the session reads idle or exited rather than trying to detect
+one: a finished goal drawn indefinitely reads as current, which is worse than no goal line at all.
 
 The session's in-flight work rides the same card, and it corrects a state rather than adding one. A
 session blocked on dispatched subagents fires no hooks at all, so hook-driven liveness called it
@@ -327,7 +343,16 @@ is mirrored raw, on the reasoning that readable pipes beat a truncated block.
 The channel's pinned messages are maintained the same way the threads are: by reconciling against
 Discord's own answer rather than a flag this broker keeps, which is what survives a restart, a
 hand-made pin, and a card rebuilt after a deletion. The sweep touches only messages the broker
-recognizes as its own cards, so a pin the operator made is not collateral.
+recognizes as its own cards, so a pin the operator made is not collateral. That narrowing is also
+why the fifty-pin ceiling is read as the channel's rather than as this broker's: every pin the sweep
+will not touch is counted against the ceiling before the cards are, since nothing here will ever
+free those slots and asking for a pin the channel has no room for is a permanent refusal, three of
+which stop the pin route for the life of the process.
+
+An exited session's thread archives itself on the same tick, unless the host turns that off. The
+flag lives beside the binding and clears the moment the session's derived state stops reading
+exited, which is what lets a presumed-dead session that wakes get its card and its title maintained
+again, and be archived once more at its real exit.
 
 ## External integrations
 
