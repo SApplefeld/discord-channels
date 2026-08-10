@@ -33,7 +33,6 @@
 // fence delimiter, and an unescaped asterisk could close the emphasis it sits inside.
 import {
   FENCE_COST,
-  GLYPHS,
   MAX_BLOCK_WIDTH,
   MAX_CARD_LENGTH,
   alignedRows,
@@ -242,9 +241,13 @@ function bar(drawn: number, raw: number): string {
  * The bar and the percentage are always drawn, and each of the two after them appears only when it
  * carries something. Leaving an empty part out rather than padding past it is what keeps a row that
  * has nothing to say after its percentage from carrying trailing whitespace.
+ *
+ * The value leads with a space of its own. The aligning machinery puts one space between the label
+ * column and the value it draws, and every other part of the row is held off its neighbor by two,
+ * so the second space here is what makes the label-to-bar gap read like the rest of the row.
  */
 function rowValue(drawn: number, raw: number, clause: string, marker: string): string {
-  const measure = `${bar(drawn, raw)}${`${drawn}%`.padStart(PCT_WIDTH)}`;
+  const measure = ` ${bar(drawn, raw)}${`${drawn}%`.padStart(PCT_WIDTH)}`;
   const said = clause === "" ? "" : `${CLAUSE_GAP}${clause}`;
   return `${measure}${said}${marker === "" ? "" : `${MARKER_GAP}${marker}`}`;
 }
@@ -441,21 +444,8 @@ function accountSection(account: UsageAccount, now: number): CardSection {
     if (marker !== "") marked = true;
     rows.push({ label, value: rowValue(pct, window.pct, resetsClause(window, now), marker) });
   };
-  // The 5h window carries no pace marker at any percentage, and no roll either: it resets too fast
-  // for a pace reading to mean anything, and its cadence is not the weekly one the roll advances by.
-  if (account.fiveHour !== null) windowRow(FIVE_HOUR_LABEL, account.fiveHour, false);
-  if (account.sevenDay !== null) {
-    const seven = rolledWeekly(account.sevenDay, fetchedAt, now);
-    windowRow(SEVEN_DAY_LABEL, seven, aheadOfPace(seven, fetchedAt));
-  }
-  for (const row of account.scoped) {
-    const scoped = { ...row, ...rolledWeekly(row, fetchedAt, now) };
-    // A maxed per-model limit carries the warning marker alone. Being ahead of pace is a forecast,
-    // and it says nothing beside a window that has already arrived where the forecast pointed.
-    const ahead = scoped.pct < 100 && aheadOfPace(scoped, fetchedAt);
-    const name = inertBlockField(scoped.name, MAX_SCOPED_NAME_LENGTH);
-    windowRow(name === "" ? UNNAMED_SCOPE : name, scoped, ahead);
-  }
+  // The spend row leads the block, in the operator's own reading order: the credit balance is the
+  // number the card is opened for, and the windows follow it.
   if (account.spend !== null) {
     const symbol =
       account.spend.currency === null ? null : (CURRENCY_SYMBOLS.get(account.spend.currency) ?? null);
@@ -480,6 +470,21 @@ function accountSection(account: UsageAccount, now: number): CardSection {
       value: rowValue(pct, account.spend.pct, `${amounts}${currency}`, marker),
     });
   }
+  // The 5h window carries no pace marker at any percentage, and no roll either: it resets too fast
+  // for a pace reading to mean anything, and its cadence is not the weekly one the roll advances by.
+  if (account.fiveHour !== null) windowRow(FIVE_HOUR_LABEL, account.fiveHour, false);
+  if (account.sevenDay !== null) {
+    const seven = rolledWeekly(account.sevenDay, fetchedAt, now);
+    windowRow(SEVEN_DAY_LABEL, seven, aheadOfPace(seven, fetchedAt));
+  }
+  for (const row of account.scoped) {
+    const scoped = { ...row, ...rolledWeekly(row, fetchedAt, now) };
+    // A maxed per-model limit carries the warning marker alone. Being ahead of pace is a forecast,
+    // and it says nothing beside a window that has already arrived where the forecast pointed.
+    const ahead = scoped.pct < 100 && aheadOfPace(scoped, fetchedAt);
+    const name = inertBlockField(scoped.name, MAX_SCOPED_NAME_LENGTH);
+    windowRow(name === "" ? UNNAMED_SCOPE : name, scoped, ahead);
+  }
   // Backing off is an instant that has not arrived yet, not a field that is set: claude-swap leaves
   // the timestamp behind after the pause it describes has elapsed.
   const backingOff = account.backoffUntil !== null && now < account.backoffUntil;
@@ -503,18 +508,19 @@ function accountSection(account: UsageAccount, now: number): CardSection {
 }
 
 /**
- * One live session: the state glyph, the name, the state, and how long since it last reported.
+ * One live session: the name, the state, and how long since it last reported.
  *
- * A whole-width line, with the name cut to what the rest of it leaves. The glyph leads, the way it
- * leads a thread title, and the state and the age are what the name gives way to: a session's name
- * is the field this broker does not size, and the other two are why the row is read.
+ * A whole-width line, with the name cut to what the rest of it leaves: a session's name is the
+ * field this broker does not size, and the other two are why the row is read. The state is the
+ * word alone, with no glyph in front of it; the glyph vocabulary belongs to the thread titles,
+ * where it survives the mobile list's truncation, and inside a block it costs width the name needs
+ * while saying what the word beside it already says.
  */
 function sessionLine(view: SessionView, state: SurfaceState, now: number): string {
-  const glyph = `${GLYPHS[state]} `;
   const suffix = ` ${SEPARATOR} ${state} ${SEPARATOR} ${span(Math.max(now - view.lastHookAt, 0))}`;
-  const room = MAX_BLOCK_WIDTH - [...glyph].length - [...suffix].length;
+  const room = MAX_BLOCK_WIDTH - [...suffix].length;
   const limit = Math.min(MAX_SESSION_NAME_LENGTH, Math.max(room, 0));
-  return `${glyph}${inertBlockField(displayName(view), limit)}${suffix}`;
+  return `${inertBlockField(displayName(view), limit)}${suffix}`;
 }
 
 /**

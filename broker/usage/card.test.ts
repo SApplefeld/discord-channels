@@ -470,7 +470,7 @@ test("a row at its worst case stands inside the width bound with nothing cut off
   const row = fencedLines(body).find((line) => line.includes("(!)")) ?? "";
   const geometry = valueColumn(body) + BAR_CELLS + PCT_WIDTH + "  6d 23h".length + " (!)".length;
 
-  assert.equal(valueColumn(body), 11, "a ten-character label and the one space after it");
+  assert.equal(valueColumn(body), 12, "a ten-character label and the two spaces after it");
   assert.equal([...row].length, geometry, `the row is its parts and nothing else: ${row}`);
   assert.ok(
     [...row].length <= MAX_BLOCK_WIDTH,
@@ -498,7 +498,7 @@ test("a marked spend row keeps its money and its marker under the widest label c
 
   const row = fencedLines(body).find((line) => line.startsWith("Spend")) ?? "";
 
-  assert.equal(valueColumn(body), 11, "a ten-character label and the one space after it");
+  assert.equal(valueColumn(body), 12, "a ten-character label and the two spaces after it");
   assert.equal(value(body, "Spend"), rowValue(14, "95%", "  $13,440 (!)"));
   assert.ok(
     [...row].length <= MAX_BLOCK_WIDTH,
@@ -1039,8 +1039,8 @@ test("live sessions render one row each and ended ones are omitted", () => {
     view({ sessionId: "c", name: "CHNL: Finished", lifecycle: "ended", endedAt: NOW - MINUTE }),
   ]);
 
-  assert.match(body, /^⚙ CHNL: Answering · working · 2m$/m);
-  assert.match(body, /^✅ CHNL: Usage card · idle · 30m$/m);
+  assert.match(body, /^CHNL: Answering · working · 2m$/m);
+  assert.match(body, /^CHNL: Usage card · idle · 30m$/m);
   assert.match(body, /^\*\*Sessions\*\*$/m);
   assert.doesNotMatch(body, /Finished/);
 });
