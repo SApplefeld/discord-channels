@@ -21,6 +21,7 @@ import {
   renderTaskNotice,
   span,
   tableParses,
+  tableRowsDrawn,
   threadName,
 } from "./render.ts";
 import type { AskedOption, AskedQuestion } from "./render.ts";
@@ -1126,6 +1127,28 @@ test("a run of pipe-carrying lines that is no table costs one parse per line", (
 
   assert.ok(small > 0, "the counter has to be reached at all, or this passes on nothing");
   assert.ok(large <= small * 3, `${small} parses at 400 lines, ${large} at 800`);
+});
+
+test("a run of rows too long to draw as one block stops paying to draw as it grows", () => {
+  // The sibling gate above covers a run the shape checks reject. This covers the run they accept:
+  // every line here is a well-formed two-column row, so every candidate start clears the header,
+  // the delimiter and the body checks, and only the block's own ceiling refuses it. Reading that
+  // run is already linear, so the count that can still grow with its square is the drawing, and
+  // the same event-loop stall is what a quadratic one would cost. Past the point where no block of
+  // that many rows could fit, a longer run adds nothing to the drawing at all, so the two counts
+  // here are the same number and the threshold in the middle has all the room it needs.
+  const rows = (count: number): string => Array.from({ length: count }, () => "-|-").join("\n");
+  const drawn = (count: number): number => {
+    tableRowsDrawn.count = 0;
+    renderMirror("reply", rows(count));
+    return tableRowsDrawn.count;
+  };
+
+  const small = drawn(1000);
+  const large = drawn(2000);
+
+  assert.ok(small > 0, "the counter has to be reached at all, or this passes on nothing");
+  assert.ok(large <= small * 3, `${small} rows drawn at 1000 lines, ${large} at 2000`);
 });
 
 test("mirrored text cannot draw the attribution from inside a fence either", () => {

@@ -784,6 +784,16 @@ const DELIMITER_CELL = /^:?-+:?$/;
 export const tableParses = { count: 0 };
 
 /**
+ * How many rows the table transform has neutralized and measured for a block, counted on the same
+ * reasoning as `tableParses` and for the same kind of test.
+ *
+ * Reading a run cheaply is only half the bound. A run whose every line is a well-formed row clears
+ * the shape checks from every one of its starts, so drawing before judging whether the result could
+ * fit would spend the whole run's padding once per start no matter how few lines were ever parsed.
+ */
+export const tableRowsDrawn = { count: 0 };
+
+/**
  * One row's cells, or `null` when the line is not a row at all.
  *
  * A row is recognized by carrying a pipe, and one leading and one trailing pipe are dropped, which
@@ -849,6 +859,18 @@ function tableBlock(rows: readonly (string[] | null)[], start: number): string |
   if (delimiter.length !== columns || !delimiter.every((cell) => DELIMITER_CELL.test(cell))) {
     return null;
   }
+  // The smallest block these rows could possibly draw, which is enough to refuse an over-long one
+  // before a character of it is padded. Every row but the delimiter is drawn, each row's cells are
+  // joined by a separator whose pipe and leading space no trailing trim can reach, and the fence
+  // costs its two lines plus a newline between every line. Those are ASCII, so the floor is in the
+  // UTF-16 units the finished block is measured in, and anything a cell actually carries only moves
+  // the real block further past it: a block refused here is one the length check below would refuse
+  // too. Judging first is what keeps a long run of well-formed rows from drawing the whole of
+  // itself once per candidate start and throwing all of it away.
+  const height = rows.length - start - 1;
+  const leastRow = Math.max(TABLE_SEPARATOR.length * (columns - 1) - 1, 0);
+  if (FENCE.length * 2 + height + 1 + height * leastRow > MAX_TABLE_LENGTH) return null;
+
   const body = rows.slice(start + 2);
   if (body.some((row) => row === null || row.length !== columns)) return null;
 
@@ -858,6 +880,7 @@ function tableBlock(rows: readonly (string[] | null)[], start: number): string |
     if (leads && trails) return "center";
     return trails ? "right" : "left";
   });
+  tableRowsDrawn.count += body.length + 1;
   const drawn = [header, ...body].map((row) => (row ?? []).map((cell) => inertBlock(cell)));
 
   // The separators are spent before the columns are: they are what makes the block read as a table
