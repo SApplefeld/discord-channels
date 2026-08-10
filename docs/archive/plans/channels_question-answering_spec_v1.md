@@ -1,13 +1,13 @@
 # Channels: answering a question from the thread
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: fable-tier sections and the reviewer bumps, dispatched with the explicit override from this Opus-led session; overage onto usage credits approved 2026-08-09
 Created: 2026-08-09
 
 ## Related
 
-- [channels_tailer-blackout_spec_v1.md](../archive/plans/channels_tailer-blackout_spec_v1.md): shipped the
+- [channels_tailer-blackout_spec_v1.md](channels_tailer-blackout_spec_v1.md): shipped the
   ask-time question alert and the `PreToolUse` hook entry this design turns into an answer
   channel. This plan begins where that one's backlog entry ("Answering a console question from
   the thread") left off; the entry is absorbed here.
@@ -197,8 +197,12 @@ Files: `broker/routing/inbound.ts`, `broker/tail.ts`, `broker/question-desk.ts` 
 tests.
 
 Acceptance: a typed message during a hold resolves the entry as `response` and is not delivered
-as steering; the same message with no held entry steers exactly as today; a verdict-shaped
-message is consumed as a verdict even during a hold; a console answer after release triggers the
+as steering; the same message with no held entry steers exactly as today; a verdict-shaped message
+is consumed as a verdict during a hold when it resolves a permission request that is actually open,
+and otherwise falls through to the held question as its answer, with the unknown-request notice
+behind both (narrowed 2026-08-09 from "consumed as a verdict even during a hold", which would have
+left a message like "yes merge" drawing a notice about a request nobody sent while the question
+stayed parked for the rest of its hold); a console answer after release triggers the
 answered-at-console edit exactly once.
 
 Tests: lock the pipeline order (verdict, then answer, then steering) in both directions, and the
@@ -452,4 +456,52 @@ Critical's decision, and the verdict-collision Major.
 Operator-pending: none. The walk is done and its one finding is specced elsewhere.
 Stamps: none surfaced at this boundary
 Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-09
+Completed: the whole-effort finishing pass; the plan is Complete and archived in this changeset
+Implemented By: main session orchestrating qa-verifier, security-reviewer and adversarial-reviewer
+(the latter two at fable), plus docs curation
+Metrics: 1 finishing review round; 0 escalations; tree-state bracket clean across it
+Decisions / Surprises: QA passed at 1082 tests / 1081 pass / 0 fail / 1 pre-existing skip across two
+runs, and its regression sweep over the thirty-six commits two concurrent efforts added since found
+them additive, with this effort's own contracts intact. Both finishing reviews then found the code
+coherent and every finding in the records rather than in the tree, which is its own verdict on where
+this effort's risk actually sat.
+Three of those findings were errors in what this plan itself asserts, and each is corrected here
+rather than only recorded. The Section 3 acceptance line still demanded that a verdict-shaped
+message be consumed as a verdict during a hold, which the shipped code deliberately does not do and
+cannot pass; an acceptance criterion is current state rather than journal, so the line is amended
+and the Chapter keeps the record of why. The index and the architecture's closing summary still
+called the question console-only, which the architecture's own body contradicts two hundred lines
+earlier, so Chapter 4's claim that the now-false-claims sweep came back clean was itself false, and
+the sweep it reported is what missed them.
+Two riding checks are recorded open rather than quietly closed, which the reviewer was right to
+insist on: the shutdown flush-before-destroy ordering is correct by reading but has never run
+against a live held socket, since the one end-to-end test that posts a real question runs without
+Discord and its hold releases before shutdown; and the clear-then-repick on a multi-select, named in
+Chapter 2 as the claim most likely wrong, does not appear in the live walk Chapter 4 records. The
+multi-select join discrepancy proves a menu answer happened, so it may have been exercised
+unrecorded, which is exactly why it is stated as open rather than inferred closed.
+The accepted residual from Chapter 3 gains its missing half: when a released ask is abandoned and
+the session later asks the same question and answers it at the console, the single resolution line
+is consumed by the stale record, so the newer ask's own message is left permanently telling the
+operator to answer at the console. The wrong-flip symptom was recorded; this one, arguably the more
+confusing of the two in a thread, was not.
+Security's two findings were the same class and are fixed in the same pass: the model's invariant
+that a verdict naming nothing open is answered in-thread stopped being true when the collision fix
+landed, and the component-interaction surface, named in this section's own deliverable, was never
+described. Both are now in the model, the second with what a press can and cannot carry.
+Carried to the backlog rather than fixed here, because it is a recurrence rather than a defect of
+this effort: five hand-copied repeat-log implementations now sit in as many modules and have begun
+to diverge cosmetically (counted at the backlog write; the review's own figure of three undercounted
+it). This exact duplication bit once inside this effort, when an unbounded sweep
+was fixed in one copy and later found byte-identical in another.
+Review Findings: QA PASS; security CONCERNS (0 Critical, 0 Major, 2 Minor, both fixed here);
+adversarial APPROVED_WITH_CONCERNS (3 Major, 2 Minor; the three Majors and one Minor fixed here, the
+duplication Minor carried to the backlog).
+Operator-pending: two live checks named above (a shutdown against a held socket, and a
+clear-then-repick on a multi-select), carried to the backlog so they survive the archive.
+Stamps: none surfaced at this boundary
+Next: none; the effort is complete
 Commit Model: Commit-and-Push

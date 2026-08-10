@@ -7,7 +7,7 @@ Created: 2026-08-09
 
 ## Related
 
-- [channels_question-answering_spec_v1.md](channels_question-answering_spec_v1.md): the round whose
+- [channels_question-answering_spec_v1.md](../archive/plans/channels_question-answering_spec_v1.md): the round whose
   live walk surfaced the multi-select join difference in Section 2 below.
 
 ## Goal

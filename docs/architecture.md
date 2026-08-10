@@ -353,9 +353,10 @@ green when it matched no test files).
 A host running this has a Discord channel whose thread list is a live dashboard of every session on
 that machine, a card in each thread carrying what that session is doing right now, the conversation
 itself mirrored into the thread turn by turn, mid-turn narration on a long turn, an alert when a
-session parks itself on a console-only question, background-task wake-ups compressed to one line,
-and a path for sending it a message or approving its tool calls from a phone. The status path, the message path,
-and the mirror fail independently, which is what makes a dead message path visible instead of silent.
+session parks itself on a question and a way to answer it from the thread, background-task wake-ups
+compressed to one line, and a path for sending it a message or approving its tool calls from a
+phone. The status path, the message path, and the mirror fail independently, which is what makes a
+dead message path visible instead of silent.
 
 Installing a host is [`install.md`](install.md). Running one is [`operations.md`](operations.md).
 What the design trusts and what it does not is [`security-model.md`](security-model.md).

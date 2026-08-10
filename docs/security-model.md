@@ -347,7 +347,20 @@ push the part worth refusing past the boundary.
 A verdict is bound to the thread it was typed in as well as to the five-letter request ID, and
 answering consumes the request, so a verdict cannot be replayed or applied to a different open
 prompt. A verdict naming nothing open is answered in-thread rather than dropped in silence: from a
-phone, silence is indistinguishable from success.
+phone, silence is indistinguishable from success. One case takes precedence over that notice: when
+the session holds a question the thread can answer, a verdict shape that resolved nothing becomes
+that question's answer instead, because the verdict pattern is also the shape of a short reply and
+the alternative parks the session for the rest of its hold. The notice still fires when no hold
+takes the message.
+
+**A component interaction is a second gated inbound path.** A button or a menu on a question message
+arrives over the gateway and is checked against the same one-account allowlist every typed message
+passes, before it reads or changes anything; a press from any other account is ignored with no reply
+and no state change. What a press carries is an opaque server-minted reference and a position, never
+content: the desk resolves the position against its own copy of the ask, so a press can only ever
+submit a label the session itself offered, and a crafted reference resolves to nothing rather than
+to another session's ask. Interaction acknowledgements spend their own rate budget, separate from
+the buckets the message surfaces spend.
 
 **A message the inbound ceiling cut is never read as a verdict.** The pattern tolerates interior
 whitespace, so a cut can land on an exact verdict match that the operator's full message never

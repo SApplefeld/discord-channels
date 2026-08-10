@@ -53,3 +53,12 @@ the live backlog carries active items only.
   a message over the ceiling is delivered cut with an unfloored in-thread notice asking for the
   tail as its own message. Closed by `channels_inbound-whole-delivery_spec_v1.md` the same day the
   operator hit the old silent 2,000 cut live.
+
+## Completed 2026-08-09
+
+- **Answer a console question from the thread.** Graduated to its own plan and delivered by it,
+  [`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md):
+  the broker holds the `AskUserQuestion` `PreToolUse` request open, posts the questions as an
+  interactive message, and answers the hook with the operator's choices, with every failure of the
+  hold releasing cleanly to the console picker. The two live checks that plan left open ride on the
+  live backlog rather than here.

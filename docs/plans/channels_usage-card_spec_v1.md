@@ -7,7 +7,7 @@ Created: 2026-08-09
 
 ## Related
 
-- [channels_question-answering_spec_v1.md](channels_question-answering_spec_v1.md): the concurrent
+- [channels_question-answering_spec_v1.md](../archive/plans/channels_question-answering_spec_v1.md): the concurrent
   round; the two share the broker but no files beyond `broker/index.ts` wiring, and land
   independently.
 

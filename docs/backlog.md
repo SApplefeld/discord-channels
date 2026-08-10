@@ -30,9 +30,20 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   because the clean fix, a single monotonic arrival counter that survives eviction, would make any
   ID-less arrival anywhere end every in-flight run's coalescing. Growing the fleet is the trigger to
   take that trade.
-- Answering a console question from the thread: graduated to its own plan,
-  [`plans/channels_question-answering_spec_v1.md`](plans/channels_question-answering_spec_v1.md),
-  which carries the ratifying live measurements and the agreed design.
+- Two live checks the question-answering round could not close from code, both needing a real held
+  question at a console with the thread beside it
+  ([`archive/plans/channels_question-answering_spec_v1.md`](archive/plans/channels_question-answering_spec_v1.md)
+  is the delivered plan). First, stopping the broker while a question is genuinely held: the desk
+  releases every held hook on shutdown so the console picker takes over, which is tested against a
+  synthetic entry but never against a live socket, and the failure it guards is a session wedged
+  with no picker on either surface. Second, clearing a multi-select back to nothing and re-picking
+  before submitting, the one interaction path where Discord's own component state, not the desk's,
+  decides what arrives.
+- Fold the five duplicated `createRepeatLog` implementations into one. The rate-limited repeat
+  logger is hand-copied into `broker/tail.ts`, `broker/question-desk.ts`,
+  `broker/routing/interactions.ts`, `broker/discord/pins.ts`, and `broker/usage/thread.ts`, each
+  with its own window constant, so a fix to the throttling behavior has to be found in five places.
+  Low risk and no behavior change wanted; purely the drift that a sixth copy would make worse.
 - A usage and fleet-health card in the channel: graduated to its own plan,
   [`plans/channels_usage-card_spec_v1.md`](plans/channels_usage-card_spec_v1.md), after the
   claude-swap recon and the operator's design ratification (thread card, mirror-never-poll,
