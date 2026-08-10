@@ -183,22 +183,122 @@ function Assert-ChannelInstallUnelevated {
     }
 }
 
+<#
+.SYNOPSIS
+Resolves the host identity this install runs under from the arguments given and the last install's
+broker.env, throwing when a value is neither supplied nor on disk.
+
+.DESCRIPTION
+A run whose only purpose is to pick up new hooks on a host installed months ago should not have to
+retype the two Discord IDs nobody remembers, and the last install already wrote all four values to
+broker.env under keys it owns. So an argument that was not supplied falls back to the file, and an
+argument that was supplied always wins, which keeps rebinding a host to a different channel exactly
+what it is on a first install.
+
+A reused value is validated rather than trusted: PowerShell applies the ID ValidatePattern to a
+bound parameter and to nothing else, so a hand-edited, truncated, or partially written broker.env
+would otherwise reach Install-Host.ps1 and fail there with a message about the wrong thing. A key
+present with an empty value counts as absent, because the pattern the parameters declare admits the
+empty string and a blank reuse would be announced and passed on as if it were an identity.
+
+-EnvFile exists so a test can drive a real env file without a state root.
+#>
+function Resolve-ChannelInstallIdentity {
+    param(
+        [string]$HostName,
+        [string]$ChannelId,
+        [string]$AllowedUserId,
+        [Nullable[int]]$Port,
+        [string]$EnvFile = (Join-Path (Get-ChannelStateRoot) 'broker.env')
+    )
+
+    # Get-ChannelEnvFile reads the file directly, so a first install on a host that has none is
+    # answered here rather than by a "cannot find path" from underneath the runner's Stop preference.
+    $existing = @{}
+    if (Test-Path -LiteralPath $EnvFile) { $existing = Get-ChannelEnvFile -Path $EnvFile }
+
+    $read = {
+        param($Key)
+        if (-not $existing.ContainsKey($Key)) { return '' }
+        return ([string]$existing[$Key]).Trim()
+    }
+
+    if (-not $HostName) {
+        $HostName = & $read 'CHANNEL_HOST_NAME'
+        if ($HostName) { Write-Host "Reusing -HostName $HostName from $EnvFile." }
+    }
+    # The same pattern the ChannelId and AllowedUserId parameters declare, less its optional empty
+    # alternative, which an empty value has already been read as absent for.
+    $idPattern = '^\d{17,20}$'
+    if (-not $ChannelId) {
+        $ChannelId = & $read 'CHANNEL_DISCORD_CHANNEL'
+        if ($ChannelId) {
+            if ($ChannelId -notmatch $idPattern) {
+                throw "Install-All: CHANNEL_DISCORD_CHANNEL in $($EnvFile) is not a Discord ID " +
+                    "('$ChannelId'); it must be 17 to 20 digits. Fix that line, or pass " +
+                    "-ChannelId to override the file."
+            }
+            Write-Host "Reusing -ChannelId $ChannelId from $EnvFile."
+        }
+    }
+    if (-not $AllowedUserId) {
+        $AllowedUserId = & $read 'CHANNEL_ALLOWED_USER_ID'
+        if ($AllowedUserId) {
+            if ($AllowedUserId -notmatch $idPattern) {
+                throw "Install-All: CHANNEL_ALLOWED_USER_ID in $($EnvFile) is not a Discord ID " +
+                    "('$AllowedUserId'); it must be 17 to 20 digits. Fix that line, or pass " +
+                    "-AllowedUserId to override the file."
+            }
+            Write-Host "Reusing -AllowedUserId $AllowedUserId from $EnvFile."
+        }
+    }
+    if ($null -eq $Port) {
+        $reusedPort = & $read 'CHANNEL_BROKER_PORT'
+        if ($reusedPort) {
+            # TryParse rather than a cast: [int]'87.9' rounds to 88 and would bind the broker to a
+            # port the file never named.
+            $parsedPort = 0
+            if (-not [int]::TryParse($reusedPort, [ref]$parsedPort)) {
+                throw "Install-All: CHANNEL_BROKER_PORT in $($EnvFile) is not a whole number " +
+                    "('$reusedPort'). Fix that line, or pass -Port to override the file."
+            }
+            $Port = $parsedPort
+            Write-Host "Reusing -Port $Port from $EnvFile."
+        }
+    }
+
+    $missing = @()
+    if (-not $HostName) { $missing += '-HostName' }
+    if (-not $ChannelId) { $missing += '-ChannelId' }
+    if (-not $AllowedUserId) { $missing += '-AllowedUserId' }
+    if ($missing.Count -gt 0) {
+        throw "Install-All: -HostName, -ChannelId, and -AllowedUserId are all required. The two " +
+            "IDs come from Discord with Developer Mode on; docs/install.md step 1 walks through it. " +
+            "Not supplied and not found in $($EnvFile): $($missing -join ', ')."
+    }
+
+    return @{
+        HostName      = $HostName
+        ChannelId     = $ChannelId
+        AllowedUserId = $AllowedUserId
+        Port          = $Port
+    }
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     # Mirrors Install-Elevated.ps1's runner: a non-terminating cmdlet error anywhere in this
     # sequence must stop the install rather than scroll past and let the completion message print
     # over a half-provisioned host.
     $ErrorActionPreference = 'Stop'
 
-    if (-not $HostName -or -not $ChannelId -or -not $AllowedUserId) {
-        throw "Install-All: -HostName, -ChannelId, and -AllowedUserId are all required. The two " +
-            "IDs come from Discord with Developer Mode on; docs/install.md step 1 walks through it."
-    }
+    $identity = Resolve-ChannelInstallIdentity -HostName $HostName -ChannelId $ChannelId `
+        -AllowedUserId $AllowedUserId -Port $Port
     Assert-ChannelInstallUnelevated
 
     $hostArgs = @{
-        HostName      = $HostName
-        ChannelId     = $ChannelId
-        AllowedUserId = $AllowedUserId
+        HostName      = $identity.HostName
+        ChannelId     = $identity.ChannelId
+        AllowedUserId = $identity.AllowedUserId
         RepoRoot      = $RepoRoot
     }
     if ($BotToken) { $hostArgs.BotToken = $BotToken }
@@ -211,7 +311,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $existingToken = Join-Path (Get-ChannelStateRoot) 'discord-token.txt'
         if (Test-Path -LiteralPath $existingToken) { $hostArgs.BotTokenFile = $existingToken }
     }
-    if ($null -ne $Port) { $hostArgs.Port = $Port }
+    if ($null -ne $identity.Port) { $hostArgs.Port = $identity.Port }
     & (Join-Path $PSScriptRoot 'Install-Host.ps1') @hostArgs
 
     Install-ChannelPlugin -RepoRoot $RepoRoot
@@ -220,7 +320,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $envFile = Join-Path (Get-ChannelStateRoot) 'broker.env'
     Invoke-ChannelElevatedInstall -User $user -EnvFile $envFile -RepoRoot $RepoRoot
 
-    $brokerPort = if ($null -ne $Port) { $Port } else { 8787 }
+    $brokerPort = if ($null -ne $identity.Port) { $identity.Port } else { 8787 }
     Wait-ChannelBrokerReady -Port $brokerPort
     Write-Host "Broker restarted and answering on http://127.0.0.1:$brokerPort/sessions."
 
