@@ -524,7 +524,7 @@ test("the card is edited in place, and only when its text changed", async () => 
 
   assert.equal(calls.posts.length, 1, "the starter message is never re-posted");
   assert.equal(calls.cards.length, 1);
-  assert.match(calls.cards[0], /^\*\*Tool\*\*\n```\nRead\n```$/m, calls.cards[0]);
+  assert.match(calls.cards[0], /^### Tool\n```\nRead\n```$/m, calls.cards[0]);
 });
 
 test("an in-flight pass is not overtaken by the next tick", async () => {

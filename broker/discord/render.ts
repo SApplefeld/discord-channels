@@ -1103,32 +1103,42 @@ const CARD_COLUMN = columnWidth(
 );
 
 /**
- * The headers over the card's second and third blocks.
+ * The card's title, drawn a second time as the largest heading Discord offers.
  *
- * Outside their fences, where Discord still renders their bold, exactly as the card's title line
- * sits outside the first one. What they head is a block rather than a labelled row, because both
- * carry values a label column leaves no room for: a fan-out's tasks take two rows each, and a real
- * tool path is longer than a row of this width.
+ * The message's first line is drawn inline beside the bot's name, where it reads as chrome rather
+ * than as the card's own heading, so a channel of cards scrolls as one run of text with nothing to
+ * pick a card out by. Repeating the title at heading size on a line of its own is what gives each
+ * card a visible top edge, and the largest size is what holds that edge at a scrolling glance.
  */
-const TASKS_HEADER = "**Tasks**";
-const TOOL_HEADER = "**Tool**";
+const TITLE_HEADING = "#";
 
 /**
- * The header over the goal block, which a card draws only while it has a goal to put under it.
+ * The headers over the card's optional blocks.
  *
- * The one block that is omitted rather than drawn empty, unlike the two above, whose `None` is what
- * tells an empty block apart from a broken renderer. A session under no goal is the ordinary case
- * rather than an empty one, so a `None` here would put a line on every card in the channel to say
- * nothing, and the block's presence is itself the signal.
+ * Outside their fences, where Discord renders the heading, exactly as the title heading sits outside
+ * the first one, and a smaller heading than that title so the card's name and its sections read as
+ * different ranks rather than as the same weight. What they head is a block rather than a labelled
+ * row, because each carries values a label column leaves no room for: a fan-out's tasks take two
+ * rows each, a real tool path is longer than a row of this width, and a goal is a sentence the
+ * operator wrote.
  *
- * A block rather than a row of the field block: the goal is a sentence the operator wrote, and the
- * room a label column leaves at this width is a third of a line, which is the same shape that made
- * the tool row read `(cut)` essentially always.
+ * A header sits directly against the block above it, with no blank line between them: Discord draws
+ * its own air around a fenced block, and a blank line there is spacing on top of spacing on a
+ * surface read by scrolling past several cards.
+ *
+ * Tool leads Tasks because a session usually has a tool and rarely has tasks, so the sparse block is
+ * not the one that leads. The goal keeps the position directly under the fields, which says what the
+ * session is working toward before what it is working with.
+ *
+ * A section with nothing to show is omitted, header and block together, rather than drawn with a
+ * placeholder value. What a placeholder buys is telling an empty block apart from a renderer that
+ * has stopped drawing one; what it costs is two lines saying nothing on every idle card in the
+ * channel, which is every card between fan-outs, and on a scrolled surface that noise is the more
+ * expensive of the two. The block's presence is itself the signal.
  */
-const GOAL_HEADER = "**Goal**";
-
-/** What a block with nothing in it draws, so an empty one and a broken renderer read differently. */
-const NO_VALUE = "None";
+const GOAL_HEADER = "### Goal";
+const TOOL_HEADER = "### Tool";
+const TASKS_HEADER = "### Tasks";
 
 /**
  * How much of a session ID the card draws, in code points.
@@ -1182,12 +1192,12 @@ function filled(value: string): string[] {
  * measured on the escaped text, which is what the reader sees.
  *
  * A preview that neutralizes to nothing draws no separator with nothing after it, and a session
- * that has run no tool, or one whose tool name neutralizes to nothing, draws the empty block's own
- * value.
+ * that has run no tool, or one whose tool name neutralizes to nothing, draws no lines at all, which
+ * is what leaves the block and its header off the card.
  */
 function toolLines(view: SessionView): string[] {
   const name = view.lastTool === null ? "" : inertBlockField(view.lastTool, MAX_BLOCK_WIDTH);
-  if (name === "") return [NO_VALUE];
+  if (name === "") return [];
   const whole = view.lastToolInput === null ? "" : inertBlock(view.lastToolInput);
   if (whole === "") return filled(name);
   const shown = fit(whole, MAX_TOOL_INPUT_PREVIEW);
@@ -1277,8 +1287,8 @@ function rosterEntry(task: BackgroundTask, now: number): string[] {
 
 /**
  * The card's tasks block: every task the session is waiting on, and a count of any the cap left
- * out. The empty block's own value for a session waiting on nothing, which is every session between
- * fan-outs.
+ * out. No lines at all for a session waiting on nothing, which is every session between fan-outs,
+ * and which is what leaves the block and its header off the card.
  *
  * Oldest first, which is the order the tasks were dispatched in, so an entry keeps its place as the
  * fan-out grows around it. Nothing is dropped at any size an operator will see: the whole reason
@@ -1289,7 +1299,10 @@ function rosterEntry(task: BackgroundTask, now: number): string[] {
  * state row, which carries that count wherever a state is drawn.
  */
 function rosterLines(tasks: readonly BackgroundTask[], now: number, count: number): string[] {
-  if (tasks.length === 0) return [NO_VALUE];
+  // Keyed on the tasks themselves rather than on the count: a card whose ceiling has driven the
+  // count to zero is still waiting on every one of them, and the `+N more` line below is what says
+  // so, where an omitted block would report a fan-out as nothing at all.
+  if (tasks.length === 0) return [];
   const named = tasks.slice(0, Math.max(count, 0));
   const lines = named.flatMap((task) => rosterEntry(task, now));
   const left = tasks.length - named.length;
@@ -1396,14 +1409,18 @@ export function renderModelChange(input: {
  * The starter message: the thread's detail card, edited in place forever after. Each field named,
  * and no session field that is not one of them.
  *
- * A title line and three blocks: the session's fields, the tasks it is waiting on, and the tool it
- * is running, plus a fourth block naming what the session is trying to finish on a card that has
- * one. The title and the block headers stay outside a fence and everything else goes inside one.
- * That split is what the surfaces need: the title is the line the channel's thread list shows, where
- * the glyph, the bold name, and the state are what a reader picks a thread out by, and Discord draws
- * no bold at all inside a block; the fields are a table, and a block is the only shape Discord gives
- * that keeps a column of values under each other. The tasks, the tool and the goal have blocks of
- * their own because a label column leaves none of them the room they are read for.
+ * A title line, that same title again as a heading, and the field block, followed by the blocks a
+ * card carries only when it has something to put in them: what the session is trying to finish, the
+ * tool it is running, and the tasks it is waiting on, each under its own header. The title, the
+ * heading and the headers stay outside a fence and everything else goes inside one. That split is
+ * what the surfaces need: Discord renders no markdown at all inside a block, and the fields are a
+ * table, for which a block is the only shape Discord gives that keeps a column of values under each
+ * other. The goal, the tool and the tasks have blocks of their own because a label column leaves
+ * none of them the room they are read for.
+ *
+ * The title is drawn twice because the two positions do different jobs. The first line is what
+ * Discord draws inline beside the bot's name, and the heading under it is the card's own top edge,
+ * which is what tells one card from the next when several are scrolled past.
  *
  * The goal is drawn while the session is working or waiting on a person, and dropped the moment it
  * reads idle or exited. Whether a goal has been met is not observable, since one that clears on
@@ -1447,23 +1464,30 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
       CARD_COLUMN,
     ),
   );
-  const tool = fenced(toolLines(view));
+  const tool = toolLines(view);
   // Cut to one line of the block rather than wrapped, since what the operator needs at a glance is
   // which goal is running rather than every clause of it, and neutralized as every other
   // transcript-sourced field is. A goal that neutralizes to nothing draws no block.
   const goal = goalLines(view, state);
   const title = (name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
+  const heading = (name: string): string =>
+    `${TITLE_HEADING} ${GLYPHS[state]} ${name} ${SEPARATOR} ${label}`;
   const compose = (count: number): string => {
+    const roster = rosterLines(tasks, now, count);
     const body = [
       fields,
       ...goal,
-      TASKS_HEADER,
-      fenced(rosterLines(tasks, now, count)),
-      TOOL_HEADER,
-      tool,
+      ...(tool.length === 0 ? [] : [TOOL_HEADER, fenced(tool)]),
+      ...(roster.length === 0 ? [] : [TASKS_HEADER, fenced(roster)]),
     ].join("\n");
-    const room = MAX_CARD_LENGTH - body.length - 1 - title("").length;
-    return `${title(fit(inertText(displayName(view)), Math.max(room, 0)))}\n${body}`;
+    // The name is drawn twice, so what the ceiling leaves after everything that is not the name is
+    // split between the two occurrences, and both are drawn from one fitted string: two cuts of
+    // different lengths would put two spellings of one session on one card. The two newlines are the
+    // ones the title, the heading and the body are joined with.
+    const spent = title("").length + heading("").length + body.length + 2;
+    const room = Math.floor(Math.max(MAX_CARD_LENGTH - spent, 0) / 2);
+    const name = fit(inertText(displayName(view)), room);
+    return `${title(name)}\n${heading(name)}\n${body}`;
   };
   // Measured in UTF-16 units, the larger of the two counts a length could mean, so holding it holds
   // the code point count too.

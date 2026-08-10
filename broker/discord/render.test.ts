@@ -58,42 +58,78 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
  */
 function bodyOf(card: string): string[] {
   const lines = card.split("\n");
-  assert.equal(lines[1], "```", card);
+  assert.equal(lines[2], "```", card);
   assert.equal(lines.at(-1), "```", card);
   const blocks = blocksOf(card);
-  return [...blocks.fields, ...(blocks.goal ?? []), ...blocks.tasks, ...blocks.tool];
+  return [...blocks.fields, ...(blocks.goal ?? []), ...(blocks.tool ?? []), ...(blocks.tasks ?? [])];
 }
 
 /**
- * A card's blocks: the labelled fields, the goal where the card carries one, the tasks, and the
- * tool. Each header sits outside its own fence, where Discord still renders its bold, so a card that
- * folded the blocks back together or lost a header fails here rather than in whichever assertion
- * noticed. The goal block is the one that comes and goes, and it reads as null when it is absent,
- * so a test cannot confuse an absent block with an empty one.
+ * A card's blocks: the labelled fields every card carries, and the three a card draws only when it
+ * has something to put in them, each null when it is left out. `order` is the section headers in the
+ * order the card draws them, so a reordering or a lost header fails here rather than in whichever
+ * assertion noticed.
+ *
+ * Read by walking the fences rather than by counting them: every block but the fields is optional,
+ * so a fixed part count would describe one card's shape and no other. A header is the last line
+ * above the fence it heads, which is also what pins that a header carries no blank line of its own.
  */
 function blocksOf(card: string): {
+  order: string[];
   fields: string[];
   goal: string[] | null;
-  tasks: string[];
-  tool: string[];
+  tasks: string[] | null;
+  tool: string[] | null;
 } {
   const parts = card.split("```");
-  const body = (part: string): string[] => part.split("\n").filter((line) => line !== "");
-  if (parts.length === 9) {
-    assert.equal(parts[2].trim(), "**Goal**", card);
-    assert.equal(parts[4].trim(), "**Tasks**", card);
-    assert.equal(parts[6].trim(), "**Tool**", card);
-    return {
-      fields: body(parts[1]),
-      goal: body(parts[3]),
-      tasks: body(parts[5]),
-      tool: body(parts[7]),
-    };
+  assert.equal(parts.length % 2, 1, `a fence the card never closed: ${card}`);
+  const headers: string[] = [];
+  const bodies: string[][] = [];
+  for (let index = 1; index < parts.length; index += 2) {
+    headers.push((parts[index - 1].split("\n").filter((line) => line !== "").at(-1) ?? "").trim());
+    bodies.push(parts[index].split("\n").filter((line) => line !== ""));
   }
-  assert.equal(parts.length, 7, card);
-  assert.equal(parts[2].trim(), "**Tasks**", card);
-  assert.equal(parts[4].trim(), "**Tool**", card);
-  return { fields: body(parts[1]), goal: null, tasks: body(parts[3]), tool: body(parts[5]) };
+  const at = (header: string): string[] | null => {
+    const index = headers.indexOf(header);
+    return index === -1 ? null : bodies[index];
+  };
+  return {
+    order: headers.slice(1),
+    fields: bodies[0],
+    goal: at("### Goal"),
+    tasks: at("### Tasks"),
+    tool: at("### Tool"),
+  };
+}
+
+/**
+ * Asserts that the only lines of a card carrying a backtick are the delimiters of the blocks it
+ * draws, two to a block. Counted off the blocks the card actually has rather than a fixed number,
+ * since every block but the fields is drawn only when there is something to put in it, and what the
+ * assertion pins either way is that no field composed a delimiter of its own.
+ */
+function assertOnlyFenceBackticks(card: string): void {
+  const drawn = card.split("\n").filter((line) => line.includes("`"));
+  const blocks = blocksOf(card).order.length + 1;
+  assert.deepEqual(
+    drawn,
+    Array.from({ length: 2 * blocks }, () => "```"),
+    `only the ${String(blocks)} blocks' delimiters carry a backtick: ${card}`,
+  );
+}
+
+/** The tasks block, on a card that is expected to draw one. */
+function tasksOf(card: string): string[] {
+  const tasks = blocksOf(card).tasks;
+  assert.ok(tasks !== null, `the card draws no tasks block: ${card}`);
+  return tasks;
+}
+
+/** The tool block, on a card that is expected to draw one. */
+function toolOf(card: string): string[] {
+  const tool = blocksOf(card).tool;
+  assert.ok(tool !== null, `the card draws no tool block: ${card}`);
+  return tool;
 }
 
 /**
@@ -101,7 +137,7 @@ function blocksOf(card: string): {
  * than breaking on spaces, so the lines rejoin with nothing between them.
  */
 function toolValue(card: string): string {
-  return blocksOf(card).tool.join("");
+  return toolOf(card).join("");
 }
 
 /** The value drawn beside a label in the field block, without the padding that aligns it. */
@@ -212,17 +248,17 @@ test("untrusted text in the card is inert", () => {
 test("Discord's chip syntax cannot render anywhere on the card", () => {
   // `<t:...:R>` renders as a live relative timestamp, which would spoof the heartbeat the card
   // exists to carry, and the same brackets carry mentions, channel links, and custom emoji. The
-  // title is live markdown, so the syntax is escaped out of it; the body is inside a fence, where
-  // Discord resolves no chip at all, so the syntax survives as the characters it is, which is what
-  // the operator should see a tool called `<@...>` as.
+  // title line and the heading under it are live markdown, so the syntax is escaped out of both; the
+  // body is inside a fence, where Discord resolves no chip at all, so the syntax survives as the
+  // characters it is, which is what the operator should see a tool called `<@...>` as.
   const card = renderCard(
     view({ name: "<t:2000000000:R>", lastTool: "<@123456789012345678>" }),
     "working",
     NOW,
   );
 
-  assert.ok(!/<t:\d+:R>/.test(card.split("\n")[0]), card);
-  assert.deepEqual(blocksOf(card).tool, ["<@123456789012345678>"], "characters inside the fence");
+  assert.ok(!/<t:\d+:R>/.test(card.split("\n").slice(0, 2).join("\n")), card);
+  assert.deepEqual(toolOf(card), ["<@123456789012345678>"], "characters inside the fence");
   assert.equal(inertText("<#123>"), "\\<\\#123\\>");
 });
 
@@ -257,7 +293,7 @@ test("a long tool name cannot push the heartbeat off the card", () => {
   assert.equal(value(card, "Heartbeat"), "14m ago");
   // The tool has a block of its own now, and it is bounded there rather than by the row it used to
   // share: the name is held to a line and the preview keeps its own budget beside it.
-  assert.ok(blocksOf(card).tool.length <= 4, blocksOf(card).tool.join("\n"));
+  assert.ok(toolOf(card).length <= 4, toolOf(card).join("\n"));
 });
 
 test("a name is cut on code points, never mid-character", () => {
@@ -270,12 +306,12 @@ test("a name is cut on code points, never mid-character", () => {
   assert.ok(name.endsWith(" · working"));
 });
 
-test("the card carries the named fields, the state, and its two blocks", () => {
+test("the card carries the named fields, the state, and its tool block", () => {
   const card = renderCard(view({ lastHookAt: NOW - 840_000, contextTokens: 737_000 }), "working", NOW);
 
-  // The title and the two block headers are the lines outside a fence, since a title is what the
-  // channel's thread list shows and Discord draws no bold inside a block; every field is a row of
-  // the first block. The host leads, because it is the first thing to orient on.
+  // The title line, the heading, and the section headers are the lines outside a fence, since
+  // Discord renders no markdown at all inside a block; every field is a row of the first block. The
+  // host leads, because it is the first thing to orient on.
   assert.equal(card.split("\n")[0], "⚙ **neo-intake** · working");
   assert.deepEqual(blocksOf(card).fields, [
     "Host      NEO",
@@ -284,7 +320,7 @@ test("the card carries the named fields, the state, and its two blocks", () => {
     "Context   737k",
     "Heartbeat 14m ago",
   ]);
-  assert.deepEqual(blocksOf(card).tool, ["Bash"], "the tool is a block of its own");
+  assert.deepEqual(toolOf(card), ["Bash"], "the tool is a block of its own");
   // Every value starts in the same column, which is the whole reason the body is fenced: a phone
   // draws the block in a monospace font, so a padded label column is what makes the fields scannable.
   const columns = new Set(
@@ -294,6 +330,57 @@ test("the card carries the named fields, the state, and its two blocks", () => {
     }),
   );
   assert.equal(columns.size, 1, blocksOf(card).fields.join("\n"));
+});
+
+test("the card's title is a heading, and its section headers a smaller one against the block above", () => {
+  // The message's first line is drawn inline beside the bot's name, where it reads as chrome rather
+  // than as the card's own heading, so a channel of cards scrolls as one run of text with nothing to
+  // pick a card out by. The title is repeated at the largest heading size on a line of its own, and
+  // the section headers take a smaller one, so the title and its sections read as different ranks.
+  const card = renderCard(
+    view({ goal: "ship the pin reconcile", backgroundTasks: [agent("S6")] }),
+    "working",
+    NOW,
+  );
+  const lines = card.split("\n");
+
+  assert.equal(lines[0], "⚙ **neo-intake** · working · 1 task");
+  assert.equal(lines[1], "# ⚙ neo-intake · working · 1 task");
+  assert.equal(lines[2], "```", "the heading sits directly against the block it heads");
+  for (const header of ["### Goal", "### Tool", "### Tasks"]) {
+    const at = lines.indexOf(header);
+    assert.ok(at > 0, `${header} is drawn: ${card}`);
+    // Discord draws its own air around a fenced block, so a header carries none of its own on
+    // either side of it.
+    assert.equal(lines[at - 1], "```", `a blank line above ${header}: ${card}`);
+    assert.equal(lines[at + 1], "```", `a blank line below ${header}: ${card}`);
+  }
+});
+
+test("the tool leads the tasks, and the goal leads both", () => {
+  // A session usually has a tool and rarely has tasks, so the sparse block does not lead. The goal
+  // keeps its place directly under the fields, which the new order leaves untouched.
+  const card = renderCard(
+    view({ goal: "ship the pin reconcile", backgroundTasks: [agent("S6")] }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(card.indexOf("### Goal") > card.indexOf("Heartbeat"), card);
+  assert.ok(card.indexOf("### Tool") > card.indexOf("### Goal"), card);
+  assert.ok(card.indexOf("### Tasks") > card.indexOf("### Tool"), card);
+});
+
+test("a section with nothing to show is left out, header and block together", () => {
+  const quiet = renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW);
+  const tooled = renderCard(view(), "working", NOW);
+
+  assert.ok(!quiet.includes("### Tool"), quiet);
+  assert.ok(!quiet.includes("### Tasks"), quiet);
+  assert.ok(!quiet.includes("None"), quiet);
+  // A session running a tool and waiting on nothing draws the one block it has something for.
+  assert.ok(tooled.includes("### Tool"), tooled);
+  assert.ok(!tooled.includes("### Tasks"), tooled);
 });
 
 test("the card's body stays inside the width bound at its widest fields", () => {
@@ -336,7 +423,7 @@ test("a session under a goal says what it is trying to finish, and one without r
   const working = renderCard(view({ goal: "ship the pin reconcile" }), "working", NOW);
 
   assert.deepEqual(blocksOf(working).goal, ["ship the pin reconcile"]);
-  assert.match(working, /^\*\*Goal\*\*$/m, "the header is outside the fence, where bold renders");
+  assert.match(working, /^### Goal$/m, "the header is outside the fence, where the heading renders");
   // The block that comes and goes is the one whose absence has to be exact: a session under no goal
   // draws the card it drew before this block existed, rather than an empty block of its own.
   assert.equal(blocksOf(renderCard(view(), "working", NOW)).goal, null);
@@ -393,11 +480,7 @@ test("a crafted goal can compose no pill, no chip, no markdown, and no fence del
     /<@123456789012345678> at <t:99:R>/,
     "the chip syntax reads as its own characters inside the fence",
   );
-  assert.deepEqual(
-    card.split("\n").filter((line) => line.includes("`")),
-    ["```", "```", "```", "```", "```", "```", "```", "```"],
-    "exactly the eight delimiters the four blocks take",
-  );
+  assertOnlyFenceBackticks(card);
 });
 
 test("a card carrying a goal, a full roster and its widest fields still fits one message", () => {
@@ -438,8 +521,8 @@ test("a card carrying a goal, a full roster and its widest fields still fits one
   // can grow are pinned against each other here, so a goal block that stopped coming out of the
   // same budget fails rather than quietly costing the card its ceiling.
   assert.ok(
-    blocksOf(card).tasks.some((line) => /^\+\d+ more$/.test(line)),
-    blocksOf(card).tasks.join("\n"),
+    tasksOf(card).some((line) => /^\+\d+ more$/.test(line)),
+    tasksOf(card).join("\n"),
   );
   for (const line of bodyOf(card)) {
     assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
@@ -462,7 +545,7 @@ test("a field inside the fence shows its own characters, with no escape a fence 
     NOW,
   );
 
-  assert.deepEqual(blocksOf(card).tool, ["mcp__plugin_relay_channel-relay"]);
+  assert.deepEqual(toolOf(card), ["mcp__plugin_relay_channel-relay"]);
   assert.equal(value(card, "Host"), "**host**", "the fence shows the asterisks as characters");
   assert.ok(card.split("\n")[0].includes(String.raw`\*\*loud\*\*`), "the title still escapes");
 });
@@ -485,12 +568,7 @@ test("no crafted field can break out of the fence or compose a body line of its 
     NOW,
   );
 
-  const delimiters = card.split("\n").filter((line) => line.includes("`"));
-  assert.deepEqual(
-    delimiters,
-    ["```", "```", "```", "```", "```", "```"],
-    "exactly the six delimiters the three blocks take, and no other line carries a backtick",
-  );
+  assertOnlyFenceBackticks(card);
   for (const line of bodyOf(card)) {
     assert.doesNotMatch(line, /`/, `no backtick inside the body: ${line}`);
   }
@@ -498,7 +576,7 @@ test("no crafted field can break out of the fence or compose a body line of its 
   // The tool block fills its lines to the width, so a break can land between an escape and the
   // character it makes inert. A backslash left at the end of a line is drawn as a backslash, which
   // is the shape to know about, so it is pinned rather than reasoned about.
-  for (const line of blocksOf(card).tool) {
+  for (const line of toolOf(card)) {
     assert.doesNotMatch(line, /\\$/, `no line ends stranded from what it escapes: ${line}`);
   }
 });
@@ -533,12 +611,12 @@ test("the tool line carries what the tool was called with, from the record throu
   assert.equal(toolValue(renderCard(toView(record), "working", NOW)), "Bash · npm test");
 });
 
-test("a tool that supplied nothing previewable renders the name alone, and no tool renders None", () => {
+test("a tool that supplied nothing previewable renders the name alone, and no tool renders no block", () => {
   assert.equal(toolValue(renderCard(view({ lastToolInput: null }), "working", NOW)), "Bash");
   assert.equal(
-    toolValue(renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW)),
-    "None",
-    "an empty block and a renderer that stopped drawing one have to read differently",
+    blocksOf(renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW)).tool,
+    null,
+    "a session that has run no tool has nothing to head a block with",
   );
   // A preview of nothing but invisible characters neutralizes to an empty string, which renders as
   // no preview rather than as a separator with nothing after it.
@@ -559,11 +637,11 @@ test("a preview past the block's budget is cut and says so", () => {
   // needs and what the label column could not give it.
   const exact = renderCard(view({ lastToolInput: "p".repeat(MAX_TOOL_INPUT_PREVIEW) }), "working", NOW);
   assert.equal(toolValue(exact), `Bash · ${"p".repeat(MAX_TOOL_INPUT_PREVIEW)}`);
-  assert.ok(blocksOf(exact).tool.length > 1, "a preview that long is drawn over several lines");
+  assert.ok(toolOf(exact).length > 1, "a preview that long is drawn over several lines");
 
   // A short preview renders whole, with no marker at all, and on one line.
   const short = renderCard(view({ lastToolInput: "npm test" }), "working", NOW);
-  assert.deepEqual(blocksOf(short).tool, ["Bash · npm test"]);
+  assert.deepEqual(toolOf(short), ["Bash · npm test"]);
 });
 
 test("a long tool name cannot squeeze the preview out of the block", () => {
@@ -580,7 +658,7 @@ test("a long tool name cannot squeeze the preview out of the block", () => {
   assert.ok(drawn.includes(" · rm -rf / --no-preserve-root"), `the preview survives the name: ${drawn}`);
   assert.ok(drawn.startsWith("ttttt"), drawn);
   assert.ok(/t…/.test(drawn), `the name carries its own cut: ${drawn}`);
-  for (const line of blocksOf(card).tool) {
+  for (const line of toolOf(card)) {
     assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
   }
 });
@@ -1702,9 +1780,11 @@ test("an untrusted model string cannot close the fence or crowd the card", () =>
     NOW,
   );
 
-  const delimiters = card.split("\n").filter((line) => line.includes("``"));
-  assert.deepEqual(delimiters, ["```", "```", "```", "```", "```", "```"], card);
-  assert.ok(!/<@\d+>/.test(card.split("\n")[0]), "no chip syntax outside the fence");
+  assertOnlyFenceBackticks(card);
+  assert.ok(
+    !/<@\d+>/.test(card.split("\n").slice(0, 2).join("\n")),
+    "no chip syntax on the title line or the heading, the two lines above the first fence",
+  );
   assert.ok(value(card, "Heartbeat") !== "", "the rows below the model line survive it");
 });
 
@@ -1805,7 +1885,7 @@ test("every task a session is waiting on is named, two rows to an entry", () => 
   );
 
   const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
-  const tasks = blocksOf(card).tasks;
+  const tasks = tasksOf(card);
 
   assert.equal(tasks.length, 24, tasks.join("\n"));
   assert.ok(
@@ -1822,14 +1902,16 @@ test("every task a session is waiting on is named, two rows to an entry", () => 
   assert.ok(card.length <= MAX_CARD_LENGTH, card);
 });
 
-test("an empty roster and a session that has run no tool say so rather than going blank", () => {
-  // A quiet session and a renderer that stopped drawing a block have to look different, so both
-  // blocks stand with a value in them rather than being left out.
+test("an idle card draws its fields alone, with neither optional block standing empty", () => {
+  // Two placeholder blocks on every card between fan-outs is the noise a scrolled channel pays for
+  // telling an empty block apart from a renderer that stopped drawing one, so a section with nothing
+  // to show is left out, header and block together.
   const card = renderCard(view({ lastTool: null, lastToolInput: null }), "working", NOW);
   const blocks = blocksOf(card);
 
-  assert.deepEqual(blocks.tasks, ["None"]);
-  assert.deepEqual(blocks.tool, ["None"]);
+  assert.deepEqual(blocks.order, [], "the fields are the whole card");
+  assert.equal(blocks.tasks, null);
+  assert.equal(blocks.tool, null);
 });
 
 test("a session waiting on agents says so on the card and in the title", () => {
@@ -1847,7 +1929,7 @@ test("a session waiting on agents says so on the card and in the title", () => {
   const card = renderCard(waiting, "working", NOW);
   // Both tasks whole, oldest first, and neither of them counted: what it is running under and how
   // long it has been out lead the entry, and its description has a row to itself under them.
-  assert.deepEqual(blocksOf(card).tasks, [
+  assert.deepEqual(tasksOf(card), [
     "1h 2m · implementer-opus",
     "      · PR ladder fix round three",
     "35m · implementer-fable",
@@ -1859,8 +1941,10 @@ test("a session waiting on agents says so on the card and in the title", () => {
   assert.equal(value(card, "State"), "working · 2 tasks");
   assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 2 tasks");
   // The tasks sit below the fields the card always carries, because the roster is the one part
-  // sized by another program's fan-out.
-  assert.ok(card.indexOf("**Tasks**") > card.indexOf("Heartbeat"), card);
+  // sized by another program's fan-out, and below the tool, which nearly every session has where
+  // few have tasks.
+  assert.deepEqual(blocksOf(card).order, ["### Tool", "### Tasks"], card);
+  assert.ok(card.indexOf("### Tasks") > card.indexOf("Heartbeat"), card);
 });
 
 test("a shell task renders beside a subagent, since both are invisible work", () => {
@@ -1877,7 +1961,7 @@ test("a shell task renders beside a subagent, since both are invisible work", ()
 
   const card = renderCard(waiting, "working", NOW);
   assert.deepEqual(
-    blocksOf(card).tasks,
+    tasksOf(card),
     ["4m · shell", "   · npm test on the integration suite"],
     "the kind is what tells a shell task from a subagent",
   );
@@ -1920,7 +2004,7 @@ test("a fan-out past the card's cap is counted rather than dropped, and the card
       }),
     );
     const card = renderCard(view({ backgroundTasks: fleet }), "working", NOW);
-    const tasks = blocksOf(card).tasks;
+    const tasks = tasksOf(card);
 
     assert.equal(
       value(card, "State"),
@@ -1970,7 +2054,7 @@ test("a card whose every field is at its cap still fits one message, roster incl
   assert.ok(card.length <= MAX_CARD_LENGTH, `${String(card.length)} units`);
   assert.ok([...card].length <= MAX_CARD_LENGTH, `${String([...card].length)} characters`);
   assert.equal(value(card, "Heartbeat"), "just now", "the rows the card exists to carry survive it");
-  assert.match(blocksOf(card).tasks.at(-1) ?? "", /^\+\d+ more$/);
+  assert.match(tasksOf(card).at(-1) ?? "", /^\+\d+ more$/);
 });
 
 test("a hostile task description is drawn as text, and cannot draw a chip or close the fence", () => {
@@ -2012,8 +2096,8 @@ test("a task with nothing to say about itself is named by its kind", () => {
   );
 
   // One row, not two: an entry with nothing to say about itself draws no empty second line.
-  assert.deepEqual(blocksOf(blank).tasks, ["0m · subagent"]);
-  assert.deepEqual(blocksOf(absent).tasks, ["1m · subagent"]);
+  assert.deepEqual(tasksOf(blank), ["0m · subagent"]);
+  assert.deepEqual(tasksOf(absent), ["1m · subagent"]);
 
   // Two of them on one card, both drawn: neither has a description to crowd the other's row,
   // because an entry no longer shares a row with anything.
@@ -2027,7 +2111,7 @@ test("a task with nothing to say about itself is named by its kind", () => {
     "working",
     NOW,
   );
-  assert.deepEqual(blocksOf(both).tasks, ["1m · subagent", "0m · subagent"]);
+  assert.deepEqual(tasksOf(both), ["1m · subagent", "0m · subagent"]);
 });
 
 test("an entry's age and type are drawn whole, whatever the type is called", () => {
@@ -2048,7 +2132,7 @@ test("an entry's age and type are drawn whole, whatever the type is called", () 
     NOW,
   );
 
-  const tasks = blocksOf(card).tasks;
+  const tasks = tasksOf(card);
   assert.equal(tasks[0], `1m · ${"a".repeat(32)}`);
   assert.ok(tasks[1].startsWith("   · a description long enough"), tasks[1]);
   for (const line of tasks) assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
