@@ -297,6 +297,27 @@ thread title, where a phone's truncation eats everything else, and the rename da
 composed title rather than on the state, so a fan-out draining coalesces instead of spending the
 budget a parked session's own title needs.
 
+## What the cards are made of
+
+Both cards draw their bodies inside fenced monospace blocks so their columns line up at a glance,
+with headings outside the fences where Discord still renders them. The width they pad to is one
+shared constant, and it is a phone's constraint rather than a taste: a code block scrolls sideways
+on a phone rather than wrapping, so a card wider than its bound costs a drag to read, which is worse
+than the ragged lines the fence replaced.
+
+A fence is also a security surface, and the shape of its protection is measured rather than
+reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it
+finds the fence, and opening with more than three backticks does not defend it either, because three
+is the whole delimiter and a fourth is content. So every backtick in a fenced field becomes an
+apostrophe, which cannot open anything, and the tests assert that no backtick reaches a body at all
+rather than that no two are adjacent. The backslash escape stays, because Discord does resolve it
+inside a block, which is what draws a Windows path correctly.
+
+The channel's pinned messages are maintained the same way the threads are: by reconciling against
+Discord's own answer rather than a flag this broker keeps, which is what survives a restart, a
+hand-made pin, and a card rebuilt after a deletion. The sweep touches only messages the broker
+recognizes as its own cards, so a pin the operator made is not collateral.
+
 ## External integrations
 
 Three, and each one fails in its own way.

@@ -19,7 +19,12 @@ identity, and so a revoked token takes down one machine rather than all of them.
    empty content, which reads as a silent delivery failure rather than a permission error.
 4. Under **OAuth2 > URL Generator**, select the `bot` scope and these permissions: View Channels,
    Send Messages, Send Messages in Threads, Create Public Threads, Manage Threads, Read Message
-   History.
+   History. **Pin Messages** is optional and buys one thing: the channel's pin list becomes the
+   sessions that are running. Grant it as a channel-level override on the broker's own channel
+   rather than server-wide, since it also permits deleting other people's messages. Without it the
+   pin list simply does not populate and one log line says so; nothing else changes. Note that
+   Discord's older pin route reports a missing-permission error naming Manage Messages when Pin
+   Messages is the one actually required, so that error points at the wrong grant.
 5. Open the generated URL and invite the bot to your server.
 6. Create a text channel for the host and copy its ID (right-click the channel with Developer Mode
    on). Copy your own user ID the same way; it is the only account permitted to steer a session.

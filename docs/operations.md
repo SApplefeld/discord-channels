@@ -90,8 +90,43 @@ Renames are the scarcest resource here. Discord documents no limit on channel or
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
 adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
 because a rename landing ten minutes late paints a state that stopped being true. The card underneath
-is edited in a far looser bucket and carries the detail: session ID, host, state, last tool and what
-that tool was called with, turn count, and heartbeat.
+is edited in a far looser bucket and carries the detail. The card opens with a heading naming the
+session and its state, then a fenced block of fields (host, session, state, model, context size,
+heartbeat), then one fenced block per thing the session has to say about itself: the goal it is
+working toward, the tool it last ran and what that tool was called with, and the subagents and
+background commands it is waiting on. A section with nothing to show is left out rather than drawn
+empty, so a quiet session is a short card.
+
+## The channel's pins, and threads that put themselves away
+
+The channel's pinned messages are the sessions that are running. The broker pins a session's card
+while its session is live, unpins it when the session exits, and keeps the fleet usage card pinned
+permanently, so the pin list answers "what is running right now" without a scroll. It works by
+reading the channel's own pins each pass and moving them toward that set, which is what survives a
+broker restart and a card rebuilt after a deletion. A pin you added by hand is left alone.
+
+This needs Discord's **Pin Messages** permission on the broker's channel, and it is worth knowing
+that the older pin route answers `Missing Permissions` when the newer permission is what is actually
+missing, so that error names the wrong cause. Without the grant nothing breaks: a refused pin writes
+one log line and every other surface behaves exactly as it does without the feature.
+
+Two costs come from Discord rather than from here. A channel holds at most fifty pins, and at the
+ceiling the oldest live sessions keep theirs rather than an older session being evicted for a newer
+one. And pinning writes a system line into the channel while unpinning writes none, so a host that
+starts many sessions pays a line per session.
+
+Separately, an exited session's thread archives itself unless the host turns that off. An archived
+thread leaves the active list but is not destroyed: it stays readable and searchable, and posting in
+it revives it. That matters because the session that exited wrongly is the one worth reading
+afterward.
+
+## What a session is trying to finish
+
+A session running under a completion goal shows it on its card, read from the goal command in the
+session's own transcript. The line is drawn while the session is working and dropped the moment it
+reads idle or exited, which is deliberate: a goal that completes need not write anything down, so
+the end of one is not observable, and a card showing a finished goal indefinitely would be worse
+than no goal line at all. A session that never set one shows nothing.
 
 ## Answering a permission prompt
 
