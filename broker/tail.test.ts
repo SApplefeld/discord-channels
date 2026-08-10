@@ -2584,6 +2584,119 @@ test("a run that landed part of a long reply keeps its claim and is not posted a
   );
 });
 
+test("a tailer run that landed nothing after the mirror deferred still gets the text posted", async (t) => {
+  // The loss the claim-at-dispatch rule opens, from the tailer's side: the tailer claims, the Stop
+  // mirror finds the claim and drops its own copy, and the tailer's run is then refused on every
+  // message. The tailer's offset is already past those bytes and it never re-reads them, and the
+  // mirror has answered its caller, so nothing else in the system still owes this text: the bounded
+  // retry at the release is the only thing that can put it on the thread.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { file, tailer, outbound, posts } = integration(t, async (attempt) => {
+    if (attempt === 1) {
+      await held;
+      return { landed: false };
+    }
+    return { landed: true };
+  });
+  await tailer.poll();
+
+  appendFileSync(file, assistantText(LONG_REPLY), "utf8");
+  const polling = tailer.poll();
+  await until(() => posts.length === 1); // the run's first message is on the wire
+
+  const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
+  assert.deepEqual(await mirrored, { status: "sent" }, "the mirror deferred to the claim");
+  release();
+  await polling;
+  assert.deepEqual(
+    posts.slice(1),
+    renderMirror("interim", LONG_REPLY),
+    `the deferred-to run must retry rather than lose the text: ${posts.join("\n---\n")}`,
+  );
+});
+
+test("a mirror run that landed nothing after the tailer deferred still gets the text posted", async (t) => {
+  // The same loss from the other side: the mirror claims, the poll landing inside its run finds the
+  // claim and skips the chunk with its offset already advanced, and the mirror's run is then refused
+  // on every message.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { file, tailer, outbound, posts } = integration(t, async (attempt) => {
+    if (attempt === 1) {
+      await held;
+      return { landed: false };
+    }
+    return { landed: true };
+  });
+  await tailer.poll();
+
+  appendFileSync(file, assistantText(LONG_REPLY), "utf8");
+  const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
+  await until(() => posts.length === 1); // the run's first message is on the wire
+
+  // The poll settles while that run is still going only because the tailer skipped the text, which
+  // is the deferral this test is about.
+  let polled = false;
+  const polling = tailer.poll().then(() => {
+    polled = true;
+  });
+  await until(() => polled);
+
+  release();
+  await polling;
+  assert.deepEqual(await mirrored, { status: "sent" }, "the retry carried the text");
+  assert.deepEqual(
+    posts.slice(1),
+    renderMirror("reply", LONG_REPLY),
+    `the deferred-to run must retry rather than lose the text: ${posts.join("\n---\n")}`,
+  );
+});
+
+test("a run that landed nothing with nobody deferring to it releases and does not retry", async (t) => {
+  // The ordinary refusal, which the release already answers: no other path has dropped a copy on
+  // the strength of this claim, so the text is owed to that path rather than to a retry here, and a
+  // retry would be a second run nobody asked for.
+  const { file, tailer, outbound, posts } = integration(t, async () => ({ landed: false }));
+  await tailer.poll();
+
+  const closing = "Done: the migration is green and pushed.";
+  appendFileSync(file, assistantText(closing), "utf8");
+  await tailer.poll();
+  assert.equal(posts.length, 1, `the refused run posts once and does not retry: ${posts.join("|")}`);
+
+  assert.deepEqual(await outbound.mirror(TOKEN, "reply", closing, SESSION), {
+    status: "failed",
+    error: "refused",
+  });
+  assert.equal(posts.length, 2, `the mirror's own refused run does not retry: ${posts.join("|")}`);
+});
+
+test("a partial run keeps its claim and fires no retry", async (t) => {
+  // The verdict the retry turns on is the run's landed count, so the partial run is the case that
+  // must not reach it: the operator has the run's first messages, and a retry would post the whole
+  // reply a second time under them.
+  const { file, tailer, outbound, posts } = integration(t, async (attempt) => ({
+    landed: attempt === 1,
+  }));
+  await tailer.poll();
+
+  appendFileSync(file, assistantText(LONG_REPLY), "utf8");
+  await tailer.poll();
+  assert.equal(
+    posts.length,
+    2,
+    `the run stops at its refused second message: ${posts.join("\n---\n")}`,
+  );
+
+  assert.deepEqual(await outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION), { status: "sent" });
+  assert.equal(posts.length, 2, `a reply that partly landed must not be re-posted: ${posts.length}`);
+});
+
 test("a release drops only the claim naming the same text, and never the answer record", () => {
   const echo = createEchoMemory();
   echo.noteInterim(SESSION, "half a run");
@@ -2605,6 +2718,35 @@ test("a release drops only the claim naming the same text, and never the answer 
   assert.equal(echo.isAnswerEcho(SESSION, CLOSEOUT), true);
 
   echo.release("never-seen-session", "anything");
+});
+
+test("a release reports whether the claim it drops had already suppressed the other path", () => {
+  const echo = createEchoMemory();
+
+  // A claim nothing has consulted: the other path still holds its own copy of this text, so a run
+  // giving this claim up loses nothing.
+  echo.noteInterim(SESSION, "half a run");
+  assert.equal(echo.release(SESSION, "half a run"), false);
+
+  // A claim the other path matched: that path dropped its copy on the strength of it, so the
+  // release is the moment the text has no path left carrying it.
+  echo.noteReply(SESSION, "the closing text");
+  assert.equal(echo.isEcho(SESSION, "the closing text"), true);
+  assert.equal(echo.release(SESSION, "the closing text"), true);
+  assert.equal(
+    echo.release(SESSION, "the closing text"),
+    false,
+    "the deferral is spent with the release that reported it",
+  );
+
+  // A slot claimed again is a new run, which nothing has deferred to yet, whatever the previous
+  // claim on that slot answered for. Each slot carries its own bit for that reason: the mirror
+  // records its own reply digest one line after deferring to the tailer's interim claim, and that
+  // record must not read as the tailer's deferral being over.
+  echo.noteInterim(SESSION, "narrated once");
+  assert.equal(echo.isInterimEcho(SESSION, "narrated once"), true);
+  echo.noteInterim(SESSION, "narrated once");
+  assert.equal(echo.release(SESSION, "narrated once"), false);
 });
 
 test("interim text between the final reply and the turn's earlier narration still posts", async (t) => {

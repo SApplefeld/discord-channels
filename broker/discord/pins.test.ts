@@ -201,6 +201,49 @@ test("at the pin ceiling the oldest live sessions keep their pins and the shortf
   assert.match(shortfall[0], /11 live session\(s\) are left unpinned/);
 });
 
+/** The channel with Discord's own ceiling enforced: a pin past fifty is refused and stays refused. */
+function withCeiling(room: Channel): ChannelPins {
+  return {
+    ...room.pins,
+    pin: async ({ messageId }) => {
+      if (room.list.length < MAX_CHANNEL_PINS) return room.pins.pin({ messageId });
+      room.pinned.push(messageId);
+      return { status: "failed", error: "HTTP 400: max pins reached", rate: HEALTHY, permanent: true };
+    },
+  };
+}
+
+test("pins the operator made by hand hold their slots, and the keeper budgets what is left", async () => {
+  // The fifty is the channel's ceiling, not this broker's share of it, and a hand pin is never swept,
+  // so it holds its slot against every pass. A keeper budgeting all fifty for cards would ask for
+  // pins the channel has no room for, and three refusals in a row stop the pin route for the life of
+  // the process, long after the room came back.
+  const hand = Array.from({ length: 10 }, (_, at) => String(9000 + at));
+  const room = channel([...hand]);
+  const logged: string[] = [];
+  const keeper = keeperWith(withCeiling(room), logged);
+  const live = Array.from({ length: MAX_CHANNEL_PINS }, (_, at) => String(6000 + at));
+
+  await keeper.reconcile(intended("5000", live));
+
+  assert.equal(
+    room.pinned.length,
+    MAX_CHANNEL_PINS - hand.length,
+    "the keeper asks for the slots that exist and no more",
+  );
+  assert.equal(room.list.length, MAX_CHANNEL_PINS, "and the channel ends full rather than over");
+  assert.deepEqual(
+    room.list.filter((messageId) => hand.includes(messageId)),
+    hand,
+    "the operator's own pins are all still where they put them",
+  );
+  assert.equal(
+    logged.filter((line) => line.includes("is not attempted again")).length,
+    0,
+    `the pin route spends no refusals on a ceiling it can see: ${logged.join("\n")}`,
+  );
+});
+
 test("without the permission every write is refused, one line names it, and nothing else changes", async () => {
   // The ship-dark shape rather than a fallback: a host that has not granted Pin Messages sees one
   // log line and a channel that behaves exactly as it does with no pin list at all.

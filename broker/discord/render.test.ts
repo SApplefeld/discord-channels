@@ -9,6 +9,7 @@ import {
   MAX_TOOL_INPUT_PREVIEW,
   appendNarration,
   heartbeat,
+  inertField,
   inertMessage,
   inertText,
   renderAnswer,
@@ -19,6 +20,7 @@ import {
   renderQuestionNotice,
   renderTaskNotice,
   span,
+  tableParses,
   threadName,
 } from "./render.ts";
 import type { AskedOption, AskedQuestion } from "./render.ts";
@@ -766,6 +768,14 @@ test("a message is cut to a length Discord will accept", () => {
   assert.ok(long.endsWith("…"), "a cut message says it was cut");
 });
 
+test("a field with no room left is empty, not a lone cut marker", () => {
+  // A suffix can consume the whole width a label had, and a bound of zero has to mean zero: a cut
+  // marker drawn there is one character wide and puts the line it sits in over the width that was
+  // measured for it. One character of room is the last one that can carry the marker.
+  assert.equal(inertField("neo-tail", 0), "");
+  assert.equal(inertField("neo-tail", 1), "…");
+});
+
 /**
  * How many characters of a mirrored message the attribution spends, asked of the renderer rather
  * than written down here. A test carrying its own copy of it would keep passing after the
@@ -984,6 +994,27 @@ test("a table that is not whole is left as the text it was written as", () => {
   }
 });
 
+test("a table under lines of prose that carry a pipe is still drawn as a table", () => {
+  // The candidate is the whole run of consecutive pipe-carrying lines, and a run that is no table
+  // gives up only its first line before the rest is judged again. So a table opens wherever in the
+  // run its header sits, and the prose above it stays the prose it was written as.
+  const [message] = renderMirror("reply", `a pipe | in prose\nanother | line\n${TABLE}`);
+
+  assert.equal(
+    said(message),
+    [
+      "a pipe | in prose",
+      "another | line",
+      "```",
+      "Session    |  Model | Status",
+      "neo-tail   |   opus | working",
+      "pin-keeper | sonnet |  idle",
+      "```",
+    ].join("\n"),
+    message,
+  );
+});
+
 test("a wide table stays inside the block width, with the cells past their column cut", () => {
   const written = [
     "| Path | Reason |",
@@ -1072,6 +1103,29 @@ test("a cell is neutralized before it is padded, so the columns line up on what 
   const separators = lines.slice(1, -1).map((line) => line.indexOf("|"));
   assert.deepEqual(separators, [separators[0], separators[0], separators[0]], lines.join("\n"));
   assert.ok(lines.includes("C:\\\\ops | one"), lines.join("\n"));
+});
+
+test("a run of pipe-carrying lines that is no table costs one parse per line", () => {
+  // A reply is never truncated and the mirror route takes megabytes, so a model that writes a long
+  // ragged near-table hands this transform the whole of it. The broker runs on one event loop, and
+  // work here that grew with the square of the run would stall hook intake, heartbeats, and the
+  // permission prompts behind it for seconds. The gate is the parse count rather than the clock:
+  // a loaded machine moves wall time by an order of magnitude and would make this flaky, where the
+  // count is the same number everywhere. Doubling the input doubles a linear count and quadruples
+  // a quadratic one, so the margin between them is wide enough to name a threshold in the middle.
+  const near = (count: number): string =>
+    Array.from({ length: count }, (_, index) => (index % 2 === 0 ? "a|b" : "a|b|c")).join("\n");
+  const parses = (count: number): number => {
+    tableParses.count = 0;
+    renderMirror("reply", near(count));
+    return tableParses.count;
+  };
+
+  const small = parses(400);
+  const large = parses(800);
+
+  assert.ok(small > 0, "the counter has to be reached at all, or this passes on nothing");
+  assert.ok(large <= small * 3, `${small} parses at 400 lines, ${large} at 800`);
 });
 
 test("mirrored text cannot draw the attribution from inside a fence either", () => {

@@ -467,12 +467,22 @@ test("a thread revived by a post is not archived again until its session exits a
   await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
   assert.deepEqual(calls.archived, ["thread-1"]);
 
+  const painted = calls.cards.length;
+  // A pass per dwell, so the rename back to a live title is settled by the time it is asked for.
   for (let pass = 0; pass < 3; pass += 1) {
-    time.advance(1_000);
+    time.advance(DWELL_MS);
     await surface.tick([view({ lastHookAt: time.now(), turnCount: pass + 2 })]);
   }
 
   assert.deepEqual(calls.archived, ["thread-1"], "the revived thread is left where the operator put it");
+  assert.ok(calls.cards.length > painted, "and its card is maintained again rather than left frozen");
+  assert.equal(names(calls).at(-1), "⚙ neo-intake · working", "and its title follows it back");
+
+  // The real exit, which is what the archive is for: it closes again rather than staying open
+  // because an earlier presumption already spent the one archive the thread was ever going to get.
+  time.advance(1_000);
+  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+  assert.deepEqual(calls.archived, ["thread-1", "thread-1"]);
 });
 
 test("an exited thread is left open unless archiving is turned on", async () => {

@@ -1356,6 +1356,52 @@ test("a mirrored reply that failed to land is not remembered as mirrored", async
   );
 });
 
+test("a reply the tailer deferred to goes again once when its run landed nothing", async () => {
+  // The claim's own cost, bounded here. The tailer met the claim mid-run and skipped the text with
+  // its transcript offset already past those bytes, so a run that then lands nothing is the last
+  // thing carrying the turn's closing words: it goes again, once, and the loss gets a line of its
+  // own rather than the partial-run line, which reads identically for a run whose text the other
+  // path is about to carry.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const echo = createEchoMemory();
+  const lines: string[] = [];
+  const posts: string[] = [];
+  const reply = "the turn's closing words, refused on every attempt";
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      // The tailer's poll landing inside the run: it finds the claim and skips the chunk.
+      if (posts.length === 1) echo.isEcho("session-a", reply);
+      return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  assert.equal((await router.mirror(TOKEN, "reply", reply, "session-a")).status, "failed");
+  assert.equal(posts.length, 2, `the run goes again exactly once: ${posts.join("\n---\n")}`);
+  assert.ok(
+    lines.some((line) => line.includes("reached the thread by neither path")),
+    lines.join("\n"),
+  );
+  assert.ok(
+    !lines.join("\n").includes("closing words"),
+    `mirror content leaked into the routing log: ${lines.join("\n")}`,
+  );
+  assert.equal(
+    echo.isEcho("session-a", reply),
+    false,
+    "text on the thread by neither path is claimed by neither path",
+  );
+});
+
 test("a narration chunk with nothing visible in it leaves no claim behind", async () => {
   // The claim is made as the delivery is dispatched, before the chunk is rendered, so a chunk that
   // neutralizes to nothing claims a digest and then posts nothing. The release is what keeps the

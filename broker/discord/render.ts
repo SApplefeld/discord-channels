@@ -631,6 +631,10 @@ export function threadName(view: SessionView, state: SurfaceState): string {
  * in half leaves a lone surrogate, which is not valid UTF-8 for the request body.
  */
 function fit(value: string, limit: number): string {
+  // No room is no text: the cut marker is a character of its own, and drawn where nothing fits it
+  // would put the line it sits in a character past the bound that was measured for it.
+  if (limit <= 0) return "";
+
   const characters = [...value];
   if (characters.length <= limit && value.length <= limit) return value;
 
@@ -768,12 +772,25 @@ type ColumnAlignment = "left" | "right" | "center";
 const DELIMITER_CELL = /^:?-+:?$/;
 
 /**
+ * How many lines the table transform has parsed as candidate rows, counted so a test can hold the
+ * transform to a cost linear in the text it is given.
+ *
+ * This is the one thing here that runs over a whole reply, and a reply has no length cap, on the
+ * single event loop every hook, heartbeat, and permission prompt shares. A pipe-heavy reply that
+ * cost more than one parse per line would stall all of them for as long as it took. Wall clock
+ * cannot express that bound in a test, since a loaded machine moves it by an order of magnitude,
+ * where a parse count is the same number on any machine.
+ */
+export const tableParses = { count: 0 };
+
+/**
  * One row's cells, or `null` when the line is not a row at all.
  *
  * A row is recognized by carrying a pipe, and one leading and one trailing pipe are dropped, which
  * is the GFM shape with the optional outer pipes either present or absent.
  */
 function tableCells(line: string): string[] | null {
+  tableParses.count += 1;
   if (!line.includes("|")) return null;
   return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
 }
@@ -814,12 +831,16 @@ function paddedCell(cell: string, width: number, alignment: ColumnAlignment): st
  * Cells are neutralized before they are measured and padded, never after: the fence-inert form is
  * what the reader sees, so it is what the columns have to line up on, and a backslash doubled after
  * the padding would push its row a character wider than the block it sits in.
+ *
+ * The run arrives already parsed, and `start` names which of its rows the candidate opens on, so
+ * one run judged from several starts is parsed once rather than once per start. The judge that can
+ * reject on two rows runs before anything reads the rest of them, which is what keeps a long run
+ * that is no table from costing more than a walk over it.
  */
-function tableBlock(lines: readonly string[]): string | null {
-  const rows = lines.map(tableCells);
-  if (rows.length < 3) return null;
-  const header = rows[0];
-  const delimiter = rows[1];
+function tableBlock(rows: readonly (string[] | null)[], start: number): string | null {
+  if (rows.length - start < 3) return null;
+  const header = rows[start];
+  const delimiter = rows[start + 1];
   if (header === null || header === undefined || delimiter === null || delimiter === undefined) {
     return null;
   }
@@ -828,7 +849,7 @@ function tableBlock(lines: readonly string[]): string | null {
   if (delimiter.length !== columns || !delimiter.every((cell) => DELIMITER_CELL.test(cell))) {
     return null;
   }
-  const body = rows.slice(2);
+  const body = rows.slice(start + 2);
   if (body.some((row) => row === null || row.length !== columns)) return null;
 
   const alignments: ColumnAlignment[] = delimiter.map((cell) => {
@@ -885,20 +906,35 @@ function blockedTables(text: string): string {
   const drawn: string[] = [];
   let index = 0;
   while (index < lines.length) {
+    if (!(lines[index] ?? "").includes("|")) {
+      drawn.push(lines[index] ?? "");
+      index += 1;
+      continue;
+    }
+
     // The candidate is the whole run of consecutive pipe-carrying lines, so a row the table cannot
     // account for is inside the shape being judged rather than outside it. A run that is not a
     // table gives up only its first line, and the line after it opens the next candidate: a table
     // under a line of prose that happens to carry a pipe is still a table.
-    let end = index;
+    let end = index + 1;
     while (end < lines.length && (lines[end] ?? "").includes("|")) end += 1;
-    const block = end - index >= 3 ? tableBlock(lines.slice(index, end)) : null;
-    if (block !== null) {
-      drawn.push(block);
-      index = end;
-      continue;
+
+    // Where the run ends does not depend on which of its lines a candidate opens on, so both the
+    // boundary and the parse belong to the run, are found once, and every candidate start is an
+    // index view into that one parse. Redoing either per start is what would cost the square of a
+    // long run's length before it was rejected.
+    const rows = lines.slice(index, end).map(tableCells);
+    let block: string | null = null;
+    let start = index;
+    while (start < end && block === null) {
+      block = tableBlock(rows, start - index);
+      if (block === null) {
+        drawn.push(lines[start] ?? "");
+        start += 1;
+      }
     }
-    drawn.push(lines[index] ?? "");
-    index += 1;
+    if (block !== null) drawn.push(block);
+    index = end;
   }
   return drawn.join("\n");
 }

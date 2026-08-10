@@ -23,9 +23,16 @@ import { clean } from "./sanitize.ts";
 
 const FORMAT_VERSION = 1;
 
+/**
+ * A record as the file carries it: every field but the goal, which is operator prose off a
+ * transcript that only the card reads and that a load never restores anyway. Writing it would put
+ * it on disk for the record's whole retention life for nothing.
+ */
+type PersistedRecord = Omit<SessionRecord, "goal">;
+
 type Snapshot = {
   version: number;
-  sessions: SessionRecord[];
+  sessions: PersistedRecord[];
 };
 
 const STATES: readonly SessionState[] = ["live", "stale", "ended"];
@@ -262,8 +269,44 @@ export function loadSessions(file: string, options: LoadOptions = {}): SessionRe
   return parsed.sessions.map(cleanRecord);
 }
 
+/**
+ * One record reduced to what the file holds, field by field rather than by deleting from a copy, on
+ * `redact`'s discipline at the publishing seam: a field added to SessionRecord has to be written to
+ * disk deliberately instead of arriving here on its own.
+ *
+ * What it keeps and what that route withholds differ because the reasons do: the process token is
+ * the join key a hook post is authenticated by, and a restart that lost it would orphan every live
+ * session, so it is written here and never published. The goal is read by one card and by nothing
+ * else, restored by nothing, so it is written nowhere.
+ */
+function persisted(record: SessionRecord): PersistedRecord {
+  return {
+    sessionId: record.sessionId,
+    processToken: record.processToken,
+    name: record.name,
+    host: record.host,
+    source: record.source,
+    state: record.state,
+    lastTool: record.lastTool,
+    lastToolInput: record.lastToolInput,
+    toolCount: record.toolCount,
+    turnCount: record.turnCount,
+    startedAt: record.startedAt,
+    lastHookAt: record.lastHookAt,
+    lastRelayAt: record.lastRelayAt,
+    endedAt: record.endedAt,
+    openingModel: record.openingModel,
+    model: record.model,
+    // Written, and dropped on load rather than here: the snapshot is written whole on every
+    // mutation, so what a restart must not read back is settled by the load path alone.
+    contextTokens: record.contextTokens,
+    downgrade: record.downgrade,
+    backgroundTasks: record.backgroundTasks,
+  };
+}
+
 export function saveSessions(file: string, sessions: SessionRecord[]): void {
-  const snapshot: Snapshot = { version: FORMAT_VERSION, sessions };
+  const snapshot: Snapshot = { version: FORMAT_VERSION, sessions: sessions.map(persisted) };
   // A unique temp name, so two writers cannot land on each other's half-written file.
   const temp = `${file}.${randomUUID()}.tmp`;
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });

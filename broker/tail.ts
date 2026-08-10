@@ -64,11 +64,17 @@ export const MAX_TAIL_READ_BYTES = 256 * 1024;
  * A digest is claimed when a delivery is dispatched rather than when it lands, and released when
  * that run lands nothing at all. The window is why: a long reply posts as several paced messages,
  * so a digest recorded on the way out sits seconds behind the check that needed it, and the other
- * path arriving inside those seconds finds a gap and posts its own whole copy. What the release
- * keeps from the record-on-sent rule it replaces is the property that matters, that a run every
- * message of which was refused leaves the text owed to whichever path can still post it. What it
- * does not keep is the guarantee at the width of a whole run: a path that has already deferred to
- * a claim has posted nothing, so a claimed run refused on every message leaves that text unposted.
+ * path arriving inside those seconds finds a gap and posts its own whole copy. A run every message
+ * of which was refused therefore leaves the text owed to whichever path can still post it, which is
+ * the property record-on-sent bought and the claim must not spend.
+ *
+ * Each claim also carries whether the other path has already matched it and dropped its own copy on
+ * that strength, which is what `release` reports. That case is the one the claim alone cannot
+ * answer: the deferring path has posted nothing and will not look again, and on the tailer's side
+ * the bytes are already behind its offset, so a claimed run refused on every message is text with no
+ * path left carrying it. The releasing site is what acts on the report. The bit is per slot and a
+ * fresh claim on a slot clears it, because a new run is one nothing has deferred to yet, and because
+ * the mirror records its own reply digest immediately after deferring to an interim claim.
  *
  * The answer record is the third digest, for the other duplicate pair: on a long turn the model
  * often calls the reply tool with its closing summary and the turn's closing text arrives moments
@@ -105,8 +111,11 @@ export type EchoMemory = {
    * Only a digest equal to this text's is dropped, so a release cannot spend a record some other
    * text established, and the answer record is never touched: it carries its own turn boundary and
    * neither posting path claims it.
+   *
+   * True when a claim being dropped here had already suppressed the other path's own copy, which
+   * makes the releasing site the last place this text can still reach the thread.
    */
-  release: (sessionId: string, text: string) => void;
+  release: (sessionId: string, text: string) => boolean;
   /** Drops the session's answer record unread; the reply-kind mirror's turn boundary. */
   clearAnswer: (sessionId: string) => void;
   forget: (sessionId: string) => void;
@@ -128,6 +137,17 @@ export function createEchoMemory(): EchoMemory {
     interim: string | null;
     reply: string | null;
     /**
+     * The digest of the claim in each slot that the other path matched and dropped its own copy
+     * over, held past the match that consumed the claim itself: the release comes from the run that
+     * made the claim, which is seconds of paced posting later, and what it needs to know then is
+     * whether anything else is still carrying this text.
+     *
+     * Held per slot, and reset by a fresh claim on that slot alone, because the two slots defer to
+     * each other within one turn: the mirror matching the tailer's interim claim records its own
+     * reply digest one line later, and that record says nothing about the tailer's deferral.
+     */
+    deferred: { interim: string | null; reply: string | null };
+    /**
      * The digest answers an exact repeat; the sketch answers a light rewording of it; the
      * normalized length is what refuses a candidate that grew past the allowance above.
      */
@@ -142,7 +162,7 @@ export function createEchoMemory(): EchoMemory {
   function entry(sessionId: string): Entry {
     let held = state.get(sessionId);
     if (held === undefined) {
-      held = { interim: null, reply: null, answer: null };
+      held = { interim: null, reply: null, deferred: { interim: null, reply: null }, answer: null };
       state.set(sessionId, held);
     }
     return held;
@@ -150,10 +170,14 @@ export function createEchoMemory(): EchoMemory {
 
   return {
     noteInterim(sessionId, text) {
-      entry(sessionId).interim = digest(text);
+      const held = entry(sessionId);
+      held.interim = digest(text);
+      held.deferred.interim = null;
     },
     noteReply(sessionId, text) {
-      entry(sessionId).reply = digest(text);
+      const held = entry(sessionId);
+      held.reply = digest(text);
+      held.deferred.reply = null;
     },
     noteAnswer(sessionId, text) {
       entry(sessionId).answer = {
@@ -167,12 +191,17 @@ export function createEchoMemory(): EchoMemory {
       if (held === undefined) return false;
       const mark = digest(text);
       let matched = false;
+      // The caller is about to post nothing for this text, so each claim it consumes is one the
+      // caller is now relying on. Recorded as the claim is spent, since that is the only moment
+      // both the digest and the deferral are in hand.
       if (held.interim !== null && mark === held.interim) {
         held.interim = null;
+        held.deferred.interim = mark;
         matched = true;
       }
       if (held.reply !== null && mark === held.reply) {
         held.reply = null;
+        held.deferred.reply = mark;
         matched = true;
       }
       return matched;
@@ -180,6 +209,7 @@ export function createEchoMemory(): EchoMemory {
     isInterimEcho(sessionId, text) {
       const held = state.get(sessionId);
       if (held === undefined || held.interim === null || digest(text) !== held.interim) return false;
+      held.deferred.interim = held.interim;
       held.interim = null;
       return true;
     },
@@ -204,13 +234,25 @@ export function createEchoMemory(): EchoMemory {
     },
     release(sessionId, text) {
       const held = state.get(sessionId);
-      if (held === undefined) return;
+      if (held === undefined) return false;
       const mark = digest(text);
       // Both slots, because the only way the other half's slot holds this digest is that it
       // matched this claim and dropped its own post, which makes that record worthless; a record
       // standing for text the other half really did post carries a different digest and stays.
       if (held.interim === mark) held.interim = null;
       if (held.reply === mark) held.reply = null;
+      // The deferral is spent here too, so a second release over the same text reports nothing left
+      // to save and the releasing site's retry stays bounded to one.
+      let deferred = false;
+      if (held.deferred.interim === mark) {
+        held.deferred.interim = null;
+        deferred = true;
+      }
+      if (held.deferred.reply === mark) {
+        held.deferred.reply = null;
+        deferred = true;
+      }
+      return deferred;
     },
     clearAnswer(sessionId) {
       const held = state.get(sessionId);
@@ -242,7 +284,8 @@ export type TranscriptTailerOptions = {
   /**
    * Posts one interim chunk to the session's own thread; the outbound router's `interim`. Nothing
    * about the result is consulted: nothing here queues or retries, and the echo digest this chunk
-   * claims is claimed and released inside the router, beside the count of messages that landed.
+   * claims is claimed and released inside the router, beside the count of messages that landed,
+   * which is also where a run the Stop mirror deferred to goes again once after landing nothing.
    * The router's own result type, imported type-only so the two modules share one status
    * vocabulary without a runtime cycle: a typo'd status string here would otherwise compile and
    * silently never match.

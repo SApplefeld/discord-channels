@@ -647,6 +647,57 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   }
 
   /**
+   * The one retry a run owes its text when it landed nothing and the other posting path had
+   * already dropped its own copy over this run's claim.
+   *
+   * That combination is the only case where nothing else in the broker is still carrying the text:
+   * the deferring path has answered its caller and will not look again, and on the tailer's side
+   * the transcript bytes are already behind its offset, which it never rewinds. The ordinary
+   * zero-landed run does not come through here, because the release hands the text back to a path
+   * that still has it.
+   *
+   * One retry rather than a loop: what makes a retry worth anything here is a transport failure
+   * shorter than the run that met it, and a second failure is evidence of something longer than
+   * this run can outlast while it holds the thread's ordering chain. A run that lands even one
+   * message keeps its claim on the ordinary rule, so the retry can only ever be the whole text or
+   * nothing, never a second copy of messages the operator already has.
+   *
+   * Both outcomes are logged in their own words. This is a loss the ordinary partial-run line
+   * cannot express, since that line reads identically for a run whose text another path is about
+   * to carry, and the operator's only other signal is silence in the thread.
+   */
+  async function retryDeferredRun(
+    threadId: string,
+    sessionId: string,
+    text: string,
+    messages: string[],
+    reclaim: () => void,
+    subject: string,
+    firstError: string,
+  ): Promise<{ landed: number; error: string | null }> {
+    // Re-claimed with no await between the release that reported the deferral and this line: the
+    // other path consults the memory on its own schedule, and a gap here is that path posting its
+    // own copy beside the retry below.
+    reclaim();
+    const retry = await deliver(threadId, messages);
+    if (retry.landed > 0) {
+      log(
+        `routing: the ${subject} from session ${sessionId} landed nothing (${firstError}) with the ` +
+          `other path already deferred to it; its one retry posted ${retry.landed} of ` +
+          `${messages.length} messages`,
+      );
+      return retry;
+    }
+    options.echo?.release(sessionId, text);
+    log(
+      `routing: the ${subject} from session ${sessionId} reached the thread by neither path: the ` +
+        `run the other path deferred to landed nothing (${firstError}) and its one retry landed ` +
+        `nothing (${retry.error ?? "nothing landed"})`,
+    );
+    return retry;
+  }
+
+  /**
    * Posts the one-line notice a recognized wake prompt compresses to under the `brief` setting,
    * shared by the two prompt paths so the notice and its logging cannot drift between them.
    *
@@ -850,7 +901,24 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       if (kind === "reply") options.echo?.noteReply(located.sessionId, text);
       const run = await deliver(located.threadId, messages);
       if (run.error === null) return { status: "sent" };
-      if (kind === "reply" && run.landed === 0) options.echo?.release(located.sessionId, text);
+      if (kind === "reply" && run.landed === 0) {
+        // The release reports whether the tailer had already skipped its own copy of this text over
+        // this claim. If it had, its transcript bytes are behind its offset and this run is the last
+        // thing carrying the text, so it goes again once.
+        if (options.echo?.release(located.sessionId, text) === true) {
+          const retry = await retryDeferredRun(
+            located.threadId,
+            located.sessionId,
+            text,
+            messages,
+            () => options.echo?.noteReply(located.sessionId, text),
+            `mirrored ${kind}`,
+            run.error,
+          );
+          if (retry.error === null) return { status: "sent" };
+          return { status: "failed", error: retry.error };
+        }
+      }
 
       // The kind, the counts, and the transport's error class only. The text is the operator's
       // prompt or Claude's reply, and mirror content never appears in the broker log at any level.
@@ -970,7 +1038,26 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         },
       );
       if (run.error === null) return { status: "sent" };
-      if (run.landed === 0) options.echo?.release(sessionId, text);
+      // The release reports whether the Stop mirror had already dropped its own copy of this text
+      // over this claim. If it had, the mirror has answered its caller and this run is the last
+      // thing carrying the text, so it goes again once, posting fresh: the block this chunk might
+      // have grown is gone either way, and the fail direction of coalescing is more messages rather
+      // than lost narration. A chunk that rendered to nothing is excluded by the count below, since
+      // there is nothing to post a second time.
+      const deferred = run.landed === 0 && options.echo?.release(sessionId, text) === true;
+      if (deferred && run.total > 0) {
+        const retry = await retryDeferredRun(
+          threadId,
+          sessionId,
+          text,
+          renderMirror("interim", text),
+          () => options.echo?.noteInterim(sessionId, text),
+          "interim narration",
+          run.error,
+        );
+        if (retry.error === null) return { status: "sent" };
+        return { status: "failed", error: retry.error };
+      }
       // A chunk with nothing visible in it posted nothing. The tailer's next chunk narrates
       // whatever this one did not, so the drop is reported to the caller and not logged.
       if (run.total === 0) return { status: "failed", error: run.error };

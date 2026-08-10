@@ -293,6 +293,23 @@ test("a persisted downgrade survives a restart, and neither the context size nor
   }
 });
 
+test("a goal set on a record never reaches the bytes on disk", () => {
+  // The goal is operator prose off a transcript, held for one display surface, and nothing reads it
+  // back: the load path nulls it whatever the file says. So the snapshot has no reason to carry it
+  // at all, and the check is on the file's own bytes rather than on what a load returns, which is
+  // the only place the difference between "not restored" and "not written" is visible.
+  const { file, cleanup } = scratchFile();
+  try {
+    saveSessions(file, [{ ...record("session-a"), goal: "ship the fidelity round" }]);
+
+    const bytes = readFileSync(file, "utf8");
+    assert.ok(!bytes.includes("ship the fidelity round"), bytes);
+    assert.ok(!bytes.includes('"goal"'), "the field itself is not written either");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a malformed downgrade nulls that field, never the snapshot around it", () => {
   // The tolerance is `lastToolInput`'s, applied at field level: a strict check here would be a
   // whole-snapshot rejection, and one malformed record would empty the registry, costing every

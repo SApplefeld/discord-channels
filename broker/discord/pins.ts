@@ -218,12 +218,21 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
    * What the channel is meant to carry, in the order the ceiling reads: the permanent card first,
    * then the live sessions oldest first. Duplicates are collapsed, since one message pinned twice
    * is one pin.
+   *
+   * `heldByOthers` is how many of the channel's slots are already spent on pins this keeper does not
+   * sweep. Discord's ceiling is the channel's, not this broker's share of it, so budgeting all fifty
+   * for cards in a channel the operator also pins in asks for pins the channel has no room for: each
+   * is refused permanently, and three refusals in a row stop the pin route for the life of the
+   * process, long after the room comes back.
    */
-  function wanted(intended: IntendedPins): { kept: string[]; shortfall: number } {
+  function wanted(
+    intended: IntendedPins,
+    heldByOthers: number,
+  ): { kept: string[]; shortfall: number } {
     const live = [...new Set(intended.live)]
       .filter((messageId) => messageId !== intended.permanent)
       .sort(olderFirst);
-    const room = MAX_CHANNEL_PINS - (intended.permanent === null ? 0 : 1);
+    const room = MAX_CHANNEL_PINS - heldByOthers - (intended.permanent === null ? 0 : 1);
     const kept = intended.permanent === null ? [] : [intended.permanent];
     kept.push(...live.slice(0, Math.max(room, 0)));
     return { kept, shortfall: live.length - Math.min(live.length, Math.max(room, 0)) };
@@ -247,7 +256,15 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
     const whole = !listed.value.hasMore;
     if (!whole) complete = false;
 
-    const { kept, shortfall } = wanted(intended);
+    // The sweep's whole reach: this broker's own cards, and nothing else in the channel. A pin the
+    // operator made by hand is in neither set and is left exactly where they put it.
+    const ourCards = new Set([...intended.known, ...(intended.permanent === null ? [] : [intended.permanent])]);
+    // Which is also what makes those pins part of the ceiling rather than of the budget: nothing
+    // here will ever free their slots. A page that did not carry the whole list undercounts them,
+    // and undercounting only widens the budget on a pass that pins nothing anyway.
+    const heldByOthers = pinned.filter((messageId) => !ourCards.has(messageId)).length;
+
+    const { kept, shortfall } = wanted(intended, heldByOthers);
     if (shortfall > 0) {
       repeats(
         "the channel is at its pin ceiling",
@@ -255,9 +272,6 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
       );
     }
     const intendedSet = new Set(kept);
-    // The sweep's whole reach: this broker's own cards, and nothing else in the channel. A pin the
-    // operator made by hand is in neither set and is left exactly where they put it.
-    const ourCards = new Set([...intended.known, ...(intended.permanent === null ? [] : [intended.permanent])]);
 
     // Unpins first, so a channel at the ceiling has room for the pins below before they are tried.
     for (const messageId of pinned) {

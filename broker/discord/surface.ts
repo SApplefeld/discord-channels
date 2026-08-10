@@ -452,6 +452,16 @@ export function createSurface(options: SurfaceOptions): Surface {
       exitedAfterMs: options.exitedAfterMs,
     });
     const entry = entryFor(view, state);
+    // A thread is archived on the derived exited, which includes the backstop's presumption about a
+    // record that has merely been silent, and posting into an archived thread revives it on
+    // Discord's side. So a session that comes back stops being an archived one here the moment it
+    // renders anything but exited: its card and its title are maintained again, and the archive it
+    // is owed at its real exit is one this pass has not already spent. The flag is what a restart
+    // reads back, so a change to it is persisted like any other.
+    if (state !== "exited" && entry.archived) {
+      entry.archived = false;
+      bound();
+    }
     if (entry.abandoned || entry.archived) return;
 
     // The card is refreshed whether or not the thread exists yet. A posted message whose thread
