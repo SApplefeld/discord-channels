@@ -266,6 +266,12 @@ ceiling. Reading the cache costs nothing and mutates nothing, and the reader ope
 files, uses no field of either as a path, and leaves the failure detail of a failed poll unread,
 because an authentication error is where a token would appear.
 
+The card is drawn as a bold label over a fenced block per account, and the label is the one place
+an untrusted string lands outside a fence: a bold line is live markdown, where a crafted account
+name could otherwise draw a mention pill, a heading, a fence delimiter, or close the emphasis it
+sits inside, so the label takes the same full-markdown neutralization the session card's title takes
+rather than the lighter escape a fenced field needs.
+
 The card's discipline is freshness rather than completeness. Ages are derived from each reading's
 own fetch time; countdowns are recomputed from reset instants rather than repeated from strings the
 cache froze at fetch time; a window whose reset has passed is drawn for the period it is in now,

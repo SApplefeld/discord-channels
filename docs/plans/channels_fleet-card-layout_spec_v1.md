@@ -295,3 +295,23 @@ bar glyph's tiling stands as the operator's verification step.
 Stamps: none surfaced (memq unstamped --since 1d returned zero on both tiers)
 Next: 3. The docs describe the card that ships
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-10
+Completed: 3. The docs describe the card that ships
+Implemented By: main session (Locus: inline; the docs-write-guard blocks implementer subagents
+under docs/)
+Metrics: 0 review rounds (prose-only section; the finishing pass's docs-curator drift report is the
+review, and it runs next); NEEDS_CONTEXT 0; escalations 0; advisor off
+Decisions / Surprises: executed after section 4 so the shape was documented once, against the final
+card. operations.md gained the per-account shape paragraph and a new "Upgrading a host" section;
+install.md's one-command install now states the identity arguments are first-install-only;
+architecture.md gained the one security fact (the account label is the one untrusted string outside
+a fence, so it takes the full-markdown neutralization). The reuse rule is documented as
+Install-All's alone: Install-Host.ps1 run by itself still takes explicit arguments, confirmed
+against commit 03916e8's diff, and both docs say so. A sweep for the old shape found no live doc
+describing the single-fence card (security-model.md's fleet-card paragraph is shape-agnostic and
+stays true; archive and README archive-index hits are history by design).
+Review Findings: deferred to the finishing pass's docs-curator by design
+Stamps: none surfaced (covered by this session's Chapter 3 sweep)
+Next: finishing-work
+Commit Model: Commit-and-Push

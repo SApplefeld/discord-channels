@@ -72,7 +72,11 @@ relay plugin through the `claude` CLI, then raises exactly one UAC prompt for
 file described under "The launch dialog", and installs a block into the machine-wide PowerShell
 profile that dot-sources the launch wrapper and aliases it, so a new shell anywhere on the machine
 launches a watched session with `cchat <session-name>`. Every piece is idempotent; re-run it after
-moving the checkout or rotating a token.
+moving the checkout or rotating a token. The three identity arguments are needed on the first
+install only: a re-run reads `-HostName`, `-ChannelId`, `-AllowedUserId`, and `-Port` back from the
+`broker.env` the last install wrote, announces each reused value as it picks it up, and refuses a
+malformed value on disk naming the key. An argument you supply always wins, which is how a host is
+rebound to a different channel.
 
 Step 1 stays manual either way (it is Discord's web console), and a host still runs the per-host
 verification checklist under "The relay as a plugin" before its wrapper table entry moves to plain
