@@ -1,13 +1,13 @@
 # Channels: the usage and fleet-health card
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: fable-tier sections and the reviewer bumps, dispatched with the explicit override from this Opus-led session; overage onto usage credits approved 2026-08-09
 Created: 2026-08-09
 
 ## Related
 
-- [channels_question-answering_spec_v1.md](../archive/plans/channels_question-answering_spec_v1.md):
+- [channels_question-answering_spec_v1.md](channels_question-answering_spec_v1.md):
   a concurrent round, landed and archived.
 - [channels_mirror-fidelity-repairs_spec_v1.md](channels_mirror-fidelity-repairs_spec_v1.md): the
   other concurrent round, which redrew the cards this plan's Sections 3 and 4 write into.
@@ -590,4 +590,57 @@ marker's glyph reads clearly beside the card's own state glyph at a phone's widt
 Review Findings: none new; every section's findings were closed in its own round.
 Stamps: none surfaced at this boundary
 Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push
+
+### Chapter 6 - 2026-08-09 - close-out
+Completed: the whole-effort finishing pass, run once over this round and the concurrent
+mirror-fidelity round together. That round's Chapter 5 carries the pass's full account, including
+the base-ref resolution, the reviewer tiers, and the two quadratic defects in the shared rendering
+path. This Chapter records what belongs to this plan.
+Implemented By: qa-verifier on this plan, then the shared security, adversarial, implementation and
+curation agents named in the sibling Chapter.
+Metrics: suite 1094 tests, 1093 pass, 0 fail, 1 skip, exit 0. Typecheck exit 0. QA on this plan
+returned PASS on every code criterion with each one backed by a named passing test, and the single
+unidentified failure this plan's Chapter 4 recorded did not reproduce across the pass's two full
+runs, nor across any run since. It remains unreproduced and unidentified rather than called a
+flake.
+
+Decisions / Surprises: this plan's own findings were all truth-of-record rather than behavior. The
+goal was written to the on-disk snapshot while `registry.ts` stated as an invariant that it never
+is. It was nulled on load and read back by nothing, so the effect was small, but the fix makes the
+invariant true rather than weakening it to match the code: `PersistedRecord` now omits the field.
+The security model's tailer paragraph still said a transcript line yields on one of three named
+shapes when it yields on six, and it never named the `/goal` egress at all, which is the only one
+of the six that sends operator prose rather than model output. It now carries its own paragraph and
+the four bounds that hold it: one command by allowlist, the mirror-on gate, neutralization at the
+render site, and omission from both the public record and the snapshot.
+
+The roster's overflow policy had three descriptions and no two agreed. This spec said "the newest
+few entries"; `docs/operations.md` shipped "the newest few tasks", false on both counts; and the
+code names up to 24, oldest first, so the overflow count hides the newest. The code's policy is the
+one kept, adjudicated in Section 4 above with the reasoning. The change arrived through the
+concurrent round's commit `ea52cd3` and no Chapter recorded it, which is how three sources drifted
+apart inside one day.
+
+Deviations recorded rather than reconciled: the pin reconciler's sticky-shortfall band widens from
+50 cards to 40 now that hand-made pins are counted against the ceiling. If the operator removes
+hand pins after a shortfall, the intended set is unchanged, the converged gate returns without
+reading, and those sessions stay unpinned until the intended set next changes on its own. Fixing it
+means reading before the converged gate, which is the property that gate exists to hold. Reversal
+is not wanted; the alternative is worse.
+
+Open and inferred rather than confirmed: after the archive-revive fix, a session woken by hook
+traffic alone leaves the broker's archived flag cleared while Discord's own thread may still be
+archived. If Discord refuses a rename on an archived thread as a permanent failure, three of them
+mark the entry abandoned and the card is unpinned, which is a worse-looking but louder failure than
+the frozen card it replaces. Nothing in this repository states Discord's rule and no test can
+establish it. What would confirm it is a real archived thread taking a name-change request, which
+is on the operator list.
+
+Review Findings: QA PASS; the shared security and adversarial verdicts and their disposition are in
+the sibling plan's Chapter 5. Every finding in both is fixed.
+Operator-pending: carried to `docs/backlog.md` so they survive the archive, and named in the
+close-out status in the order they are run.
+Stamps: none surfaced at this boundary
+Next: none; the effort is complete
 Commit Model: Commit-and-Push

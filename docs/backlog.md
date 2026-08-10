@@ -44,10 +44,35 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   `broker/routing/interactions.ts`, `broker/discord/pins.ts`, and `broker/usage/thread.ts`, each
   with its own window constant, so a fix to the throttling behavior has to be found in five places.
   Low risk and no behavior change wanted; purely the drift that a sixth copy would make worse.
-- A usage and fleet-health card in the channel: graduated to its own plan,
-  [`plans/channels_usage-card_spec_v1.md`](plans/channels_usage-card_spec_v1.md), after the
-  claude-swap recon and the operator's design ratification (thread card, mirror-never-poll,
-  accounts plus session health; backlog surfacing deferred as mechanism-less).
+- **Deploy the two delivered rounds and walk them, in this order.** Everything below needs a real
+  host, a real Discord client, or a phone, and none of it can be closed from code. The delivered
+  plans are
+  [`archive/plans/channels_usage-card_spec_v1.md`](archive/plans/channels_usage-card_spec_v1.md)
+  and
+  [`archive/plans/channels_mirror-fidelity-repairs_spec_v1.md`](archive/plans/channels_mirror-fidelity-repairs_spec_v1.md).
+  1. Pull and restart the broker on SCOTT, NEO and ASR, and set `CHANNEL_USAGE_CARD` on wherever
+     the fleet card is wanted. Nothing else on this list can run before this.
+  2. Read both cards on a phone and confirm neither costs a horizontal drag. The width bound counts
+     code points, while a glyph-led line can draw one column wider, so this is the check the bound
+     itself cannot make. The downgrade marker's glyph beside the state glyph is read in the same
+     pass.
+  3. Compare the fleet card's numbers against a console `cswap status` within one refresh. This
+     cannot be run from a session at all: `cswap` mutates the cache under test and spends the shared
+     budget of roughly 28 requests per hour per account.
+  4. Watch a session start and exit and confirm the channel's pin list follows it.
+  5. Mirror a turn that carries a Markdown table and confirm it draws as an aligned block.
+  6. Answer a multi-select from the thread and confirm the session reports comma-space text.
+  7. Stop every other claude-swap consumer for an hour and confirm the card's "as of" ages honestly
+     rather than reading fresh.
+  8. On a host with zero sessions and no claude-swap, confirm the static body means a deleted card
+     goes undetected until restart.
+- Confirm what Discord does with a rename on a still-archived thread. Inferred, never established:
+  after the archive-revive fix, a session woken by hook traffic alone leaves the broker's archived
+  flag cleared while Discord's thread may still be archived. If Discord refuses the rename as a
+  permanent failure, three refusals mark the entry abandoned and the card is unpinned, which is a
+  louder failure than the frozen card it replaces but still not the intended one. Nothing in this
+  repository states the rule and no test can establish it; a real archived thread taking a
+  name-change request settles it.
 - Spoiler-collapsed background-task reports, behind `CHANNEL_TASK_NOTIFICATION=full`. The default
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without

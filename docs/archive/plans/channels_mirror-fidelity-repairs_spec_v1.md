@@ -1,14 +1,19 @@
 # Channels: mirror fidelity repairs
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: fable-tier sections and the reviewer bumps, dispatched with the explicit override from this Opus-led session; overage onto usage credits approved 2026-08-09
 Created: 2026-08-09
 
 ## Related
 
-- [channels_question-answering_spec_v1.md](../archive/plans/channels_question-answering_spec_v1.md): the round whose
+- [channels_question-answering_spec_v1.md](channels_question-answering_spec_v1.md): the round whose
   live walk surfaced the multi-select join difference in Section 2 below.
+- [channels_usage-card_spec_v1.md](channels_usage-card_spec_v1.md): the other concurrent round,
+  whose card fields this round's redesign draws.
+
+All three rounds write `broker/discord/render.ts`, so their commits interleave on one branch and
+one finishing pass covers the three changesets together.
 
 ## Goal
 
@@ -487,4 +492,73 @@ finishing pass's QA run is instructed to capture any failure's output rather tha
 Review Findings: none formal on these sections; the finishing pass covers them.
 Stamps: none surfaced at this boundary
 Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-09 - close-out
+Completed: the whole-effort finishing pass, run once over this round and the concurrent usage-card
+round together, because all three of the day's rounds write `broker/discord/render.ts` and a
+per-plan split would have handed each reviewer half the story of the same file. Base ref
+`03772e3`, resolved by asking git which commit added each plan doc rather than by reading commit
+subjects, which put it eight commits earlier than the subjects suggested and would otherwise have
+hidden the usage cache reader from every reviewer.
+Implemented By: two qa-verifier agents (one per plan), security-reviewer and adversarial-reviewer
+at the fable tier per the Fable Spend header, three implementer agents on disjoint file sets, one
+implementer for the follow-on quadratic, and docs-curator.
+Metrics: suite 1094 tests, 1093 pass, 0 fail, 1 skip, exit 0, against a 1082/1081/0/1 baseline, so
++12 tests and no regressions. Typecheck exit 0 at every commit. 1 Critical, 6 Major, 3 Minor found
+and all fixed here. 0 escalations.
+
+QA on this plan returned FAIL, on Section 8: the table transform reached no documentation, because
+the docs commit `52dd6f7` landed before the transform and the transform's own commit `2ca5a37`
+touched no `docs/` file. Two named acceptance items were unmet with nothing to signal it. A green
+suite cannot see that, and no per-section review would have either, since Section 8 was reviewed
+while its claims were still true.
+
+Decisions / Surprises: the effort's largest defect was invisible to both efforts that caused it.
+The mirrored-table transform was quadratic over a run of pipe-carrying lines that never forms a
+table, measured at 809ms for 4000 such lines, and it runs on untrusted model output on the broker's
+only event loop. It passed every test and satisfied its spec line by line; it mattered only because
+a different section's decision, that a mirrored reply is never truncated, sets the input size. A
+second quadratic shape survived the first fix, found because parses went linear while wall time
+kept quadrupling, which located the remaining cost downstream of parsing. Both are fixed and both
+are pinned by gates that count work rather than measure wall time, since a timing assertion is
+flaky on a loaded machine.
+
+The claim-at-dispatch narrowing this round's Chapter 4 handed to the reviewers was real in both
+orderings, and the answer was yes, the release should do more than restore a digest. The echo
+memory now records that a match consumed a claim, and a zero-landed run whose claim had already
+suppressed the other path re-takes the claim without yielding and runs once more.
+
+The verification method worth keeping is the differential fuzz, and specifically what one
+implementer did with it. Its first corpus reported zero output mismatches against the pre-fix
+renderer, so it built a deliberately-wrong mutant of its own predicate and ran the same corpus
+against it. The mutant also passed, proving the corpus could not tell right from wrong. It added
+inputs straddling the refusal point, at which the mutant produced 340 mismatches and the real fix
+still produced zero across 28680 comparisons. A green result from a test never shown able to go red
+is not evidence, which is the same lesson the fence-escaping property taught this effort in
+Chapter 4, learned there at the cost of four agreeing sources all measuring the same wrong thing.
+
+Deviations recorded rather than reconciled: the retry converts a conditional duplicate into a
+certain one in one case, where a transport loses the response after Discord has already created the
+message. That case is a false zero-landed verdict today too, and today it duplicates by the other
+path posting; the retry makes that duplicate deterministic rather than introducing a new class.
+Reversal cost is one commit: drop the retry at the two release sites and keep the loud log line.
+The retry also gives the run a fresh wait budget, so a rate-limited run plus its retry can hold a
+thread's ordering chain for roughly twice `MAX_RUN_WAIT_MS`.
+
+Chapter 3 recorded that both optional card blocks render `None` rather than being omitted, on the
+operator's reasoning that an omitted section cannot be told from a broken renderer. The shipped code
+omits them, on the later operator instruction, and the reversal was recorded nowhere until the
+curation pass surfaced it. The docs already described the as-built behavior; this is the record.
+
+Review Findings: QA FAIL on Section 8 (fixed here); security CONCERNS (0 Critical, 2 Major, 1
+Minor, all fixed); adversarial CHANGES_REQUIRED (1 Critical, 3 Major, 2 Minor, all fixed). Neither
+reviewer contradicted the other. Two findings were corrections to my own prose: the security model
+named a width-derived mechanism for the card's field cuts that does not exist, and my brief to one
+implementer named a pin-budget formula that, taken literally, would have made the channel thrash.
+That implementer implemented the intent instead and said so.
+Operator-pending: carried to `docs/backlog.md` so they survive the archive, and named in the
+close-out status in the order they are run.
+Stamps: none surfaced at this boundary
+Next: none; the effort is complete
 Commit Model: Commit-and-Push

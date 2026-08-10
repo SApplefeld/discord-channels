@@ -62,3 +62,10 @@ the live backlog carries active items only.
   interactive message, and answers the hook with the operator's choices, with every failure of the
   hold releasing cleanly to the console picker. The two live checks that plan left open ride on the
   live backlog rather than here.
+
+- **A usage and fleet-health card in the channel.** Graduated to its own plan and delivered by it,
+  [`plans/channels_usage-card_spec_v1.md`](plans/channels_usage-card_spec_v1.md): one always-there
+  "Fleet: Usage" thread whose card mirrors claude-swap's local cache rather than invoking a CLI
+  that mutates credentials and spends a shared request budget, plus the model, context size and
+  subagent roster on each session's own card. The operator-only deploy and walk survive on the live
+  backlog rather than here.
