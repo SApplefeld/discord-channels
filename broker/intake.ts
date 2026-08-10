@@ -566,9 +566,11 @@ export type HandlerOptions = {
 
 /**
  * What `GET /sessions` publishes. The process token is withheld: it is the join key a hook post is
- * authenticated by, so anything that can read one can forge session traffic.
+ * authenticated by, so anything that can read one can forge session traffic. The goal is withheld
+ * too: it is operator prose off the transcript, held for one display surface, and a debugging route
+ * that anything on this machine can read is not that surface.
  */
-export type PublicSessionRecord = Omit<SessionRecord, "processToken">;
+export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal">;
 
 export function redact(record: SessionRecord): PublicSessionRecord {
   // Field by field rather than by deleting from a copy, so a field added to SessionRecord has to

@@ -199,6 +199,10 @@ function cleanRecord(record: SessionRecord): SessionRecord {
     // would render as the size the session is running at right now. The next transcript line
     // reports the real one, and until it does the card carries the model without a figure beside it.
     contextTokens: null,
+    // Dropped for the same reason, and one the card is built around: whether a goal is still being
+    // worked toward is not observable, so a goal restored from a snapshot would draw as current on
+    // a card indefinitely, which reads worse than no goal line at all.
+    goal: null,
     // Absent, null, and malformed all land as null: the validator above vouches for every other
     // field of the record, and this one answers for itself.
     downgrade: fallbackOrNull(record.downgrade),

@@ -881,6 +881,32 @@ test("a reading for a session the registry does not hold unended changes nothing
   assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
 });
 
+test("a goal is held on the record it names, replaced by the next one, and cleared on request", () => {
+  const { registry, sessionId } = withSession();
+
+  registry.noteGoal(sessionId, "finish the fidelity round");
+  assert.equal(registry.list()[0].goal, "finish the fidelity round");
+
+  registry.noteGoal(sessionId, "then write the chapter");
+  assert.equal(registry.list()[0].goal, "then write the chapter", "the newest goal is the goal");
+
+  registry.noteGoal(sessionId, null);
+  assert.equal(registry.list()[0].goal, null);
+});
+
+test("a goal for a session the registry does not hold unended changes nothing", () => {
+  // An ended record is a tombstone whose thread has been painted its final state, and a goal
+  // arriving after it would put a line on a card that says the session is over.
+  const { registry, sessionId } = withSession();
+  registry.relayClosed(TOKEN, sessionId);
+
+  assert.equal(registry.noteGoal(sessionId, "too late"), null);
+  assert.equal(registry.noteGoal("no-such-session", "nobody's goal"), null);
+
+  assert.equal(registry.list()[0].goal, null);
+  assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
+});
+
 /** The refusal record's fields as the reader reduces them, the captured specimen's values. */
 const REFUSAL: ModelFallback = {
   cause: "refusal",

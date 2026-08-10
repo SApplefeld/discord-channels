@@ -721,6 +721,39 @@ test("Set-ChannelEnvFile and Get-ChannelEnvFile round-trip", (t) => {
   assert.equal(result.CHANNEL_BROKER_PORT, "8787");
 });
 
+test("a reinstall preserves an allowlisted knob the operator set by hand", (t) => {
+  // The knob that makes this load-bearing is the archive switch: it is on by default, so turning it
+  // off is the only thing an operator can say about it, and a rewrite that dropped the line would
+  // make the default the only reachable behavior. Driven against a real file through both halves,
+  // because what is being pinned is what a second install finds on disk.
+  const dir = tmpDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const envPath = path.join(dir, "broker.env");
+
+  const result = runFunctions<Record<string, string>>(
+    [
+      `Set-ChannelEnvFile -Path "${envPath}" -Values ([ordered]@{ CHANNEL_HOST_NAME = "NEO"; CHANNEL_BROKER_PORT = 8787 })`,
+      // What an operator does between installs: one hand-set knob, plus a key the allowlist refuses.
+      `Add-Content -LiteralPath "${envPath}" -Value "CHANNEL_DISCORD_ARCHIVE_ON_END=off"`,
+      `Add-Content -LiteralPath "${envPath}" -Value "NODE_OPTIONS=--require /tmp/evil.js"`,
+      // The second install, writing the same fixed key list with a moved port.
+      `Set-ChannelEnvFile -Path "${envPath}" -Values ([ordered]@{ CHANNEL_HOST_NAME = "NEO"; CHANNEL_BROKER_PORT = 9999 })`,
+      `$values = Get-ChannelEnvFile -Path "${envPath}"`,
+      `($values | ConvertTo-Json) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
+    ].join("\n"),
+    dir,
+  );
+
+  assert.equal(result.CHANNEL_DISCORD_ARCHIVE_ON_END, "off", "the hand-set knob survives the install");
+  assert.equal(result.CHANNEL_BROKER_PORT, "9999", "a value the install carries wins over the file's");
+  assert.equal(result.CHANNEL_HOST_NAME, "NEO");
+  assert.equal(
+    result.NODE_OPTIONS,
+    undefined,
+    "a key off the allowlist is dropped rather than carried forward",
+  );
+});
+
 test("Set-ChannelBrokerEnvironment applies only allowlisted keys", (t) => {
   const dir = tmpDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -771,7 +804,10 @@ test("every knob broker/config.ts reads is on the installer's env allowlist", ()
   );
 
   const functionsSource = readFileSync(FUNCTIONS_PATH, "utf8");
-  const blockStart = functionsSource.indexOf("$script:ChannelBrokerEnvAllowlist");
+  // Anchored on the assignment rather than on the name, which the functions that read the
+  // allowlist also carry: a locator matching a mention instead would extract an empty set and pin
+  // nothing.
+  const blockStart = functionsSource.indexOf("$script:ChannelBrokerEnvAllowlist = @(");
   assert.ok(blockStart !== -1, "the allowlist assignment must exist to be pinned against");
   const block = functionsSource.slice(blockStart, functionsSource.indexOf(")", blockStart));
   const allowlisted = new Set(

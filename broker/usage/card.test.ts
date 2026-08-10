@@ -41,6 +41,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
     turnCount: 4,
     lastHookAt: NOW - 2 * MINUTE,
     endedAt: null,
@@ -130,9 +131,11 @@ test("a field inside the body reads as its characters, and none composes markdow
 });
 
 test("no crafted cache string can break out of the usage card's fence", () => {
-  // The backtick and the backslash stay escaped, so escaped output can never carry two adjacent
-  // backticks and no field can compose a fence delimiter at any length; the newline dies in the
-  // invisible strip, so no field composes a body line of its own.
+  // The body carries no backtick at all, which is the only bound a crafted field cannot compose
+  // around: Discord processes a backslash escape inside a fence, so an escaped backtick arrives as
+  // a real one and three of those close the block. The backslash is escaped rather than replaced,
+  // because that same processing is what draws a path readably. The newline dies in the invisible
+  // strip, so no field composes a body line of its own.
   const body = card(
     {
       available: true,
@@ -144,13 +147,17 @@ test("no crafted cache string can break out of the usage card's fence", () => {
         }),
       ],
     },
-    [view({ name: "two\nlines" })],
+    [view({ name: "two\nlines \\`" })],
   );
 
-  const delimiters = body.split("\n").filter((line) => line.includes("``"));
-  assert.deepEqual(delimiters, ["```", "```"], "exactly the two fence delimiters, nothing else");
+  const delimiters = body.split("\n").filter((line) => line.includes("`"));
+  assert.deepEqual(
+    delimiters,
+    ["```", "```"],
+    "exactly the two fence delimiters, and no other line carries a backtick",
+  );
   for (const line of bodyOf(body)) {
-    assert.doesNotMatch(line, /``/, `no adjacent backticks inside the body: ${line}`);
+    assert.doesNotMatch(line, /`/, `no backtick inside the body: ${line}`);
   }
   assert.match(body, /twolines/, "the newline is stripped, never a line break");
 });
@@ -502,7 +509,7 @@ test("the footer names interim mirroring only while it is off", () => {
 test("hostile strings in an account label or a session name render inert", () => {
   // Every one of these fields is drawn inside the fence, where Discord resolves no chip and draws
   // no pill, so the syntax reaches the operator as the characters it is. What a crafted string
-  // still cannot do is close the block: the backtick stays escaped, so the fence around the body
+  // still cannot do is close the block: no backtick survives into the body, so the fence around it
   // holds and nothing a label carries can reach a surface where a chip renders.
   const body = card(
     {
@@ -514,10 +521,10 @@ test("hostile strings in an account label or a session name render inert", () =>
     [view({ name: "`code` <@everyone>" })],
   );
 
-  const delimiters = body.split("\n").filter((line) => line.includes("``"));
+  const delimiters = body.split("\n").filter((line) => line.includes("`"));
   assert.deepEqual(delimiters, ["```", "```"], "the fence holds around every hostile field");
   assert.match(body, /<@1234567890> \*\*admin/, "the characters, with no visible backslash");
-  assert.match(body, /\\`code\\`/, "the backtick is the character the fence still escapes");
+  assert.match(body, /'code' <@everyone>/, "a backtick is replaced by the character nearest it");
 });
 
 test("live sessions render one row each and ended ones are omitted", () => {

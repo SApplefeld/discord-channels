@@ -696,6 +696,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         const change = registry.noteFallback(sessionId, fallback);
         if (change !== null) announceModelChange(change);
       },
+      // What the session is trying to finish, for its own card. Nothing is posted and nothing is
+      // logged: the goal is operator prose, and the card is the one surface that reads it.
+      noteGoal: (sessionId, goal) => {
+        registry.noteGoal(sessionId, goal);
+      },
       echo,
       log: note,
       // The pass watchdog's threshold, scaled here because the tailer does not know the poll

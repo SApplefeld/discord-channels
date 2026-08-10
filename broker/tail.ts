@@ -263,6 +263,12 @@ export type TranscriptTailerOptions = {
    * flagged.
    */
   noteFallback?: (sessionId: string, fallback: ModelFallback) => void;
+  /**
+   * Records what the session is trying to finish, as a `/goal` command line set it, or clears it on
+   * the explicit `/goal clear`; the registry's `noteGoal`. Nothing here is posted as content and the
+   * text is never logged: what it feeds is a record the card is rendered from.
+   */
+  noteGoal?: (sessionId: string, goal: string | null) => void;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
@@ -418,7 +424,8 @@ type TailItem =
   | { kind: "text" | "prompt"; text: string }
   | { kind: "question"; questions: readonly AskedQuestion[] }
   | { kind: "model"; reading: ModelReading }
-  | { kind: "fallback"; fallback: ModelFallback };
+  | { kind: "fallback"; fallback: ModelFallback }
+  | { kind: "goal"; goal: string | null };
 
 /**
  * The most questions one `AskUserQuestion` line contributes, the tool's own ceiling.
@@ -491,6 +498,73 @@ export function askedQuestions(input: unknown): AskedQuestion[] {
     });
   }
   return readable;
+}
+
+/**
+ * The slash command a user line reports, and its arguments, from the markup Claude Code writes a
+ * console command as: `<command-name>/goal</command-name>` beside `<command-args>…</command-args>`.
+ *
+ * The first of each tag wins, and the content is taken non-greedily, so a command whose arguments
+ * quote the markup itself cannot re-aim the reading: what an operator typed is text of the same
+ * class as any other transcript content, and the tags are read as a fixed shape rather than parsed
+ * as a document.
+ */
+const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+
+/**
+ * The one command whose arguments this reader admits.
+ *
+ * An allowlist rather than a sweep of every command: a command's arguments are operator prose, and
+ * most of it is nobody's business on a surface that leaves the machine. `/goal` is admitted because
+ * what a session is trying to finish is exactly what a long quiet stretch on the thread needs
+ * explaining, and it is the operator's own words about their own work.
+ */
+const GOAL_COMMAND = "/goal";
+
+/** The argument that clears a goal, which is the one end of a goal this reader can observe. */
+const GOAL_CLEAR = "clear";
+
+/**
+ * The text of a user line, whichever shape it carries it in: Claude Code writes `message.content`
+ * as a string on some lines and as an array of blocks on others, and a command lands in either.
+ */
+function userText(message: unknown): string {
+  if (typeof message !== "object" || message === null || Array.isArray(message)) return "";
+  const content = (message as Record<string, unknown>)["content"];
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
+    const fields = block as Record<string, unknown>;
+    if (fields["type"] !== "text") continue;
+    const text = fields["text"];
+    if (typeof text === "string") parts.push(text);
+  }
+  return parts.join("\n");
+}
+
+/**
+ * What a `/goal` command line contributes: the goal it set, or null for the explicit clear.
+ *
+ * Undefined for every other line, which is every other command, a bare `/goal` (a query at the
+ * console rather than a setting), and a goal whose text is empty once the invisible class is
+ * stripped, on `askedQuestions`' rule that a field the surface would draw blank is not a field.
+ * The text itself is held as it was written and bounded at the render site, the way an option label
+ * is: nothing but the card reads it.
+ */
+function goalCommand(text: string): string | null | undefined {
+  const name = COMMAND_NAME.exec(text);
+  if (name === null || withoutInvisible(name[1]).trim() !== GOAL_COMMAND) return undefined;
+  const args = COMMAND_ARGS.exec(text);
+  if (args === null) return undefined;
+  const written = withoutInvisible(args[1]).trim();
+  if (written === "") return undefined;
+  // Compared trimmed and case-folded, the way every other operator-written word this broker reads
+  // is: a goal named "Clear" is nobody's goal, and reading one as a goal would leave the card
+  // carrying the word the operator used to take it down.
+  return written.toLowerCase() === GOAL_CLEAR ? null : args[1];
 }
 
 /** The three usage figures that add up to the context a turn ran against. */
@@ -591,9 +665,16 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * thread itself, and a `prompt` that is an object rather than a string carries pasted image
  * references rather than prose.
  *
+ * A `user` line yields a goal when its content carries the console-command markup and the command
+ * named in it is `/goal`. One command by allowlist, never a sweep: a command's arguments are
+ * operator prose, and most of it is nobody's business on a surface that leaves the machine. What is
+ * yielded is the goal's own text, or null for the explicit `/goal clear`. No other user line yields
+ * anything, and none of them yields conversation text: a typed prompt reaches the thread through
+ * its own hook.
+ *
  * Everything else yields nothing: thinking blocks, tool calls, tool results, attachments of other
  * types, a `queued_command` whose `commandMode` is not `prompt`, withdrawn queue entries, system
- * lines, user lines, and every line type this build has never seen. The transcript is another
+ * lines, every other user line, and every line type this build has never seen. The transcript is another
  * program's file format that can grow new line types without notice, so the safe default for the
  * unrecognized is silence, never publication.
  *
@@ -672,6 +753,10 @@ function lineItems(line: string, sessionId: string): TailItem[] {
         },
       },
     ];
+  }
+  if (record["type"] === "user") {
+    const goal = goalCommand(userText(record["message"]));
+    return goal === undefined ? [] : [{ kind: "goal", goal }];
   }
   if (record["type"] === "attachment") {
     const attachment = record["attachment"];
@@ -1126,6 +1211,17 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
             repeats(
               `session ${sessionId}'s model downgrade could not be recorded`,
               "the record is dropped; the error detail is withheld, it can carry content",
+            );
+          }
+          continue;
+        }
+        if (item.kind === "goal") {
+          try {
+            options.noteGoal?.(sessionId, item.goal);
+          } catch {
+            repeats(
+              `session ${sessionId}'s goal could not be recorded`,
+              "the goal is dropped; the error detail is withheld, it can carry content",
             );
           }
           continue;

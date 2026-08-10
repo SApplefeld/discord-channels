@@ -36,6 +36,7 @@ function record(sessionId: string): SessionRecord {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
   };
 }
 
@@ -258,12 +259,12 @@ test("a snapshot written before the model fields existed loads with them absent,
   }
 });
 
-test("a persisted downgrade survives a restart and a persisted context size does not", () => {
+test("a persisted downgrade survives a restart, and neither the context size nor the goal does", () => {
   // A downgrade is a state that outlives the process: the tailer rebaselines to the transcript's end
   // after a restart and never sees that record again, so an unpersisted opening model would be
-  // re-seeded from the fallback and the standing marker would vanish. The context size is the
-  // opposite case, since a figure written hours ago would render as the size a session is running at
-  // right now.
+  // re-seeded from the fallback and the standing marker would vanish. The context size and the goal
+  // are the opposite case, since a figure or a sentence written hours ago would render as what a
+  // session is running at right now.
   const { file, cleanup } = scratchFile();
   try {
     const downgraded: SessionRecord = {
@@ -271,6 +272,10 @@ test("a persisted downgrade survives a restart and a persisted context size does
       openingModel: "claude-fable-5",
       model: "claude-opus-4-8",
       contextTokens: 61_380,
+      // Dropped on the same reasoning the context size is, and one the card is built around:
+      // whether a goal is still being worked toward is not observable, so one restored from a
+      // snapshot would draw as current indefinitely.
+      goal: "ship the fidelity round",
       downgrade: {
         cause: "refusal",
         originalModel: "claude-fable-5",
@@ -282,7 +287,7 @@ test("a persisted downgrade survives a restart and a persisted context size does
     saveSessions(file, [downgraded]);
 
     const loaded = loadSessions(file, { log: () => {} });
-    assert.deepEqual(loaded, [{ ...downgraded, contextTokens: null }]);
+    assert.deepEqual(loaded, [{ ...downgraded, contextTokens: null, goal: null }]);
   } finally {
     cleanup();
   }

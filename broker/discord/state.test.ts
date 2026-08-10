@@ -20,6 +20,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,
@@ -152,6 +153,7 @@ test("a view starts without attention until something reports it", () => {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
   });
 
   assert.equal(narrowed.needsAttention, false);

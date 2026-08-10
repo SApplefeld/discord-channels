@@ -48,7 +48,10 @@ export type SurfaceOptions = {
   idleAfterMs: number;
   /** A session silent for this long is presumed dead and renders exited. */
   exitedAfterMs: number;
-  /** Off by default: an exited thread stays open so its final state is readable in the list. */
+  /**
+   * On by default: an exited session's thread leaves the active list once its final state is
+   * painted. The thread itself survives archiving, readable and searchable, and a post revives it.
+   */
   archiveOnEnd: boolean;
   maxCallsPerTick?: number;
   /** Threads this broker already owns, from the previous run. */
@@ -153,6 +156,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       contextTokens: null,
       downgrade: null,
       backgroundTasks: [],
+      goal: null,
       needsAttention: false,
       lifecycle: "ended",
     };

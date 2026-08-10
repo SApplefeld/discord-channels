@@ -53,6 +53,8 @@ type Recorder = {
   posts: string[];
   opens: { messageId: string; name: string }[];
   edits: { messageId: string; card: string }[];
+  /** Every thread this card asked Discord to close. The fleet thread is permanent, so it is empty. */
+  archived: string[];
   /** Scripted results for the next call of each kind. Anything unscripted succeeds. */
   nextPost: CallOutcome<{ messageId: string }> | null;
   nextOpen: CallOutcome<{ threadId: string }> | null;
@@ -64,6 +66,7 @@ function recorder(): Recorder {
     posts: [],
     opens: [],
     edits: [],
+    archived: [],
     nextPost: null,
     nextOpen: null,
     nextEdit: null,
@@ -87,7 +90,10 @@ function recorder(): Recorder {
         return scripted ?? ok(null);
       },
       renameThread: async () => ok(null),
-      archiveThread: async () => ok(null),
+      archiveThread: async ({ threadId }) => {
+        state.archived.push(threadId);
+        return ok(null);
+      },
     },
   };
   return state;
@@ -130,6 +136,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,
@@ -175,6 +182,30 @@ test("the first tick posts the card and opens its thread on it, under a fixed na
     { messageId: MESSAGE_ID, threadId: null },
     { messageId: MESSAGE_ID, threadId: THREAD_ID },
   ]);
+});
+
+test("the fleet thread is never archived, whatever the sessions on it are doing", async () => {
+  // The fleet thread is permanent: it is the one card that is always relevant, and it belongs to
+  // this module rather than to the session surface, which closes a thread when its session exits.
+  // Every session on the card being exited is the case that most resembles that trigger, so it is
+  // the one driven here, alongside an unreadable cache and a restart onto the same thread.
+  const { calls, usage } = card({
+    sessions: () => [
+      view({ sessionId: "session-a", lifecycle: "ended", endedAt: START }),
+      view({ sessionId: "session-b", lifecycle: "ended", endedAt: START }),
+    ],
+  });
+
+  await usage.tick();
+  const restarted = card({
+    binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
+    sessions: () => [],
+    read: () => UNREADABLE,
+  });
+  await restarted.usage.tick();
+
+  assert.deepEqual(calls.archived, []);
+  assert.deepEqual(restarted.calls.archived, []);
 });
 
 test("a restart rebinds to the persisted thread instead of opening a second one", async (t) => {

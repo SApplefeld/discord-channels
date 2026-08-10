@@ -2,6 +2,7 @@
 // error: the broker runs its registry and its hook intake with no Discord connection at all, which
 // is what every test and every local debugging run does.
 import { readFileSync } from "node:fs";
+import { strictFlag } from "../config.ts";
 import { SNOWFLAKE } from "../security/senders.ts";
 import { assertTokenFileIsProtected } from "./credentials.ts";
 
@@ -18,7 +19,11 @@ export type DiscordConfig = {
   idleAfterMs: number;
   /** A session silent for this long is presumed dead and renders exited. */
   exitedAfterMs: number;
-  /** Off by default: an exited thread stays open so its final state stays readable in the list. */
+  /**
+   * On by default: an exited session's thread leaves the active list on its own, so the channel
+   * reads as what is running. An archived thread is not destroyed, it stays readable and searchable
+   * and a post revives it, which is why the default is safe to be on.
+   */
   archiveOnEnd: boolean;
 };
 
@@ -37,11 +42,6 @@ function integerAtLeast(raw: string | undefined, minimum: number, fallback: numb
     throw new Error(`expected an integer of at least ${minimum}, got ${JSON.stringify(raw)}`);
   }
   return value;
-}
-
-function flag(raw: string | undefined): boolean {
-  const value = raw?.trim().toLowerCase() ?? "";
-  return value === "1" || value === "true" || value === "yes";
 }
 
 /**
@@ -158,6 +158,9 @@ export function loadDiscordConfig(
     dwellMs: integerAtLeast(env.CHANNEL_DISCORD_DWELL_MS, 0, DEFAULT_DWELL_MS),
     idleAfterMs,
     exitedAfterMs,
-    archiveOnEnd: flag(env.CHANNEL_DISCORD_ARCHIVE_ON_END),
+    // Absent means archive, and only the recognized off vocabulary disables it: a new host gets the
+    // behavior without configuring anything, and a host that wants its threads left in the active
+    // list says so once. The mirror switch's idiom, read through the mirror switch's own parser.
+    archiveOnEnd: strictFlag(env.CHANNEL_DISCORD_ARCHIVE_ON_END, true),
   };
 }

@@ -103,24 +103,49 @@ export function inertField(value: string, limit: number): string {
   return fit(inertText(value), limit);
 }
 
-// The two characters a fenced block still gives meaning to. A run of backticks can close the
-// block and put the rest of the card outside it, and a backslash in front of an inserted escape
-// would free the backtick after it, so both are escaped: escaped output can never carry two
-// adjacent backticks, which is what makes a delimiter impossible to compose at any length.
-const BLOCK_SYNTAX = /[\\`]/g;
+/**
+ * What a backtick becomes inside a fenced block, since no escape of one holds there.
+ *
+ * A plain apostrophe rather than a modifier letter or a zero-width character: it renders in every
+ * client and every font, it is not in the invisible class `visible` strips, and it is the closest
+ * thing to a backtick that cannot be part of a fence delimiter.
+ */
+const BLOCK_BACKTICK = "'";
+
+/** The one character a fenced block still gives meaning to that survives as itself: the backslash. */
+const BLOCK_ESCAPE = /\\/g;
+
+/** Every backtick, whatever it sits beside. None of them reaches a fenced body. */
+const BLOCK_FENCE = /`/g;
 
 /**
  * Untrusted text for a line inside a fenced block.
  *
  * A fence renders no markdown, resolves no chip, and honors no quote marker, so the full escape
  * would reach the operator as a visible backslash in front of every underscore and asterisk a
- * real tool name contains. What a fence does still honor is its own delimiter, so the backtick
- * and the backslash are escaped, and `visible` is what keeps a field from composing a body line
- * of its own: the newline is in the invisible class it strips, and any whitespace run left over
- * collapses to one space.
+ * real tool name contains. `visible` is what keeps a field from composing a body line of its own:
+ * the newline is in the invisible class it strips, and any whitespace run left over collapses to
+ * one space.
+ *
+ * Two characters still need handling, and they need opposite handling.
+ *
+ * A backslash is escaped, because Discord processes a backslash escape inside a fence, measured in
+ * a real client: an unescaped one would consume the character after it, and a Windows path is
+ * exactly the string that pays for that.
+ *
+ * A backtick is replaced rather than escaped, because Discord processes those same escapes: a
+ * fenced line carrying the escaped form `\`\`\`` arrives at the reader as a real triple backtick,
+ * which closes the block and renders everything after it as live markdown. Escaping was the
+ * previous shape here and it was measured to fail in a real client, so replacement is the property
+ * that actually holds, and a longer opening fence is not an alternative: Discord opens a block on
+ * exactly three backticks and reads a fourth as content, so an inner triple closes a four-backtick
+ * fence too. What a fenced body carries after this is no backtick at all, which is the only bound
+ * that cannot be composed around.
  */
 export function inertBlock(value: string): string {
-  return visible(value).replace(BLOCK_SYNTAX, (character) => `\\${character}`);
+  return visible(value)
+    .replace(BLOCK_ESCAPE, "\\\\")
+    .replace(BLOCK_FENCE, BLOCK_BACKTICK);
 }
 
 /** The `inertField` pairing for a fenced line: block-inert, and bounded on the escaped text. */
@@ -1088,6 +1113,20 @@ const CARD_COLUMN = columnWidth(
 const TASKS_HEADER = "**Tasks**";
 const TOOL_HEADER = "**Tool**";
 
+/**
+ * The header over the goal block, which a card draws only while it has a goal to put under it.
+ *
+ * The one block that is omitted rather than drawn empty, unlike the two above, whose `None` is what
+ * tells an empty block apart from a broken renderer. A session under no goal is the ordinary case
+ * rather than an empty one, so a `None` here would put a line on every card in the channel to say
+ * nothing, and the block's presence is itself the signal.
+ *
+ * A block rather than a row of the field block: the goal is a sentence the operator wrote, and the
+ * room a label column leaves at this width is a third of a line, which is the same shape that made
+ * the tool row read `(cut)` essentially always.
+ */
+const GOAL_HEADER = "**Goal**";
+
 /** What a block with nothing in it draws, so an empty one and a broken renderer read differently. */
 const NO_VALUE = "None";
 
@@ -1155,6 +1194,21 @@ function toolLines(view: SessionView): string[] {
   if (shown === whole) return filled(`${name} ${SEPARATOR} ${shown}`);
   const marked = fit(whole, Math.max(MAX_TOOL_INPUT_PREVIEW - CUT_MARKER.length, 0));
   return filled(`${name} ${SEPARATOR} ${marked}${CUT_MARKER}`);
+}
+
+/**
+ * The card's goal block, as the header and the fenced line it takes, and nothing at all for a card
+ * that carries no goal.
+ *
+ * A goal is drawn only while the session is working or waiting on a person. Idle and exited both
+ * drop it, because a session that stopped working is the best evidence available that what it was
+ * working toward is done: the console need write nothing when a goal completes, so there is no line
+ * to read the end off, and a card that kept drawing one would be asserting something it cannot know.
+ */
+function goalLines(view: SessionView, state: SurfaceState): string[] {
+  if (view.goal === null || state === "idle" || state === "exited") return [];
+  const goal = inertBlockField(view.goal, MAX_BLOCK_WIDTH);
+  return goal === "" ? [] : [GOAL_HEADER, fenced([goal])];
 }
 
 /**
@@ -1343,12 +1397,19 @@ export function renderModelChange(input: {
  * and no session field that is not one of them.
  *
  * A title line and three blocks: the session's fields, the tasks it is waiting on, and the tool it
- * is running. The title and the two block headers stay outside a fence and everything else goes
- * inside one. That split is what the surfaces need: the title is the line the channel's thread list
- * shows, where the glyph, the bold name, and the state are what a reader picks a thread out by, and
- * Discord draws no bold at all inside a block; the fields are a table, and a block is the only
- * shape Discord gives that keeps a column of values under each other. The tasks and the tool have
- * blocks of their own because a label column leaves neither of them the room they are read for.
+ * is running, plus a fourth block naming what the session is trying to finish on a card that has
+ * one. The title and the block headers stay outside a fence and everything else goes inside one.
+ * That split is what the surfaces need: the title is the line the channel's thread list shows, where
+ * the glyph, the bold name, and the state are what a reader picks a thread out by, and Discord draws
+ * no bold at all inside a block; the fields are a table, and a block is the only shape Discord gives
+ * that keeps a column of values under each other. The tasks, the tool and the goal have blocks of
+ * their own because a label column leaves none of them the room they are read for.
+ *
+ * The goal is drawn while the session is working or waiting on a person, and dropped the moment it
+ * reads idle or exited. Whether a goal has been met is not observable, since one that clears on
+ * completion writes nothing, so the state is what stands in for it: a goal being met is precisely
+ * what lets a session stop. The failure that avoids is a card carrying a finished goal indefinitely,
+ * which is worse than no goal line at all, because it reads as current.
  *
  * The title is where the card gives way when it runs long, since every line of every block is
  * already inside the width bound: the name is the one field a session sizes for itself. Past that,
@@ -1387,11 +1448,20 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
     ),
   );
   const tool = fenced(toolLines(view));
+  // Cut to one line of the block rather than wrapped, since what the operator needs at a glance is
+  // which goal is running rather than every clause of it, and neutralized as every other
+  // transcript-sourced field is. A goal that neutralizes to nothing draws no block.
+  const goal = goalLines(view, state);
   const title = (name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
   const compose = (count: number): string => {
-    const body = [fields, TASKS_HEADER, fenced(rosterLines(tasks, now, count)), TOOL_HEADER, tool].join(
-      "\n",
-    );
+    const body = [
+      fields,
+      ...goal,
+      TASKS_HEADER,
+      fenced(rosterLines(tasks, now, count)),
+      TOOL_HEADER,
+      tool,
+    ].join("\n");
     const room = MAX_CARD_LENGTH - body.length - 1 - title("").length;
     return `${title(fit(inertText(displayName(view)), Math.max(room, 0)))}\n${body}`;
   };

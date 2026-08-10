@@ -250,6 +250,8 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   /** The card readings the tailer took, in transcript order, as the registry would be given them. */
   const readings: { sessionId: string; reading: ModelReading }[] = [];
   const fallbacks: { sessionId: string; fallback: ModelFallback }[] = [];
+  /** What the session said it is trying to finish, in transcript order; null is an explicit clear. */
+  const goals: { sessionId: string; goal: string | null }[] = [];
   const live = new Set<string>([SESSION]);
   const echo = createEchoMemory();
   const tailer = createTranscriptTailer({
@@ -281,6 +283,9 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     noteFallback: (sessionId, fallback) => {
       fallbacks.push({ sessionId, fallback });
     },
+    noteGoal: (sessionId, goal) => {
+      goals.push({ sessionId, goal });
+    },
     echo,
     log: (message) => logs.push(message),
     now: () => 1_000,
@@ -296,10 +301,111 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     logs,
     readings,
     fallbacks,
+    goals,
     live,
     echo,
   };
 }
+
+/**
+ * A console command in the real transcript shape: a user line whose content carries the command
+ * markup, which is how Claude Code writes `/goal`, `/model` and `/rename` alike.
+ */
+function command(name: string, args: string, sessionId: string = SESSION): string {
+  return line({
+    parentUuid: "00000000-0000-4000-8000-000000000000",
+    isSidechain: false,
+    type: "user",
+    sessionId,
+    message: {
+      role: "user",
+      content:
+        `<command-message>${name.slice(1)}</command-message>\n` +
+        `<command-name>${name}</command-name>\n` +
+        `<command-args>${args}</command-args>`,
+    },
+  });
+}
+
+test("a goal command reports what the session is trying to finish, and only that command", async (t) => {
+  // An allowlist of one rather than a sweep of every command: a command's arguments are operator
+  // prose, and what /model or /rename was called with is nobody's business on a surface that leaves
+  // the machine. The goal's own text is admitted because it is what a long quiet stretch on the
+  // thread needs explaining.
+  const file = transcriptFile(t);
+  const { tailer, goals, posts, prompts, logs } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    command("/goal", "land Section 5 with its tests green") +
+      command("/model", "SECRET-model-argument") +
+      command("/rename", "SECRET-rename-argument") +
+      // A bare command with no arguments is a query at the console, not a setting.
+      command("/goal", "  ") +
+      // Another session's line, and a sidechain line, are refused before the command is read.
+      command("/goal", "SECRET-other-session", OTHER_SESSION),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(goals, [{ sessionId: SESSION, goal: "land Section 5 with its tests green" }]);
+  assert.deepEqual(posts, [], "a command line is not conversation and posts nothing");
+  assert.deepEqual(prompts, []);
+  for (const entry of logs) {
+    assert.doesNotMatch(entry, /land Section 5|SECRET/, `the log carries no command text: ${entry}`);
+  }
+});
+
+test("an explicit goal clear is the one end of a goal this reader can observe", async (t) => {
+  // A goal that completes need write nothing, so the card drops one on idle rather than waiting for
+  // a line that may never come. `/goal clear` is the case where the operator did say so, and it
+  // takes effect at once instead of waiting for the session to go quiet.
+  const file = transcriptFile(t);
+  const { tailer, goals } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, command("/goal", "finish the round") + command("/goal", " Clear "), "utf8");
+  await tailer.poll();
+
+  assert.deepEqual(goals, [
+    { sessionId: SESSION, goal: "finish the round" },
+    { sessionId: SESSION, goal: null },
+  ]);
+});
+
+test("a goal command written as content blocks is read the same as one written as a string", async (t) => {
+  // The transcript is another program's format and writes a user line's content both ways.
+  const file = transcriptFile(t);
+  const { tailer, goals } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    line({
+      isSidechain: false,
+      type: "user",
+      sessionId: SESSION,
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "<command-name>/goal</command-name>" },
+          { type: "text", text: "<command-args>read the whole spec first</command-args>" },
+        ],
+      },
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(goals, [{ sessionId: SESSION, goal: "read the whole spec first" }]);
+});
 
 test("what a transcript held before it was learned is never republished", async (t) => {
   // The first pass over a learned path takes the file's end without consuming anything: after a

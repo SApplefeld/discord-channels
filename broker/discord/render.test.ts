@@ -46,35 +46,54 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
     ...overrides,
   };
 }
 
 /**
- * Every line a card draws inside a fence, across all three of its blocks. The title and the two
- * block headers are the only lines outside one, so a card that stopped fencing a block fails here
- * rather than in whichever assertion noticed.
+ * Every line a card draws inside a fence, across every block it carries. The title and the block
+ * headers are the only lines outside one, so a card that stopped fencing a block fails here rather
+ * than in whichever assertion noticed.
  */
 function bodyOf(card: string): string[] {
   const lines = card.split("\n");
   assert.equal(lines[1], "```", card);
   assert.equal(lines.at(-1), "```", card);
   const blocks = blocksOf(card);
-  return [...blocks.fields, ...blocks.tasks, ...blocks.tool];
+  return [...blocks.fields, ...(blocks.goal ?? []), ...blocks.tasks, ...blocks.tool];
 }
 
 /**
- * A card's three blocks: the labelled fields, the tasks, and the tool. Each header sits outside its
- * own fence, where Discord still renders its bold, so a card that folded the blocks back together
- * or lost a header fails here rather than in whichever assertion noticed.
+ * A card's blocks: the labelled fields, the goal where the card carries one, the tasks, and the
+ * tool. Each header sits outside its own fence, where Discord still renders its bold, so a card that
+ * folded the blocks back together or lost a header fails here rather than in whichever assertion
+ * noticed. The goal block is the one that comes and goes, and it reads as null when it is absent,
+ * so a test cannot confuse an absent block with an empty one.
  */
-function blocksOf(card: string): { fields: string[]; tasks: string[]; tool: string[] } {
+function blocksOf(card: string): {
+  fields: string[];
+  goal: string[] | null;
+  tasks: string[];
+  tool: string[];
+} {
   const parts = card.split("```");
+  const body = (part: string): string[] => part.split("\n").filter((line) => line !== "");
+  if (parts.length === 9) {
+    assert.equal(parts[2].trim(), "**Goal**", card);
+    assert.equal(parts[4].trim(), "**Tasks**", card);
+    assert.equal(parts[6].trim(), "**Tool**", card);
+    return {
+      fields: body(parts[1]),
+      goal: body(parts[3]),
+      tasks: body(parts[5]),
+      tool: body(parts[7]),
+    };
+  }
   assert.equal(parts.length, 7, card);
   assert.equal(parts[2].trim(), "**Tasks**", card);
   assert.equal(parts[4].trim(), "**Tool**", card);
-  const body = (part: string): string[] => part.split("\n").filter((line) => line !== "");
-  return { fields: body(parts[1]), tasks: body(parts[3]), tool: body(parts[5]) };
+  return { fields: body(parts[1]), goal: null, tasks: body(parts[3]), tool: body(parts[5]) };
 }
 
 /**
@@ -311,6 +330,122 @@ test("the card's body stays inside the width bound at its widest fields", () => 
   }
 });
 
+test("a session under a goal says what it is trying to finish, and one without renders unchanged", () => {
+  // The goal has a block of its own rather than a row of the field block: it is a sentence the
+  // operator wrote, and the room a label column leaves at this width is a third of a line.
+  const working = renderCard(view({ goal: "ship the pin reconcile" }), "working", NOW);
+
+  assert.deepEqual(blocksOf(working).goal, ["ship the pin reconcile"]);
+  assert.match(working, /^\*\*Goal\*\*$/m, "the header is outside the fence, where bold renders");
+  // The block that comes and goes is the one whose absence has to be exact: a session under no goal
+  // draws the card it drew before this block existed, rather than an empty block of its own.
+  assert.equal(blocksOf(renderCard(view(), "working", NOW)).goal, null);
+  assert.equal(
+    renderCard(view(), "working", NOW),
+    renderCard(view({ goal: null }), "working", NOW),
+  );
+});
+
+test("the goal is dropped the moment the session reads idle or exited", () => {
+  // Whether a goal has been met is not observable: one that clears on completion writes nothing, so
+  // there is no line to read the end off. What stands in for it is the session stopping, since a
+  // goal being met is precisely what lets it stop. A card carrying a finished goal indefinitely is
+  // worse than no goal line at all, because it reads as current.
+  const under = view({ goal: "ship the pin reconcile" });
+
+  assert.deepEqual(blocksOf(renderCard(under, "working", NOW)).goal, ["ship the pin reconcile"]);
+  assert.deepEqual(
+    blocksOf(renderCard({ ...under, needsAttention: true }, "needs you", NOW)).goal,
+    ["ship the pin reconcile"],
+    "a session waiting on a person has not finished what it is doing",
+  );
+  assert.equal(blocksOf(renderCard(under, "idle", NOW)).goal, null);
+  assert.equal(
+    blocksOf(renderCard({ ...under, lifecycle: "ended", endedAt: NOW }, "exited", NOW)).goal,
+    null,
+  );
+});
+
+test("a goal longer than the block is cut rather than wrapped", () => {
+  const card = renderCard(view({ goal: `${"g".repeat(200)} and then some` }), "working", NOW);
+  const goal = blocksOf(card).goal ?? [];
+
+  assert.equal(goal.length, 1, "one line, however long the operator's sentence is");
+  assert.equal([...goal[0]].length, MAX_BLOCK_WIDTH);
+  assert.ok(goal[0].endsWith("…"), goal[0]);
+});
+
+test("a crafted goal can compose no pill, no chip, no markdown, and no fence delimiter", () => {
+  // The goal is operator prose off a transcript, which is untrusted text of the same class as every
+  // other field the card draws, and it is drawn inside a fence where none of that syntax renders.
+  const card = renderCard(
+    view({ goal: "before\nafter ``` **bold** \\` <@123456789012345678>" }),
+    "working",
+    NOW,
+  );
+  const goal = blocksOf(card).goal ?? [];
+
+  assert.equal(goal.length, 1);
+  assert.doesNotMatch(goal[0], /`/, `no backtick reaches the body: ${goal[0]}`);
+  assert.match(goal[0], /beforeafter/, "the newline is stripped, never a line break");
+  assert.match(
+    renderCard(view({ goal: "<@123456789012345678> at <t:99:R>" }), "working", NOW),
+    /<@123456789012345678> at <t:99:R>/,
+    "the chip syntax reads as its own characters inside the fence",
+  );
+  assert.deepEqual(
+    card.split("\n").filter((line) => line.includes("`")),
+    ["```", "```", "```", "```", "```", "```", "```", "```"],
+    "exactly the eight delimiters the four blocks take",
+  );
+});
+
+test("a card carrying a goal, a full roster and its widest fields still fits one message", () => {
+  // The goal block is fixed length, so it comes out of the same budget the roster gives way from:
+  // a card that could not be trimmed back inside the ceiling is a card Discord refuses, which
+  // freezes the thread at whatever it last said.
+  const card = renderCard(
+    view({
+      name: "n".repeat(200),
+      goal: "g".repeat(200),
+      lastTool: "t".repeat(80),
+      lastToolInput: "x".repeat(MAX_TOOL_INPUT_PREVIEW),
+      model: "claude-opus-4-8",
+      openingModel: "claude-fable-5",
+      contextTokens: 348_000,
+      downgrade: {
+        cause: "refusal",
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-4-8",
+        category: "cyber",
+        choice: null,
+      },
+      backgroundTasks: Array.from({ length: 40 }, (_unused, index) =>
+        agent(`task-${index}`, {
+          since: NOW - (index + 1) * 60_000,
+          description: "d".repeat(120),
+          agentType: "a".repeat(60),
+        }),
+      ),
+    }),
+    "working",
+    NOW,
+  );
+
+  assert.ok(card.length <= MAX_CARD_LENGTH, `${card.length} characters is past the ceiling`);
+  assert.deepEqual(blocksOf(card).goal, [`${"g".repeat(MAX_BLOCK_WIDTH - 1)}…`]);
+  // The roster is what gave way, and the goal block is what it gave way for: the two blocks that
+  // can grow are pinned against each other here, so a goal block that stopped coming out of the
+  // same budget fails rather than quietly costing the card its ceiling.
+  assert.ok(
+    blocksOf(card).tasks.some((line) => /^\+\d+ more$/.test(line)),
+    blocksOf(card).tasks.join("\n"),
+  );
+  for (const line of bodyOf(card)) {
+    assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+  }
+});
+
 test("a field inside the fence shows its own characters, with no escape a fence would draw", () => {
   // Inside a block Discord renders no markdown and resolves no chip, so nothing there needs the
   // full escape, and applying it would reach the operator as a visible backslash in front of every
@@ -333,14 +468,16 @@ test("a field inside the fence shows its own characters, with no escape a fence 
 });
 
 test("no crafted field can break out of the fence or compose a body line of its own", () => {
-  // The two escapes a fence still needs: the backtick, because a run of three would close the
-  // block and put the rest of the card outside it, and the backslash, because one in front of an
-  // inserted escape would free the backtick after it. Escaped output can never carry two adjacent
-  // backticks, so no field can compose a delimiter at any length; and the newline dies in the
-  // invisible strip, so no field composes a body line of its own.
+  // A fenced body carries no backtick at all, which is the only bound a crafted field cannot
+  // compose around: Discord processes a backslash escape inside a fence, so an escaped backtick
+  // arrives as a real one, and three of those close the block and put the rest of the card outside
+  // it. The backslash is escaped rather than replaced, because that same processing is what draws a
+  // Windows path readably. The newline dies in the invisible strip, so no field composes a body
+  // line of its own.
   const card = renderCard(
     view({
       host: "before\nafter",
+      sessionId: "```js-\\`-rest",
       lastTool: "```js",
       lastToolInput: "`".repeat(200),
     }),
@@ -348,20 +485,19 @@ test("no crafted field can break out of the fence or compose a body line of its 
     NOW,
   );
 
-  const delimiters = card.split("\n").filter((line) => line.includes("``"));
+  const delimiters = card.split("\n").filter((line) => line.includes("`"));
   assert.deepEqual(
     delimiters,
     ["```", "```", "```", "```", "```", "```"],
-    "exactly the six delimiters the three blocks take, nothing else",
+    "exactly the six delimiters the three blocks take, and no other line carries a backtick",
   );
   for (const line of bodyOf(card)) {
-    assert.doesNotMatch(line, /``/, `no adjacent backticks inside the body: ${line}`);
+    assert.doesNotMatch(line, /`/, `no backtick inside the body: ${line}`);
   }
   assert.equal(value(card, "Host"), "beforeafter", "the newline is stripped, never a line break");
   // The tool block fills its lines to the width, so a break can land between an escape and the
-  // character it makes inert. A backslash left at the end of a line inside a fence is drawn as a
-  // backslash, and no break can put two backticks together, but a line ending in one is the shape
-  // to know about, so it is pinned rather than reasoned about.
+  // character it makes inert. A backslash left at the end of a line is drawn as a backslash, which
+  // is the shape to know about, so it is pinned rather than reasoned about.
   for (const line of blocksOf(card).tool) {
     assert.doesNotMatch(line, /\\$/, `no line ends stranded from what it escapes: ${line}`);
   }
@@ -391,6 +527,7 @@ test("the tool line carries what the tool was called with, from the record throu
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
   };
 
   assert.equal(toolValue(renderCard(toView(record), "working", NOW)), "Bash · npm test");
@@ -466,11 +603,11 @@ test("eight characters of the session id are eight, however many need escaping",
   // The raw id is sliced before it is neutralized. Sliced after, every escaped character would
   // spend two of the eight, and two ids differing only past the escapes would draw one prefix on
   // the surface the operator tells threads apart by.
-  const first = renderCard(view({ sessionId: "````aaaa-rest" }), "working", NOW);
-  const second = renderCard(view({ sessionId: "````bbbb-rest" }), "working", NOW);
+  const first = renderCard(view({ sessionId: String.raw`\\\\aaaa-rest` }), "working", NOW);
+  const second = renderCard(view({ sessionId: String.raw`\\\\bbbb-rest` }), "working", NOW);
 
-  assert.equal(value(first, "Session"), String.raw`\`\`\`\`aaaa`);
-  assert.equal(value(second, "Session"), String.raw`\`\`\`\`bbbb`);
+  assert.equal(value(first, "Session"), String.raw`\\\\\\\\aaaa`);
+  assert.equal(value(second, "Session"), String.raw`\\\\\\\\bbbb`);
   assert.notEqual(value(first, "Session"), value(second, "Session"));
 });
 
@@ -516,6 +653,7 @@ test("neither the view nor the card can carry the process token", () => {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
   };
 
   const narrowed = toView(record);

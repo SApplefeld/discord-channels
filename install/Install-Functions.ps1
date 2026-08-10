@@ -499,13 +499,33 @@ Writes the broker's runtime configuration as KEY=VALUE lines.
 install/Start-Broker.ps1 reads this file and sets each line as an environment variable before
 starting the broker. A flat KEY=VALUE file, rather than JSON, so the launcher does not need a JSON
 parser just to set six environment variables.
+
+A key already in the file that is on $script:ChannelBrokerEnvAllowlist and that this call does not
+carry a value for is preserved, so a knob an operator set by hand survives the next install. Without
+that, an install silently reverts every setting the installer does not itself write, which makes a
+default the only reachable behavior for anything configured after the fact. The allowlist is what
+bounds the preservation, since it already governs everything the broker will export; a key outside
+it and outside $Values is dropped, exactly as it is refused at read time.
+
+A value in $Values always wins, and the file's own key ordering is not preserved: the values this
+call carries lead, and the preserved keys follow in the order the allowlist declares them.
 #>
 function Set-ChannelEnvFile {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][System.Collections.Specialized.OrderedDictionary]$Values
     )
-    $lines = foreach ($key in $Values.Keys) { "$key=$($Values[$key])" }
+    $merged = [ordered]@{}
+    foreach ($key in $Values.Keys) { $merged[$key] = $Values[$key] }
+    if (Test-Path -LiteralPath $Path) {
+        $existing = Get-ChannelEnvFile -Path $Path
+        foreach ($key in $script:ChannelBrokerEnvAllowlist) {
+            if ($merged.Contains($key)) { continue }
+            if (-not $existing.ContainsKey($key)) { continue }
+            $merged[$key] = $existing[$key]
+        }
+    }
+    $lines = foreach ($key in $merged.Keys) { "$key=$($merged[$key])" }
     $directory = Split-Path -Parent $Path
     if ($directory -and -not (Test-Path -LiteralPath $directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null

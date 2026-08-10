@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadDiscordConfig } from "./config.ts";
+import { loadConfig } from "../config.ts";
 
 const STALE_AFTER_MS = 300_000;
 const CHANNEL = "123456789012345678";
@@ -57,19 +58,56 @@ test("the token comes from the environment or from a file, and the defaults are 
 
     assert.equal(fromEnv?.token, "from-env");
     assert.equal(fromFile?.token, "from-a-file");
-    assert.equal(fromFile?.archiveOnEnd, false, "an exited thread is left open by default");
+    assert.equal(fromFile?.archiveOnEnd, true, "an exited thread archives itself by default");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test("archiving is turned on only by an explicit affirmative", () => {
-  const base = { CHANNEL_DISCORD_TOKEN: "t", CHANNEL_DISCORD_CHANNEL: CHANNEL };
+test("archiving is on unless the setting spells one of the recognized ways to say off", () => {
+  // A host that configures nothing archives, which is what makes the behavior reachable on every
+  // host rather than only on one whose operator found the knob.
+  // A fresh environment per call, since loadDiscordConfig takes the token out of the one it reads.
+  const archives = (raw?: string): boolean | undefined =>
+    load({
+      CHANNEL_DISCORD_TOKEN: "t",
+      CHANNEL_DISCORD_CHANNEL: CHANNEL,
+      ...(raw === undefined ? {} : { CHANNEL_DISCORD_ARCHIVE_ON_END: raw }),
+    })?.archiveOnEnd;
 
-  assert.equal(load({ ...base, CHANNEL_DISCORD_ARCHIVE_ON_END: "true" })?.archiveOnEnd, true);
-  assert.equal(load({ ...base, CHANNEL_DISCORD_ARCHIVE_ON_END: "1" })?.archiveOnEnd, true);
-  assert.equal(load({ ...base, CHANNEL_DISCORD_ARCHIVE_ON_END: "no" })?.archiveOnEnd, false);
-  assert.equal(load({ ...base, CHANNEL_DISCORD_ARCHIVE_ON_END: "" })?.archiveOnEnd, false);
+  assert.equal(archives(), true, "absent means archive");
+  assert.equal(archives(""), true);
+  assert.equal(archives("true"), true);
+  assert.equal(archives("1"), true);
+  assert.equal(archives("no"), false);
+  assert.equal(archives("off"), false);
+  assert.equal(archives(" OFF "), false);
+  assert.equal(archives("0"), false);
+  assert.equal(archives("false"), false);
+});
+
+test("this knob and the mirror switch admit exactly the same spellings", () => {
+  // The seam the two parsers used to disagree at: one read `1`, `true` and `yes`, the other also
+  // read `on` and `off`, so a host writing `on` here got a silent false while the same word turned
+  // the mirror on. Both read one vocabulary now, and a spelling neither recognizes is refused
+  // rather than guessed at, so a typo cannot silently mean the opposite of what was written.
+  const archives = (raw: string): boolean | undefined =>
+    load({
+      CHANNEL_DISCORD_TOKEN: "t",
+      CHANNEL_DISCORD_CHANNEL: CHANNEL,
+      CHANNEL_DISCORD_ARCHIVE_ON_END: raw,
+    })?.archiveOnEnd;
+
+  for (const raw of ["1", "true", "yes", "on", " TRUE "]) {
+    assert.equal(archives(raw), true, raw);
+    assert.equal(loadConfig({ CHANNEL_MIRROR: raw }).mirror, true, raw);
+  }
+  for (const raw of ["0", "false", "no", "off", " OFF "]) {
+    assert.equal(archives(raw), false, raw);
+    assert.equal(loadConfig({ CHANNEL_MIRROR: raw }).mirror, false, raw);
+  }
+  assert.throws(() => archives("offf"), /expected one of/, "an unrecognized spelling is refused here");
+  assert.throws(() => loadConfig({ CHANNEL_MIRROR: "offf" }), /expected one of/);
 });
 
 test("an idle threshold at or above the staleness window is refused", () => {

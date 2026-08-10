@@ -433,6 +433,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
   };
 
   const posts: string[] = [];

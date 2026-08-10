@@ -108,6 +108,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     contextTokens: null,
     downgrade: null,
     backgroundTasks: [],
+    goal: null,
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,
@@ -373,6 +374,105 @@ test("a session waiting on a person is renamed without waiting out the dwell win
   await surface.tick([view({ needsAttention: true })]);
 
   assert.deepEqual(names(calls), ["⏸ neo-intake · needs you"]);
+});
+
+test("a startup pass archives a restored thread whose session already exited, exactly once", async () => {
+  // Hosts carry sessions that exited before archiving became the default, and their threads sit in
+  // the active list with nothing left to drive them: the registry has long since let the record go,
+  // so the session arrives in no view set. The retire path is what reaches them, and it paints the
+  // final card and title before it closes the thread, so nothing is archived still claiming to work.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, {
+    archiveOnEnd: true,
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+  });
+
+  await surface.tick([]);
+  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"], "the final title lands first");
+  assert.deepEqual(calls.archived, ["thread-9"]);
+
+  time.advance(1_000);
+  await surface.tick([]);
+  assert.deepEqual(calls.archived, ["thread-9"], "the pass that reached it is the only one");
+});
+
+test("a restored thread whose record is still retained as ended is archived too", async () => {
+  // The other startup shape: the registry retains a dead record for its retention window, so the
+  // session does arrive in the view set and is driven through reconcile rather than retire. Both
+  // paths reach the same close, or an exited session's thread would stay in the active list for as
+  // long as its record is retained.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, {
+    archiveOnEnd: true,
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+  });
+
+  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+
+  assert.deepEqual(calls.archived, ["thread-9"]);
+});
+
+test("an archived thread is never renamed, whatever the session goes on to report", async () => {
+  // Discord refuses a rename on an archived thread, so the archive is the last write a session's
+  // thread takes. A later title change would be a doomed call on every pass for the life of the
+  // broker, and the record's own name is what a title is composed from, so it can still move.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, { archiveOnEnd: true });
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  const ended = view({ lifecycle: "ended", endedAt: time.now() });
+  await surface.tick([ended]);
+  assert.deepEqual(calls.archived, ["thread-1"]);
+  const spent = calls.renames.length;
+
+  time.advance(DWELL_MS * 2);
+  await surface.tick([{ ...ended, name: "neo-renamed" }]);
+  await surface.tick([{ ...ended, name: "neo-renamed-again", needsAttention: true }]);
+
+  assert.equal(calls.renames.length, spent, "nothing is attempted against the archived thread");
+});
+
+test("a thread revived by a post is not archived again until its session exits again", async () => {
+  // Posting into an archived thread revives it on Discord's side, which is the whole reason
+  // archiving is not deletion. The session behind it can then go back to working, and a surface
+  // that re-derived the close from the live state would shut the thread on the operator mid-read.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, { archiveOnEnd: true });
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+  assert.deepEqual(calls.archived, ["thread-1"]);
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    time.advance(1_000);
+    await surface.tick([view({ lastHookAt: time.now(), turnCount: pass + 2 })]);
+  }
+
+  assert.deepEqual(calls.archived, ["thread-1"], "the revived thread is left where the operator put it");
 });
 
 test("an exited thread is left open unless archiving is turned on", async () => {

@@ -240,8 +240,13 @@ export const FLAG_FALSE: readonly string[] = ["0", "false", "no", "off"];
  * Refuses rather than guesses, holding the same line the numeric knobs hold: a boolean knob read
  * permissively turns a typo like `CHANNEL_MIRROR=fasle` into whichever default the parser leans
  * toward, and a knob silently moved is a knob whose behavior nobody can reason about later.
+ *
+ * Exported for the same reason `FLAG_FALSE` is: broker/discord/config.ts's own knobs read this one
+ * vocabulary rather than a second literal. Two parsers that admit different spellings mean a host
+ * writing `on` for one knob gets true and for another gets a silent false, which is a
+ * configuration the operator cannot reason about from the file they wrote.
  */
-function strictFlag(raw: string | undefined, fallback: boolean): boolean {
+export function strictFlag(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined || raw.trim() === "") return fallback;
   const value = raw.trim().toLowerCase();
   if (FLAG_TRUE.includes(value)) return true;

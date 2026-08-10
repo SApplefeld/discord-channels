@@ -216,6 +216,16 @@ export type SessionRecord = {
    * otherwise read as idle at the moment it is most heavily worked.
    */
   backgroundTasks: BackgroundTask[];
+  /**
+   * What the session is trying to finish, as the most recent `/goal` command in its transcript set
+   * it, and null for a session running under none.
+   *
+   * Held raw and neutralized at the render site, the way an option label is: nothing but a display
+   * surface reads it. A goal that ended is not observable, since one that clears on completion need
+   * not write anything, so the card drops it on idle or exited rather than trusting this field to
+   * say when it stopped being true.
+   */
+  goal: string | null;
 };
 
 export type HookEvent = "SessionStart" | "PreToolUse" | "PostToolUse" | "Stop";
@@ -310,6 +320,15 @@ export type Registry = {
    * transition line landed before any other reading. Null when the record only updates state.
    */
   noteFallback: (sessionId: string, fallback: ModelFallback) => ModelChange | null;
+  /**
+   * Records what the session is trying to finish, as a `/goal` command line reported it, or clears
+   * it when the operator cleared it explicitly. Returns the record it wrote, and null when nothing
+   * unended holds that ID: a line arriving after a session ended cannot move what its card says.
+   *
+   * The goal is never logged and never persisted. It is one more piece of operator prose off a
+   * transcript, so it lives where the card can read it and nowhere else.
+   */
+  noteGoal: (sessionId: string, goal: string | null) => SessionRecord | null;
   /**
    * Held changes whose attach window has closed, released plain and exactly once. Polled on the
    * tailer's own cadence, because the hold exists for a record the tailer reads: a change whose
@@ -515,6 +534,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       contextTokens: null,
       downgrade: null,
       backgroundTasks: [],
+      goal: null,
     };
     sessions.set(sessionId, record);
     // A fresh record starts fresh announcement bookkeeping: a held change or a changed flag from
@@ -728,6 +748,17 @@ export function createRegistry(options: RegistryOptions): Registry {
     return null;
   }
 
+  function noteGoal(sessionId: string, goal: string | null): SessionRecord | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    if (record.goal === goal) return record;
+    record.goal = goal;
+    // Not persisted on its own account, the same reasoning the context size holds: what the snapshot
+    // is for is surviving a restart, and a goal restored from one would draw as current on a card
+    // long after the session that set it stopped working toward it.
+    return record;
+  }
+
   function dueModelChanges(): ModelChange[] {
     const at = now();
     const due: ModelChange[] = [];
@@ -826,6 +857,7 @@ export function createRegistry(options: RegistryOptions): Registry {
     impostorStart,
     noteModel,
     noteFallback,
+    noteGoal,
     dueModelChanges,
     sweep,
     list,

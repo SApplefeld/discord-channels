@@ -33,6 +33,11 @@ export type SessionView = {
   downgrade: ModelFallback | null;
   /** The work the session is waiting on, in the table's own order. Empty when it waits on nothing. */
   backgroundTasks: readonly BackgroundTask[];
+  /**
+   * What the session is trying to finish, from the most recent `/goal` command, and null for a
+   * session running under none. Raw operator prose: the card is what bounds and neutralizes it.
+   */
+  goal: string | null;
   /** True while the session is blocked on a permission verdict. Fed by the permission relay. */
   needsAttention: boolean;
   /** The registry's own lifecycle state, mapped to a surface state by `deriveSurfaceState`. */
@@ -54,6 +59,7 @@ export function toView(record: SessionRecord, needsAttention = false): SessionVi
     contextTokens: record.contextTokens,
     downgrade: record.downgrade,
     backgroundTasks: record.backgroundTasks,
+    goal: record.goal,
     needsAttention,
     lifecycle: record.state,
   };
