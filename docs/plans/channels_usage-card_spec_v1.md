@@ -7,9 +7,13 @@ Created: 2026-08-09
 
 ## Related
 
-- [channels_question-answering_spec_v1.md](../archive/plans/channels_question-answering_spec_v1.md): the concurrent
-  round; the two share the broker but no files beyond `broker/index.ts` wiring, and land
-  independently.
+- [channels_question-answering_spec_v1.md](../archive/plans/channels_question-answering_spec_v1.md):
+  a concurrent round, landed and archived.
+- [channels_mirror-fidelity-repairs_spec_v1.md](channels_mirror-fidelity-repairs_spec_v1.md): the
+  other concurrent round, which redrew the cards this plan's Sections 3 and 4 write into.
+
+All three rounds write `broker/discord/render.ts` as well as `broker/index.ts`, so their commits
+interleave on one branch and no section here can be read against the card alone.
 
 ## Goal
 

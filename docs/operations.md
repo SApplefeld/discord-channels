@@ -343,6 +343,18 @@ reply that carries materially more than the answer still posts in full, and a sh
 never suppresses a long reply: the comparison requires both near-identical wording and
 near-identical length, so the fail direction is a duplicate message, never lost words.
 
+A Markdown table in anything mirrored arrives as an aligned block rather than as the row of literal
+pipes Discord would otherwise draw, because Discord renders no tables. The broker redraws the table
+into a fenced monospace block whose columns are padded to line up, honoring the header's alignment
+markers (`---:` right, `:---:` centered, left by default) and padding to the same width the cards
+use, so a wide table has its cells cut rather than wrapped. Every mirrored surface draws it the same
+way: a reply, a mid-turn chunk, and a narration append are indistinguishable on this. Three things
+are deliberately left alone. A table already inside a code fence is untouched, since the author
+meant it as text. A malformed table, one missing its delimiter row or with a row whose column count
+disagrees with the header, is passed through unchanged rather than guessed at. And a table so large
+that the redrawn block would not fit a message is mirrored as its raw text, on the reasoning that
+literal pipes you can read beat a block that had to be truncated to exist.
+
 Two knobs govern it, both in `broker.env`:
 
 | Setting | Default | What it decides |

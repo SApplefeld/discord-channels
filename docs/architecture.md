@@ -301,9 +301,10 @@ budget a parked session's own title needs.
 
 Both cards draw their bodies inside fenced monospace blocks so their columns line up at a glance,
 with headings outside the fences where Discord still renders them. The width they pad to is one
-shared constant, and it is a phone's constraint rather than a taste: a code block scrolls sideways
-on a phone rather than wrapping, so a card wider than its bound costs a drag to read, which is worse
-than the ragged lines the fence replaced.
+shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46 columns, and it is a
+phone's constraint rather than a taste: a code block scrolls sideways on a phone rather than
+wrapping, so a card wider than its bound costs a drag to read, which is worse than the ragged lines
+the fence replaced.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it
@@ -312,6 +313,16 @@ is the whole delimiter and a fourth is content. So every backtick in a fenced fi
 apostrophe, which cannot open anything, and the tests assert that no backtick reaches a body at all
 rather than that no two are adjacent. The backslash escape stays, because Discord does resolve it
 inside a block, which is what draws a Windows path correctly.
+
+The mirroring path borrows the same machinery for one transform of its own. Discord renders no
+Markdown tables, so a table in anything mirrored, a reply, a mid-turn chunk, or a narration append,
+would reach the thread as literal pipes. The renderer redraws it into a fenced block padded to the
+same shared width, honoring the header's alignment markers, and it neutralizes each cell before
+padding rather than after, so a cell that grows under neutralization cannot push its column out of
+line. The transform is the only place the mirror rewrites a model's own formatting, and it declines
+in three cases rather than guessing: a table already inside a fence is the author's own text, a
+malformed table is passed through unchanged, and a table whose redrawn block would not fit a message
+is mirrored raw, on the reasoning that readable pipes beat a truncated block.
 
 The channel's pinned messages are maintained the same way the threads are: by reconciling against
 Discord's own answer rather than a flag this broker keeps, which is what survives a restart, a
