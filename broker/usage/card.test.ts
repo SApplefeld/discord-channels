@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import { MAX_BLOCK_WIDTH, MAX_CARD_LENGTH } from "../discord/render.ts";
 import type { SessionView, StateThresholds } from "../discord/state.ts";
 import type { UsageAccount, UsageReading, UsageUnavailableReason } from "./cache.ts";
-import { MAX_ACCOUNT_LABEL_LENGTH, WARNING_PCT, renderUsageCard } from "./card.ts";
+import {
+  BAR_CELLS,
+  BAR_GLYPH,
+  MAX_ACCOUNT_LABEL_LENGTH,
+  PCT_WIDTH,
+  WARNING_PCT,
+  renderUsageCard,
+} from "./card.ts";
 
 const NOW = 1_786_300_000_000;
 const MINUTE = 60_000;
@@ -122,10 +129,37 @@ function closingOf(rendered: string): string[] {
   return lines.slice(lines.lastIndexOf("```") + 1);
 }
 
-/** The value drawn beside a label, without the padding that aligns the label column. */
+/**
+ * The column every value on a card starts in, read off a row whose bar has at least one cell.
+ *
+ * Read rather than trimmed, because a bar of no cells is a run of spaces and trimming it away would
+ * leave a zero row's assertions unable to tell an empty bar from the padding that aligns the labels,
+ * which is the one thing those assertions are for.
+ */
+function valueColumn(rendered: string): number {
+  const drawn = fencedLines(rendered).find((line) => line.includes(BAR_GLYPH)) ?? "";
+  const column = drawn.indexOf(BAR_GLYPH);
+  assert.notEqual(column, -1, `some row on this card draws a bar to read the column off: ${rendered}`);
+  return column;
+}
+
+/** The value drawn beside a label, bar included, without the padding that aligns the label column. */
 function value(rendered: string, label: string): string {
   const line = fencedLines(rendered).find((text) => text.startsWith(`${label} `)) ?? "";
-  return line.slice(label.length).trimStart();
+  return line.slice(valueColumn(rendered));
+}
+
+/**
+ * A row's value as the card composes one: a bar filled to this many cells and blank to the right of
+ * them, the percentage right-aligned under every other row's, and whatever the row carries after it.
+ */
+function rowValue(cells: number, pct: string, tail = ""): string {
+  return `${BAR_GLYPH.repeat(cells)}${" ".repeat(BAR_CELLS - cells)}${pct.padStart(PCT_WIDTH)}${tail}`;
+}
+
+/** How many cells of a row's bar are filled. */
+function filledCells(rendered: string, label: string): number {
+  return [...value(rendered, label)].filter((character) => character === BAR_GLYPH).length;
 }
 
 /**
@@ -136,23 +170,95 @@ function markedRows(rendered: string, marker: string): string[] {
   return fencedLines(rendered).filter((line) => line.includes(marker));
 }
 
-/** The one section header naming an account, which is the surface the label now renders on. */
+/** The one bold line naming an account, which is the surface the label renders on. */
 function accountHeader(rendered: string): string {
-  return rendered.split("\n").find((line) => line.startsWith("### ") && line !== "### Sessions") ?? "";
+  return rendered.split("\n").find((line) => line.startsWith("**") && line !== "**Sessions**") ?? "";
 }
 
-test("an account renders a heading and a row per window, with reset times derived from now", () => {
+/** What an account's bold line carries between its emphasis marks. */
+function headerText(rendered: string): string {
+  return accountHeader(rendered).slice("**".length, -"**".length);
+}
+
+test("an account renders a bold label and a row per window, with reset times derived from now", () => {
   const body = card({ available: true, accounts: [account({ active: true })] });
 
-  assert.match(body, /^### ▶ one@example\.test · 14m ago$/m);
-  assert.equal(value(body, "5 Hr"), "46%  resets 3h 44m");
-  assert.equal(value(body, "7 Day"), "56%  resets 4d 6h  (^)");
-  assert.equal(value(body, "Fable"), "12%", "a window with no reset time draws its percentage and stops");
-  assert.equal(value(body, "Spend"), "6%  $95.40 of $1,500");
+  assert.match(body, /^\*\*▶ one@example\.test · 14m ago\*\*$/m);
+  assert.equal(value(body, "5 Hr"), rowValue(7, "46%", "  3h 44m"));
+  assert.equal(value(body, "7 Day"), rowValue(8, "56%", "  4d 6h (^)"));
+  assert.equal(
+    value(body, "Fable"),
+    rowValue(2, "12%"),
+    "a window with no reset time draws its percentage and stops",
+  );
+  assert.equal(value(body, "Spend"), rowValue(1, "6%", "  $95.40"));
 });
 
-test("each account is its own heading and its own fence, and the sessions are one more pair", () => {
-  // The shape the card is read by: a heading names a section and the fence under it holds that
+test("a window's bar is its percentage rounded to nearest fifteenth, and never empty above zero", () => {
+  // Hand-checked against the 100/15 of a point one cell stands for: 46% is 6.9 cells and draws 7,
+  // 50% is 7.5 and draws 8, 96% is 14.4 and draws 14. The bottom of the table is the floor rather
+  // than the rounding, and the floor reads the raw percentage: 0.4% draws a cell beside a rounded
+  // 0%, because a bar identical to zero's is what leaves a trace and a true zero looking the same,
+  // which is the reading the bar is on the card to give. The top of the scale carries no matching
+  // ceiling, so 97% upwards fills every cell.
+  const cases: [number, number][] = [
+    [-5, 0],
+    [0, 0],
+    [0.4, 1],
+    [0.6, 1],
+    [3, 1],
+    [10, 2],
+    [46, 7],
+    [50, 8],
+    [96, 14],
+    [97, 15],
+    [100, 15],
+    [1e20, 15],
+  ];
+
+  for (const [pct, cells] of cases) {
+    const body = card({
+      available: true,
+      accounts: [
+        account({
+          fiveHour: { pct, resetsAt: null },
+          sevenDay: null,
+          scoped: [],
+          // A row with a bar of its own, so the column every value starts in can be read off the
+          // card even when the window under test draws no cell at all.
+          spend: { pct: 50, used: null, limit: null, currency: null },
+        }),
+      ],
+    });
+
+    assert.equal(filledCells(body, "5 Hr"), cells, `${pct}% draws ${cells} cells`);
+    assert.equal(
+      value(body, "5 Hr").slice(0, BAR_CELLS),
+      `${BAR_GLYPH.repeat(cells)}${" ".repeat(BAR_CELLS - cells)}`,
+      "filled from the left and blank to the right, so the columns after the bar never move",
+    );
+  }
+});
+
+test("a trace of usage draws a cell beside the zero it rounds to, and a true zero draws none", () => {
+  // The two rows the floor exists to separate. Both read `0%`, and the bar is the only thing on the
+  // card that tells the operator one window has been touched and the other has not.
+  const anchor = { pct: 50, used: null, limit: null, currency: null };
+  const trace = card({
+    available: true,
+    accounts: [account({ fiveHour: { pct: 0.4, resetsAt: null }, sevenDay: null, scoped: [], spend: anchor })],
+  });
+  const none = card({
+    available: true,
+    accounts: [account({ fiveHour: { pct: 0, resetsAt: null }, sevenDay: null, scoped: [], spend: anchor })],
+  });
+
+  assert.equal(value(trace, "5 Hr"), rowValue(1, "0%"));
+  assert.equal(value(none, "5 Hr"), rowValue(0, "0%"));
+});
+
+test("each account is its own bold label and its own fence, and the sessions are one more pair", () => {
+  // The shape the card is read by: a label names a section and the fence under it holds that
   // section's columns, so three accounts are three visual boundaries rather than twelve near
   // identical lines the operator has to count rows through.
   const body = card(
@@ -170,11 +276,14 @@ test("each account is its own heading and its own fence, and the sessions are on
   assert.equal(blocksOf(body).length, 4, "three accounts and the sessions");
   assert.equal(body.split("\n").filter((line) => line === "```").length, 8, "two delimiters a block");
   assert.equal(
-    body.split("\n").filter((line) => line.startsWith("### ")).length,
+    body.split("\n").filter((line) => line.startsWith("**") && line.endsWith("**")).length,
     4,
-    "one header a block, each outside the fence it heads",
+    "one label a block, each outside the fence it heads",
   );
-  assert.match(body, /^### Sessions$/m);
+  assert.match(body, /^\*\*Sessions\*\*$/m);
+  // Bold rather than a heading of any rank: Discord puts a margin above a heading and around a
+  // fenced block, and at one section per account that margin is paid down the whole card.
+  assert.doesNotMatch(body, /^#{2,}/m, "no heading below the title's own");
 });
 
 test("the percentages stack in one column across every block, whatever a block's labels are", () => {
@@ -218,11 +327,11 @@ test("no row carries trailing whitespace, since a marker is not padded to a colu
   }
 });
 
-test("a hostile account label manufactures nothing in the heading it now occupies", () => {
-  // The label moved from inside a fence to outside one, which is the one way this shape can be less
-  // safe than the one it replaces: a fence renders no markdown and draws no pill, and a heading
-  // renders both. So the label takes the neutralization the session card's title takes, and what a
-  // crafted address reaches the operator as is the characters it contains.
+test("a hostile account label manufactures nothing in the bold line it occupies", () => {
+  // The label sits outside its fence, which is the one way this shape can be less safe than a fenced
+  // one: a fence renders no markdown and draws no pill, and a bold paragraph line renders both. So
+  // the label takes the neutralization the session card's title takes, and what a crafted address
+  // reaches the operator as is the characters it contains.
   // Held inside the label's own cap, so what the assertions read is the whole neutralized label
   // rather than the head of one: this is the escaping under test, not the cut.
   const body = card({
@@ -230,35 +339,37 @@ test("a hostile account label manufactures nothing in the heading it now occupie
     accounts: [account({ active: true, email: "<@1>#```*b*_u_~s~|p|[l](r)\nsecond line" })],
   });
   const header = accountHeader(body);
-  const label = header.slice("### ▶ ".length);
+  const label = headerText(body).slice("▶ ".length);
 
-  assert.match(header, /^### ▶ /, "the renderer's own marker, and one heading line");
+  assert.match(header, /^\*\*▶ /, "the renderer's own marker, inside the emphasis it opens");
+  assert.match(header, /\*\*$/, "and the emphasis closed at the end of the line");
   assert.match(label, /\\<@1\\>/, "no mention pill: the chip syntax is escaped");
+  assert.match(label, /\\\*b\\\*/, "the asterisks are escaped, so the label cannot close the span");
   assert.doesNotMatch(
     label,
     /(?<!\\)[<>#*_~|`[\]()]/,
     `every character Discord builds syntax from is escaped: ${label}`,
   );
   assert.match(label, /second line/, "the newline collapses to a space rather than breaking the line");
-  assert.equal(
-    body.split("\n").filter((line) => line.startsWith("###")).length,
-    1,
-    "the label composes no heading of its own",
+  assert.deepEqual(
+    body.split("\n").filter((line) => line.startsWith("#")),
+    ["# 📊 Fleet: Usage"],
+    "the label composes no heading of its own, and the card's own title is the only one on it",
   );
   for (const line of plainLines(body)) {
     assert.doesNotMatch(line, /(?<!\\)`/, `every backtick outside a fence is escaped: ${line}`);
   }
 });
 
-test("a label made of nothing but syntax still draws one inert heading", () => {
+test("a label made of nothing but syntax still draws one inert bold line", () => {
   const body = card({
     available: true,
     accounts: [account({ email: "```#*_~|[]()<>", organizationName: null })],
   });
 
   assert.equal(blocksOf(body).length, 1, "the label neither opens nor closes a fence");
-  assert.equal(body.split("\n").filter((line) => line.startsWith("###")).length, 1);
-  assert.doesNotMatch(accountHeader(body).slice("### · ".length), /(?<!\\)[<>#*_~|`[\]()]/);
+  assert.equal(body.split("\n").filter((line) => line.startsWith("**")).length, 1);
+  assert.doesNotMatch(headerText(body).slice("· ".length), /(?<!\\)[<>#*_~|`[\]()]/);
 });
 
 test("an account label is bounded, and one that neutralizes to nothing falls back to the slot", () => {
@@ -271,16 +382,20 @@ test("an account label is bounded, and one that neutralizes to nothing falls bac
     accounts: [account({ number: 4, email: "​​", organizationName: null })],
   });
 
-  const label = accountHeader(long).slice("### · ".length).replace(/ · 14m ago$/, "");
+  const label = headerText(long).slice("· ".length).replace(/ · 14m ago$/, "");
   assert.equal([...label].length, MAX_ACCOUNT_LABEL_LENGTH);
-  assert.match(empty, /^### · account 4 · 14m ago$/m, "the slot number is the one part this broker owns");
+  assert.match(
+    empty,
+    /^\*\*· account 4 · 14m ago\*\*$/m,
+    "the slot number is the one part this broker owns",
+  );
 });
 
 test("no crafted cache string can break out of a fenced block", () => {
   // A fenced body carries no backtick at all, which is the only bound a crafted field cannot compose
   // around: Discord processes a backslash escape inside a fence, so an escaped backtick arrives as a
   // real one and three of those close the block. This is narrower than a card-wide ban because a
-  // heading is not a fence: a backtick there is escaped and inert, which the heading tests pin.
+  // bold line is not a fence: a backtick there is escaped and inert, which the label tests pin.
   const body = card(
     {
       available: true,
@@ -305,7 +420,7 @@ test("every fenced line stays inside the width bound at a worst case of accounts
   // A phone scrolls a code block sideways rather than wrapping it, so one line past the bound costs
   // a drag across the whole card. Driven at the widest inputs the cache can hand over: the longest
   // account labels, per-model rows named at their own cap, and the longest session names. The bound
-  // is a property of the fenced lines alone; a heading outside a fence wraps rather than scrolls.
+  // is a property of the fenced lines alone; a bold line outside a fence wraps rather than scrolls.
   const accounts = Array.from({ length: 4 }, (_unused, index) =>
     account({
       number: index + 1,
@@ -335,6 +450,111 @@ test("every fenced line stays inside the width bound at a worst case of accounts
   }
 });
 
+test("a row at its worst case stands inside the width bound with nothing cut off it", () => {
+  // The widest a row gets: the label column at the cap a per-model name pushes it to, a bar at every
+  // cell, the longest countdown a weekly window can carry, and a marker after it. Measured off the
+  // rendered line against the geometry's own parts rather than against a typed transcript of it, so
+  // what fails here is a column that moved rather than a string that was retyped.
+  const body = card({
+    available: true,
+    accounts: [
+      account({
+        fiveHour: null,
+        sevenDay: null,
+        spend: null,
+        scoped: [{ name: "long-model", pct: 100, resetsAt: NOW + 6 * 24 * HOUR + 23 * HOUR }],
+      }),
+    ],
+  });
+
+  const row = fencedLines(body).find((line) => line.includes("(!)")) ?? "";
+  const geometry = valueColumn(body) + BAR_CELLS + PCT_WIDTH + "  6d 23h".length + " (!)".length;
+
+  assert.equal(valueColumn(body), 11, "a ten-character label and the one space after it");
+  assert.equal([...row].length, geometry, `the row is its parts and nothing else: ${row}`);
+  assert.ok(
+    [...row].length <= MAX_BLOCK_WIDTH,
+    `${[...row].length} characters is past the ${MAX_BLOCK_WIDTH} bound: ${row}`,
+  );
+  assert.doesNotMatch(row, /…/, "and it reaches the bound whole rather than by being cut to it");
+});
+
+test("a marked spend row keeps its money and its marker under the widest label column", () => {
+  // The other worst case, and the one a live cache reaches: a four-figure balance at the warning
+  // threshold, in the same block as a per-model name that pushes the label column to its cap. The
+  // cents are what the amount drops there, and dropping them is what leaves the marker room to stand
+  // on the line rather than being cut off the end of it.
+  const body = card({
+    available: true,
+    accounts: [
+      account({
+        fiveHour: null,
+        sevenDay: null,
+        scoped: [{ name: "long-model", pct: 12, resetsAt: null }],
+        spend: { pct: 95, used: 13440.5, limit: 15000, currency: "USD" },
+      }),
+    ],
+  });
+
+  const row = fencedLines(body).find((line) => line.startsWith("Spend")) ?? "";
+
+  assert.equal(valueColumn(body), 11, "a ten-character label and the one space after it");
+  assert.equal(value(body, "Spend"), rowValue(14, "95%", "  $13,440 (!)"));
+  assert.ok(
+    [...row].length <= MAX_BLOCK_WIDTH,
+    `${[...row].length} characters is past the ${MAX_BLOCK_WIDTH} bound: ${row}`,
+  );
+  assert.doesNotMatch(row, /…/, "nothing was cut to make it fit");
+  assert.equal(closingOf(body)[0], "(^) ahead of pace   (!) at or above 90%", "and the legend keys it");
+});
+
+test("a row whose value is cut takes the legend down with the marker it lost", () => {
+  // A value too wide for the block is cut from the end, which is where the marker sits, so a card
+  // can compose a marker and draw none. The legend is keyed off the drawn lines for exactly that
+  // case: a key to a symbol nowhere on the card is a puzzle rather than a legend.
+  const body = card({
+    available: true,
+    accounts: [
+      account({
+        fiveHour: null,
+        sevenDay: null,
+        scoped: [{ name: "long-model", pct: 12, resetsAt: null }],
+        spend: { pct: 95, used: 12345678901234, limit: null, currency: "USD" },
+      }),
+    ],
+  });
+
+  const row = fencedLines(body).find((line) => line.startsWith("Spend")) ?? "";
+
+  assert.match(row, /…$/, "the amount ran past the block and was cut to it");
+  assert.doesNotMatch(body, /\(!\)/, "so no marker reached the card");
+  assert.doesNotMatch(body, /at or above/, "and no legend keys one that is not there");
+});
+
+test("a cache string that reads as a marker cannot summon the legend on its own", () => {
+  // The drawn-line check is read together with the markers the rows earned, never on its own: a
+  // per-model name sits in the label column where no line ends, and a currency code can end one.
+  // Neither is a marker, and neither may draw the key to the two that are.
+  const body = card({
+    available: true,
+    accounts: [
+      account({
+        fiveHour: { pct: 12, resetsAt: null },
+        sevenDay: null,
+        scoped: [{ name: "(!) Fable", pct: 12, resetsAt: null }],
+        spend: { pct: 12, used: 95.4, limit: null, currency: "(!)" },
+      }),
+    ],
+  });
+
+  assert.ok(
+    fencedLines(body).some((line) => line.startsWith("(!) Fable")),
+    "the name is drawn, in the label column where a value follows it",
+  );
+  assert.equal(value(body, "Spend"), rowValue(2, "12%", "  95.40 (!)"), "and the code trails the amount");
+  assert.doesNotMatch(body, /at or above/, "no row earned a marker, so nothing keys the legend");
+});
+
 test("the same reading renders the same bytes, so a quiet fleet spends no edit", () => {
   // The card is edited only when its text changes. Anything that varied between two renders of one
   // reading, a clock read inside the renderer or a width measured off something outside the inputs,
@@ -354,7 +574,7 @@ test("a window whose reset time has passed says so rather than counting backward
     accounts: [account({ fiveHour: { pct: 46, resetsAt: NOW - MINUTE }, sevenDay: null, scoped: [] })],
   });
 
-  assert.equal(value(body, "5 Hr"), "46%  resets due");
+  assert.equal(value(body, "5 Hr"), rowValue(7, "46%", "  due"));
 });
 
 test("an account with no spend renders no spend line", () => {
@@ -366,7 +586,7 @@ test("an account with no spend renders no spend line", () => {
 test("a stale cache ages honestly instead of reading as fresh", () => {
   const body = card({ available: true, accounts: [account({ fetchedAt: NOW - 3 * HOUR })] });
 
-  assert.match(body, /^### · one@example\.test · 3h ago$/m);
+  assert.match(body, /^\*\*· one@example\.test · 3h ago\*\*$/m);
 });
 
 test("an account whose usage checks are failing carries a warning line beside its numbers", () => {
@@ -381,7 +601,11 @@ test("an account whose usage checks are failing carries a warning line beside it
     fencedLines(body).join(" ").includes("⚠ usage checks failing · backing off · 3 consecutive"),
     fencedLines(body).join(" "),
   );
-  assert.equal(value(body, "5 Hr"), "46%  resets 3h 44m", "the numbers still render, under an honest age");
+  assert.equal(
+    value(body, "5 Hr"),
+    rowValue(7, "46%", "  3h 44m"),
+    "the numbers still render, under an honest age",
+  );
 });
 
 test("a backoff instant that has passed renders no warning at all", () => {
@@ -413,8 +637,12 @@ test("the warning marker appears at the threshold and not below it", () => {
     accounts: [account({ fiveHour: { pct: WARNING_PCT, resetsAt: null }, sevenDay: null, scoped: [] })],
   });
 
-  assert.equal(value(below, "5 Hr"), "89%");
-  assert.equal(value(at, "5 Hr"), "90%  (!)", "the marker ends the row, where it moves no column");
+  assert.equal(value(below, "5 Hr"), rowValue(13, "89%"));
+  assert.equal(
+    value(at, "5 Hr"),
+    rowValue(14, "90%", " (!)"),
+    "the marker ends the row, where it moves no column",
+  );
 });
 
 test("the warning follows the percentage as drawn, not the one behind it", () => {
@@ -429,8 +657,8 @@ test("the warning follows the percentage as drawn, not the one behind it", () =>
     accounts: [account({ fiveHour: { pct: 90.4, resetsAt: null }, sevenDay: null, scoped: [] })],
   });
 
-  assert.equal(value(under, "5 Hr"), "90%  (!)");
-  assert.equal(value(over, "5 Hr"), "90%  (!)");
+  assert.equal(value(under, "5 Hr"), rowValue(14, "90%", " (!)"));
+  assert.equal(value(over, "5 Hr"), rowValue(14, "90%", " (!)"));
 });
 
 test("a window at the threshold draws the warning alone, never the pace marker too", () => {
@@ -448,7 +676,7 @@ test("a window at the threshold draws the warning alone, never the pace marker t
     ],
   });
 
-  assert.equal(value(body, "7 Day"), "95%  resets 4d 6h  (!)");
+  assert.equal(value(body, "7 Day"), rowValue(14, "95%", "  4d 6h (!)"));
   assert.deepEqual(markedRows(body, "(^)"), []);
 });
 
@@ -484,7 +712,11 @@ test("a weekly window inside the pace margin carries no marker", () => {
     accounts: [account({ sevenDay: { pct: 50, resetsAt: NOW + 4 * 24 * HOUR + 6 * HOUR } })],
   });
 
-  assert.equal(value(body, "7 Day"), "50%  resets 4d 6h", "10.9 points over schedule is inside the margin");
+  assert.equal(
+    value(body, "7 Day"),
+    rowValue(8, "50%", "  4d 6h"),
+    "10.9 points over schedule is inside the margin",
+  );
 });
 
 test("the five-hour window carries no pace marker on numbers that would mark a weekly one", () => {
@@ -499,7 +731,11 @@ test("the five-hour window carries no pace marker on numbers that would mark a w
     ],
   });
 
-  assert.equal(value(body, "5 Hr"), "56%  resets 4d 6h", "a 5h window resets too fast for pace to mean anything");
+  assert.equal(
+    value(body, "5 Hr"),
+    rowValue(8, "56%", "  4d 6h"),
+    "a 5h window resets too fast for pace to mean anything",
+  );
 });
 
 test("a weekly window in its first day after a reset carries no marker", () => {
@@ -519,7 +755,7 @@ test("a weekly window whose reset has passed is drawn for the period it is in no
 
   // The last-written 99% belongs to a window that no longer exists. Drawn against a boundary that is
   // gone, it would report no headroom at the moment a full week of it opened up.
-  assert.equal(value(body, "7 Day"), "0%  resets 6d 23h");
+  assert.equal(value(body, "7 Day"), rowValue(0, "0%", "  6d 23h"), "a bar with no cell at all");
   assert.doesNotMatch(body, /99%/);
   assert.deepEqual(markedRows(body, "(^)"), [], "a period with no measured spend is not ahead of anything");
 });
@@ -530,7 +766,11 @@ test("a reset several periods back rolls to the next future boundary, not to the
     accounts: [account({ sevenDay: { pct: 66, resetsAt: NOW - 15 * 24 * HOUR }, scoped: [] })],
   });
 
-  assert.equal(value(body, "7 Day"), "0%  resets 6d 0h", "three whole weeks past a boundary fifteen days old");
+  assert.equal(
+    value(body, "7 Day"),
+    rowValue(0, "0%", "  6d 0h"),
+    "three whole weeks past a boundary fifteen days old",
+  );
 });
 
 test("a per-model window rolls the same way and drops its maxed warning with the period", () => {
@@ -539,7 +779,7 @@ test("a per-model window rolls the same way and drops its maxed warning with the
     accounts: [account({ sevenDay: null, scoped: [{ name: "Fable", pct: 100, resetsAt: NOW - MINUTE }] })],
   });
 
-  assert.equal(value(body, "Fable"), "0%  resets 6d 23h");
+  assert.equal(value(body, "Fable"), rowValue(0, "0%", "  6d 23h"));
   assert.deepEqual(markedRows(body, "(!)"), [], "a dropped warning leaves no marker on the card");
   assert.doesNotMatch(body, /at or above/, "and no legend either, since nothing keys it");
 });
@@ -550,7 +790,11 @@ test("the five-hour window is never rolled, whatever its reset instant says", ()
     accounts: [account({ fiveHour: { pct: 46, resetsAt: NOW - MINUTE }, sevenDay: null, scoped: [] })],
   });
 
-  assert.equal(value(body, "5 Hr"), "46%  resets due", "a 5h window does not reset on the weekly cadence");
+  assert.equal(
+    value(body, "5 Hr"),
+    rowValue(7, "46%", "  due"),
+    "a 5h window does not reset on the weekly cadence",
+  );
 });
 
 test("a fetch time the card will not believe rolls nothing", () => {
@@ -561,8 +805,12 @@ test("a fetch time the card will not believe rolls nothing", () => {
     ],
   });
 
-  assert.match(body, /^### · one@example\.test · age unknown$/m);
-  assert.equal(value(body, "7 Day"), "66%  resets due", "no trustworthy measurement time is no ground for a fresh period");
+  assert.match(body, /^\*\*· one@example\.test · age unknown\*\*$/m);
+  assert.equal(
+    value(body, "7 Day"),
+    rowValue(10, "66%", "  due"),
+    "no trustworthy measurement time is no ground for a fresh period",
+  );
 });
 
 test("a scoped window carries the marker, and a maxed one carries the warning alone", () => {
@@ -575,8 +823,8 @@ test("a scoped window carries the marker, and a maxed one carries the warning al
     accounts: [account({ scoped: [{ name: "Fable", pct: 100, resetsAt: NOW + 4 * 24 * HOUR + 6 * HOUR }] })],
   });
 
-  assert.equal(value(ahead, "Fable"), "56%  resets 4d 6h  (^)");
-  assert.equal(value(maxed, "Fable"), "100%  resets 4d 6h  (!)");
+  assert.equal(value(ahead, "Fable"), rowValue(8, "56%", "  4d 6h (^)"));
+  assert.equal(value(maxed, "Fable"), rowValue(15, "100%", "  4d 6h (!)"));
 });
 
 test("a fetch time the card will not believe takes the pace marker down with the age", () => {
@@ -591,32 +839,98 @@ test("a spend at the threshold carries the warning marker the windows use", () =
     accounts: [account({ spend: { pct: 89.6, used: 1344, limit: 1500, currency: "USD" } })],
   });
 
-  assert.equal(value(body, "Spend"), "90%  $1,344 of $1,500  (!)", "the same rounding, so the same threshold");
+  assert.equal(
+    value(body, "Spend"),
+    rowValue(14, "90%", "  $1,344 (!)"),
+    "the same rounding, so the same threshold",
+  );
 });
 
 test("spend amounts render as money rather than as the double behind it", () => {
-  // The live cache's own record: a fractional used amount and a whole limit, drawn with grouped
-  // thousands, two decimal places, and a trailing .00 dropped, under the symbol for a currency
-  // code this renderer knows.
+  // The live cache's own record: a fractional used amount, drawn with grouped thousands, two decimal
+  // places, and a trailing .00 dropped, under the symbol for a currency code this renderer knows.
   const live = card({
     available: true,
     accounts: [account({ spend: { pct: 6.36, used: 95.4, limit: 1500, currency: "USD" } })],
   });
-  assert.equal(value(live, "Spend"), "6%  $95.40 of $1,500");
+  assert.equal(value(live, "Spend"), rowValue(1, "6%", "  $95.40"));
 
-  // A float sum's noise is rounded to the cent, and a fractional limit keeps its cents too.
+  // A float sum's noise is rounded to the cent.
   const noisy = card({
     available: true,
     accounts: [account({ spend: { pct: 1, used: 0.1 + 0.2, limit: 1500.5, currency: "USD" } })],
   });
-  assert.equal(value(noisy, "Spend"), "1%  $0.30 of $1,500.50");
+  assert.equal(value(noisy, "Spend"), rowValue(1, "1%", "  $0.30"));
 
   // Grouping recurs every three digits, not only once.
   const large = card({
     available: true,
     accounts: [account({ spend: { pct: 50, used: 1234567.89, limit: 2500000, currency: "USD" } })],
   });
-  assert.equal(value(large, "Spend"), "50%  $1,234,567.89 of $2,500,000");
+  assert.equal(value(large, "Spend"), rowValue(8, "50%", "  $1,234,567"));
+});
+
+test("an amount of a thousand and up is drawn whole, and one below it keeps its cents", () => {
+  // Three characters of cents on a four-figure balance are what pushes a row past the block's width
+  // beside a bar of fifteen cells, and they are the digits worth least: what a four-figure spend is
+  // read for is its scale. The line sits at a thousand, so the mock's own $95.40 is untouched.
+  const spent = (used: number): string => {
+    const body = card({
+      available: true,
+      accounts: [account({ spend: { pct: 50, used, limit: null, currency: "USD" } })],
+    });
+    return value(body, "Spend").slice(BAR_CELLS + PCT_WIDTH + "  ".length);
+  };
+
+  assert.equal(spent(999.99), "$999.99", "the last amount that keeps its cents");
+  assert.equal(spent(1000), "$1,000");
+  assert.equal(spent(1500), "$1,500");
+  assert.equal(spent(13440.5), "$13,440", "the cents are dropped, not rounded up into the dollars");
+  assert.equal(spent(-13440.5), "$-13,440", "the magnitude decides, so a negative drops them too");
+  assert.equal(spent(-95.4), "$-95.40");
+});
+
+test("a spend row carries what was spent and never the limit beside it", () => {
+  // The percentage says how much of the budget is gone and the bar says it again at a glance, so the
+  // ceiling is a third telling of one fact in columns the bar is drawn in instead.
+  const body = card({
+    available: true,
+    accounts: [account({ spend: { pct: 6.36, used: 95.4, limit: 1500, currency: "USD" } })],
+  });
+
+  // Read off the rows rather than the whole card, since the legend's own key to the pace marker
+  // reads "ahead of pace".
+  for (const line of fencedLines(body)) {
+    assert.doesNotMatch(line, / of /, `no ratio on a row: ${line}`);
+  }
+  assert.doesNotMatch(body, /1,500/, "and no ceiling anywhere on the card");
+});
+
+test("a spend the cache gave no amount for draws its percentage and stops", () => {
+  const body = card({
+    available: true,
+    accounts: [account({ spend: { pct: 6.36, used: null, limit: 1500, currency: "USD" } })],
+  });
+
+  assert.equal(value(body, "Spend"), rowValue(1, "6%"), "a limit alone is nothing the row will draw");
+});
+
+test("a spend with an amount and no limit behind it still draws the amount", () => {
+  const body = card({
+    available: true,
+    accounts: [account({ spend: { pct: 6.36, used: 95.4, limit: null, currency: "USD" } })],
+  });
+
+  assert.equal(value(body, "Spend"), rowValue(1, "6%", "  $95.40"));
+});
+
+test("no row on the card carries the word the bar beside it replaced", () => {
+  const body = card({
+    available: true,
+    accounts: [account({ active: true }), account({ number: 2, spend: null })],
+  });
+
+  assert.doesNotMatch(body, /resets/, "the bar is what says how far through a window an account is");
 });
 
 test("an unknown currency code keeps its shape after the amount rather than guessing a symbol", () => {
@@ -627,7 +941,7 @@ test("an unknown currency code keeps its shape after the amount rather than gues
     accounts: [account({ spend: { pct: 6, used: 95.4, limit: 1500, currency: "EUR" } })],
   });
 
-  assert.equal(value(body, "Spend"), "6%  95.40 of 1,500 EUR");
+  assert.equal(value(body, "Spend"), rowValue(1, "6%", "  95.40 EUR"));
 });
 
 test("a nonsense percentage is bounded rather than drawn in full", () => {
@@ -636,7 +950,7 @@ test("a nonsense percentage is bounded rather than drawn in full", () => {
     accounts: [account({ fiveHour: { pct: 1e20, resetsAt: null }, sevenDay: null, scoped: [] })],
   });
 
-  assert.equal(value(body, "5 Hr"), "999%  (!)");
+  assert.equal(value(body, "5 Hr"), rowValue(15, "999%", " (!)"));
 });
 
 test("a scoped row whose name neutralizes to nothing keeps a label", () => {
@@ -645,7 +959,11 @@ test("a scoped row whose name neutralizes to nothing keeps a label", () => {
     accounts: [account({ scoped: [{ name: "​​", pct: 12, resetsAt: null }] })],
   });
 
-  assert.equal(value(body, "per-model"), "12%", "zero-width characters survive a trim and are stripped later");
+  assert.equal(
+    value(body, "per-model"),
+    rowValue(2, "12%"),
+    "zero-width characters survive a trim and are stripped later",
+  );
 });
 
 test("the footer ages the card off the oldest reading on it", () => {
@@ -662,7 +980,7 @@ test("a held reading keeps its numbers and says the cache behind them is down", 
   // them from reading as a cache that is still answering.
   const body = card({ available: true, accounts: [account()] }, [], true, "unreadable");
 
-  assert.equal(value(body, "5 Hr"), "46%  resets 3h 44m");
+  assert.equal(value(body, "5 Hr"), rowValue(7, "46%", "  3h 44m"));
   assert.ok(
     closingOf(body)
       .join(" ")
@@ -707,7 +1025,7 @@ test("hostile strings inside a fenced block render as their characters", () => {
     [view({ name: "`code` <@everyone>" })],
   );
 
-  assert.equal(value(body, "<#999>"), "1%", "the characters, with no visible backslash");
+  assert.equal(value(body, "<#999>"), rowValue(1, "1%"), "the characters, with no visible backslash");
   assert.ok(
     fencedLines(body).some((line) => line.includes("'code' <@everyone>")),
     fencedLines(body).join(" | "),
@@ -723,7 +1041,7 @@ test("live sessions render one row each and ended ones are omitted", () => {
 
   assert.match(body, /^⚙ CHNL: Answering · working · 2m$/m);
   assert.match(body, /^✅ CHNL: Usage card · idle · 30m$/m);
-  assert.match(body, /^### Sessions$/m);
+  assert.match(body, /^\*\*Sessions\*\*$/m);
   assert.doesNotMatch(body, /Finished/);
 });
 
@@ -743,7 +1061,7 @@ test("a reading that parsed but holds no accounts says so rather than titling an
 test("a fetch time in the future reads as unknown rather than as fresh", () => {
   const body = card({ available: true, accounts: [account({ fetchedAt: NOW + 10 * MINUTE })] });
 
-  assert.match(body, /· age unknown$/m);
+  assert.match(body, /· age unknown\*\*$/m);
   assert.doesNotMatch(body, /just now/);
 });
 
@@ -798,8 +1116,12 @@ test("a host with few accounts and many sessions overflows on the sessions alone
     body.length <= MAX_CARD_LENGTH,
     `the card must stay inside ${MAX_CARD_LENGTH}, rendered ${body.length}`,
   );
-  assert.match(body, /^### · one@example\.test · 14m ago$/m, "the account heading survives whole");
-  assert.equal(value(body, "5 Hr"), "46%  resets 3h 44m", "and so do its windows");
+  assert.match(
+    body,
+    /^\*\*· one@example\.test · 14m ago\*\*$/m,
+    "the account's label line survives whole",
+  );
+  assert.equal(value(body, "5 Hr"), rowValue(7, "46%", "  3h 44m"), "and so do its windows");
   assert.match(
     closingOf(body)[0] ?? "",
     /^\(\+\d+ sessions not shown\)$/,

@@ -473,7 +473,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
 
   const body = posts[0] ?? "";
   assert.equal(posts.length, 1);
-  assert.match(body, /^5 Hr  46%$/m, "the cache under the configured root is what the card reads");
+  assert.match(body, /^5 Hr .* 46%$/m, "the cache under the configured root is what the card reads");
   assert.match(body, /^⏸ wired-session · needs you · 0m$/m, "and the registry is what it lists");
   assert.match(body, /interim mirroring off/, "with the tailer's own state in the footer");
   assert.deepEqual(

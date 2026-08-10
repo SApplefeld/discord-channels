@@ -27,10 +27,10 @@
 // Which escape depends on where the field lands, and the card has both kinds of place. A field
 // drawn inside a fence takes `inertBlockField`, because a fence renders no markdown and resolves no
 // chip, so the full escape would reach the operator as a backslash in front of every underscore a
-// real name contains. The account label is drawn in a heading outside its fence, which is live
+// real name contains. The account label is drawn in the bold line above its fence, which is live
 // markdown, so it takes `inertField`, the same neutralization the session status card's own title
 // takes: there a crafted address could otherwise draw a mention pill, a heading of its own, or a
-// fence delimiter.
+// fence delimiter, and an unescaped asterisk could close the emphasis it sits inside.
 import {
   FENCE_COST,
   GLYPHS,
@@ -71,14 +71,6 @@ export const WARNING_PCT = 90;
 export const MAX_DRAWN_PCT = 999;
 
 /**
- * The width every percentage is drawn in, taken from the largest one that can be drawn so the
- * digits stack under each other whatever numbers a fleet happens to carry. Fixed rather than
- * measured off the card, because a column that narrowed when no account happened to be in three
- * figures would move the whole card's numbers as usage crossed 100%.
- */
-const PCT_WIDTH = `${MAX_DRAWN_PCT}%`.length;
-
-/**
  * How far ahead of the current time a fetch time may sit and still be believed. Small clock
  * disagreement between the writer of the cache and the reader of it is ordinary; past this, the
  * timestamp is not describing a past measurement and nothing can be derived from it.
@@ -113,20 +105,59 @@ const PREVIEW = "📊 **Fleet: Usage**";
 const TITLE = "# 📊 Fleet: Usage";
 
 /**
- * The header over one section's fenced block, a rank below the title so the card's name and its
- * sections read as different weights.
+ * The label over one section's fenced block: bold paragraph text rather than a heading of any rank.
  *
- * Outside its fence, which is the only place Discord renders a heading at all: inside one it would
- * reach the operator as the hashes it is written with. A header sits directly against the block it
- * heads, with no blank line between them, because Discord draws its own air around a fenced block
+ * Discord puts its own margin above a heading and around a fenced block, and at one section per
+ * account that margin is paid three or four times down a card read on a phone, which is air the
+ * card spends instead of numbers. `###` is the smallest heading Discord draws, so the only weight
+ * left below it is no heading at all: bold paragraph text carries no margin of its own and still
+ * reads as a boundary between one account and the next.
+ *
+ * Outside the fence either way, which is the only place Discord renders emphasis at all: inside one
+ * it would reach the operator as the asterisks it is written with. The label sits directly against
+ * the block it heads, with no blank line between them, because the block already brings its own air
  * and a blank line there is spacing on top of spacing.
  */
-const SECTION_HEADER = "###";
-const SESSIONS_HEADER = `${SECTION_HEADER} Sessions`;
+function sectionLabel(text: string): string {
+  return `**${text}**`;
+}
+const SESSIONS_HEADER = sectionLabel("Sessions");
 const NO_ACCOUNTS = `⚠ usage unavailable ${SEPARATOR} the usage cache holds no accounts`;
 
-/** What separates a row's parts inside a block: the percentage, its clause, and its marker. */
-const GAP = "  ";
+/**
+ * The bar every row leads with, and the glyph its filled cells are drawn in.
+ *
+ * A fixed area, so every column after it stands still whatever the value is, and fifteen cells wide
+ * because that is what the block's width bound leaves once the label column, the percentage, a
+ * reset clause and a marker have taken theirs. It is the row's whole reason for being wider: a
+ * length is read at a glance, where a number has to be converted first.
+ *
+ * U+2014 is a typographic character rather than a box-drawing one, so whether consecutive ones tile
+ * into an unbroken line or leave hairline gaps between them is a property of the font the reader's
+ * client draws with, and only a real client settles it. `─` (U+2500) is the swap where they do not
+ * tile.
+ */
+export const BAR_GLYPH = "—";
+export const BAR_CELLS = 15;
+
+/** What holds a row's clause off the percentage before it, and the percentage off the bar. */
+const CLAUSE_GAP = "  ";
+
+/**
+ * What holds a row's marker off whatever it follows. One column rather than the clause's two: the
+ * marker ends the line, where there is nothing after it for a wider gap to separate it from, and
+ * the column it gives back is a column the bar spends.
+ */
+const MARKER_GAP = " ";
+
+/**
+ * The width every percentage is drawn in: the largest one that can be drawn, and the columns that
+ * hold it off the bar to its left. Right-aligned inside that width, the digits stack under each
+ * other whatever numbers a fleet happens to carry. Fixed rather than measured off the card, because
+ * a column that narrowed when no account happened to be in three figures would move the whole
+ * card's numbers as usage crossed 100%.
+ */
+export const PCT_WIDTH = CLAUSE_GAP.length + `${MAX_DRAWN_PCT}%`.length;
 
 /**
  * The two markers a row can end with, and the key to them.
@@ -156,7 +187,7 @@ const FIVE_HOUR_LABEL = "5 Hr";
 const SEVEN_DAY_LABEL = "7 Day";
 const SPEND_LABEL = "Spend";
 
-/** What an account's heading says instead of an age when its fetch time cannot be believed. */
+/** What an account's label line says instead of an age when its fetch time cannot be believed. */
 const UNKNOWN_AGE = "age unknown";
 
 /** What a scoped row is called when the cache's name for it neutralizes to nothing. */
@@ -170,25 +201,52 @@ const UNAVAILABLE: Record<UsageUnavailableReason, string> = {
 };
 
 /**
- * `resets 3h 44m` for a window that carries a reset time, and nothing at all for one that does not,
- * which is the shape claude-swap really writes for some accounts and which draws as a percentage
- * that simply stops. A reset instant already behind the current time renders as due rather than as
- * a countdown running backwards: the cache can be older than the window it describes.
+ * `3h 44m` for a window that carries a reset time, and nothing at all for one that does not, which
+ * is the shape claude-swap really writes for some accounts and which draws as a percentage that
+ * simply stops. A reset instant already behind the current time renders as due rather than as a
+ * countdown running backwards: the cache can be older than the window it describes.
+ *
+ * The span alone, with no word in front of it. The bar beside it is what says how far through the
+ * window the account is, so a word introducing the countdown spends columns restating what the row
+ * already shows, and those columns are what the bar is drawn in.
  */
 function resetsClause(window: UsageWindow, now: number): string {
   if (window.resetsAt === null) return "";
   const remaining = window.resetsAt - now;
-  return `resets ${remaining <= 0 ? "due" : span(remaining)}`;
+  return remaining <= 0 ? "due" : span(remaining);
 }
 
 /**
- * One row's value: the percentage right-aligned so the digits stack, then the clause that says when
- * the window resets or what the spend is, then the marker, each separated by the same gap and each
- * left out when it is empty. Leaving an empty part out rather than padding past it is what keeps a
- * row that has nothing to say after its percentage from carrying trailing whitespace.
+ * The bar for a percentage: filled left to right, one cell per 100/15 of a point, rounded to
+ * nearest, and blank-padded to the full width so the columns after it never move.
+ *
+ * It reads two percentages, and which one governs what is the whole rule. The cells are counted off
+ * the percentage as the card draws it, so the length and the digits beside it can never disagree
+ * about the same window. The floor of one cell is read off the raw percentage instead: any usage at
+ * all draws a cell, including the trace that rounds to `0%`. A window at 0.4% drawing one cell
+ * beside a `0%` is the intended signal rather than a contradiction, because a bar identical to
+ * zero's is the one thing that leaves a trace and a true zero indistinguishable, and telling those
+ * two apart is why the bar is on the card. Zero and anything below it draw no cell at all.
  */
-function rowValue(pct: number, clause: string, marker: string): string {
-  return [`${pct}%`.padStart(PCT_WIDTH), clause, marker].filter((part) => part !== "").join(GAP);
+function bar(drawn: number, raw: number): string {
+  const scaled = Math.round((drawn * BAR_CELLS) / 100);
+  const cells = raw <= 0 ? 0 : Math.min(Math.max(scaled, 1), BAR_CELLS);
+  return `${BAR_GLYPH.repeat(cells)}${" ".repeat(BAR_CELLS - cells)}`;
+}
+
+/**
+ * One row's value: the bar, the percentage right-aligned so the digits stack, then the clause that
+ * says when the window resets or what the spend is, then the marker. The drawn percentage is what
+ * the row shows and what its bar is measured in; the raw one rides along for the bar's floor alone.
+ *
+ * The bar and the percentage are always drawn, and each of the two after them appears only when it
+ * carries something. Leaving an empty part out rather than padding past it is what keeps a row that
+ * has nothing to say after its percentage from carrying trailing whitespace.
+ */
+function rowValue(drawn: number, raw: number, clause: string, marker: string): string {
+  const measure = `${bar(drawn, raw)}${`${drawn}%`.padStart(PCT_WIDTH)}`;
+  const said = clause === "" ? "" : `${CLAUSE_GAP}${clause}`;
+  return `${measure}${said}${marker === "" ? "" : `${MARKER_GAP}${marker}`}`;
 }
 
 /** The percentage as the card draws it: whole, and inside a range a line can carry. */
@@ -266,14 +324,28 @@ function rowMarker(pct: number, ahead: boolean): string {
 }
 
 /**
+ * Whether a line, as the block will actually show it, ends in a marker.
+ *
+ * The legend is keyed off this rather than off the markers the rows were composed with, because a
+ * value too wide for the block is cut to fit and the marker is the part at the end that goes: a key
+ * to a symbol nowhere on the card is a puzzle rather than a legend. It is read together with the
+ * section's own flag, never on its own, since the cache names a per-model window and a currency and
+ * a field that happens to read as a marker is not one.
+ */
+function endsMarked(line: string): boolean {
+  return line.endsWith(WARNING_MARKER) || line.endsWith(AHEAD_MARKER);
+}
+
+/**
  * What an account is called: its address, its organization name, or its slot number. The slot
  * number is the one part that is this broker's own, so it is what the label falls back to when
  * `sequence.json` was unreadable or when the identity it held neutralizes to nothing.
  *
- * Neutralized for live markdown rather than for a fenced line, because the heading it is drawn in
- * is a surface Discord resolves a mention, an emoji chip, a heading, and a fence delimiter on.
- * Bounded by the field cap alone: the width bound is a property of a fenced line, where a phone
- * scrolls sideways instead of wrapping, and a heading is neither cut nor scrolled.
+ * Neutralized for live markdown rather than for a fenced line, because the bold line it is drawn in
+ * is a surface Discord resolves a mention, an emoji chip, a heading, and a fence delimiter on, and
+ * where an unescaped asterisk would close the emphasis the label sits inside. Bounded by the field
+ * cap alone: the width bound is a property of a fenced line, where a phone scrolls sideways instead
+ * of wrapping, and a paragraph line is neither cut nor scrolled.
  */
 function accountLabel(account: UsageAccount): string {
   const named = inertField(account.email ?? account.organizationName ?? "", MAX_ACCOUNT_LABEL_LENGTH);
@@ -303,11 +375,21 @@ function measuredAt(account: UsageAccount, now: number): number | null {
  */
 const CURRENCY_SYMBOLS = new Map([["USD", "$"]]);
 
+/** The amount from which cents stop being drawn, in cents: one thousand of the currency's unit. */
+const WHOLE_UNITS_FROM = 100_000;
+
 /**
- * A money amount as the card draws it: the integer part grouped in threes, two decimal places, and
- * a trailing `.00` dropped, so 95.4 draws as `95.40` and 1500 as `1,500`. The cache's numbers
- * arrive as JSON doubles, so a sum of fractional charges reaches this renderer as
- * `0.30000000000000004`, and rounding to the cent is what a currency amount means.
+ * The one money amount the card draws, which is what an account has spent: the integer part grouped
+ * in threes, and the cents, so 95.4 draws as `95.40`. The cache's numbers arrive as JSON doubles, so
+ * a sum of fractional charges reaches this renderer as `0.30000000000000004`, and rounding to the
+ * cent is what a currency amount means. A trailing `.00` is dropped, since two zeros say only that
+ * the amount is round.
+ *
+ * From a thousand up the cents are dropped entirely, so 13,440.50 draws as `13,440`. The row has to
+ * stand inside the block's width beside a bar of fifteen cells, and three characters of cents on a
+ * five-figure amount is what pushes it past that, where the line is cut and takes the row's marker
+ * off the end with it. Cents on a large balance are also the digits least worth the columns: what
+ * the operator reads a four-figure spend for is the scale of it.
  *
  * Formatted by hand rather than through `toLocaleString`, because the rendered body must depend on
  * nothing but the inputs: the card's byte-compare change detection rests on identical inputs
@@ -317,15 +399,18 @@ const CURRENCY_SYMBOLS = new Map([["USD", "$"]]);
 function amount(value: number): string {
   const cents = Math.round(value * 100);
   const sign = cents < 0 ? "-" : "";
+  // The magnitude decides, so a large negative amount drops its cents the way its positive twin
+  // does rather than keeping them on the strength of its sign.
   const magnitude = Math.abs(cents);
   const whole = String(Math.trunc(magnitude / 100)).replace(/\B(?=(\d{3})+$)/g, ",");
-  const fraction = magnitude % 100;
+  const fraction = magnitude >= WHOLE_UNITS_FROM ? 0 : magnitude % 100;
   return `${sign}${whole}${fraction === 0 ? "" : `.${String(fraction).padStart(2, "0")}`}`;
 }
 
 /**
  * One section of the card: the header drawn outside its fence, the rows drawn inside it, and
- * whether any of those rows ended in a marker, which is what decides the legend at the foot.
+ * whether any of those rows earned a marker, which is half of what decides the legend at the foot.
+ * The other half is whether a drawn line still ends in one, which only the composed block knows.
  *
  * A section with no header is one the card has no name for, which is the pair of readings that
  * carry a notice instead of an account: a header over a one-line apology says nothing the line does
@@ -334,26 +419,27 @@ function amount(value: number): string {
 type CardSection = { header: string | null; rows: BlockRow[]; marked: boolean };
 
 /**
- * One account's section: a heading carrying the active marker, the label, and the age, over a block
- * holding a row per window.
+ * One account's section: a bold line carrying the active marker, the label, and the age, over a
+ * block holding a row per window.
  *
- * The heading is outside the fence, which is what gives each account a visible boundary rather than
+ * The label is outside the fence, which is what gives each account a visible boundary rather than
  * leaving three accounts to run together as twelve near-identical lines. It also takes the width
- * pressure off the label: Discord renders a heading as ordinary wrapping text, so a long address
- * there cannot push a column, force a horizontal scroll, or disturb the alignment inside the block.
+ * pressure off the label: Discord wraps a paragraph line rather than scrolling it, so a long
+ * address there cannot push a column, force a horizontal scroll, or disturb the alignment inside
+ * the block.
  */
 function accountSection(account: UsageAccount, now: number): CardSection {
   const fetchedAt = measuredAt(account, now);
   const age = fetchedAt === null ? UNKNOWN_AGE : heartbeat(Math.max(now - fetchedAt, 0));
   const active = account.active ? "▶" : SEPARATOR;
-  const header = `${SECTION_HEADER} ${active} ${accountLabel(account)} ${SEPARATOR} ${age}`;
+  const header = sectionLabel(`${active} ${accountLabel(account)} ${SEPARATOR} ${age}`);
   const rows: BlockRow[] = [];
   let marked = false;
   const windowRow = (label: string, window: UsageWindow, ahead: boolean): void => {
     const pct = drawnPct(window.pct);
     const marker = rowMarker(pct, ahead);
     if (marker !== "") marked = true;
-    rows.push({ label, value: rowValue(pct, resetsClause(window, now), marker) });
+    rows.push({ label, value: rowValue(pct, window.pct, resetsClause(window, now), marker) });
   };
   // The 5h window carries no pace marker at any percentage, and no roll either: it resets too fast
   // for a pace reading to mean anything, and its cadence is not the weekly one the roll advances by.
@@ -373,13 +459,12 @@ function accountSection(account: UsageAccount, now: number): CardSection {
   if (account.spend !== null) {
     const symbol =
       account.spend.currency === null ? null : (CURRENCY_SYMBOLS.get(account.spend.currency) ?? null);
-    // The amounts are shown only when both sides of the ratio are readable: a spend of 95.4 with no
-    // limit beside it says nothing the percentage has not already said. A known currency's symbol
-    // leads each amount; an unknown code trails the pair instead.
+    // What was spent, whenever the cache carries it, and the limit not at all: the percentage says
+    // how much of the budget is gone and the bar says it again at a glance, so a ceiling drawn
+    // beside them is a third telling of one fact, in columns the bar is drawn in instead. A known
+    // currency's symbol leads the amount; an unknown code trails it instead.
     const amounts =
-      account.spend.used === null || account.spend.limit === null
-        ? ""
-        : `${symbol ?? ""}${amount(account.spend.used)} of ${symbol ?? ""}${amount(account.spend.limit)}`;
+      account.spend.used === null ? "" : `${symbol ?? ""}${amount(account.spend.used)}`;
     const currency =
       account.spend.currency === null || symbol !== null || amounts === ""
         ? ""
@@ -390,7 +475,10 @@ function accountSection(account: UsageAccount, now: number): CardSection {
     const pct = drawnPct(account.spend.pct);
     const marker = rowMarker(pct, false);
     if (marker !== "") marked = true;
-    rows.push({ label: SPEND_LABEL, value: rowValue(pct, `${amounts}${currency}`, marker) });
+    rows.push({
+      label: SPEND_LABEL,
+      value: rowValue(pct, account.spend.pct, `${amounts}${currency}`, marker),
+    });
   }
   // Backing off is an instant that has not arrived yet, not a field that is set: claude-swap leaves
   // the timestamp behind after the pause it describes has elapsed.
@@ -479,14 +567,14 @@ function overflowTail(accounts: number, sessions: number): string {
 }
 
 /**
- * The whole card, bounded to one message: a title heading, a heading-and-fence pair per account, one
+ * The whole card, bounded to one message: a title heading, a label-and-fence pair per account, one
  * more pair for the live sessions, then the marker legend and the footer as plain lines.
  *
- * The headings sit outside their fences and the rows inside them, which is the split the two halves
- * need. A heading is the only thing Discord will draw at heading weight, and that weight is what
- * gives each account a visible boundary; a fenced block is the only shape Discord gives that keeps a
- * column of numbers under each other. A section with nothing to show is left out, header and block
- * together, rather than drawn empty.
+ * The labels sit outside their fences and the rows inside them, which is the split the two halves
+ * need. Bold is the heaviest text Discord draws that brings no margin with it, and that weight is
+ * what gives each account a visible boundary; a fenced block is the only shape Discord gives that
+ * keeps a column of numbers under each other. A section with nothing to show is left out, label and
+ * block together, rather than drawn empty.
  *
  * Composed section by section rather than cut at the end, because the tail is where the sessions
  * live: a card assembled whole and then truncated would drop the live sessions off a busy host
@@ -579,7 +667,7 @@ export function renderUsageCard(input: {
     if (section.header !== null) lines.push(section.header);
     lines.push(fenced(drawn));
     used += cost;
-    marked = marked || section.marked;
+    marked = marked || (section.marked && drawn.some(endsMarked));
   }
 
   const opening = live[0];
@@ -614,7 +702,7 @@ export function renderUsageCard(input: {
 }
 
 /**
- * A section carrying one line the card has no heading for: the two readings that report why there
+ * A section carrying one line the card has no label for: the two readings that report why there
  * are no numbers rather than drawing any. Fenced like every other block so it is held to the same
  * width, and headerless because a header over a one-line notice says nothing the line does not.
  */
