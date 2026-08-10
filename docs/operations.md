@@ -287,9 +287,13 @@ tailer is the only reader and it never opens a suppressed session's transcript.
 A session whose main thread is blocked on dispatched subagents fires no hooks at all, so before
 this the card called it idle at the moment it was working hardest. The harness reports its own
 table of in-flight work at every turn end, and the card carries it: the count in the thread title,
-where a phone's truncation eats everything else, and the newest few tasks with their ages on the
-card. Long-running background commands ride the same line, since a command left running is the same
-kind of invisible work.
+where a phone's truncation eats everything else, and the tasks themselves with their ages on the
+card. At any fan-out you are likely to see, every task is named. A card only ever omits one when the
+message ceiling forces it, and then it keeps the oldest and counts the rest as `+N more`, for two
+reasons: the longest-running task is the one most likely to be stuck and so the most worth reading,
+and keeping the oldest holds each entry in the same position as a fan-out grows, where keeping the
+newest would reshuffle the list under you. Long-running background commands ride the same line,
+since a command left running is the same kind of invisible work.
 
 The roster survives a broker restart, so a restart in the middle of a fan-out does not go back to
 reporting idle for the rest of the wait. It is replaced wholesale by each report rather than merged,

@@ -231,10 +231,21 @@ and the knowledge that pairing a dispatch with its own `tool_result` reports eve
 agent as finished at launch.
 
 **The card** carries a roster line per session while anything is outstanding: the count, then the
-newest few entries with description, type, and age, then an overflow count (`⚙ 7 tasks ·
+entries with description, type, and age, then an overflow count when the bound bites (`⚙ 7 tasks ·
 Grooming S6 implementation (implementer-fable) 35m · PR ladder fix round three (implementer-opus)
-62m · +5 more`). A full roster rendered in full runs past 700 characters at twelve entries, which
-would crowd every other thing the card carries, so the bound is structural rather than cosmetic.
+62m · +5 more`).
+
+The as-built bound is `MAX_ROSTER_ENTRIES = 24`, oldest first, so the overflow count hides the
+newest (amended 2026-08-09 in the finishing pass; the section as written said "the newest few" at a
+bound the twelve-entry illustration above would have crossed, and the shipped code, which arrived
+via the concurrent card redesign, does the opposite). The as-built behavior is the one kept, on the
+adversarial reviewer's adjudication and my own: at any fan-out an operator actually sees, all of it
+is named, and when the message ceiling does force a cut, the oldest task is the longest-running and
+therefore the one most likely stuck, while keeping the oldest also holds each entry in a stable
+position as the fan-out grows. It is the same keep-the-oldest policy the channel's pin ceiling
+holds. The real working bound is the message ceiling rather than this constant, which is a backstop
+against a count another program reports.
+
 The line sits below the turn count and the heartbeat, because a card that runs long is cut from
 its end and those are what the card exists to carry. Nothing is rendered when the roster is empty,
 and nothing is rendered for a session that has exited, whose roster describes work that no longer

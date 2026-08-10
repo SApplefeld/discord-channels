@@ -486,10 +486,17 @@ function createRepeatLog(
 }
 
 /**
- * One thing a transcript line contributes: a block of assistant narration, a mid-turn message the
- * operator typed at the console, or the questions an `AskUserQuestion` call is holding the
- * session on. All carry untrusted content, and they differ in where they go, `deliver` against
- * `deliverPrompt` against `deliverQuestion`, and therefore in how the thread presents them.
+ * One thing a transcript line contributes. Three of them are posted as their own message and carry
+ * untrusted content into the thread: a block of assistant narration, a mid-turn message the
+ * operator typed at the console, and the questions an `AskUserQuestion` call is holding the session
+ * on. They differ in where they go, `deliver` against `deliverPrompt` against `deliverQuestion`,
+ * and therefore in how the thread presents them.
+ *
+ * The other three feed a session's record rather than the thread: the model that answered a line
+ * and the context size its usage adds up to, a structured record naming why a model was forced
+ * down, and the goal a `/goal` command set. They reach the operator on the card, which is why they
+ * are neutralized at the render site rather than at the read, and the goal reaches nowhere else:
+ * `PublicSessionRecord` and `PersistedRecord` both omit it.
  */
 type TailItem =
   | { kind: "text" | "prompt"; text: string }

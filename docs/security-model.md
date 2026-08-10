@@ -184,12 +184,25 @@ which is what keeps this advisory rather than enforced.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
-matching one of three named shapes whole: an assistant line's `text` content block, an attachment
+matching one of six named shapes whole: an assistant line's `text` content block; an attachment
 whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
-prompt is a non-empty string, or an assistant line's `tool_use` block naming exactly
+prompt is a non-empty string; an assistant line's `tool_use` block naming exactly
 `AskUserQuestion`, whose bounded reading (at most 4 questions and 4 option labels, each readable
-only as a non-empty string once invisibles are stripped) becomes the open-question alert. A
-deviation in any field yields silence. Two of the queued-command clauses carry weight past format
+only as a non-empty string once invisibles are stripped) becomes the open-question alert; an
+assistant line's own model name and the usage figures that sum to a context size; a structured
+model-fallback record, whose subtype is read through an own-property check so a prototype key names
+no cause; and a `queued_command` naming exactly `/goal`, whose argument becomes the goal line. A
+deviation in any field yields silence.
+
+The `/goal` yield is a class of egress worth naming on its own, because it sends operator prose
+rather than model output. What the operator types after `/goal` at the console is extracted from
+the transcript and drawn on the session card in Discord, which means a completion goal is written
+wherever that channel is read. Four things bound it. The allowlist admits that one command and no
+other, so no other slash command's arguments are ever extracted. The read is gated on the same
+mirror-on verdict every other transcript read is gated on, so a session with mirroring off yields
+nothing. The rendered value is drawn through the fenced-field neutralizer, so a crafted goal
+manufactures no mention, chip, or markup. And it is withheld from `GET /sessions` and omitted from
+the on-disk snapshot, so the one place it exists off the transcript is the card itself. Two of the queued-command clauses carry weight past format
 hygiene. The mode clause keeps out the machine-written background-task notices that make up the
 bulk of queued lines, which would otherwise fill the thread. And the origin clause is what stops a
 message the operator posted in the thread itself from being extracted and posted back into it,
