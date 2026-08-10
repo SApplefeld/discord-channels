@@ -921,6 +921,159 @@ test("text outside a fence in the same reply is still stripped of chip syntax", 
   assert.ok(message.includes("Map<string, number>"), message);
 });
 
+/** A three-column GFM table with one marker of each alignment, as a model writes one. */
+const TABLE = [
+  "| Session | Model | Status |",
+  "| --- | ---: | :---: |",
+  "| neo-tail | opus | working |",
+  "| pin-keeper | sonnet | idle |",
+].join("\n");
+
+test("a mirrored table becomes one fenced block whose columns line up", () => {
+  // Discord renders no Markdown table, so the pipes and dashes arrive literally and the operator
+  // reads them with effort. The block is monospace, so the columns are where the eye expects them,
+  // and the alignment markers are honored: left by default, right on `---:`, centered on `:---:`.
+  const [message] = renderMirror("reply", `Here are the numbers:\n\n${TABLE}\n\nDone.`);
+
+  assert.equal(
+    said(message),
+    [
+      "Here are the numbers:",
+      "",
+      "```",
+      "Session    |  Model | Status",
+      "neo-tail   |   opus | working",
+      "pin-keeper | sonnet |  idle",
+      "```",
+      "",
+      "Done.",
+    ].join("\n"),
+    message,
+  );
+});
+
+test("every mirrored surface draws a table the same way", () => {
+  // One seam for the three paths mirrored text reaches a thread by, so a table cannot read one way
+  // as an answer and another way as the narration chunk that carried the same words.
+  const block = said(renderMirror("reply", TABLE)[0]);
+  assert.equal(said(renderAnswer(TABLE)[0]), block);
+  assert.equal(said(renderMirror("interim", TABLE)[0]), block);
+  assert.ok((appendNarration("✨ Claude · working\nearlier text", TABLE) ?? "").endsWith(block), block);
+});
+
+test("a table inside a code fence is left exactly as it was written", () => {
+  // It is already monospace, and re-wrapping it would mean opening a fence inside one.
+  const [message] = renderMirror("reply", `\`\`\`\n${TABLE}\n\`\`\``);
+
+  assert.equal(said(message), `\`\`\`\n${TABLE}\n\`\`\``);
+});
+
+test("a table that is not whole is left as the text it was written as", () => {
+  // What a block is gets decided from the whole block: a run missing its delimiter row, missing a
+  // body row, or carrying a row of a different width is not a table this can draw without
+  // inventing or dropping a cell, so it stays the text the model wrote.
+  const cases = [
+    ["| Session | Model |", "| neo-tail | opus |", "| pin-keeper | sonnet |"].join("\n"),
+    ["| Session | Model |", "| --- | --- |"].join("\n"),
+    ["| Session | Model |", "| --- | --- |", "| neo-tail | opus | working |"].join("\n"),
+    ["| Session | Model |", "| --- | --- | --- |", "| neo-tail | opus |"].join("\n"),
+  ];
+
+  for (const written of cases) {
+    assert.equal(said(renderMirror("reply", written)[0]), written, written);
+  }
+});
+
+test("a wide table stays inside the block width, with the cells past their column cut", () => {
+  const written = [
+    "| Path | Reason |",
+    "| --- | --- |",
+    [
+      "| broker/routing/outbound.ts and everything under it",
+      "the run's claim is dispatched from there rather than recorded after it lands |",
+    ].join(" | "),
+    "| broker/tail.ts | the echo memory |",
+  ].join("\n");
+  const [message] = renderMirror("reply", written);
+
+  const lines = said(message).split("\n");
+  assert.equal(lines[0], "```");
+  assert.equal(lines[lines.length - 1], "```");
+  for (const line of lines) {
+    assert.ok([...line].length <= MAX_BLOCK_WIDTH, `${[...line].length}: ${line}`);
+  }
+  // Both columns want more room than the block has, so both are cut to the common cap the width
+  // leaves them; a column narrow enough to fit under that cap keeps its own width.
+  assert.deepEqual(
+    lines.slice(1, -1),
+    [
+      "Path                  | Reason",
+      "broker/routing/outbo… | the run's claim is d…",
+      "broker/tail.ts        | the echo memory",
+    ],
+    said(message),
+  );
+});
+
+test("a table too long for one message is mirrored as the text it was written as", () => {
+  // A block cut mid-row reads as a complete table saying something the model did not write, where
+  // raw text reads as raw text.
+  const rows = Array.from({ length: 200 }, (_, index) => `| row ${index} | ${index} |`);
+  const written = ["| Step | Count |", "| --- | ---: |", ...rows].join("\n");
+  const messages = renderMirror("reply", written);
+
+  assert.ok(!messages.some((message) => message.includes("```")), messages[0]);
+  assert.ok(said(messages[0]).startsWith("| Step | Count |"), said(messages[0]));
+});
+
+test("a paste cut mid-table draws no table, so no cut row reads as a whole one", () => {
+  // The paste cap is the one cut this renderer makes, and it lands inside the text rather than at
+  // a row boundary. Nothing has to detect that: a table long enough to be reached by the cap is
+  // already past what one message holds, so it mirrors as raw text with the cut marker under it.
+  const rows = Array.from({ length: 1_200 }, (_, index) => `| row ${index} | value ${index} |`);
+  const messages = renderMirror("prompt", ["| Step | Value |", "| --- | --- |", ...rows].join("\n"));
+  const whole = messages.join("\n");
+
+  assert.ok(!whole.includes("```"), whole.slice(0, 200));
+  assert.ok(whole.endsWith("(long paste shortened in mirror)"), whole.slice(-200));
+});
+
+test("no table cell can compose a pill, a chip, or a fence delimiter", () => {
+  const written = [
+    "| Who | What |",
+    "| --- | --- |",
+    "| <@123456789> | <t:1700000000:R> |",
+    "| `still code` | > not a quote |",
+  ].join("\n");
+  const [message] = renderMirror("reply", written);
+  const body = said(message);
+
+  // Exactly the two delimiters the block itself is made of, and no backtick anywhere else: what a
+  // cell carries cannot close the block and put the rest of the message outside it.
+  assert.equal((body.match(/`/g) ?? []).length, 6, body);
+  assert.ok(body.startsWith("```\n") && body.endsWith("\n```"), body);
+  // The chip syntax survives as its own characters, which is inert inside a fence and is why the
+  // fence-aware neutralizer leaves it alone rather than escaping it into visible backslashes.
+  assert.ok(body.includes("<@123456789>"), body);
+  assert.equal(body.split("\n").filter((line) => /^\s*>/.test(line)).length, 0, body);
+});
+
+test("a cell is neutralized before it is padded, so the columns line up on what is drawn", () => {
+  // A backslash doubles inside a fence, and a backtick becomes an apostrophe. Measured after that
+  // and not before, or the row carrying one draws a character wider than the column it sits in.
+  const written = [
+    "| Path | Note |",
+    "| --- | --- |",
+    "| C:\\ops | one |",
+    "| plain | two |",
+  ].join("\n");
+  const lines = said(renderMirror("reply", written)[0]).split("\n");
+
+  const separators = lines.slice(1, -1).map((line) => line.indexOf("|"));
+  assert.deepEqual(separators, [separators[0], separators[0], separators[0]], lines.join("\n"));
+  assert.ok(lines.includes("C:\\\\ops | one"), lines.join("\n"));
+});
+
 test("mirrored text cannot draw the attribution from inside a fence either", () => {
   // Inside a fence the quote marker is not escaped, because a fence renders its contents as code
   // and a quoted line there is code too. What keeps it from reading as the renderer's attribution

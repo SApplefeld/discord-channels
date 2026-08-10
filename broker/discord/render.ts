@@ -745,6 +745,179 @@ export function wrapped(text: string): string[] {
 }
 
 /**
+ * What separates two columns of a fenced table, and the whole of what a gap between them costs.
+ */
+const TABLE_SEPARATOR = " | ";
+
+/**
+ * The room one fenced table has, in UTF-16 units.
+ *
+ * A message carries an attribution line beside the block, and the widest of them is what this
+ * reserves, so a table that passes here fits whichever surface mirrors it. A table over the bound
+ * is left as the Markdown the model wrote rather than cut: a block cut mid-row reads as a complete
+ * table that says something different from what was written, where raw text reads as raw text.
+ */
+const MAX_TABLE_LENGTH =
+  MAX_MESSAGE_LENGTH -
+  Math.max(...[ANSWER_ATTRIBUTION, ...Object.values(ATTRIBUTION)].map((line) => line.length));
+
+/** Where a column's cells sit in their padding, as the delimiter row's markers declare it. */
+type ColumnAlignment = "left" | "right" | "center";
+
+/** A delimiter row's cell: dashes, with a colon on the side or sides the column aligns to. */
+const DELIMITER_CELL = /^:?-+:?$/;
+
+/**
+ * One row's cells, or `null` when the line is not a row at all.
+ *
+ * A row is recognized by carrying a pipe, and one leading and one trailing pipe are dropped, which
+ * is the GFM shape with the optional outer pipes either present or absent.
+ */
+function tableCells(line: string): string[] | null {
+  if (!line.includes("|")) return null;
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+/**
+ * The width each column is padded to, given what its cells want and the room they share.
+ *
+ * Every column that fits under a common cap keeps its natural width, and the ones past that cap are
+ * cut to it, so the room a narrow column does not need goes to the columns that do. A table whose
+ * natural width is inside the budget is padded to its cells and nothing is cut.
+ */
+function columnCaps(widths: readonly number[], budget: number): number[] {
+  let cap = Math.max(...widths);
+  const spent = (limit: number): number =>
+    widths.reduce((total, width) => total + Math.min(width, limit), 0);
+  while (cap > 1 && spent(cap) > budget) cap -= 1;
+  return widths.map((width) => Math.min(width, cap));
+}
+
+/** One cell drawn in its column: cut to the column's width, then padded to it. */
+function paddedCell(cell: string, width: number, alignment: ColumnAlignment): string {
+  const shown = fit(cell, width);
+  const room = Math.max(width - [...shown].length, 0);
+  if (alignment === "right") return `${" ".repeat(room)}${shown}`;
+  if (alignment === "left") return `${shown}${" ".repeat(room)}`;
+  const before = Math.floor(room / 2);
+  return `${" ".repeat(before)}${shown}${" ".repeat(room - before)}`;
+}
+
+/**
+ * A run of pipe-carrying lines drawn as one fenced block, or `null` when it is not a whole table.
+ *
+ * Whole means all of it: a header row, a delimiter row of dashes under it, at least one body row,
+ * and the same cell count on every one of them. What a block is gets decided from the whole block,
+ * so a ragged or half-written table is left as the text the model wrote rather than drawn as a
+ * table that quietly dropped a column.
+ *
+ * Cells are neutralized before they are measured and padded, never after: the fence-inert form is
+ * what the reader sees, so it is what the columns have to line up on, and a backslash doubled after
+ * the padding would push its row a character wider than the block it sits in.
+ */
+function tableBlock(lines: readonly string[]): string | null {
+  const rows = lines.map(tableCells);
+  if (rows.length < 3) return null;
+  const header = rows[0];
+  const delimiter = rows[1];
+  if (header === null || header === undefined || delimiter === null || delimiter === undefined) {
+    return null;
+  }
+  const columns = header.length;
+  if (columns === 0) return null;
+  if (delimiter.length !== columns || !delimiter.every((cell) => DELIMITER_CELL.test(cell))) {
+    return null;
+  }
+  const body = rows.slice(2);
+  if (body.some((row) => row === null || row.length !== columns)) return null;
+
+  const alignments: ColumnAlignment[] = delimiter.map((cell) => {
+    const leads = cell.startsWith(":");
+    const trails = cell.endsWith(":");
+    if (leads && trails) return "center";
+    return trails ? "right" : "left";
+  });
+  const drawn = [header, ...body].map((row) => (row ?? []).map((cell) => inertBlock(cell)));
+
+  // The separators are spent before the columns are: they are what makes the block read as a table
+  // at all, so the cells share what is left rather than the whole width.
+  const budget = MAX_BLOCK_WIDTH - (columns - 1) * TABLE_SEPARATOR.length;
+  if (budget < columns) return null;
+  const widths = columnCaps(
+    Array.from({ length: columns }, (_, column) =>
+      Math.max(...drawn.map((row) => [...(row[column] ?? "")].length)),
+    ),
+    budget,
+  );
+
+  const block = fenced(
+    drawn.map((row) =>
+      row
+        .map((cell, column) => paddedCell(cell, widths[column] ?? 0, alignments[column] ?? "left"))
+        .join(TABLE_SEPARATOR)
+        .trimEnd(),
+    ),
+  );
+  return block.length > MAX_TABLE_LENGTH ? null : block;
+}
+
+/**
+ * Mirrored text with every Markdown table in it redrawn as a fenced aligned block.
+ *
+ * Discord renders no Markdown table: the pipes and the dashes arrive as themselves, which is a
+ * shape the operator reads with effort on a phone. A fence renders no Markdown either, and that is
+ * what makes it the fit: the columns line up in a monospace grid, and the cell text inside is
+ * already inert.
+ *
+ * Only text outside an existing fence is examined, on the file's one reading of where a fence is,
+ * so a table the model wrote inside a code block stays exactly as it wrote it and nothing here can
+ * open a fence inside one.
+ */
+function withTablesBlocked(value: string): string {
+  return scanFences(null, value)
+    .runs.map((run) => (run.fenced ? run.text : blockedTables(run.text)))
+    .join("");
+}
+
+/** Every whole table in one unfenced stretch of text, redrawn; everything else left as it is. */
+function blockedTables(text: string): string {
+  const lines = text.split("\n");
+  const drawn: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    // The candidate is the whole run of consecutive pipe-carrying lines, so a row the table cannot
+    // account for is inside the shape being judged rather than outside it. A run that is not a
+    // table gives up only its first line, and the line after it opens the next candidate: a table
+    // under a line of prose that happens to carry a pipe is still a table.
+    let end = index;
+    while (end < lines.length && (lines[end] ?? "").includes("|")) end += 1;
+    const block = end - index >= 3 ? tableBlock(lines.slice(index, end)) : null;
+    if (block !== null) {
+      drawn.push(block);
+      index = end;
+      continue;
+    }
+    drawn.push(lines[index] ?? "");
+    index += 1;
+  }
+  return drawn.join("\n");
+}
+
+/**
+ * Mirrored conversation text made ready for a thread: its tables redrawn as fenced blocks, then its
+ * chip and quote syntax neutralized.
+ *
+ * One seam for both the paths mirrored text reaches Discord by, the messages a run posts and the
+ * merge that grows a narration block, so a table cannot draw one way when a chunk opens a message
+ * and another way when it grows one. The table transform runs first because it reads and writes
+ * ordinary Markdown: run after the escape, it would measure and pad cells around backslashes the
+ * fence it draws renders as themselves.
+ */
+function mirrorBody(value: string): string {
+  return withoutChips(withTablesBlocked(value));
+}
+
+/**
  * One mirrored prompt or reply, rendered as the ordered messages it takes to carry it whole.
  *
  * A reply is never truncated: it is among the highest-value things this system posts, and a reply
@@ -811,7 +984,7 @@ export function appendNarration(existing: string, text: string): string | null {
   // thread with every append. The rest of the precondition, that the base is renderer output and
   // not merely renderer-shaped, is the caller's provenance to keep.
   if (existing === "" || existing !== withoutInvisible(existing).trim()) return null;
-  const seen = withoutChips(withoutInvisible(text).trim());
+  const seen = mirrorBody(withoutInvisible(text).trim());
   if (seen === "") return null;
   const closing = fenceAfter(null, seen) === null ? "" : `\n${FENCE}`;
   const merged = `${existing}\n\n${seen}${closing}`;
@@ -830,7 +1003,7 @@ export function appendNarration(existing: string, text: string): string | null {
  * that then prefixed anything at all would post messages over it, which Discord rejects outright.
  */
 function attributed(seen: string, prefix: string): string[] {
-  const body = withoutChips(seen);
+  const body = mirrorBody(seen);
   // Nothing at all to say. Reported as no messages rather than as one empty message, which Discord
   // refuses and which would read as the session having answered with silence.
   if (body === "") return [];

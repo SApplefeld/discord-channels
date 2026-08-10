@@ -2312,8 +2312,17 @@ test("the hook payload and the transcript line parse to the same bounded questio
 /**
  * The tailer wired to the real outbound router, the way index.ts wires them, so the dedup is
  * proved across the seam the two halves actually share rather than against a hand-built stub.
+ *
+ * `gate` decides what the transport does with each post attempt, by attempt number: the default
+ * accepts every one immediately, and a test that needs a run held open or refused answers with a
+ * promise of its own. `posts` records an attempt as it is made rather than as it lands, which is
+ * what lets a test see a run that is still in flight. The router's pacing sleep is a no-op here, so
+ * a run of several messages costs no wall-clock time.
  */
-function integration(t: TestContext) {
+function integration(
+  t: TestContext,
+  gate: (attempt: number) => Promise<{ landed: boolean }> = async () => ({ landed: true }),
+) {
   const file = transcriptFile(t);
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   registry.apply({
@@ -2329,9 +2338,13 @@ function integration(t: TestContext) {
   });
   const posts: string[] = [];
   const edits: string[] = [];
+  let attempts = 0;
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input.text);
+      attempts += 1;
+      const outcome = await gate(attempts);
+      if (!outcome.landed) return { status: "failed", error: "refused", rate: NO_RATE_INFO };
       return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
     editInThread: async (input) => {
@@ -2345,6 +2358,7 @@ function integration(t: TestContext) {
     threadFor: () => THREAD,
     mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
     echo,
+    sleep: async () => {},
   });
   const tailer = createTranscriptTailer({
     liveSessions: () => [SESSION],
@@ -2419,6 +2433,178 @@ test("a final reply the tailer posted first is not posted again by the Stop mirr
     status: "sent",
   });
   assert.equal(posts.length, 2);
+});
+
+/**
+ * A turn's closing text long enough to post as several paced messages.
+ *
+ * That length is what the dedup's claim answers for: a run of one message records what it posted
+ * milliseconds after the check that needed it, and a run of several records it seconds later, which
+ * is a window the other path can arrive inside whole.
+ */
+const LONG_REPLY = Array.from(
+  { length: 6 },
+  (_, index) => `Paragraph ${index + 1}: ${"the migration is green and pushed. ".repeat(12)}`,
+).join("\n\n");
+
+/** Yields until the condition holds, so a test can act while a run is genuinely still in flight. */
+async function until(holds: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 1_000 && !holds(); turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(holds(), "the condition never held");
+}
+
+test("the fixture reply takes more than one message on both paths that carry it", () => {
+  // A single-message fixture cannot exercise a claim held across a paced run, and the two paths
+  // render it under different attributions, so both are held to the shape the tests below need.
+  assert.ok(renderMirror("reply", LONG_REPLY).length > 1, "the mirror's copy");
+  assert.ok(renderMirror("interim", LONG_REPLY).length > 1, "the tailer's copy");
+});
+
+test("a long reply the tailer is still posting is not posted again by the Stop mirror", async (t) => {
+  // The live defect: the tailer's run is mid-flight, so no digest exists yet, and the Stop mirror
+  // arriving inside that window finds a gap where the claim now sits and posts its own whole copy.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { file, tailer, outbound, posts } = integration(t, async (attempt) => {
+    if (attempt === 1) await held;
+    return { landed: true };
+  });
+  await tailer.poll();
+
+  appendFileSync(file, assistantText(LONG_REPLY), "utf8");
+  const polling = tailer.poll();
+  await until(() => posts.length === 1); // the run's first message is on the wire
+
+  const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
+  release();
+  assert.deepEqual(await mirrored, { status: "sent" });
+  await polling;
+  assert.deepEqual(
+    posts,
+    renderMirror("interim", LONG_REPLY),
+    `the reply must post once, as the run that was already carrying it: ${posts.join("\n---\n")}`,
+  );
+});
+
+test("a long reply the Stop mirror is still posting is not posted again by the tailer", async (t) => {
+  // The same window from the other side: a poll landing inside the mirror's own paced run.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { file, tailer, outbound, posts } = integration(t, async (attempt) => {
+    if (attempt === 1) await held;
+    return { landed: true };
+  });
+  await tailer.poll();
+
+  appendFileSync(file, assistantText(LONG_REPLY), "utf8");
+  const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
+  await until(() => posts.length === 1); // the run's first message is on the wire
+
+  // The poll settles while that run is still going only because the tailer skipped the text: a
+  // poll that dispatched a delivery of its own would be queued behind the run on the thread's
+  // ordering chain and could not settle until the run below released it.
+  let polled = false;
+  const polling = tailer.poll().then(() => {
+    polled = true;
+  });
+  await until(() => polled);
+
+  release();
+  await polling;
+  assert.deepEqual(await mirrored, { status: "sent" });
+  assert.deepEqual(
+    posts,
+    renderMirror("reply", LONG_REPLY),
+    `the reply must post once, as the run that was already carrying it: ${posts.join("\n---\n")}`,
+  );
+});
+
+test("a run that landed nothing releases its claim, so the other path posts the text", async (t) => {
+  // The claim is a reservation rather than a record: a run every message of which was refused
+  // leaves the text owed to whichever path can still post it, which is what record-on-sent bought
+  // and what the claim must not spend.
+  const refuseFirst = async (attempt: number): Promise<{ landed: boolean }> => ({
+    landed: attempt > 1,
+  });
+  const closing = "Done: the migration is green and pushed.";
+
+  const tailerFirst = integration(t, refuseFirst);
+  await tailerFirst.tailer.poll();
+  appendFileSync(tailerFirst.file, assistantText(closing), "utf8");
+  await tailerFirst.tailer.poll();
+  assert.equal(tailerFirst.posts.length, 1, "the tailer's own run was refused");
+  assert.deepEqual(await tailerFirst.outbound.mirror(TOKEN, "reply", closing, SESSION), {
+    status: "sent",
+  });
+  assert.deepEqual(
+    tailerFirst.posts.slice(1),
+    renderMirror("reply", closing),
+    "the mirror carries the text the refused run did not land",
+  );
+
+  const mirrorFirst = integration(t, refuseFirst);
+  await mirrorFirst.tailer.poll();
+  appendFileSync(mirrorFirst.file, assistantText(closing), "utf8");
+  assert.deepEqual(await mirrorFirst.outbound.mirror(TOKEN, "reply", closing, SESSION), {
+    status: "failed",
+    error: "refused",
+  });
+  await mirrorFirst.tailer.poll();
+  assert.deepEqual(
+    mirrorFirst.posts.slice(1),
+    renderMirror("interim", closing),
+    "the tailer carries the text the refused mirror did not land",
+  );
+});
+
+test("a run that landed part of a long reply keeps its claim and is not posted again", async (t) => {
+  // A partial run is the case the claim is kept for: the operator has the first messages, and the
+  // other path arriving behind it would post the whole reply a second time under them.
+  const { file, tailer, outbound, posts } = integration(t, async (attempt) => ({
+    landed: attempt === 1,
+  }));
+  await tailer.poll();
+
+  appendFileSync(file, assistantText(LONG_REPLY), "utf8");
+  await tailer.poll();
+  const attempted = posts.length;
+  assert.ok(attempted > 1, "the run reached its second message");
+
+  assert.deepEqual(await outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION), { status: "sent" });
+  assert.equal(
+    posts.length,
+    attempted,
+    `a reply that partly landed must not be re-posted whole: ${posts.join("\n---\n")}`,
+  );
+});
+
+test("a release drops only the claim naming the same text, and never the answer record", () => {
+  const echo = createEchoMemory();
+  echo.noteInterim(SESSION, "half a run");
+  echo.release(SESSION, "some other text");
+  assert.equal(
+    echo.isInterimEcho(SESSION, "half a run"),
+    true,
+    "a release naming other text leaves the claim standing",
+  );
+
+  echo.noteReply(SESSION, "the reply");
+  echo.release(SESSION, "the reply");
+  assert.equal(echo.isEcho(SESSION, "the reply"), false, "the released claim is gone");
+
+  // The answer record carries its own turn boundary and no posting path claims it, so a release
+  // has no business spending it.
+  echo.noteAnswer(SESSION, CLOSEOUT);
+  echo.release(SESSION, CLOSEOUT);
+  assert.equal(echo.isAnswerEcho(SESSION, CLOSEOUT), true);
+
+  echo.release("never-seen-session", "anything");
 });
 
 test("interim text between the final reply and the turn's earlier narration still posts", async (t) => {

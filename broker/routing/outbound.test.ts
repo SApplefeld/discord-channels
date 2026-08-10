@@ -1336,11 +1336,11 @@ test("an invisible character cannot hide a reply from the interim dedup", async 
 });
 
 test("a mirrored reply that failed to land is not remembered as mirrored", async () => {
-  // The digest is recorded only after the run posted whole. Recorded before delivery, a reply the
-  // transport refused would still poison the memory, the tailer's next pass would skip the same
-  // text off the transcript, and the reply would appear nowhere: the silence this whole design
-  // trades away from. The tailer's own half already records only on sent; this is the symmetric
-  // guarantee on the mirror's half.
+  // The digest is claimed as the run is dispatched and released again by a run that landed nothing
+  // at all. Kept, a reply the transport refused would poison the memory, the tailer's next pass
+  // would skip the same text off the transcript, and the reply would appear nowhere: the silence
+  // this whole design trades away from. The tailer's own half releases the same way; this is the
+  // symmetric guarantee on the mirror's half.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
@@ -1354,6 +1354,22 @@ test("a mirrored reply that failed to land is not remembered as mirrored", async
     false,
     "a reply that never landed must not suppress the tailer's copy of the same text",
   );
+});
+
+test("a narration chunk with nothing visible in it leaves no claim behind", async () => {
+  // The claim is made as the delivery is dispatched, before the chunk is rendered, so a chunk that
+  // neutralizes to nothing claims a digest and then posts nothing. The release is what keeps the
+  // memory as it found it: a claim left standing on that digest would suppress the next mirror
+  // carrying the same text.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, echo });
+
+  assert.equal((await router.interim("session-a", "​")).status, "failed");
+  assert.deepEqual(posts, []);
+  assert.equal(echo.isInterimEcho("session-a", "​"), false, "nothing posted, nothing claimed");
 });
 
 /** A close-out answer of the length and register the reply tool and the Stop mirror both carry. */

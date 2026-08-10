@@ -61,6 +61,15 @@ export const MAX_TAIL_READ_BYTES = 256 * 1024;
  * answers for exactly one: left standing, the digest would be an indefinite blocklist, and a turn
  * ending "Done." would silence every later turn's own "Done." forever.
  *
+ * A digest is claimed when a delivery is dispatched rather than when it lands, and released when
+ * that run lands nothing at all. The window is why: a long reply posts as several paced messages,
+ * so a digest recorded on the way out sits seconds behind the check that needed it, and the other
+ * path arriving inside those seconds finds a gap and posts its own whole copy. What the release
+ * keeps from the record-on-sent rule it replaces is the property that matters, that a run every
+ * message of which was refused leaves the text owed to whichever path can still post it. What it
+ * does not keep is the guarantee at the width of a whole run: a path that has already deferred to
+ * a claim has posted nothing, so a claimed run refused on every message leaves that text unposted.
+ *
  * The answer record is the third digest, for the other duplicate pair: on a long turn the model
  * often calls the reply tool with its closing summary and the turn's closing text arrives moments
  * later as the Stop mirror, or off the transcript by a tailer poll that lands first, carrying the
@@ -90,6 +99,14 @@ export type EchoMemory = {
   isInterimEcho: (sessionId: string, text: string) => boolean;
   /** True when the text matches the last answer, exactly or nearly, consuming it on a match. */
   isAnswerEcho: (sessionId: string, text: string) => boolean;
+  /**
+   * Drops a claim over this text, made by whichever half is reporting that its run landed nothing.
+   *
+   * Only a digest equal to this text's is dropped, so a release cannot spend a record some other
+   * text established, and the answer record is never touched: it carries its own turn boundary and
+   * neither posting path claims it.
+   */
+  release: (sessionId: string, text: string) => void;
   /** Drops the session's answer record unread; the reply-kind mirror's turn boundary. */
   clearAnswer: (sessionId: string) => void;
   forget: (sessionId: string) => void;
@@ -185,6 +202,16 @@ export function createEchoMemory(): EchoMemory {
       held.answer = null;
       return true;
     },
+    release(sessionId, text) {
+      const held = state.get(sessionId);
+      if (held === undefined) return;
+      const mark = digest(text);
+      // Both slots, because the only way the other half's slot holds this digest is that it
+      // matched this claim and dropped its own post, which makes that record worthless; a record
+      // standing for text the other half really did post carries a different digest and stays.
+      if (held.interim === mark) held.interim = null;
+      if (held.reply === mark) held.reply = null;
+    },
     clearAnswer(sessionId) {
       const held = state.get(sessionId);
       if (held !== undefined) held.answer = null;
@@ -213,11 +240,12 @@ export type TranscriptTailerOptions = {
    */
   liveSessions: () => string[];
   /**
-   * Posts one interim chunk to the session's own thread; the outbound router's `interim`. The
-   * status is read so a chunk that did not land is not remembered as posted; nothing else about
-   * the result is consulted, because nothing here queues or retries. The router's own result
-   * type, imported type-only so the two modules share one status vocabulary without a runtime
-   * cycle: a typo'd status string here would otherwise compile and silently never match.
+   * Posts one interim chunk to the session's own thread; the outbound router's `interim`. Nothing
+   * about the result is consulted: nothing here queues or retries, and the echo digest this chunk
+   * claims is claimed and released inside the router, beside the count of messages that landed.
+   * The router's own result type, imported type-only so the two modules share one status
+   * vocabulary without a runtime cycle: a typo'd status string here would otherwise compile and
+   * silently never match.
    */
   deliver: (sessionId: string, text: string) => Promise<ReplyResult>;
   /**
@@ -1324,20 +1352,18 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         }
         // One await per item, here and on the prompt branch above, so a session's chunks and its
         // queued prompts post in the order the transcript holds them. A chunk the router could not
-        // land is dropped, never kept for a later call, the rule the whole routing layer follows,
-        // and its digest is not recorded: the Stop mirror carrying the same text must
-        // still post it, because nothing else will. The catch holds each failure to its own
-        // chunk: the consumed bytes are already behind the offset, so a throw that escaped this
-        // loop would lose every later chunk in the batch with no way to re-read them. The error
-        // is discarded unread; it can quote the text it failed to post.
+        // land is dropped, never kept for a later call, the rule the whole routing layer follows.
+        // The echo digest is claimed and released inside the router, where the count of messages
+        // that landed is, so this loop makes no write-back of its own past the await and has no
+        // epoch to re-check for one: the claim is made at dispatch, when this pass was valid, and
+        // a suppressed session's whole entry is dropped by `forget` and `sweep` regardless. The
+        // catch holds each failure to its own chunk: the consumed bytes are already behind the
+        // offset, so a throw that escaped this loop would lose every later chunk in the batch with
+        // no way to re-read them. The error is discarded unread; it can quote the text it failed
+        // to post.
         try {
-          const outcome = await options.deliver(sessionId, text);
-          // A suppress() landing during this very await must not record the echo digest: the
-          // deliver call itself already happened and cannot be undone, but recording the digest
-          // is its own write-back, and every write-back this loop makes is checked against the
-          // epoch it started under, the same rule pollOne's other reads and writes follow.
+          await options.deliver(sessionId, text);
           if (!stillValid()) return;
-          if (outcome.status === "sent") options.echo.noteInterim(sessionId, text);
         } catch {
           repeats(
             `session ${sessionId}'s interim delivery failed`,

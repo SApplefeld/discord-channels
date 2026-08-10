@@ -444,3 +444,47 @@ whether the escape can be dropped for paths.
 Stamps: none surfaced at this boundary
 Next: Section 4: An exited session's thread archives itself, by default
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-09
+Completed: Sections 4 and 5 (archive by default, the goal on the card), the operator's card polish,
+Sections 6 and 7 (the duplicate reply, the mirrored table), and Section 8's documentation. The
+out-of-band Critical the operator's own probes uncovered landed with Sections 4 and 5.
+Implemented By: implementer-opus across four rounds
+Metrics: 0 formal review rounds on these sections, each round carrying red-first evidence; the
+whole-effort finishing pass covers the changeset; 0 escalations
+Decisions / Surprises: the round's most valuable work came from the operator rendering probes in a
+real client, which is the one instrument this repository does not have. Three separate questions
+that looked like design calls turned out to be measurements, and two of them contradicted what
+inspection had concluded. Escaping does not protect a fence, because Discord resolves the escape
+before it finds the delimiter; a longer opening fence is no alternative, because three backticks are
+the whole delimiter and a fourth is content; and a heading parses directly under a paragraph line,
+where a blank line before it adds margin on top of the margin Discord already gives a heading, so
+the tighter spacing the operator asked for comes from having no blank line rather than from removing
+one that was never there.
+That fence finding is the effort's own recurring shape at the highest level of care available: the
+code satisfied a property, the tests asserted the same property, a security review verified the code
+against it, and a hostile-cast probe through the renderer confirmed it. All four agreed and all four
+measured the same wrong thing, because the assumption that no adjacent backticks implies the fence
+holds was never itself testable here. The tests now assert that no backtick reaches a fenced body at
+all, which no wrong model of Discord can satisfy.
+The duplicate reply was diagnosed from a live host's log by what was absent from it: no partial-run
+line and no dedup drop line in the window, so neither path suppressed the other and both posted.
+Record-on-sent was not wrong, which is why the fix keeps its reasoning: it exists so a refused post
+cannot leave a reply appearing nowhere, and that holds for a short message where the window is
+milliseconds rather than for the one message a turn that takes seconds to post.
+Named risk, for the finishing reviewers rather than accepted here: claiming at dispatch narrows one
+guarantee the old rule held. If one path claims, the other drops its own copy, and the claiming run
+then lands nothing at all, the release restores the digest but the tailer's bytes are already past
+its offset, so that text reaches the thread nowhere. It is strictly rarer than the duplicate it
+fixes, since it needs a race and a total failure rather than a race alone, but its cost is the
+worse direction for this codebase, and the reviewers should weigh whether the release should do more
+than restore a digest.
+Verification note, recorded rather than smoothed: one full-suite run reported a single failure whose
+identity was not captured before it cleared, followed by six consecutive clean runs including two
+with full output preserved. It is not reproduced and not identified, so it is not called a flake
+here. Heavy concurrent load during the session is a plausible but unproven explanation, and the
+finishing pass's QA run is instructed to capture any failure's output rather than only its count.
+Review Findings: none formal on these sections; the finishing pass covers them.
+Stamps: none surfaced at this boundary
+Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push

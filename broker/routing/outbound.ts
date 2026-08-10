@@ -841,15 +841,16 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "failed", error: "the message was empty" };
       }
 
+      // The digest is claimed here, as the run is dispatched, rather than after it lands. A long
+      // reply posts as several paced messages, so a digest recorded on the way out would sit
+      // seconds behind the check that needed it, and the tailer polling inside those seconds would
+      // find a gap and post the same text as narration. Released below when the run lands nothing
+      // at all, which is what keeps a reply the transport refused from appearing nowhere: the text
+      // is then still owed to whichever path can post it.
+      if (kind === "reply") options.echo?.noteReply(located.sessionId, text);
       const run = await deliver(located.threadId, messages);
-      if (run.error === null) {
-        // Recorded only now that the run posted whole, matching the tailer's own record-on-sent
-        // rule. Recorded before delivery, a reply the transport refused would still poison the
-        // memory, the tailer's next pass would skip the same text off the transcript, and the
-        // reply would appear nowhere at all.
-        if (kind === "reply") options.echo?.noteReply(located.sessionId, text);
-        return { status: "sent" };
-      }
+      if (run.error === null) return { status: "sent" };
+      if (kind === "reply" && run.landed === 0) options.echo?.release(located.sessionId, text);
 
       // The kind, the counts, and the transport's error class only. The text is the operator's
       // prompt or Claude's reply, and mirror content never appears in the broker log at any level.
@@ -872,6 +873,14 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         );
         return { status: "no-thread" };
       }
+
+      // The digest is claimed here, as the delivery is dispatched, rather than after it lands, and
+      // released below when the run lands nothing at all. The window is the reason: this chunk can
+      // be the turn's closing text, which posts as several paced messages and waits its turn on the
+      // thread's chain before that, so a digest recorded on the way out would sit seconds behind
+      // the check that needed it and the Stop mirror arriving inside those seconds would post the
+      // same text a second time.
+      options.echo?.noteInterim(sessionId, text);
 
       // The whole delivery is one task on the chain, the append decision included: the state is
       // consulted at the moment the write is about to go on the wire, never at call time, so an
@@ -961,6 +970,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         },
       );
       if (run.error === null) return { status: "sent" };
+      if (run.landed === 0) options.echo?.release(sessionId, text);
       // A chunk with nothing visible in it posted nothing. The tailer's next chunk narrates
       // whatever this one did not, so the drop is reported to the caller and not logged.
       if (run.total === 0) return { status: "failed", error: run.error };
