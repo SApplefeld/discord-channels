@@ -101,6 +101,23 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   order in a label with RTL text. Fix is one range each in `isInvisible` plus a test; the class is
   shared with the path that carries text to the model, so sweep both consumers when changing it.
 
+- An intermittent failure in `broker/tail.test.ts`, inside the `until` helper at its own line 2451,
+  which yields up to 1000 `setImmediate` turns and then asserts "the condition never held". It fails
+  on a different test each time and only under machine load, and it is old: the fleet-card round hit
+  it once too. What is worth knowing before anyone touches it is that the obvious fix is a trap.
+  A failure there has two possible causes, a turn-count bound too tight to cover a slow run, or the
+  tailer genuinely failing to post that once, and widening the bound cannot tell them apart. Doing
+  so would hide the second case permanently, which is the more expensive of the two by a wide
+  margin. So the next round that touches the tailer should first make the helper say which condition
+  never held, and whether it became true shortly afterwards; a bound that expired and a run that
+  never posted are then different messages and the choice of fix is evidence-led.
+
+  Measured while chasing it: 21 clean full runs against 1 failure, no reproduction in 3 runs under 12
+  CPU-saturating processes, none in 3 runs under 8 disk-saturating processes. The one failure landed
+  while two subagents were working the tree, which is also when it did its damage: an implementer
+  read the red as its own and reported against a baseline that was in fact clean. That is the real
+  cost of leaving it, and it is why it is written down rather than left as folklore.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
