@@ -732,8 +732,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       note("broker: a permission prompt arrived but discord is not configured");
       return false;
     },
-    resolve: async () => false,
+    resolve: () => false,
     reportUnknownVerdict: async () => {},
+    settled: () => Promise.resolve(),
     waiting: () => new Set<string>(),
   };
   const relayRoutes = createRelayRoutes({
@@ -1015,6 +1016,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const interactions = createInteractionRouter({
       gate,
       desk: questionDesk,
+      permissions,
       responder: createInteractionResponder(request),
       refresh: questionRefresh({
         desk: questionDesk,

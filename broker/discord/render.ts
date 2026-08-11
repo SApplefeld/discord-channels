@@ -300,7 +300,7 @@ const MIN_HARD_CUT = Math.floor(MAX_MESSAGE_LENGTH / 8);
  * request ID, and the instructions for answering off the end of the one message in this system
  * that exists to be answered.
  */
-const MAX_TOOL_NAME_LENGTH = 100;
+export const MAX_TOOL_NAME_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 300;
 const MAX_PREVIEW_LENGTH = 900;
 

@@ -219,8 +219,12 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // was not one, and the pattern tolerates enough interior whitespace that a cut can land on
       // an exact match, which would approve a tool call on words the full text never said. The cut
       // text flows to the session as chat instead, announced below.
+      //
+      // No nonce goes with it: this is a message composed now, in this thread, by the one account
+      // this broker acts for, so the ID it names is the ID the operator is looking at. The nonce is
+      // the button path's control over a tap on a message of any age.
       const verdict = truncated ? null : parseVerdict(text);
-      if (verdict !== null && (await options.permissions.resolve(message.threadId, verdict))) return;
+      if (verdict !== null && options.permissions.resolve(message.threadId, verdict, null)) return;
 
       const record = sessionForThread(options.registry, options.threadFor, message.threadId);
 

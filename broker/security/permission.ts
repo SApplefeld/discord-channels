@@ -11,8 +11,18 @@
 // against whatever else is waiting. Answering consumes the entry, so the same message replayed a
 // second time names nothing.
 //
+// The prompt's buttons need one guarantee more than a typed verdict does, because a button outlives
+// the message it was read from: a press names its request from scrollback, where an answered prompt
+// still sits. So each open request holds a nonce, the prompt's own components carry it, and a press
+// whose nonce does not match resolves to nothing. That is what a recycled request ID cannot defeat.
+//
 // Nothing here consults a process token for authorization. The sender gate on the Discord user ID
 // has already run by the time a verdict reaches this file, and it is the only authority for it.
+import { randomBytes } from "node:crypto";
+import {
+  permissionControls,
+  renderPermissionOutcome,
+} from "../discord/permission-message.ts";
 import { renderPermissionRequest } from "../discord/render.ts";
 import type { Registry } from "../registry.ts";
 import type { RelayHub } from "../routing/relays.ts";
@@ -201,12 +211,32 @@ export type PermissionDesk = {
    */
   request: (processToken: string, request: PermissionRequest) => Promise<boolean>;
   /**
-   * Applies a verdict typed in a thread, if that thread has a request open under that ID. Reports
-   * whether it consumed one, and writes nothing at all when it did not: a message of the verdict
-   * shape is also an ordinary English sentence, so a caller with somewhere else to put one decides
-   * what an unmatched verdict is before the operator is told anything about it.
+   * Applies a verdict given in a thread, if that thread has a request open under that ID and the
+   * nonce, when the caller has one, is that request's own. Reports whether it consumed one, and
+   * writes nothing at all when it did not: a message of the verdict shape is also an ordinary
+   * English sentence, so a caller with somewhere else to put one decides what an unmatched verdict
+   * is before the operator is told anything about it.
+   *
+   * Answers without a Discord call. The lookup, the delivery to the session, and the audit line are
+   * all this needs, so a caller holding an interaction open on the answer can report it inside the
+   * three seconds Discord gives a callback. What the thread then shows, a notice for a verdict that
+   * reached no session and the prompt rewritten into the record of it, is two round trips and runs
+   * behind `settled`.
+   *
+   * `nonce` is the one a button press carries, and null for a typed verdict. A typed verdict is a
+   * message composed now, in the thread, by the one account this broker acts for, so the ID it
+   * names is the ID the operator is looking at. A press is a tap on a message that may be any age,
+   * and the nonce is what ties it to the one prompt it was drawn on. Required rather than optional
+   * so a caller states which of the two it is: a press whose nonce went missing would otherwise
+   * lose the only control that stands between a recycled request ID and the wrong approval.
    */
-  resolve: (threadId: string, verdict: Verdict) => Promise<boolean>;
+  resolve: (threadId: string, verdict: Verdict, nonce: string | null) => boolean;
+  /**
+   * Settles when the writes an answered request leaves in the thread have been attempted. Held for
+   * a caller that has to observe them, which is a test: nothing in the running broker waits on a
+   * verdict's cosmetics.
+   */
+  settled: () => Promise<void>;
   /**
    * Tells the operator that a verdict named no open request. Called only once every other reading
    * of the message has declined it, because it is the reading that ends in a notice.
@@ -240,7 +270,31 @@ function keyFor(threadId: string, requestId: string): string {
   return `${threadId} ${requestId}`;
 }
 
-type OpenRequest = { processToken: string; sessionId: string; toolName: string };
+type OpenRequest = {
+  processToken: string;
+  sessionId: string;
+  toolName: string;
+  /**
+   * The prompt's own message, so answering it rewrites it. Null until the post reports an id, and
+   * still null afterwards when it carried none.
+   */
+  messageId: string | null;
+  /**
+   * This one prompt's unguessable name for itself, minted per request and never reused. A press
+   * carries it back and is refused unless it matches, which is what a five-letter request ID drawn
+   * a second time in the same thread cannot survive.
+   */
+  nonce: string;
+};
+
+/**
+ * Bytes behind a prompt's nonce, drawn from the platform CSPRNG.
+ *
+ * Six, the width the question desk mints its entry ids at: the value has to be unguessable by
+ * anything that has not seen the message, and it rides inside a `custom_id` bounded at 100
+ * characters alongside the request ID.
+ */
+const NONCE_BYTES = 6;
 
 export function createPermissionDesk(options: PermissionDeskOptions): PermissionDesk {
   const log = options.log ?? ((): void => {});
@@ -268,7 +322,67 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
     }
   }
 
+  /**
+   * The writes an answered request leaves in the thread, chained one behind the next so `settled`
+   * has a single thing to wait on. One chain for the desk rather than one per thread: nothing here
+   * depends on two threads' writes being ordered against each other, and a per-thread chain would
+   * be state keyed by a thread with nothing to remove it.
+   */
+  let cosmetic: Promise<void> = Promise.resolve();
+
+  /**
+   * What the thread shows once a verdict has been applied: the notice for an answer that reached
+   * no session, and the prompt rewritten into the record of what was answered, with its components
+   * stripped, because a button standing over a request nothing holds is a tap that reports a
+   * failure and changes nothing.
+   *
+   * Runs detached from the caller that applied the verdict, so nothing here throws: a rejection
+   * would have nobody to report it to. Its outcome is never propagated either, and it never
+   * revisits the table: the verdict was recorded and delivered before this was scheduled, so a
+   * refusal here costs a stale message rather than an answer applied twice or not at all.
+   */
+  async function closeOut(input: {
+    threadId: string;
+    verdict: Verdict;
+    messageId: string | null;
+    toolName: string;
+    delivered: boolean;
+  }): Promise<void> {
+    try {
+      if (!input.delivered) {
+        await notice(input.threadId, unreachableVerdictNotice(input.verdict.requestId));
+      }
+      if (input.messageId === null) return;
+      const rewritten = await options.writer.edit(
+        input.threadId,
+        input.messageId,
+        renderPermissionOutcome({
+          requestId: input.verdict.requestId,
+          toolName: input.toolName,
+          behavior: input.verdict.behavior,
+          delivered: input.delivered,
+        }),
+        [],
+      );
+      if (rewritten.status !== "ok") {
+        log(
+          `permission: request ${input.verdict.requestId} was answered but its prompt was not ` +
+            `rewritten: ${rewritten.status === "rate-limited" ? "rate limited" : rewritten.error}`,
+        );
+      }
+    } catch {
+      // The detail is discarded unread: a serialized transport error can carry the request it was
+      // made for, and this one carries the prompt, whose fields are a session's own text.
+      log(
+        `permission: request ${input.verdict.requestId} was answered but closing its prompt out ` +
+          "threw; the error detail is withheld, it can carry content",
+      );
+    }
+  }
+
   return {
+    settled: () => cosmetic,
+
     waiting() {
       const sessions = new Set<string>();
       for (const entry of open.values()) sessions.add(entry.sessionId);
@@ -297,8 +411,10 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
       const key = keyFor(threadId, request.requestId);
       // Claude Code derives the ID from the tool use, so a re-sent prompt carries the one already
       // on the operator's phone. Posting it again would ping them a second time for one decision.
-      // Only a prompt that landed is held here, so this never swallows a re-send of one that did
-      // not: a failed attempt leaves nothing behind to deduplicate against.
+      // A request is held from the moment this call commits to posting it until either the post
+      // fails or the operator answers, so a re-send arriving while the first is still on the wire
+      // is deduplicated against it too and a prompt whose post failed leaves nothing behind to
+      // deduplicate against at all.
       if (open.has(key)) return true;
 
       if (open.size >= MAX_OPEN_REQUESTS) {
@@ -319,31 +435,68 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
         log(`permission: thread ${threadId} is over its ping ceiling, posting ${request.requestId} quietly`);
       }
 
+      const prompt = renderPermissionRequest({ ...request, operatorId: options.operatorId });
+      // The table is what makes this thread and ID one request, so the entry is held from before
+      // the post rather than from after the attach edit: those are two round trips, and a second
+      // request for the same ID inside them would find nothing open, post a second prompt, and
+      // overwrite this one's nonce, leaving the message already on the operator's phone carrying
+      // buttons the desk answers to nothing. The message id is filled in once the post reports one.
+      const entry: OpenRequest = {
+        processToken,
+        sessionId: record.sessionId,
+        toolName: request.toolName,
+        messageId: null,
+        nonce: randomBytes(NONCE_BYTES).toString("hex"),
+      };
+      open.set(key, entry);
       const posted = await options.writer.alert(
         threadId,
-        renderPermissionRequest({ ...request, operatorId: options.operatorId }),
+        prompt,
         // Quiet means the message lands without a mention. It is the same prompt, answerable the
         // same way; the phone just stops ringing for a run nobody could keep up with anyway.
         volume === "ping" ? options.operatorId : null,
       );
       if (posted.status !== "ok") {
-        // Nothing is held open for a prompt the operator never saw. Holding it would make this
+        // Nothing is left held for a prompt the operator never saw. Holding it would make this
         // request ID deduplicate against a message that does not exist, so every later attempt at
         // the same prompt would return without trying, and the session would stay parked in
-        // silence. The operator is told, because a prompt that vanished is worth a keyboard.
+        // silence. Only this call's own entry is withdrawn, never one a later request has since put
+        // in its place. The operator is told, because a prompt that vanished is worth a keyboard.
+        if (open.get(key) === entry) open.delete(key);
         log(`permission: request ${request.requestId} was not posted into thread ${threadId}`);
         await notice(threadId, PROMPT_UNDELIVERED_NOTICE);
         return false;
       }
-      open.set(key, {
-        processToken,
-        sessionId: record.sessionId,
-        toolName: request.toolName,
-      });
+      entry.messageId = posted.value.messageId;
+      // Nothing is drawn on a request this thread no longer holds: a typed verdict can answer it
+      // while its prompt is still being posted, and buttons attached after that would stand over a
+      // request already consumed.
+      if (entry.messageId !== null && open.get(key) === entry) {
+        // The prompt goes up as text and grows its controls by edit, because a post carrying
+        // components and a mention is one call this route does not have: the id the components are
+        // addressed by is the id the post comes back with. The same text is sent again, so the
+        // message reads as it did, the `y <id>` line included: an edit resolves no mention, so the
+        // pill re-renders and pings nobody a second time.
+        const attached = await options.writer.edit(
+          threadId,
+          entry.messageId,
+          prompt,
+          permissionControls(request.requestId, entry.nonce),
+        );
+        if (attached.status !== "ok") {
+          // Reported as delivered anyway, and the request stays open: the operator has the whole
+          // prompt in front of them and the typed verdict still answers it. Only the one tap is
+          // lost.
+          log(
+            `permission: request ${request.requestId} kept the plain prompt, its buttons were not ` +
+              `attached: ${attached.status === "rate-limited" ? "rate limited" : attached.error}`,
+          );
+        }
+      }
       return true;
     },
 
-    async resolve(threadId, verdict) {
+    resolve(threadId, verdict, nonce) {
       const key = keyFor(threadId, verdict.requestId);
       const entry = open.get(key);
       // Stale, already answered, named in the wrong thread, or asked before a broker restart: this
@@ -353,6 +506,11 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
       // way out: the message is still whole and still the caller's to read another way, and only
       // the caller knows whether anything else took it.
       if (entry === undefined) return false;
+      // A press naming this request with any nonce but the one minted for it: a tap on a message
+      // whose own request was answered long ago and whose five-letter ID a later prompt has since
+      // drawn again. Refused on the same terms as an ID nothing holds, and writing just as little,
+      // because it is the same mistake seen from the other side.
+      if (nonce !== null && nonce !== entry.nonce) return false;
       open.delete(key);
 
       const delivered = options.relays.deliver(entry.processToken, {
@@ -368,10 +526,22 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
           ? `permission: request ${verdict.requestId} answered ${what}`
           : `permission: request ${verdict.requestId} answered ${what}, but its session has no relay`,
       );
+      // What the thread is left showing is scheduled rather than waited on: a caller may be holding
+      // a Discord interaction open on this answer, and a callback has about three seconds while
+      // those writes are two round trips. The message id is read here rather than inside, so the
+      // rewrite targets the message this request was posted as and nothing that replaced it.
+      cosmetic = cosmetic.then(() =>
+        closeOut({
+          threadId,
+          verdict,
+          messageId: entry.messageId,
+          toolName: entry.toolName,
+          delivered,
+        }),
+      );
       // The entry is consumed either way, so this answered the request even when its session was
       // gone. Reported as consumed for that reason: it is an answer that was applied, not a message
       // still looking for a reading.
-      if (!delivered) await notice(threadId, unreachableVerdictNotice(verdict.requestId));
       return true;
     },
 

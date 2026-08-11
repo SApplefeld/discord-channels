@@ -1,17 +1,23 @@
 // The interaction route: the second way something outside this machine reaches a running session.
 //
 // Two properties carry the weight. Only the operator's presses do anything at all, and what a press
-// can say is bounded by the ask the desk holds: positions cross the wire, labels come off the
+// can say is bounded by what the desk behind it holds: positions cross the wire, labels come off the
 // entry, and the answers that reach the session are keyed by the question text the payload itself
-// carried.
+// carried. A permission prompt's buttons ride the same route under the same two rules, and carry the
+// nonce that ties one press to the one prompt it was drawn on.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import type { AskedQuestion } from "../discord/render.ts";
+import {
+  PERMISSION_CLOSED_NOTICE,
+  permissionControls,
+} from "../discord/permission-message.ts";
 import { CLOSED_NOTICE, incompleteNotice } from "../discord/question-message.ts";
 import { createQuestionDesk } from "../question-desk.ts";
 import type { QuestionEntryView } from "../question-desk.ts";
 import type { RateLimitObservation } from "../discord/transport.ts";
+import type { Verdict } from "../security/permission.ts";
 import { createSenderGate } from "../security/senders.ts";
 import { questionDigest } from "../tail.ts";
 import { createInteractionRouter } from "./interactions.ts";
@@ -21,6 +27,16 @@ const OPERATOR = "700000000000000002";
 const INTRUDER = "700000000000000003";
 const SESSION = "session-a";
 const THREAD = "thread-1";
+const OTHER_THREAD = "thread-2";
+/** The one permission request the stand-in desk below holds, and the nonce it was drawn with. */
+const REQUEST = "qwtrb";
+const NONCE = "a1b2c3d4e5f6";
+
+/** The `custom_id` a live prompt's own buttons carry, built by the module that reads them back. */
+function permissionPress(behavior: "allow" | "deny", nonce = NONCE): string {
+  const row = permissionControls(REQUEST, nonce)[0];
+  return row.components[behavior === "deny" ? 0 : 1].custom_id;
+}
 
 /** The two-question ask the mock draws: one single-select, one multi-select. */
 function questions(): AskedQuestion[] {
@@ -93,8 +109,9 @@ function heldResponse(): { response: ServerResponse; writes: unknown[] } {
 
 type Callback = { kind: "acknowledge" | "ephemeral"; text: string | null };
 
-function harness(asked: AskedQuestion[] = questions(), rate = NO_RATE) {
+function harness(asked: AskedQuestion[] = questions(), rate = NO_RATE, now?: () => number) {
   const callbacks: Callback[] = [];
+  const resolved: Array<{ threadId: string; verdict: Verdict; nonce: string | null }> = [];
   const refreshed: QuestionEntryView[] = [];
   const logged: string[] = [];
   const held = heldResponse();
@@ -114,6 +131,15 @@ function harness(asked: AskedQuestion[] = questions(), rate = NO_RATE) {
   const router = createInteractionRouter({
     gate: createSenderGate(OPERATOR),
     desk,
+    // The permission desk stands in: what it does with a verdict is its own file's subject, and
+    // what this one measures is which thread and which nonce reach it, and what a press that found
+    // nothing is answered with. It accepts exactly one request, in one thread, under one nonce.
+    permissions: {
+      resolve: (threadId, verdict, nonce) => {
+        resolved.push({ threadId, verdict, nonce });
+        return threadId === THREAD && verdict.requestId === REQUEST && nonce === NONCE;
+      },
+    },
     responder: {
       acknowledge: async () => {
         callbacks.push({ kind: "acknowledge", text: null });
@@ -127,10 +153,11 @@ function harness(asked: AskedQuestion[] = questions(), rate = NO_RATE) {
     refresh: async (entry) => {
       refreshed.push(entry);
     },
+    now,
     log: (message) => logged.push(message),
   });
 
-  return { router, desk, entryId, writes: held.writes, callbacks, refreshed, logged };
+  return { router, desk, entryId, writes: held.writes, callbacks, refreshed, resolved, logged };
 }
 
 const NO_RATE: RateLimitObservation = {
@@ -397,4 +424,135 @@ test("no log line carries a question, an option, or an interaction token", async
   assert.ok(!text.includes("SECRET"), text);
   assert.ok(!text.includes("Commit"), text);
   assert.ok(!text.includes("Review-Only"), text);
+});
+
+test("a press on a permission button reaches the desk as the verdict its label means", async () => {
+  // The two buttons are the two verdicts, and the reference the desk is handed carries nothing the
+  // wire decided: the thread is the interaction's own, and the request and nonce are looked up.
+  const { router, resolved, callbacks } = harness();
+
+  await router.deliver(press({ customId: permissionPress("allow") }));
+  await router.deliver(press({ customId: permissionPress("deny") }));
+
+  assert.deepEqual(resolved, [
+    { threadId: THREAD, verdict: { requestId: REQUEST, behavior: "allow" }, nonce: NONCE },
+    { threadId: THREAD, verdict: { requestId: REQUEST, behavior: "deny" }, nonce: NONCE },
+  ]);
+  assert.deepEqual(
+    callbacks,
+    [
+      { kind: "acknowledge", text: null },
+      { kind: "acknowledge", text: null },
+    ],
+    "an applied verdict rewrites the prompt itself, so the press is only acknowledged",
+  );
+});
+
+test("a permission press that found nothing open is told so and nothing else", async () => {
+  // A nonce the desk does not hold is the stale-button case: a tap on an answered message still in
+  // scrollback. It resolves to nothing, and the presser gets the one ephemeral line.
+  const { router, resolved, callbacks } = harness();
+
+  await router.deliver(press({ customId: permissionPress("allow", "0000deadbeef") }));
+
+  assert.deepEqual(resolved, [
+    {
+      threadId: THREAD,
+      verdict: { requestId: REQUEST, behavior: "allow" },
+      nonce: "0000deadbeef",
+    },
+  ]);
+  assert.deepEqual(callbacks, [{ kind: "ephemeral", text: PERMISSION_CLOSED_NOTICE }]);
+});
+
+test("a permission press carries the thread it was pressed in, never one the id names", async () => {
+  // The custom_id is a string that travels. Pressed anywhere but the thread its prompt was posted
+  // in, it names a request that thread has nothing open under.
+  const { router, resolved, callbacks } = harness();
+
+  await router.deliver(press({ threadId: OTHER_THREAD, customId: permissionPress("allow") }));
+
+  assert.deepEqual(resolved, [
+    { threadId: OTHER_THREAD, verdict: { requestId: REQUEST, behavior: "allow" }, nonce: NONCE },
+  ]);
+  assert.deepEqual(callbacks, [{ kind: "ephemeral", text: PERMISSION_CLOSED_NOTICE }]);
+});
+
+test("a permission press from anyone but the operator never reaches the desk", async () => {
+  // The same gate, in front of the same door: this is the one path in the system where a press
+  // decides what a session is allowed to do, so nothing runs before the account is checked, and an
+  // account this broker does not act for is told nothing at all.
+  const { router, resolved, callbacks } = harness();
+  const customId = permissionPress("allow");
+
+  await router.deliver(press({ senderId: INTRUDER, customId }));
+
+  assert.deepEqual(resolved, [], "no verdict was even offered to the desk");
+  assert.deepEqual(callbacks, [], "and nothing was said back");
+
+  // The same bytes from the operator, so what the two assertions above measured is the account and
+  // not an unwired route.
+  await router.deliver(press({ senderId: OPERATOR, customId }));
+  assert.deepEqual(resolved, [
+    { threadId: THREAD, verdict: { requestId: REQUEST, behavior: "allow" }, nonce: NONCE },
+  ]);
+  assert.deepEqual(callbacks, [{ kind: "acknowledge", text: null }]);
+});
+
+test("a permission press the bucket cannot answer never reaches the desk", async () => {
+  // The same guarantee the question path holds, over the one press that decides what a session may
+  // run: a verdict applied and then left unanswered is a tool running while the operator's client
+  // reports the tap as failed, so an empty bucket drops the press whole.
+  const { router, resolved, callbacks, logged } = harness(questions(), {
+    remaining: 0,
+    resetAfterMs: null,
+    retryAfterMs: 60_000,
+  });
+
+  await router.deliver(press({ customId: permissionPress("allow") }));
+  await router.deliver(press({ customId: permissionPress("deny") }));
+
+  assert.equal(resolved.length, 1, "the first press spent the bucket, and the second never resolved");
+  assert.equal(callbacks.length, 1, "and it was not answered either");
+  assert.ok(logged.some((line) => line.includes("the bucket is empty")), logged.join("\n"));
+});
+
+test("a rate limit blocks from when the callback answered, not from when it was sent", async () => {
+  // The wait a 429 reports runs from the response. Folded in under the stamp the affordability
+  // check was made at, the block would lift a whole round trip early and put the next press on the
+  // wire inside the window Discord asked for.
+  // One stamp per clock read on this route, in the order the reads happen: the affordability check
+  // before a press is acted on, and the observation once its callback comes back.
+  const stamps = [1_000, 9_000, 9_500];
+  const clock = (): number => stamps.shift() ?? 9_500;
+  const { router, callbacks, resolved } = harness(
+    questions(),
+    { remaining: 0, resetAfterMs: null, retryAfterMs: 1_000 },
+    clock,
+  );
+
+  // Pressed at 1000, answered with a 429 at 9000, so the route is blocked until 10000. The second
+  // press is at 9500, inside it.
+  await router.deliver(press({ customId: permissionPress("allow") }));
+  await router.deliver(press({ customId: permissionPress("deny") }));
+
+  assert.equal(callbacks.length, 1, "the second press is inside the wait the 429 asked for");
+  assert.equal(resolved.length, 1, "so it applied no verdict either");
+});
+
+test("a custom_id neither component writer built is not a permission press", async () => {
+  const { router, resolved, callbacks } = harness();
+
+  await router.deliver(press({ customId: `pd:${REQUEST}:${NONCE}` }));
+  await router.deliver(press({ customId: `pd:${REQUEST}:${NONCE}:maybe` }));
+  await router.deliver(press({ customId: `pd::${NONCE}:y` }));
+  await router.deliver(press({ customId: `xx:${REQUEST}:${NONCE}:y` }));
+
+  assert.deepEqual(resolved, []);
+  assert.deepEqual(callbacks, []);
+
+  // The shape that is one, so the four above are measuring the reading and not a dead route.
+  await router.deliver(press({ customId: `pd:${REQUEST}:${NONCE}:y` }));
+  assert.equal(resolved.length, 1);
+  assert.deepEqual(callbacks, [{ kind: "acknowledge", text: null }]);
 });

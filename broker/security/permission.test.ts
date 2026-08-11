@@ -2,6 +2,8 @@
 // names and no other, and it reaches it once.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { parsePermissionId } from "../discord/permission-message.ts";
+import type { ActionRow } from "../discord/question-message.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
@@ -40,10 +42,27 @@ function announce(registry: Registry, processToken: string, sessionId: string): 
   });
 }
 
+/**
+ * A Discord write held open until the test releases it, which is what a call that has not come
+ * back yet looks like from this side of the messenger.
+ */
+function heldWrite(): { until: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  const until = new Promise<void>((settle) => {
+    release = settle;
+  });
+  return { until, release };
+}
+
 function harness(
   options: {
     attach?: string[];
-    outcomes?: Array<CallOutcome<{ messageId: string }>>;
+    outcomes?: Array<CallOutcome<{ messageId: string | null }>>;
+    editOutcomes?: Array<CallOutcome<null>>;
+    /** Holds every edit past the first `after` of them until the test lets them through. */
+    holdEdits?: { after: number; until: Promise<void> };
+    /** Throws out of every edit past the first `after` of them, as a dead socket does. */
+    throwEditsAfter?: number;
     now?: () => number;
   } = {},
 ) {
@@ -65,13 +84,29 @@ function harness(
     });
   }
   const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
+  const edits: Array<{
+    threadId: string;
+    messageId: string;
+    text: string;
+    components?: readonly ActionRow[];
+  }> = [];
   const outcomes = options.outcomes ?? [];
+  const editOutcomes = options.editOutcomes ?? [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
       return outcomes.shift() ?? { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
-    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    editInThread: async (input) => {
+      if (options.holdEdits !== undefined && edits.length >= options.holdEdits.after) {
+        await options.holdEdits.until;
+      }
+      if (options.throwEditsAfter !== undefined && edits.length >= options.throwEditsAfter) {
+        throw new Error("SECRET-the socket died mid-request");
+      }
+      edits.push(input);
+      return editOutcomes.shift() ?? { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
   };
   const logged: string[] = [];
   const desk = createPermissionDesk({
@@ -88,7 +123,21 @@ function harness(
   const alerts = (): typeof posts => posts.filter((post) => post.mentionUserId !== undefined);
   /** Just the broker-authored notices, which is where a dropped prompt has to become visible. */
   const notices = (): typeof posts => posts.filter((post) => post.mentionUserId === undefined);
-  return { registry, relays, desk, posts, alerts, notices, sent, logged };
+  /**
+   * The nonce the desk minted for the prompt it last drew buttons on, read back off the wire the
+   * way a press carries it: through the `custom_id` the components were built with.
+   */
+  const nonceOf = (requestId: string): string => {
+    const drawn = edits.filter((edit) => (edit.components ?? []).length > 0).at(-1);
+    assert.ok(drawn !== undefined, "the prompt was edited to carry its buttons");
+    const reference = parsePermissionId(
+      (drawn.components as ActionRow[])[0].components[0].custom_id,
+    );
+    assert.ok(reference !== null, "and the buttons carry an id this broker can read back");
+    assert.equal(reference.requestId, requestId);
+    return reference.nonce;
+  };
+  return { registry, relays, desk, posts, edits, alerts, notices, sent, logged, nonceOf };
 }
 
 function request(overrides: Partial<{ requestId: string; toolName: string; description: string; inputPreview: string }> = {}) {
@@ -139,13 +188,13 @@ test("a request is posted into its session's thread, mentioning the operator", a
 test("a verdict reaches the session that asked, as an allow or a deny", async () => {
   const { desk, sent } = harness();
   await desk.request(TOKEN_A, request());
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
+  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null);
   assert.deepEqual(sent.get(TOKEN_A), [
     { type: "permission", requestId: "abcde", behavior: "allow" },
   ]);
 
   await desk.request(TOKEN_A, request({ requestId: "qrstu" }));
-  await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "deny" });
+  await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "deny" }, null);
   assert.deepEqual((sent.get(TOKEN_A) as RelayEvent[])[1], {
     type: "permission",
     requestId: "qrstu",
@@ -160,13 +209,13 @@ test("a well-formed verdict naming no open request is dropped, not applied to an
   await desk.request(TOKEN_A, request({ requestId: "abcde" }));
 
   assert.equal(
-    await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" }),
+    await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" }, null),
     false,
     "an unknown id consumed nothing, and says so",
   );
   assert.deepEqual(sent.get(TOKEN_A), [], "an unknown id matched nothing at all");
 
-  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }), true);
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
   assert.equal((sent.get(TOKEN_A) as RelayEvent[]).length, 1, "the open request still answers");
 });
 
@@ -174,13 +223,13 @@ test("an answered request is consumed, so the same verdict repeated does nothing
   const { desk, sent } = harness();
   await desk.request(TOKEN_A, request());
 
-  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }), true);
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
   assert.equal(
-    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" }),
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" }, null),
     false,
     "the replay found nothing open, which is the same answer an unknown id gets",
   );
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
+  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null);
   assert.deepEqual(
     sent.get(TOKEN_A),
     [{ type: "permission", requestId: "abcde", behavior: "allow" }],
@@ -195,13 +244,13 @@ test("a verdict answers only a request open in the thread it was typed in", asyn
   await desk.request(TOKEN_A, request({ requestId: "abcde", toolName: "Read" }));
   await desk.request(TOKEN_B, request({ requestId: "abcde", toolName: "Bash" }));
 
-  await desk.resolve(THREAD_B, { requestId: "abcde", behavior: "allow" });
+  await desk.resolve(THREAD_B, { requestId: "abcde", behavior: "allow" }, null);
   assert.deepEqual(sent.get(TOKEN_A), [], "the other session's prompt is untouched");
   assert.deepEqual(sent.get(TOKEN_B), [
     { type: "permission", requestId: "abcde", behavior: "allow" },
   ]);
 
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" });
+  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" }, null);
   assert.deepEqual(sent.get(TOKEN_A), [
     { type: "permission", requestId: "abcde", behavior: "deny" },
   ]);
@@ -264,7 +313,7 @@ test("the open-request table refuses the newest rather than dropping the oldest"
   assert.equal(accepted.filter(Boolean).length, MAX_OPEN_REQUESTS);
   assert.equal(accepted[accepted.length - 1], false, "the newest is the one refused");
 
-  await desk.resolve(THREAD_A, { requestId: wanted[0], behavior: "allow" });
+  await desk.resolve(THREAD_A, { requestId: wanted[0], behavior: "allow" }, null);
   assert.equal(
     (sent.get(TOKEN_A) as RelayEvent[]).length,
     1,
@@ -277,10 +326,11 @@ test("a verdict for a session whose relay has gone is answered in-thread, not th
   await desk.request(TOKEN_A, request());
   relays.closeAll();
   assert.equal(
-    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }),
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null),
     true,
     "the request was answered, so the message is spent rather than left for another reading",
   );
+  await desk.settled();
   assert.equal(notices().length, 1, "an answer that went nowhere is not reported as success");
   assert.match(notices()[0].text, /no channel connected/);
 });
@@ -313,7 +363,7 @@ test("a verdict for a prompt that never landed is answered rather than silently 
   await desk.request(TOKEN_A, request());
   at += 120_000;
 
-  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }), false);
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), false);
   assert.deepEqual(sent.get(TOKEN_A), [], "nothing was approved on the strength of a guess");
 
   await desk.reportUnknownVerdict(THREAD_A, { requestId: "abcde", behavior: "allow" });
@@ -326,7 +376,7 @@ test("an unmatched verdict says so in-thread, because silence reads as success f
   // phone, from an approval that worked. The report is its own call: a message of the verdict shape
   // has other readings, and only a caller that has exhausted them asks for this.
   const { desk, notices, sent, logged } = harness();
-  assert.equal(await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" }), false);
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "allow" }, null), false);
   assert.deepEqual(notices(), [], "resolving nothing writes nothing");
 
   await desk.reportUnknownVerdict(THREAD_A, { requestId: "qrstu", behavior: "allow" });
@@ -360,7 +410,7 @@ test("a run of prompts stops ringing but keeps arriving, and is still answerable
   assert.ok(accepted.every(Boolean), "no session was left parked to keep the phone quiet");
 
   // The quiet ones are real prompts, not decoration.
-  await desk.resolve(THREAD_A, { requestId: wanted[wanted.length - 1], behavior: "allow" });
+  await desk.resolve(THREAD_A, { requestId: wanted[wanted.length - 1], behavior: "allow" }, null);
   assert.deepEqual(sent.get(TOKEN_A), [
     { type: "permission", requestId: wanted[wanted.length - 1], behavior: "allow" },
   ]);
@@ -413,7 +463,7 @@ test("the log names what was approved, in which session, and by which tool", asy
   // has no other way to answer "what did I let run, and where".
   const { desk, logged } = harness();
   await desk.request(TOKEN_A, request({ requestId: "abcde", toolName: "Bash" }));
-  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" });
+  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null);
 
   const line = logged.find((entry) => entry.includes("abcde") && entry.includes("answered"));
   assert.notEqual(line, undefined, logged.join("\n"));
@@ -433,7 +483,7 @@ test("a session with an unanswered prompt is reported as waiting, and stops when
   await desk.request(TOKEN_A, request());
   assert.deepEqual([...desk.waiting()], ["session-a"], "the session is parked on its prompt");
 
-  await desk.resolve(THREAD_A, { behavior: "allow", requestId: "abcde" });
+  await desk.resolve(THREAD_A, { behavior: "allow", requestId: "abcde" }, null);
   assert.deepEqual([...desk.waiting()], [], "answering it stops the session waiting");
 });
 
@@ -481,4 +531,285 @@ test("the question alert's own ceilings ring once a window and stop writing at f
 
   const levels = Array.from({ length: 6 }, () => volume(THREAD_A));
   assert.deepEqual(levels, ["ping", "quiet", "quiet", "quiet", "drop", "drop"]);
+});
+
+test("a posted prompt grows a Deny and an Allow, Deny leading and drawn danger", async () => {
+  // The prompt posts as text and is edited to carry its controls, because the post is what yields
+  // the message id an edit needs. Deny leads and is danger, Allow follows and is secondary: the
+  // button a thumb lands on first is not the one that grants.
+  const { desk, posts, edits } = harness();
+  await desk.request(TOKEN_A, request());
+
+  assert.equal(posts.length, 1, "the prompt is posted once");
+  assert.equal(edits.length, 1, "and edited once, to attach the controls");
+  assert.equal(edits[0].threadId, THREAD_A);
+  assert.equal(edits[0].messageId, "msg-1");
+  assert.equal(edits[0].text, posts[0].text, "the message reads as it did, the typed line included");
+  const row = (edits[0].components as ActionRow[])[0];
+  assert.deepEqual(
+    row.components.map((component) => ({
+      label: (component as { label: string }).label,
+      style: (component as { style: number }).style,
+    })),
+    [
+      { label: "Deny", style: 4 },
+      { label: "Allow", style: 2 },
+    ],
+  );
+});
+
+test("a button press answers its request, both ways", async () => {
+  const { desk, sent, nonceOf } = harness();
+  await desk.request(TOKEN_A, request());
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, nonceOf("abcde")),
+    true,
+  );
+
+  await desk.request(TOKEN_A, request({ requestId: "qrstu" }));
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "qrstu", behavior: "deny" }, nonceOf("qrstu")),
+    true,
+  );
+
+  assert.deepEqual(sent.get(TOKEN_A), [
+    { type: "permission", requestId: "abcde", behavior: "allow" },
+    { type: "permission", requestId: "qrstu", behavior: "deny" },
+  ]);
+});
+
+test("a press carrying any nonce but the open request's own resolves to nothing", async () => {
+  // The control the whole button path rests on. A request id is five letters, so a later prompt in
+  // this thread can draw the id an answered message in scrollback still carries, and stripping that
+  // message's buttons cannot be relied on: the strip is an edit, and an edit can be refused.
+  const { desk, sent, notices, nonceOf } = harness();
+  await desk.request(TOKEN_A, request());
+  const nonce = nonceOf("abcde");
+
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, `${nonce}0`),
+    false,
+    "a nonce that is not this request's answers nothing",
+  );
+  assert.deepEqual(sent.get(TOKEN_A), [], "no verdict reached the session");
+  assert.deepEqual(notices(), [], "and nothing was written about it either");
+
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" }, nonce),
+    true,
+    "the request is still open, so its own button still answers it",
+  );
+});
+
+test("two prompts drawing the same request id in one thread carry different nonces", async () => {
+  // The recycled-id case the nonce exists for: the first prompt's buttons name a nonce the second
+  // prompt's request does not have, so a tap on the old message answers nothing.
+  const { desk, sent, nonceOf } = harness();
+  await desk.request(TOKEN_A, request());
+  const first = nonceOf("abcde");
+  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "deny" }, first);
+
+  await desk.request(TOKEN_A, request());
+  const second = nonceOf("abcde");
+  assert.notEqual(second, first, "each prompt is minted its own");
+
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, first),
+    false,
+    "the answered message's button does not approve the request that replaced it",
+  );
+  assert.deepEqual(
+    sent.get(TOKEN_A),
+    [{ type: "permission", requestId: "abcde", behavior: "deny" }],
+    "only the first verdict was ever delivered",
+  );
+});
+
+test("a press naming a request open in another thread resolves to nothing", async () => {
+  // The thread a press arrives in is the authority, never anything the custom_id carries: an id is
+  // a string that travels, and the pair of them names one request in one thread or nothing at all.
+  const { desk, sent, nonceOf } = harness();
+  await desk.request(TOKEN_A, request());
+  const nonce = nonceOf("abcde");
+
+  assert.equal(
+    await desk.resolve(THREAD_B, { requestId: "abcde", behavior: "allow" }, nonce),
+    false,
+  );
+  assert.deepEqual(sent.get(TOKEN_A), [], "session A's request was not answered from another thread");
+  assert.deepEqual(sent.get(TOKEN_B), []);
+});
+
+test("an answered prompt is rewritten and stripped, whichever way it was answered", async () => {
+  // The typed path resolves the same entry the buttons do, so it clears the same message: a live
+  // button over a request nothing holds is a tap that reports a failure and changes nothing.
+  const { desk, edits } = harness();
+  await desk.request(TOKEN_A, request());
+  await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null);
+  await desk.settled();
+
+  assert.equal(edits.length, 2, "one edit attached the controls, one closed the prompt out");
+  const closed = edits[1];
+  assert.equal(closed.messageId, "msg-1");
+  assert.deepEqual(closed.components, [], "the components are stripped");
+  assert.match(closed.text, /Allowed/);
+  assert.match(closed.text, /`abcde`/);
+  assert.match(closed.text, /Bash/, "the thread keeps the record of which tool was allowed");
+});
+
+test("a refused close-out edit still leaves the verdict applied exactly once", async () => {
+  // The verdict is recorded and delivered before the edit is attempted, so a Discord refusal costs
+  // a stale message and nothing else. The entry is consumed either way, so a second answer to the
+  // same request finds nothing to apply.
+  const { desk, sent, logged } = harness({
+    editOutcomes: [
+      { status: "ok", value: null, rate: NO_RATE_INFO },
+      { status: "failed", error: "message edit refused", rate: NO_RATE_INFO },
+    ],
+  });
+  await desk.request(TOKEN_A, request());
+
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
+  await desk.settled();
+  assert.deepEqual(sent.get(TOKEN_A), [
+    { type: "permission", requestId: "abcde", behavior: "allow" },
+  ]);
+  assert.ok(
+    logged.some((line) => line.includes("was answered but its prompt was not rewritten")),
+    "the refusal is logged",
+  );
+
+  assert.equal(
+    await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null),
+    false,
+    "the request is consumed, so it cannot be answered a second time",
+  );
+  assert.equal((sent.get(TOKEN_A) as RelayEvent[]).length, 1, "and the verdict was delivered once");
+});
+
+test("a prompt whose buttons could not be attached is still open to a typed verdict", async () => {
+  // A refused attach costs the one tap, never the prompt: the whole message is in front of the
+  // operator and the `y <id>` line still answers it.
+  const { desk, sent, logged } = harness({
+    editOutcomes: [{ status: "failed", error: "message edit refused", rate: NO_RATE_INFO }],
+  });
+  assert.equal(await desk.request(TOKEN_A, request()), true, "the prompt reached the operator");
+  assert.ok(logged.some((line) => line.includes("kept the plain prompt")));
+
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
+  assert.deepEqual(sent.get(TOKEN_A), [
+    { type: "permission", requestId: "abcde", behavior: "allow" },
+  ]);
+});
+
+test("a verdict is applied and delivered before the writes it leaves behind are waited on", async () => {
+  // A press holds a Discord interaction open on this answer, and a callback has about three seconds
+  // while the close-out rewrite is a round trip of its own. So the answer comes off the table and
+  // the relay alone, and what the thread shows catches up behind `settled`.
+  const rewrite = heldWrite();
+  const { desk, sent, edits } = harness({ holdEdits: { after: 1, until: rewrite.until } });
+  await desk.request(TOKEN_A, request());
+  assert.equal(edits.length, 1, "the prompt is up and carrying its buttons");
+
+  // Raced against a bound, so an answer that waits on Discord reads as a failure here rather than
+  // as a test that never finishes.
+  const applied = await Promise.race([
+    Promise.resolve(desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null)),
+    new Promise((settle) => setTimeout(() => settle("waited on a Discord write"), 200).unref()),
+  ]);
+
+  assert.equal(applied, true, "the verdict is reported the moment it is applied");
+  assert.deepEqual(
+    sent.get(TOKEN_A),
+    [{ type: "permission", requestId: "abcde", behavior: "allow" }],
+    "and the session already has it",
+  );
+  assert.equal(edits.length, 1, "while the prompt's rewrite is still on the wire");
+
+  rewrite.release();
+  await desk.settled();
+  assert.equal(edits.length, 2, "which lands once Discord answers");
+  assert.deepEqual(edits[1].components, [], "carrying the strip");
+});
+
+test("a close-out write that throws is logged, and its detail is not", async () => {
+  // The rewrite runs behind the caller that applied the verdict rather than under it, so a throw
+  // out of the transport has nobody left to report it to and would surface as an unhandled
+  // rejection against whatever else is running. The detail goes unread: a serialized transport
+  // error can carry the request it was made for, and that one carries the prompt.
+  const { desk, sent, logged } = harness({ throwEditsAfter: 1 });
+  await desk.request(TOKEN_A, request());
+
+  assert.equal(desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
+  await desk.settled();
+
+  assert.deepEqual(sent.get(TOKEN_A), [
+    { type: "permission", requestId: "abcde", behavior: "allow" },
+  ]);
+  assert.ok(
+    logged.some((line) => line.includes("closing its prompt out threw")),
+    logged.join("\n"),
+  );
+  assert.ok(!logged.join("\n").includes("SECRET"), "the error detail is withheld");
+});
+
+test("two requests for one prompt arriving together post it once", async () => {
+  // The table is what makes a thread and an id one request, and the id comes from the tool use, so
+  // a re-send is the same decision. Held only from after the post, a second request inside that
+  // round trip would ping the operator again and mint a nonce over the first, leaving the message
+  // already on their phone carrying buttons the desk answers to nothing.
+  const { desk, alerts, edits, sent, nonceOf } = harness();
+
+  const both = await Promise.all([
+    desk.request(TOKEN_A, request()),
+    desk.request(TOKEN_A, request()),
+  ]);
+
+  assert.deepEqual(both, [true, true], "both callers are told the prompt is up");
+  assert.equal(alerts().length, 1, "one decision is one prompt");
+  assert.equal(edits.length, 1, "and one set of buttons");
+  assert.equal(
+    desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, nonceOf("abcde")),
+    true,
+    "the buttons on the message the operator has answer the request the desk holds",
+  );
+  assert.deepEqual(sent.get(TOKEN_A), [
+    { type: "permission", requestId: "abcde", behavior: "allow" },
+  ]);
+});
+
+test("a prompt whose post reported no id is answerable, with nothing to draw on", async () => {
+  // A 2xx whose body carried no readable message id: the prompt landed, so the request is open and
+  // the typed verdict answers it, but there is no handle to attach buttons to or to rewrite.
+  const { desk, edits, sent } = harness({
+    outcomes: [{ status: "ok", value: { messageId: null }, rate: NO_RATE_INFO }],
+  });
+
+  assert.equal(await desk.request(TOKEN_A, request()), true, "the prompt reached the operator");
+  assert.deepEqual(edits, [], "there is no message to draw the buttons on");
+
+  assert.equal(desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
+  await desk.settled();
+  assert.deepEqual(edits, [], "and none to rewrite on the way out");
+  assert.deepEqual(sent.get(TOKEN_A), [
+    { type: "permission", requestId: "abcde", behavior: "allow" },
+  ]);
+});
+
+test("a verdict its session never received draws no tick over a tool that never ran", async () => {
+  // The rewritten prompt is the loudest message in the thread and it replaces the only copy of the
+  // request. An answer applied here that reached no session leaves that session parked, so the line
+  // says so: the fail direction is a thread that still looks like it is waiting, never one that
+  // reports a tool as allowed when nothing ran it.
+  const { desk, edits, notices } = harness({ attach: [] });
+  await desk.request(TOKEN_A, request());
+
+  assert.equal(await desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
+  await desk.settled();
+
+  const closed = edits[1];
+  assert.deepEqual(closed.components, [], "the components go either way");
+  assert.match(closed.text, /Allowed, not delivered/);
+  assert.doesNotMatch(closed.text, /✅/);
+  assert.equal(notices().length, 1, "and the notice sends the operator to the keyboard");
 });

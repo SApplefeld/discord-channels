@@ -54,13 +54,14 @@ function watchedDesk(options: { resolves?: boolean } = {}) {
       requested.push(processToken);
       return true;
     },
-    resolve: async (threadId, verdict) => {
+    resolve: (threadId, verdict) => {
       resolved.push({ threadId, verdict });
       return options.resolves ?? true;
     },
     reportUnknownVerdict: async (threadId, verdict) => {
       unknown.push({ threadId, verdict });
     },
+    settled: () => Promise.resolve(),
     waiting: () => new Set<string>(),
   };
   return { desk, resolved, unknown, requested };

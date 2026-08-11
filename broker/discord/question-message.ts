@@ -134,7 +134,8 @@ export function parseOptionValue(raw: string): number | null {
 
 type Button = {
   type: 2;
-  style: 1 | 2;
+  /** The three Discord styles the rows in this broker draw: primary, secondary, and danger. */
+  style: 1 | 2 | 4;
   label: string;
   custom_id: string;
 };

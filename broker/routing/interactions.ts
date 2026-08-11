@@ -1,5 +1,5 @@
-// Discord to a held question: the second path a press from outside this machine reaches a running
-// session by.
+// Discord to a held question or a waiting permission prompt: the second path a press from outside
+// this machine reaches a running session by.
 //
 // The sender gate is the first thing `deliver` does, and it is in front of everything else for the
 // reason it is in inbound.ts: a component press answers a question inside a running session, so who
@@ -8,13 +8,19 @@
 // interaction from an account this broker does not act for is not owed an error message, and a
 // reply would confirm that the message it named is live.
 //
-// A `custom_id` is a reference and never evidence. It carries an opaque entry token and positions
-// inside the ask that token names, so every value behind it is looked up in the desk rather than
-// read off the wire, and an id naming an entry the desk no longer holds resolves to nothing at all.
+// A `custom_id` is a reference and never evidence. A question's carries an opaque entry token and
+// positions inside the ask that token names; a permission prompt's carries the request ID, the
+// nonce that prompt was drawn with, and which verdict the button means. Either way every value
+// behind it is looked up in the desk that holds it rather than read off the wire, and an id naming
+// nothing that desk still holds resolves to nothing at all.
 //
 // Question content never appears in the broker log at any level, the same rule the desk and the
 // tailer hold: the lines here carry session ids, entry ids, and states.
 import { createBudget } from "../discord/budget.ts";
+import {
+  PERMISSION_CLOSED_NOTICE,
+  parsePermissionId,
+} from "../discord/permission-message.ts";
 import {
   CLOSED_NOTICE,
   autoSubmits,
@@ -24,6 +30,7 @@ import {
 } from "../discord/question-message.ts";
 import type { QuestionDesk, QuestionEntryView, QuestionSubmission } from "../question-desk.ts";
 import type { InteractionResponder } from "../discord/transport.ts";
+import type { Verdict } from "../security/permission.ts";
 import type { SenderGate } from "../security/senders.ts";
 
 /**
@@ -52,6 +59,12 @@ export type InteractionRouterOptions = {
   /** The allowlist over pressers. Required: there is no permissive default to fall back to. */
   gate: SenderGate;
   desk: QuestionDesk;
+  /**
+   * The permission desk a prompt's buttons answer. Narrowed to the one verb a press can reach: a
+   * press applies a verdict to a request that desk already holds, and posting a prompt or reading
+   * what is waiting is nothing an interaction does.
+   */
+  permissions: { resolve: (threadId: string, verdict: Verdict, nonce: string | null) => boolean };
   responder: InteractionResponder;
   /**
    * Redraws a held ask's own message so the operator sees the selections the desk has accumulated.
@@ -154,18 +167,14 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
 
   /**
    * Answers one interaction, at most once, under this route's own budget, which the caller has
-   * already found affordable at `at`.
+   * already found affordable.
    *
    * Discord takes one callback per interaction, so the deferred acknowledgement and an ephemeral
    * reply are alternatives rather than a sequence. Nothing is retried: the client reports the press
    * as failed after about three seconds, by which time a retry is answering an interaction the
    * operator has already been told did not work.
    */
-  async function answer(
-    interaction: InboundInteraction,
-    reply: string | null,
-    at: number,
-  ): Promise<void> {
+  async function answer(interaction: InboundInteraction, reply: string | null): Promise<void> {
     try {
       const outcome =
         reply === null
@@ -178,10 +187,15 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
               token: interaction.token,
               text: reply,
             });
+      // Timed from when the call answered rather than from when it was sent: a 429 reports how
+      // long to wait from the response, so folding it in under the earlier stamp would lift the
+      // block by the length of the round trip too early and put the next press on the wire inside
+      // the window Discord asked for.
+      //
       // A failed call's headers are deliberately not observed, the writer's own rule: a 4xx
       // reports a bucket with room in it, and letting that clear a standing block turns a refusal
       // into a retry storm.
-      if (outcome.status !== "failed") budget.observe(outcome.rate, at);
+      if (outcome.status !== "failed") budget.observe(outcome.rate, now());
       if (outcome.status !== "ok") {
         log(
           `routing: an interaction callback in thread ${interaction.threadId} was not accepted: ` +
@@ -213,10 +227,39 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
         return;
       }
 
+      const press = parsePermissionId(interaction.customId);
+      if (press !== null) {
+        // The same budget rule the question path holds, for the same reason: a verdict applied and
+        // then left unanswered is a session proceeding while the operator's client reports the tap
+        // as failed. This stamp answers affordability and nothing else; what a call learns about
+        // the bucket is folded in under the clock as it stood when that call came back.
+        const at = now();
+        if (!budget.affordable(at)) {
+          log(`routing: an interaction in thread ${interaction.threadId} was dropped, the bucket is empty`);
+          return;
+        }
+        // The thread is the interaction's own and never anything the id carries, so a press can
+        // only ever answer a request open in the thread it was pressed in. The nonce goes with it
+        // and the desk refuses the press unless it is that request's own, which is what a tap on an
+        // answered prompt still in scrollback runs into.
+        const applied = options.permissions.resolve(
+          interaction.threadId,
+          { requestId: press.requestId, behavior: press.behavior },
+          press.nonce,
+        );
+        // Answered after the desk has spoken rather than before, because only the desk knows
+        // whether this press found anything: the request may have been answered at the keyboard,
+        // lost to a broker restart, or drawn on a message older than the prompt that holds the ID
+        // now. It costs the callback window nothing, because the desk applies and delivers a
+        // verdict without a call of its own and leaves what the thread shows for afterwards.
+        await answer(interaction, applied ? null : PERMISSION_CLOSED_NOTICE);
+        return;
+      }
+
       const reference = parseComponentId(interaction.customId);
-      // A component this module did not write. Nothing else in this broker builds any, so the
-      // reachable case is a message from an older build or another application's, and neither is
-      // this desk's to answer.
+      // A component neither of this broker's two component writers built, the question message and
+      // the permission prompt, so the reachable case is a message from an older build or another
+      // application's, and neither is this route's to answer.
       if (reference === null) return;
 
       // The whole callback budget, checked before anything the desk cannot take back. A press
@@ -238,7 +281,7 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
         // The hold ended while the message was still on the operator's screen: answered from
         // another device, released, expired, or gone with the session. The message they pressed is
         // edited by the terminal state that ended it, and this tells the person who pressed.
-        await answer(interaction, CLOSED_NOTICE, at);
+        await answer(interaction, CLOSED_NOTICE);
         return;
       }
 
@@ -246,7 +289,7 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
         // The release is digest-checked inside the desk, so a press against an ask the session has
         // since replaced releases nothing. Answered first, because the release edits this very
         // message through the terminal seam and Discord takes one callback per press.
-        await answer(interaction, null, at);
+        await answer(interaction, null);
         const released = options.desk.releaseEntry(reference.entryId);
         log(
           `routing: session ${entry.sessionId}'s question was released to the console from the thread` +
@@ -256,7 +299,7 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
       }
 
       if (reference.action.kind === "send") {
-        await answer(interaction, submissionReply(options.desk.submit(reference.entryId)), at);
+        await answer(interaction, submissionReply(options.desk.submit(reference.entryId)));
         return;
       }
 
@@ -273,7 +316,7 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
           : [reference.action.optionIndex];
       const updated = options.desk.select(reference.entryId, reference.action.questionIndex, chosen);
       if (updated === null) {
-        await answer(interaction, CLOSED_NOTICE, at);
+        await answer(interaction, CLOSED_NOTICE);
         return;
       }
 
@@ -281,12 +324,12 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
       // multi-select: a single-select ask is complete the moment its last question has a value, and
       // a Send button would be one more tap for nothing. Anything else accumulates and waits.
       if (autoSubmits(updated.questions, updated.selections)) {
-        await answer(interaction, submissionReply(options.desk.submit(reference.entryId)), at);
+        await answer(interaction, submissionReply(options.desk.submit(reference.entryId)));
         return;
       }
 
       // Acknowledged before the redraw: the callback is the three-second clock, the edit is not.
-      await answer(interaction, null, at);
+      await answer(interaction, null);
       try {
         await options.refresh(updated);
       } catch {
