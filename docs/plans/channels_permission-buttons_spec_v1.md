@@ -54,7 +54,19 @@ nothing. That makes the recycled-ID case structurally impossible rather than dep
 having succeeded. Stripping stays, because a dead button that reports a failure is still worse than
 no button, but it is now the courtesy rather than the control.
 
-## Section 2: a measurement, not a decision. Instrument built, reading outstanding
+## Section 2: a measurement, not a decision. Answered: nothing is announced
+
+**Result: Claude Code sends the relay nothing when a prompt is resolved at the console.** A session
+carrying the instrument raised a prompt, the operator answered it at the keyboard, and the relay
+logged no notification of any method.
+
+The null is evidence rather than an absence, because each link was checked: the launch registration
+pointed at the instrumented file, the relay process started after that file was written, the relay had
+connected and registered its channel notifications, `broker.log` carried no `answered` line so the
+verdict did not travel the Discord path instead, and a test already proves the seam fires when a
+notification does arrive.
+
+So Section 3 cannot wait to be told. Its rule has to be derived from what the broker already observes.
 
 A prompt answered at the console is never cleared from the desk. The entry is removed only inside
 `resolve`, expiry by age was deliberately rejected, and the channel protocol as this repository

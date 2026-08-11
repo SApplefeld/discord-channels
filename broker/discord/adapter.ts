@@ -409,5 +409,12 @@ export function createDiscordTransport(
         ? { status: "ok", value: null, rate: unpinned.rate }
         : unpinned;
     },
+
+    // The message route rather than the pin one: this removes the message itself, and the only
+    // messages it is pointed at are the pin notices this bot's own pins write.
+    deleteMessage: async ({ messageId }): Promise<CallOutcome<null>> => {
+      const deleted = await write(`/channels/${channelId}/messages/${messageId}`, "DELETE");
+      return deleted.status === "ok" ? { status: "ok", value: null, rate: deleted.rate } : deleted;
+    },
   };
 }

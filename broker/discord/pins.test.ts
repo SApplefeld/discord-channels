@@ -69,6 +69,11 @@ function channel(list: string[] = []): Channel {
         state.list = state.list.filter((held) => held !== messageId);
         return ok(null);
       },
+      // The keeper holds the pin list and nothing else. A pass that reached the delete would be
+      // removing messages from the operator's channel on a timer, so it fails the test outright.
+      deleteMessage: async ({ messageId }) => {
+        throw new Error(`the pin keeper deleted message ${messageId}`);
+      },
     },
   };
   return state;

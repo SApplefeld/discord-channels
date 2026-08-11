@@ -1,0 +1,225 @@
+// The two decisions the gateway makes about an arriving message: which ones reach a session, and
+// which ones are the pin notices this broker's own pins wrote.
+//
+// The classifier is driven directly rather than through a connected client, and that is what the
+// handler is shaped for: it reduces the library's message to facts, asks once, and hands the answer
+// to the one thing that answer names. So a decision that is never "deliver" is a message that never
+// reaches `inbound.deliver`, and a decision that is never "delete" is a message Discord is never
+// asked to remove.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { MessageType } from "discord.js";
+import { classifyMessage, createPinNoticeCleaner, createUnexpectedSystemReport } from "./gateway.ts";
+import type { MessageFacts } from "./gateway.ts";
+import type { CallOutcome } from "../discord/transport.ts";
+import { NO_RATE_INFO } from "../discord/transport.ts";
+
+const CHANNEL = "channel-1";
+const SELF = "bot-9";
+const OPERATOR = "operator-5";
+
+/** The notice Discord writes into the channel when this bot pins: the one thing ever deleted. */
+function pinNotice(facts: Partial<MessageFacts> = {}): MessageFacts {
+  return {
+    channelId: CHANNEL,
+    parentId: null,
+    inThread: false,
+    type: MessageType.ChannelPinnedMessage,
+    authorId: SELF,
+    selfId: SELF,
+    ...facts,
+  };
+}
+
+test("a pin notice this bot wrote in this host's channel is deleted", () => {
+  assert.equal(classifyMessage(pinNotice(), CHANNEL), "delete");
+});
+
+test("a pin notice in another host's channel is left alone", () => {
+  // Two brokers can share a guild. The channel is what keeps one host's deletes inside its own.
+  assert.equal(classifyMessage(pinNotice({ channelId: "channel-2" }), CHANNEL), "drop");
+});
+
+test("an ordinary message from this bot in this channel is left alone", () => {
+  // The type is what keeps this off a real message. Same channel, same author, and nothing here
+  // reads what it says.
+  assert.equal(classifyMessage(pinNotice({ type: MessageType.Default }), CHANNEL), "drop");
+});
+
+test("a pin notice behind a pin the operator made by hand is left alone", () => {
+  assert.equal(classifyMessage(pinNotice({ authorId: OPERATOR }), CHANNEL), "drop");
+});
+
+test("a pin notice arriving before the connection knows its own user is left alone", () => {
+  // The bot's own id is what the author is compared against, so without it there is no author
+  // check to pass and the notice stays.
+  assert.equal(classifyMessage(pinNotice({ selfId: null }), CHANNEL), "drop");
+});
+
+test("a system message this bot wrote that is not the pin notice is reported, not deleted", () => {
+  // The pin is issued on Discord's message-scoped route, which is newer than the notice type this
+  // deletes on. If that route ever announced itself as a different type, the cleaner would delete
+  // nothing and say nothing, and an absence reads exactly like success. This is what tells them
+  // apart, and it is a report rather than a delete because what the type means is not known here.
+  assert.equal(classifyMessage(pinNotice({ type: MessageType.ThreadCreated }), CHANNEL), "report");
+});
+
+test("an unexpected system message from anyone else, or in another channel, is not reported", () => {
+  // The report is about what this broker itself caused. A system message someone else wrote is not
+  // evidence about the pin route, and one in another host's channel is not this broker's business.
+  assert.equal(
+    classifyMessage(pinNotice({ type: MessageType.ThreadCreated, authorId: OPERATOR }), CHANNEL),
+    "drop",
+  );
+  assert.equal(
+    classifyMessage(pinNotice({ type: MessageType.ThreadCreated, channelId: "channel-2" }), CHANNEL),
+    "drop",
+  );
+});
+
+test("an unexpected system type is named once, and the naming is bounded", () => {
+  const lines: string[] = [];
+  const report = createUnexpectedSystemReport((message) => lines.push(message));
+
+  report(MessageType.ThreadCreated);
+  report(MessageType.ThreadCreated);
+  report(MessageType.ChannelFollowAdd);
+
+  assert.equal(lines.length, 2, lines.join("\n"));
+  assert.match(lines[0] ?? "", new RegExp(String(MessageType.ThreadCreated)));
+  assert.match(lines[1] ?? "", new RegExp(String(MessageType.ChannelFollowAdd)));
+
+  // Bounded in count, so a connection meeting many types cannot fill the log with them.
+  for (let type = 100; type < 200; type += 1) report(type);
+  assert.ok(lines.length <= 16, `named ${String(lines.length)} types`);
+});
+
+test("nothing outside a thread is ever delivered, whatever else it is", () => {
+  // The dead end. Every shape a parent-channel message can take answers delete or drop, so none of
+  // them reaches the inbound route, the sender gate, or the permission verdict reader.
+  const outsideAThread: MessageFacts[] = [
+    pinNotice(),
+    pinNotice({ channelId: "channel-2" }),
+    pinNotice({ type: MessageType.Default }),
+    pinNotice({ type: MessageType.Default, authorId: OPERATOR }),
+    pinNotice({ authorId: OPERATOR }),
+    pinNotice({ selfId: null }),
+    pinNotice({ type: MessageType.Reply, authorId: OPERATOR, channelId: CHANNEL }),
+    pinNotice({ type: MessageType.ThreadCreated }),
+  ];
+
+  for (const facts of outsideAThread) {
+    assert.notEqual(classifyMessage(facts, CHANNEL), "deliver", JSON.stringify(facts));
+  }
+});
+
+test("a message in a thread of this host's channel is still delivered", () => {
+  const inThread = pinNotice({
+    channelId: "thread-3",
+    parentId: CHANNEL,
+    inThread: true,
+    type: MessageType.Default,
+    authorId: OPERATOR,
+  });
+
+  assert.equal(classifyMessage(inThread, CHANNEL), "deliver");
+});
+
+test("a message in a thread of another host's channel is still dropped", () => {
+  const inThread = pinNotice({
+    channelId: "thread-3",
+    parentId: "channel-2",
+    inThread: true,
+    type: MessageType.Default,
+    authorId: OPERATOR,
+  });
+
+  assert.equal(classifyMessage(inThread, CHANNEL), "drop");
+});
+
+test("a pin notice in a thread is delivered like any message, never deleted", () => {
+  // Pins are the channel's, so a notice cannot arrive in a thread. If one did it would be routed as
+  // the message it is rather than removed, because only the channel path deletes.
+  const inThread = pinNotice({ channelId: "thread-3", parentId: CHANNEL, inThread: true });
+
+  assert.equal(classifyMessage(inThread, CHANNEL), "deliver");
+});
+
+function refused(error: string): CallOutcome<null> {
+  return { status: "failed", error, rate: NO_RATE_INFO, permanent: true };
+}
+
+function cleanerWith(
+  outcomes: () => Promise<CallOutcome<null>>,
+  clock: { at: number },
+): { deleted: string[]; lines: string[]; clean: (messageId: string) => Promise<void> } {
+  const deleted: string[] = [];
+  const lines: string[] = [];
+  const clean = createPinNoticeCleaner({
+    deleteMessage: async ({ messageId }) => {
+      deleted.push(messageId);
+      return outcomes();
+    },
+    log: (message) => lines.push(message),
+    now: () => clock.at,
+  });
+  return { deleted, lines, clean };
+}
+
+test("a refused delete is logged once for the window and never retried", async () => {
+  const clock = { at: 1_000_000 };
+  const { deleted, lines, clean } = cleanerWith(
+    async () => refused("HTTP 403"),
+    clock,
+  );
+
+  await clean("notice-1");
+  clock.at += 1_000;
+  await clean("notice-2");
+  clock.at += 1_000;
+  await clean("notice-3");
+
+  // One attempt per notice, and no second attempt at any of them: a notice that survives is the
+  // channel a broker without this has, which is not worth a write.
+  assert.deepEqual(deleted, ["notice-1", "notice-2", "notice-3"]);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /refused: HTTP 403/);
+});
+
+test("a refusal past the window is logged again, counting what was held back", async () => {
+  const clock = { at: 1_000_000 };
+  const { lines, clean } = cleanerWith(async () => refused("HTTP 403"), clock);
+
+  await clean("notice-1");
+  await clean("notice-2");
+  clock.at += 10 * 60 * 1000;
+  await clean("notice-3");
+
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /1 more since the last line/);
+});
+
+test("a delete that lands says nothing at all", async () => {
+  const clock = { at: 1_000_000 };
+  const { deleted, lines, clean } = cleanerWith(
+    async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    clock,
+  );
+
+  await clean("notice-1");
+
+  assert.deepEqual(deleted, ["notice-1"]);
+  assert.deepEqual(lines, []);
+});
+
+test("a delete the transport throws on is reported, not propagated", async () => {
+  const clock = { at: 1_000_000 };
+  const { lines, clean } = cleanerWith(async () => {
+    throw new Error("socket closed");
+  }, clock);
+
+  await clean("notice-1");
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /socket closed/);
+});

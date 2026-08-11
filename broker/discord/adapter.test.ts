@@ -190,6 +190,26 @@ test("the pin routes are the message-scoped ones, on the channel, carrying no bo
   for (const call of calls) assert.equal(call.body, undefined, call.route);
 });
 
+test("deleting a message is the message route, not the pin route, and carries no body", async () => {
+  // The two DELETEs differ by one path segment and mean entirely different things: one takes a pin
+  // off, the other removes the message. Pointed at the pin route this would leave every notice in
+  // the channel while unpinning whatever id it was handed.
+  const calls: { route: string; method: string; body: unknown }[] = [];
+  const request: RawRequest = async (input) => {
+    calls.push({ route: input.route, method: input.method, body: input.body });
+    return respond(null);
+  };
+  const transport = createDiscordTransport({ channelId: CHANNEL, request });
+
+  await transport.deleteMessage({ messageId: "message-42" });
+
+  assert.deepEqual(
+    calls.map((call) => `${call.method} ${call.route}`),
+    [`DELETE /channels/${CHANNEL}/messages/message-42`],
+  );
+  assert.equal(calls[0].body, undefined);
+});
+
 test("the pin list reads the page's message ids, and an unreadable page is a refusal", async () => {
   // The route answers `{ items, has_more }`, each item carrying the pinned message. An item with no
   // readable message id is dropped rather than guessed at, and a body that is not a page at all is

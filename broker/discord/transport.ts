@@ -76,9 +76,10 @@ export type DiscordTransport = {
 };
 
 /**
- * The channel's pin list: one read and two writes, on their own surface beside `DiscordTransport`
- * because they are their own routes with their own buckets and their own caller, and because the
- * read needs no permission grant while the writes need Discord's `PIN_MESSAGES` bit.
+ * The channel's pin list and the notices pinning writes: one read and three writes, on their own
+ * surface beside `DiscordTransport` because they are their own routes with their own buckets, and
+ * because the read needs no permission grant while the two pin writes need Discord's `PIN_MESSAGES`
+ * bit and the delete needs none at all.
  *
  * Channel-scoped, like every other route here: the pin that answers "what is running" lives in the
  * broker's channel. A thread's starter message cannot be pinned inside its own thread at all, on
@@ -98,6 +99,12 @@ export type ChannelPins = {
    */
   pin: (input: { messageId: string }) => Promise<CallOutcome<null>>;
   unpin: (input: { messageId: string }) => Promise<CallOutcome<null>>;
+  /**
+   * Deletes a message in the channel outright. Its caller is the gateway, which spends it on the
+   * system messages Discord writes when this bot pins: deleting one's own message needs no Manage
+   * Messages grant, so it works on the same permissions the pins do.
+   */
+  deleteMessage: (input: { messageId: string }) => Promise<CallOutcome<null>>;
 };
 
 /**

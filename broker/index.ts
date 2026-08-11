@@ -1057,6 +1057,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         return inbound.deliver(message);
       },
       onInteraction: (interaction) => interactions.deliver(interaction),
+      // The other half of the pin list: the keeper reconciles which cards are pinned, and this
+      // removes the system message each pin writes into the channel behind it.
+      deleteMessage: transport.deleteMessage,
       log: note,
     });
     // Awaited: a login failure belongs to startup, where it is reported, rather than surfacing
