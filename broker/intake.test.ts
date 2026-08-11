@@ -211,6 +211,45 @@ async function call(
   return done;
 }
 
+test("a credited Stop tells the permission desk the session's turn ended", async () => {
+  // A session parked awaiting a verdict cannot finish a turn, so a turn that ended is the broker's
+  // only evidence that the prompts that session had open have been resolved. PostToolUse cannot
+  // carry it: a subagent's tool calls fire it under the same process token while the session is
+  // still parked.
+  const stopped: Array<{ sessionId: string; at: number }> = [];
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror: fakeMirror().mirror,
+    permissions: { turnEnded: (sessionId, at) => stopped.push({ sessionId, at }) },
+    now: () => 5_000,
+  });
+  announce(registry);
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ session_id: "session-a" }),
+    }),
+  );
+  assert.deepEqual(stopped, [{ sessionId: "session-a", at: 5_000 }]);
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: JSON.stringify({ session_id: "session-a", tool_name: "Bash" }),
+    }),
+  );
+  assert.equal(stopped.length, 1, "a tool call says nothing about a prompt being answered");
+
+  // Credited on the token alone, which is not evidence that this session's own turn ended.
+  await call(handle, fakeRequest("127.0.0.1", { headers: hookHeaders("Stop"), body: "{}" }));
+  assert.equal(stopped.length, 1, "a Stop naming no session clears nothing");
+});
+
 test("a non-loopback request is refused and cannot touch the registry", async () => {
   const { registry, handle } = harness();
 

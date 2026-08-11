@@ -97,5 +97,26 @@ export function renderPermissionOutcome(input: {
   return [head, `\`${input.requestId}\``, tool].filter((part) => part !== "").join(` ${SEPARATOR} `);
 }
 
+/**
+ * The message a prompt the desk stopped holding is rewritten to, when nothing here knows how it was
+ * answered.
+ *
+ * A sibling of `renderPermissionOutcome` rather than a mode of it, because the two differ in exactly
+ * what they are allowed to claim: that one is written from a verdict this broker applied, and this
+ * one stands over a request resolved somewhere the broker cannot see, most often at the keyboard.
+ * Naming a verdict here would tell the operator their prompt was allowed or denied on evidence that
+ * does not exist, so no verdict word and no verdict glyph appears in it at all. What is left is the
+ * one fact that is true: nothing is waiting on this request any more.
+ *
+ * The tool name rides along for the reason it rides the outcome: this edit replaces the only copy of
+ * the prompt the thread has, and it goes through `inertField` because it is the tool's own string.
+ */
+export function renderPermissionClosed(input: { requestId: string; toolName: string }): string {
+  const tool = inertField(input.toolName, MAX_TOOL_NAME_LENGTH);
+  return ["🔕 **No longer waiting**", `\`${input.requestId}\``, tool]
+    .filter((part) => part !== "")
+    .join(` ${SEPARATOR} `);
+}
+
 /** What a press against a request the desk no longer holds is told. */
 export const PERMISSION_CLOSED_NOTICE = "That permission request is no longer open.";

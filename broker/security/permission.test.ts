@@ -59,6 +59,8 @@ function harness(
     attach?: string[];
     outcomes?: Array<CallOutcome<{ messageId: string | null }>>;
     editOutcomes?: Array<CallOutcome<null>>;
+    /** Holds every post past the first `after` of them until the test lets them through. */
+    holdPosts?: { after: number; until: Promise<void> };
     /** Holds every edit past the first `after` of them until the test lets them through. */
     holdEdits?: { after: number; until: Promise<void> };
     /** Throws out of every edit past the first `after` of them, as a dead socket does. */
@@ -94,6 +96,9 @@ function harness(
   const editOutcomes = options.editOutcomes ?? [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
+      if (options.holdPosts !== undefined && posts.length >= options.holdPosts.after) {
+        await options.holdPosts.until;
+      }
       posts.push(input);
       return outcomes.shift() ?? { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
@@ -812,4 +817,168 @@ test("a verdict its session never received draws no tick over a tool that never 
   assert.match(closed.text, /Allowed, not delivered/);
   assert.doesNotMatch(closed.text, /✅/);
   assert.equal(notices().length, 1, "and the notice sends the operator to the keyboard");
+});
+
+/** Nothing in a cleared prompt may read as a verdict: the broker knows of none. */
+const VERDICT_WORDING = /allow|deny|denied|approved|✅|⛔/i;
+
+test("a session's turn ending clears the prompts it had open, and no other session's", async () => {
+  // A prompt answered at the console is announced to this broker nowhere, so a turn that ended is
+  // the only evidence that the session is no longer parked on the prompts it had open.
+  let at = 1_000;
+  const { desk, edits } = harness({ now: () => at });
+  await desk.request(TOKEN_A, request());
+  await desk.request(TOKEN_B, request({ requestId: "qrstu" }));
+  assert.deepEqual([...desk.waiting()].sort(), ["session-a", "session-b"]);
+
+  at += 1_000;
+  desk.turnEnded("session-a", at);
+  await desk.settled();
+
+  assert.deepEqual([...desk.waiting()], ["session-b"], "only the session that stopped is cleared");
+  assert.deepEqual(
+    edits.filter((edit) => (edit.components ?? []).length === 0).map((edit) => edit.threadId),
+    [THREAD_A],
+    "and only its prompt was rewritten",
+  );
+  assert.equal(
+    desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null),
+    false,
+    "the cleared request is no longer open",
+  );
+  assert.equal(
+    desk.resolve(THREAD_B, { requestId: "qrstu", behavior: "allow" }, null),
+    true,
+    "and the other session's prompt is still answerable",
+  );
+});
+
+test("a prompt raised after a turn ended survives it", async () => {
+  // The ordering guard. A `Stop` in flight while a fresh prompt goes up must not take that prompt
+  // with it: clearing an entry too early parks a session with nobody able to answer it, which is
+  // the one direction this surface may not fail in.
+  let at = 1_000;
+  const { desk } = harness({ now: () => at });
+  const stopped = at;
+  at += 1_000;
+  await desk.request(TOKEN_A, request());
+
+  desk.turnEnded("session-a", stopped);
+  await desk.settled();
+
+  assert.deepEqual([...desk.waiting()], ["session-a"], "the newer prompt is still waiting");
+  assert.equal(desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), true);
+});
+
+test("a session that has ended clears the prompts it left open", async () => {
+  // The floor under the turn-end clear, for a session that dies without ending a turn. Nobody can
+  // answer its prompt and it holds one of the host's open-request slots until it is dropped.
+  const { desk, registry, edits } = harness();
+  await desk.request(TOKEN_A, request());
+  registry.relayClosed(TOKEN_A, "session-a");
+
+  desk.sweepEnded();
+  await desk.settled();
+
+  assert.deepEqual([...desk.waiting()], []);
+  assert.equal(desk.resolve(THREAD_A, { requestId: "abcde", behavior: "allow" }, null), false);
+  assert.equal(edits.at(-1)?.threadId, THREAD_A, "its prompt says so");
+});
+
+test("a stale session keeps its open prompt", async () => {
+  // Stale is revivable: a relay answering puts the session back to live, and a session parked on a
+  // prompt is exactly one that has gone quiet. Only ended, which is terminal, clears.
+  const { desk, registry } = harness();
+  await desk.request(TOKEN_A, request());
+  // The registry under this harness runs on the wall clock, so the state a sweep would write is
+  // written here directly.
+  const record = registry.list().find((held) => held.sessionId === "session-a");
+  assert.ok(record !== undefined);
+  record.state = "stale";
+
+  desk.sweepEnded();
+  await desk.settled();
+
+  assert.deepEqual([...desk.waiting()], ["session-a"]);
+});
+
+test("a cleared prompt is rewritten with its buttons stripped, naming no verdict", async () => {
+  // Live buttons over a request nothing holds are what lets one tap claim an answer the operator
+  // never gave, and the broker knows the request resolved without knowing how, so the message says
+  // only that.
+  let at = 1_000;
+  const { desk, edits } = harness({ now: () => at });
+  await desk.request(TOKEN_A, request());
+  at += 1_000;
+
+  desk.turnEnded("session-a", at);
+  await desk.settled();
+
+  const closed = edits.at(-1);
+  assert.ok(closed !== undefined);
+  assert.equal(closed.messageId, "msg-1", "the prompt's own message is the one rewritten");
+  assert.deepEqual(closed.components, [], "the buttons go");
+  assert.match(closed.text, /No longer waiting/);
+  assert.match(closed.text, /`abcde`/, "the request it stood for is still named");
+  assert.match(closed.text, /Bash/);
+  assert.doesNotMatch(closed.text, VERDICT_WORDING);
+});
+
+test("a turn ending while a prompt is still going up draws no buttons over it", async () => {
+  // The clear can land between the post and the edit that grows the prompt's controls. What is left
+  // in the thread is a prompt saying it is waiting, which is the direction this surface may fail in;
+  // what must never be left is a live Allow and Deny over a request nothing holds, since one tap
+  // then claims an answer the operator never gave. The prompt goes unrewritten here for the reason
+  // an answered one does when its post reported no id: there is no message handle to rewrite.
+  let at = 1_000;
+  const posting = heldWrite();
+  const { desk, edits } = harness({
+    now: () => at,
+    holdPosts: { after: 0, until: posting.until },
+  });
+  const inFlight = desk.request(TOKEN_A, request());
+
+  at += 1_000;
+  desk.turnEnded("session-a", at);
+  posting.release();
+  assert.equal(await inFlight, true, "the prompt itself still reached the operator");
+  await desk.settled();
+
+  assert.deepEqual([...desk.waiting()], []);
+  assert.deepEqual(
+    edits.filter((edit) => (edit.components ?? []).length > 0),
+    [],
+    "no controls were drawn on a prompt the desk had already let go",
+  );
+});
+
+test("a cleared entry gives its slot back against the open-request ceiling", async () => {
+  // The ceiling is host-wide and refuses the newest request, so an entry nobody can answer stops
+  // every later prompt on the machine from reaching the operator.
+  let at = 1_000;
+  // Steps past the alert window on every read, so the per-thread prompt ceiling never binds.
+  const { desk } = harness({
+    now: () => {
+      at += 120_000;
+      return at;
+    },
+  });
+  const wanted = ids(MAX_OPEN_REQUESTS + 2);
+  for (const requestId of wanted.slice(0, MAX_OPEN_REQUESTS)) {
+    assert.equal(await desk.request(TOKEN_A, request({ requestId })), true);
+  }
+  assert.equal(
+    await desk.request(TOKEN_A, request({ requestId: wanted[MAX_OPEN_REQUESTS] })),
+    false,
+    "the table is full",
+  );
+
+  desk.turnEnded("session-a", at + 1);
+  await desk.settled();
+
+  assert.equal(
+    await desk.request(TOKEN_A, request({ requestId: wanted[MAX_OPEN_REQUESTS + 1] })),
+    true,
+    "the cleared entries freed their slots",
+  );
 });

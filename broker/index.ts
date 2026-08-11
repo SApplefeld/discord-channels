@@ -733,6 +733,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       return false;
     },
     resolve: () => false,
+    turnEnded: () => {},
+    sweepEnded: () => {},
     reportUnknownVerdict: async () => {},
     settled: () => Promise.resolve(),
     waiting: () => new Set<string>(),
@@ -780,6 +782,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // own delivery either upgrades the message to one that can answer the hold or releases it, and
     // the interaction route resolves it from a tap.
     questionDesk: { hold: questionDesk.hold },
+    // The clearing seam. A session's turn ending is the one signal this broker gets that the
+    // permission prompts it had open are resolved, since a prompt answered at the console is
+    // announced nowhere. Read through a closure rather than passed directly, because `permissions`
+    // is replaced further down once the Discord surfaces exist, and the handler is built before
+    // that.
+    permissions: { turnEnded: (sessionId, at) => permissions.turnEnded(sessionId, at) },
     mirror: {
       enabled: config.mirror,
       maxBytes: config.mirrorMaxBytes,
@@ -804,6 +812,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       console.log(message);
       logger.info(message);
     }
+    // A prompt whose session has ended can never be answered, and it holds one of the host's open
+    // request slots until it is dropped. The turn-end clear covers a session that says goodbye; this
+    // is the floor under one that dies without a turn ending, and it runs on this timer because
+    // ending is a registry state rather than an event the desk can hear.
+    permissions.sweepEnded();
     // The echo memory holds one small record per session and clears them as sessions retire. The
     // tailer sweeps it too on every poll, but on a mirror-only host there is no tailer, and
     // without this line the map would hold an entry for every session the broker ever mirrored.

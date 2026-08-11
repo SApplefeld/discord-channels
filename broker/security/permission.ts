@@ -11,6 +11,11 @@
 // against whatever else is waiting. Answering consumes the entry, so the same message replayed a
 // second time names nothing.
 //
+// An entry also leaves the table without a verdict, because a prompt can be answered where the
+// broker cannot see it: Claude Code sends this desk nothing when one is resolved at the console. A
+// session's `Stop` and the end of a session are the two signals that say so, and `turnEnded` and
+// `sweepEnded` below are where each of them lands.
+//
 // The prompt's buttons need one guarantee more than a typed verdict does, because a button outlives
 // the message it was read from: a press names its request from scrollback, where an answered prompt
 // still sits. So each open request holds a nonce, the prompt's own components carry it, and a press
@@ -21,6 +26,7 @@
 import { randomBytes } from "node:crypto";
 import {
   permissionControls,
+  renderPermissionClosed,
   renderPermissionOutcome,
 } from "../discord/permission-message.ts";
 import { renderPermissionRequest } from "../discord/render.ts";
@@ -243,6 +249,40 @@ export type PermissionDesk = {
    */
   reportUnknownVerdict: (threadId: string, verdict: Verdict) => Promise<void>;
   /**
+   * Clears the open requests a session had when its turn ended, which its `Stop` reports.
+   *
+   * A session parked awaiting a verdict cannot finish a turn, so a turn that ended is a session no
+   * longer parked, and every prompt it had open has been resolved somewhere: at the console, most
+   * often, which tells this broker nothing at all. Without this the entry stands forever, rendering
+   * a working session as needing the operator, leaving live buttons over a request nothing holds,
+   * and holding one of the host's MAX_OPEN_REQUESTS slots against every later prompt on the machine.
+   *
+   * `Stop` is the only event that can carry this. `PostToolUse` fires under the same process token
+   * for a subagent's tool calls, so a session genuinely parked on a prompt while background agents
+   * work still emits it, and clearing on that would drop a prompt the operator has yet to answer.
+   * What separates the two is that hooks/settings-fragment.json declares no `SubagentStop`, so a
+   * subagent finishing reaches this broker as nothing while the session's own turn ending reaches it
+   * as `Stop`; hooks/settings-fragment.test.ts pins that.
+   *
+   * `at` is when the `Stop` arrived, and only entries opened strictly before it are cleared. A
+   * prompt raised in the moment a `Stop` was in flight keeps its entry, which is the direction this
+   * surface is allowed to fail in: an entry kept too long costs a wrong glyph, and one cleared too
+   * early parks a session with nobody able to answer it.
+   */
+  turnEnded: (sessionId: string, at: number) => void;
+  /**
+   * Clears the open requests of every session the registry now holds as ended.
+   *
+   * The floor under `turnEnded`, for a session that dies without a turn ending: a prompt whose
+   * session is gone can never be answered and is holding a slot until the broker restarts.
+   *
+   * Ended rather than stale, which is the registry's other non-live state. `ended` is terminal, and
+   * `stale` is revivable: `relaySeen` puts a stale session back to live the moment its relay
+   * answers, so clearing on stale would drop a genuinely open prompt from a session that had merely
+   * gone quiet.
+   */
+  sweepEnded: () => void;
+  /**
    * Sessions with a prompt the operator has not answered. This is what feeds the `needs you` state,
    * and it is the reason the state exists: a session parked on a permission prompt is doing nothing
    * and will do nothing until a person acts, which is precisely what the thread list is for.
@@ -274,6 +314,14 @@ type OpenRequest = {
   processToken: string;
   sessionId: string;
   toolName: string;
+  /** The two halves of this entry's own key, so a clear can address the prompt it drops. */
+  threadId: string;
+  requestId: string;
+  /**
+   * When the prompt was opened, which is what a `Stop` is ordered against: a request raised after a
+   * turn ended is not one that turn's end can have resolved.
+   */
+  openedAt: number;
   /**
    * The prompt's own message, so answering it rewrites it. Null until the post reports an id, and
    * still null afterwards when it carried none.
@@ -380,8 +428,77 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
     }
   }
 
+  /**
+   * What the thread is left showing over a request the desk stopped holding without a verdict: the
+   * prompt rewritten to say it is no longer waiting, with its components stripped, because a button
+   * standing over a request nothing holds is a tap that reports a failure and changes nothing.
+   *
+   * Runs detached from the caller that cleared the entry, so nothing here throws, and its outcome is
+   * never propagated: the entry is already gone, so a refusal here costs a stale message rather than
+   * a request the desk still believes is open.
+   */
+  async function standDown(entry: OpenRequest, messageId: string): Promise<void> {
+    try {
+      const rewritten = await options.writer.edit(
+        entry.threadId,
+        messageId,
+        renderPermissionClosed({ requestId: entry.requestId, toolName: entry.toolName }),
+        [],
+      );
+      if (rewritten.status !== "ok") {
+        log(
+          `permission: request ${entry.requestId} is no longer open but its prompt was not ` +
+            `rewritten: ${rewritten.status === "rate-limited" ? "rate limited" : rewritten.error}`,
+        );
+      }
+    } catch {
+      // The detail is discarded unread, as the answered path discards it: the prompt this failed to
+      // write carries a session's own text, and a serialized transport error can quote it.
+      log(
+        `permission: request ${entry.requestId} is no longer open but closing its prompt out ` +
+          "threw; the error detail is withheld, it can carry content",
+      );
+    }
+  }
+
+  /**
+   * Drops entries nobody is waiting on any more and leaves each prompt saying so.
+   *
+   * The table is read into a list before anything is deleted, so the caller's own predicate decides
+   * membership against one snapshot. The rewrite is scheduled on the same chain an answered
+   * request's is, so `settled` covers both and neither waits on Discord.
+   */
+  function clear(chosen: (entry: OpenRequest) => boolean, why: string): void {
+    for (const [key, entry] of [...open]) {
+      if (!chosen(entry)) continue;
+      open.delete(key);
+      log(`permission: request ${entry.requestId} in session ${entry.sessionId} is no longer open, ${why}`);
+      const messageId = entry.messageId;
+      if (messageId === null) continue;
+      cosmetic = cosmetic.then(() => standDown(entry, messageId));
+    }
+  }
+
   return {
     settled: () => cosmetic,
+
+    turnEnded(sessionId, at) {
+      clear(
+        (entry) => entry.sessionId === sessionId && entry.openedAt < at,
+        "its session ended a turn",
+      );
+    },
+
+    sweepEnded() {
+      const ended = new Set(
+        options.registry
+          .list()
+          .filter((record) => record.state === "ended")
+          .map((record) => record.sessionId),
+      );
+      if (ended.size === 0) return;
+      clear((entry) => ended.has(entry.sessionId), "its session has ended");
+    },
 
     waiting() {
       const sessions = new Set<string>();
@@ -445,6 +562,9 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
         processToken,
         sessionId: record.sessionId,
         toolName: request.toolName,
+        threadId,
+        requestId: request.requestId,
+        openedAt: now(),
         messageId: null,
         nonce: randomBytes(NONCE_BYTES).toString("hex"),
       };
@@ -499,8 +619,9 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
     resolve(threadId, verdict, nonce) {
       const key = keyFor(threadId, verdict.requestId);
       const entry = open.get(key);
-      // Stale, already answered, named in the wrong thread, or asked before a broker restart: this
-      // table does not survive one, and the session behind it is not re-prompted. Dropped rather
+      // Stale, already answered, cleared because its session stopped waiting on it, named in the
+      // wrong thread, or asked before a broker restart: this table does not survive one, and the
+      // session behind it is not re-prompted. Dropped rather
       // than matched against anything else open, because a five-letter ID is short enough to repeat
       // and guessing is how a verdict approves the wrong tool. Nothing is logged or written on the
       // way out: the message is still whole and still the caller's to read another way, and only

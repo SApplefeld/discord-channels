@@ -540,6 +540,15 @@ export type HandlerOptions = {
     ) => boolean;
   };
   /**
+   * The permission desk's clearing seam. Optional for the reason the tailer's is: with no desk
+   * wired, a `Stop` is ordinary liveness and nothing else, which is what a broker with no Discord
+   * configured has to do with one anyway.
+   */
+  permissions?: {
+    /** Reports that a session's turn ended, which resolves every prompt it had open. */
+    turnEnded: (sessionId: string, at: number) => void;
+  };
+  /**
    * The mirror route's knobs and its seam into the routing layer. Required rather than optional,
    * so a caller cannot wire the handler and silently leave the mirror unrouted: a mirror hook
    * posting into a route that drops everything looks identical to a session nobody typed in.
@@ -625,7 +634,8 @@ export function redact(record: SessionRecord): PublicSessionRecord {
 export function createHandler(
   options: HandlerOptions,
 ): (request: IncomingMessage, response: ServerResponse) => void {
-  const refusals = createRefusalLog(options.log, options.now ?? Date.now);
+  const now = options.now ?? Date.now;
+  const refusals = createRefusalLog(options.log, now);
 
   // The content-bearing intake. This function is the one place broker code holds mirror content,
   // and the invariant every branch of it upholds is that the content never appears in the broker
@@ -848,6 +858,10 @@ export function createHandler(
     }
 
     void (async () => {
+      // Read before the body is, because it is what a `Stop` orders the open permission prompts
+      // against: a prompt raised while this post was still being read is not one this turn's end
+      // can have resolved, and stamping the clear from after the read would take it with the rest.
+      const arrivedAt = now();
       const read = await readCappedBody(request, options.maxBodyBytes);
       if ("droppedBytes" in read) {
         if (read.destroyed) {
@@ -941,6 +955,17 @@ export function createHandler(
         );
         send(response, 202, { ignored: true });
         return;
+      }
+      // A turn that ended is a session no longer parked on a permission prompt, so every request it
+      // had open has been resolved, and Claude Code reports a prompt answered at its own console
+      // nowhere else. Behind the same gate the question seam's allow is behind, a credited post
+      // whose payload names the very session it was credited to: the token-only route credits an
+      // event to whatever session holds the token, and clearing on that evidence would drop a live
+      // session's open prompt on a straggler. A `Stop` that arrives without a session id therefore
+      // clears nothing and leaves the entry for the ended-session sweep, which is the direction
+      // this surface fails in.
+      if (parsed.intake.event === "Stop" && parsed.intake.sessionId === record.sessionId) {
+        options.permissions?.turnEnded(record.sessionId, arrivedAt);
       }
       // Learned only from a post the registry credited to a record: an unwatched, forged, or
       // unroutable post must not aim the tailer at a file of its choosing under a session it does

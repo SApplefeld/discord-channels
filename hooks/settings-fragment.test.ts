@@ -92,6 +92,19 @@ test("declares exactly SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, 
   ]);
 });
 
+test("no SubagentStop is declared, which is what makes Stop mean the session stopped", () => {
+  // The broker clears a session's open permission prompts when its turn ends, because a session
+  // parked awaiting a verdict cannot finish one. That reading holds only while a subagent finishing
+  // reaches the broker as nothing at all: with SubagentStop declared, a session parked on a prompt
+  // while its background agents finish would post one, and the broker would drop a prompt the
+  // operator has yet to answer, parking that session with nobody able to answer it.
+  const fragment = loadFragment();
+  assert.ok(
+    !Object.hasOwn(fragment.hooks, "SubagentStop"),
+    "broker/security/permission.ts's turnEnded rests on this event never being declared here",
+  );
+});
+
 test("SessionStart is a command hook with a short timeout, never http", () => {
   const fragment = loadFragment();
   const [entry] = fragment.hooks.SessionStart;

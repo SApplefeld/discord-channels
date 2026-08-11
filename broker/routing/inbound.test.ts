@@ -61,6 +61,8 @@ function watchedDesk(options: { resolves?: boolean } = {}) {
     reportUnknownVerdict: async (threadId, verdict) => {
       unknown.push({ threadId, verdict });
     },
+    turnEnded: () => {},
+    sweepEnded: () => {},
     settled: () => Promise.resolve(),
     waiting: () => new Set<string>(),
   };
