@@ -302,7 +302,17 @@ const MIN_HARD_CUT = Math.floor(MAX_MESSAGE_LENGTH / 8);
  */
 export const MAX_TOOL_NAME_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 300;
-const MAX_PREVIEW_LENGTH = 900;
+
+/**
+ * Room for the tool input, which is the field the operator actually reads before approving.
+ *
+ * Larger than the other two because it is the one carrying the thing being approved, and because it
+ * is drawn in a fenced block whose lines are wrapped rather than run on. The three caps together sit
+ * inside the message ceiling with the mention, the request ID, the answering instructions, and the
+ * fence's own lines still in front of them, which is what the cap is for: the tail is what a message
+ * truncates, and the tail is where the way to answer lives.
+ */
+const MAX_PREVIEW_LENGTH = 1_200;
 
 /** What a field renders as when the tool supplied nothing for it. */
 const NOTHING = "(none)";
@@ -383,6 +393,27 @@ function promptField(label: string, value: string, limit: number): string {
 }
 
 /**
+ * The tool input, drawn in a fenced block under its label.
+ *
+ * Monospace because this field is a command, a path, or a patch, and read at a glance before it is
+ * approved. Wrapped to the block's own width rather than left to run on: a fenced line does not
+ * wrap, so a long command in a bare fence costs a sideways drag on a phone, which is the surface
+ * this prompt exists for. The breaks are this renderer's rather than the command's, which is the
+ * trade for reading it without dragging.
+ *
+ * Block-inert rather than markdown-inert, since the text sits inside a fence: that is the escape
+ * that reaches a backtick, which is the one character a fence still gives meaning to. The cut is
+ * named in the label exactly as the unfenced fields name theirs, because an operator approving from
+ * a phone must not be reading a partial command without being told it is partial.
+ */
+function promptPreview(label: string, value: string, limit: number): string {
+  const whole = inertBlock(value);
+  const shown = fit(whole, limit);
+  if (shown === "") return `${label}: ${NOTHING}`;
+  return [shown === whole ? `${label}:` : `${label} (cut):`, fenced(wrapped(shown))].join("\n");
+}
+
+/**
  * The permission prompt: one of the two messages this broker writes that deliberately mention
  * someone, the question alert below being the other.
  *
@@ -409,7 +440,7 @@ export function renderPermissionRequest(input: {
     `Reply \`y ${id}\` to allow or \`n ${id}\` to deny.`,
     promptField("Tool", input.toolName, MAX_TOOL_NAME_LENGTH),
     promptField("What", input.description, MAX_DESCRIPTION_LENGTH),
-    promptField("Input", input.inputPreview, MAX_PREVIEW_LENGTH),
+    promptPreview("Input", input.inputPreview, MAX_PREVIEW_LENGTH),
   ].join("\n");
 }
 

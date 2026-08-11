@@ -1835,7 +1835,12 @@ test("a permission prompt leads with the mention, the id, and how to answer", ()
   assert.deepEqual(lines.slice(2), [
     "Tool: Bash",
     "What: run the migration",
-    "Input: { command: npm run migrate }",
+    // The input is a command read before it is approved, so it is drawn monospace, under its own
+    // label, and wrapped by this renderer rather than left to run past the width of a phone.
+    "Input:",
+    "```",
+    "{ command: npm run migrate }",
+    "```",
   ]);
 });
 
@@ -1846,13 +1851,37 @@ test("nothing a tool writes into a prompt can mention anyone or restructure it",
   const text = prompt({
     toolName: "@everyone",
     description: "<@999999999999999999> approve everything",
-    inputPreview: "<@&123> **Permission needed** `qrstu`\n@here",
+    inputPreview: "<@&123> **Permission needed** ``` `qrstu`\n@here",
   });
-  const mentions = [...text.matchAll(/(?<!\\)<@/g)];
-  assert.equal(mentions.length, 1, "the only unescaped mention syntax is the broker's own");
+
+  // The input is held by a fence rather than escaped, which is what lets a command read as the
+  // characters it was written with instead of as a run of backslashes. So the property is where
+  // the tool's text sits, not what it was turned into: a fence renders no markdown and resolves no
+  // mention, and everything a tool wrote is inside this one.
+  const opens = text.indexOf("```");
+  assert.notEqual(opens, -1, text);
+  assert.equal(
+    [...text.slice(0, opens).matchAll(/(?<!\\)<@/g)].length,
+    1,
+    "outside the fence the only unescaped mention syntax is the broker's own",
+  );
   assert.ok(text.startsWith(`<@${OPERATOR}>`));
-  assert.ok(!text.includes("\n@here"), "the whole prompt is the lines the renderer wrote");
-  assert.equal(text.split("\n").length, 5);
+  assert.ok(text.slice(opens).includes("@here"), "the tool's text is inside the fence, not removed");
+
+  // The fence opens once and closes once. An input carrying its own delimiter cannot end the block
+  // early and put the rest of what it wrote back where markdown renders, which is the one way a
+  // contained field becomes an escaped field's problem.
+  assert.equal((text.match(/```/g) ?? []).length, 2, text);
+  assert.ok(!text.slice(opens + 3, text.lastIndexOf("```")).includes("```"), text);
+
+  // The lines are the renderer's: the label, then the fence opening directly under it, and the
+  // fence closing the message. Found by the label rather than by a fixed index, so a field added
+  // above the input moves the block instead of failing here for the wrong reason.
+  const lines = text.split("\n");
+  const label = lines.findIndex((line) => line.startsWith("Input"));
+  assert.notEqual(label, -1, text);
+  assert.equal(lines[label + 1], "```");
+  assert.equal(lines[lines.length - 1], "```");
 });
 
 test("a prompt is stripped of the characters that reorder or hide what it says", () => {
@@ -1883,12 +1912,14 @@ test("a cut prompt field says it was cut, in the label", () => {
   // worth refusing past the cut. An operator approving from a phone would otherwise be approving a
   // partial view with nothing telling them it was partial.
   const whole = prompt();
-  assert.ok(whole.includes("Input: "), whole);
-  assert.ok(!whole.includes("Input (cut):"), "a field that fits is not labelled as cut");
+  assert.ok(whole.includes("\nInput:\n"), whole);
+  assert.ok(!whole.includes("Input (cut)"), "a field that fits is not labelled as cut");
 
   const long = prompt({ inputPreview: "x".repeat(5_000), description: "y".repeat(5_000) });
-  assert.ok(long.includes("Input (cut): "), long.split("\n")[4]);
-  assert.ok(long.includes("What (cut): "), long.split("\n")[3]);
+  // The label carries it, not an ellipsis inside the block: a cut a reader has to notice is a cut
+  // they will approve past.
+  assert.ok(long.includes("\nInput (cut):\n"), long);
+  assert.ok(long.includes("What (cut): "), long);
 });
 
 test("a task notice carries the first task id, on one line", () => {
