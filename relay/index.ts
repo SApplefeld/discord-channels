@@ -65,6 +65,46 @@ export function replyToolResult(status: ReplyStatus): CallToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
 
+/**
+ * The most of a notification's method name that is written, in code points, and the most distinct
+ * names one relay process names at all.
+ *
+ * A line's length is never someone else's to choose, which is why the name is cut. The count bound
+ * is what keeps the set below from being a map with nothing to remove it: past it the seam goes
+ * quiet, having already recorded thirty-two methods nobody expected.
+ */
+const MAX_METHOD_LENGTH = 120;
+const MAX_NAMED_METHODS = 32;
+
+/**
+ * Names every notification Claude Code sends that no registered handler claims, once each.
+ *
+ * What this channel carries is decided by Claude Code, not by this file, so a method arriving here
+ * is one this relay does not implement. That makes this the one seam inside a session that can
+ * report a capability the broker could be acting on and is not: a permission prompt resolved at the
+ * console is invisible to the broker, and whether anything announces it is a question nothing else
+ * observes.
+ *
+ * The method name is the whole record. A notification's params carry conversation content and this
+ * line is written to disk, so nothing here reads them.
+ *
+ * Once per distinct name, because a notification that repeats every turn would otherwise restate
+ * what its first line established. The writer is injected so the line can be read back without
+ * capturing a process stream.
+ */
+export function unhandledNotifications(
+  write: (line: string) => void,
+): (notification: { method: string }) => Promise<void> {
+  const named = new Set<string>();
+  return (notification) => {
+    const method = [...notification.method].slice(0, MAX_METHOD_LENGTH).join("");
+    if (named.has(method) || named.size >= MAX_NAMED_METHODS) return Promise.resolve();
+    named.add(method);
+    write(`relay: unhandled notification ${method}\n`);
+    return Promise.resolve();
+  };
+}
+
 function port(env: NodeJS.ProcessEnv): number {
   const raw = env.CHANNEL_BROKER_PORT?.trim();
   if (!raw) return DEFAULT_PORT;
@@ -131,6 +171,8 @@ export async function startRelay(env: NodeJS.ProcessEnv = process.env): Promise<
         });
     });
   }
+
+  server.fallbackNotificationHandler = unhandledNotifications((line) => process.stderr.write(line));
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [REPLY_TOOL] }));
 

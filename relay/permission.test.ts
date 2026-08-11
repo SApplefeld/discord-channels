@@ -17,6 +17,7 @@ import {
   channelCapabilities,
   permissionNotification,
 } from "./permission.ts";
+import { unhandledNotifications } from "./index.ts";
 
 /** Claude Code registers a channel's permission handler on the declared capability alone. */
 function relayServer(watched = true) {
@@ -137,4 +138,49 @@ test("a relay that cannot reach the broker claims no permission capability", asy
   await server.close();
 
   assert.deepEqual(experimental, { "claude/channel": {} });
+});
+
+test("a notification no handler claims is named once, by method and nothing else", async () => {
+  // What this seam is for: the channel's shape is Claude Code's to decide, so a method arriving with
+  // no handler is the only evidence from inside a session that the protocol carries something the
+  // broker could act on. A permission prompt answered at the console is the open case.
+  //
+  // The delivery is real rather than a direct call on the handler, because the load-bearing part is
+  // the SDK routing an unregistered method here at all. A handler that is never reached would leave
+  // an absent line reading exactly like a protocol that says nothing.
+  const server = relayServer();
+  const lines: string[] = [];
+  server.fallbackNotificationHandler = unhandledNotifications((line) => lines.push(line));
+  const { client } = await linked(server);
+
+  await client.notification({ method: "notifications/claude/channel/resolved_elsewhere" });
+  await client.notification({ method: "notifications/claude/channel/resolved_elsewhere" });
+  await client.notification({ method: "notifications/claude/channel/something_else" });
+  await client.close();
+  await server.close();
+
+  // Once per distinct method, and the params of a notification never appear.
+  assert.deepEqual(lines, [
+    "relay: unhandled notification notifications/claude/channel/resolved_elsewhere\n",
+    "relay: unhandled notification notifications/claude/channel/something_else\n",
+  ]);
+});
+
+test("a notification the relay does handle is not named as unhandled", async () => {
+  // The seam reports what is unimplemented, so a registered method reaching it would be a false
+  // report of a gap, and the permission prompt is the method most likely to be mistaken for one.
+  const server = relayServer();
+  const lines: string[] = [];
+  server.fallbackNotificationHandler = unhandledNotifications((line) => lines.push(line));
+  server.setNotificationHandler(PermissionRequestNotificationSchema, () => {});
+  const { client } = await linked(server);
+
+  await client.notification({
+    method: PERMISSION_REQUEST_METHOD,
+    params: { request_id: "abcde", tool_name: "Bash" },
+  });
+  await client.close();
+  await server.close();
+
+  assert.deepEqual(lines, []);
 });
