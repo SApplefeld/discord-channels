@@ -396,10 +396,11 @@ function promptField(label: string, value: string, limit: number): string {
  * The tool input, drawn in a fenced block under its label.
  *
  * Monospace because this field is a command, a path, or a patch, and read at a glance before it is
- * approved. Wrapped to the block's own width rather than left to run on: a fenced line does not
- * wrap, so a long command in a bare fence costs a sideways drag on a phone, which is the surface
- * this prompt exists for. The breaks are this renderer's rather than the command's, which is the
- * trade for reading it without dragging.
+ * approved. Drawn whole, on one line, and never broken here: a Discord client wraps a fenced line
+ * itself rather than scrolling it sideways, and it wraps to the rendered width of the window it is
+ * read in, not to any column count. There is therefore no break this renderer could insert that is
+ * right for the reader, only one narrower than theirs, and it would be a break the command does not
+ * have on the field whose exact characters are the thing being approved.
  *
  * Block-inert rather than markdown-inert, since the text sits inside a fence: that is the escape
  * that reaches a backtick, which is the one character a fence still gives meaning to. The cut is
@@ -410,7 +411,7 @@ function promptPreview(label: string, value: string, limit: number): string {
   const whole = inertBlock(value);
   const shown = fit(whole, limit);
   if (shown === "") return `${label}: ${NOTHING}`;
-  return [shown === whole ? `${label}:` : `${label} (cut):`, fenced(wrapped(shown))].join("\n");
+  return [shown === whole ? `${label}:` : `${label} (cut):`, fenced([shown])].join("\n");
 }
 
 /**
@@ -683,10 +684,12 @@ function fit(value: string, limit: number): string {
 /**
  * The width a fenced card body is held to, in characters.
  *
- * A Discord code block scrolls horizontally on a phone rather than wrapping, so a line past this
- * width costs the reader a drag across the block, which is worse than the ragged unfenced lines the
- * block replaces. Both cards read this one bound, so neither can be readable at a glance while the
- * other is not.
+ * A Discord client wraps a fenced line to the rendered width of the window rather than scrolling it,
+ * so the cost of a line past this width is not a drag but a wrap, and a wrap is what scrambles a
+ * block whose whole purpose is a column of values sitting under each other. This bound is therefore
+ * set below the narrowest window a card is read in: measured on the operator's own devices the wrap
+ * falls at roughly 51 columns on a folded phone, 62 unfolded, and 83 on a desktop. Both cards read
+ * this one bound, so neither can be readable at a glance while the other is not.
  */
 export const MAX_BLOCK_WIDTH = 46;
 
@@ -757,8 +760,9 @@ export function alignedRows(rows: readonly BlockRow[], width: number): string[] 
  *
  * Prose is wrapped rather than cut because none of it is decoration: the footer names why the
  * numbers above it are held, and a cut there would drop the reason rather than shorten it. Broken
- * on spaces, and mid-word for a word wider than the whole block, which is the only way a line that
- * long can be drawn without a drag.
+ * on spaces, and mid-word for a word wider than the whole block, so that every line of a card sits
+ * inside the one width its aligned rows are padded to. What this avoids is the client wrapping the
+ * line where it chooses, which would put a fragment of prose under a column and read as a value.
  */
 export function wrapped(text: string): string[] {
   const lines: string[] = [];
