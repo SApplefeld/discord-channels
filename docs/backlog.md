@@ -118,6 +118,22 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   read the red as its own and reported against a baseline that was in fact clean. That is the real
   cost of leaving it, and it is why it is written down rather than left as folklore.
 
+- Three display-spoofing residues on the per-row table shape, from that round's security review, none
+  with syntax reachable and all in the same class. Drawing a table as lines of `label: value` gives a
+  line semantic meaning it did not have inside a fence, so a cell that can compose a line can
+  impersonate a column the model never filled. U+0085 (NEL) is the route, and it is the same
+  character already recorded above as surviving `visible()`; what this shape changes is its reach,
+  not the class. Whether Discord treats NEL as a line break is inferred and unverified, and the
+  finding is nothing if it does not. Alongside it: a row whose first cell neutralizes to empty draws
+  its values as an orphan paragraph a reader attributes to the row above, and a cell under an empty
+  header can open a bullet or ordered list, since `-`, `+` and `1.` are not in the escape class.
+  Fixing the NEL class serves the sanitizer item above at the same time.
+- Re-pick `MAX_ROW_LABEL_WIDTH` in `broker/discord/render.ts` if a real table ever ships as raw pipes
+  unexpectedly. It is 40, justified from the header lengths this repository's own tables carry rather
+  than from a rule, and the growth bound beside it effectively tightens it to about 30 for a terse
+  and very tall table. A table with a 45-character column header ships raw and nothing in the suite
+  says so. Nothing is lost when it happens, which is why this is a note rather than a defect.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

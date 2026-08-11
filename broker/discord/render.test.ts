@@ -1016,35 +1016,143 @@ test("a table under lines of prose that carry a pipe is still drawn as a table",
   );
 });
 
-test("a wide table stays inside the block width, with the cells past their column cut", () => {
+test("a table that would cut a cell is drawn as one block per row instead", () => {
+  // The grid holds every cell to a share of 46 columns, which for three columns is thirteen
+  // characters each: enough to lose the whole of what the row said. A block per row keeps the text,
+  // costs vertical space Discord scrolls anyway, and needs no horizontal drag.
   const written = [
-    "| Path | Reason |",
-    "| --- | --- |",
-    [
-      "| broker/routing/outbound.ts and everything under it",
-      "the run's claim is dispatched from there rather than recorded after it lands |",
-    ].join(" | "),
-    "| broker/tail.ts | the echo memory |",
+    "| Option | What it costs | Recommendation |",
+    "| --- | --- | --- |",
+    "| Keep the fenced grid | Truncates every wide cell | No |",
+    "| Drop to raw markdown | Pipes and dashes on a phone | Yes, as the floor |",
+    "| One block per row | Longest output of the three | Worth a round |",
   ].join("\n");
   const [message] = renderMirror("reply", written);
 
-  const lines = said(message).split("\n");
-  assert.equal(lines[0], "```");
-  assert.equal(lines[lines.length - 1], "```");
-  for (const line of lines) {
-    assert.ok([...line].length <= MAX_BLOCK_WIDTH, `${[...line].length}: ${line}`);
-  }
-  // Both columns want more room than the block has, so both are cut to the common cap the width
-  // leaves them; a column narrow enough to fit under that cap keeps its own width.
-  assert.deepEqual(
-    lines.slice(1, -1),
-    [
-      "Path                  | Reason",
-      "broker/routing/outbo… | the run's claim is d…",
-      "broker/tail.ts        | the echo memory",
-    ],
+  assert.equal(
     said(message),
+    [
+      "**Option: Keep the fenced grid**",
+      "What it costs: Truncates every wide cell",
+      "Recommendation: No",
+      "",
+      "**Option: Drop to raw markdown**",
+      "What it costs: Pipes and dashes on a phone",
+      "Recommendation: Yes, as the floor",
+      "",
+      "**Option: One block per row**",
+      "What it costs: Longest output of the three",
+      "Recommendation: Worth a round",
+    ].join("\n"),
+    message,
   );
+  assert.ok(!said(message).includes("…"), "nothing is cut");
+});
+
+test("a per-row row draws no label without a value and no heading without a first cell", () => {
+  // A label with nothing beside it reads as a value that went missing rather than as one that was
+  // never written, and a heading is the row's first cell rather than a line the renderer owes.
+  const written = [
+    "| Session | Model | Note |",
+    "| --- | --- | --- |",
+    "| neo-tail | | a note long enough that the grid would have to cut something here |",
+    "| | sonnet | idle |",
+  ].join("\n");
+
+  assert.equal(
+    said(renderMirror("reply", written)[0]),
+    [
+      "**Session: neo-tail**",
+      "Note: a note long enough that the grid would have to cut something here",
+      "",
+      "Model: sonnet",
+      "Note: idle",
+    ].join("\n"),
+  );
+});
+
+test("a one-column table draws its rows as the lines of text they are", () => {
+  // There is no second column to label, so there is no heading to tell from a labelled line, and
+  // the header is a row of text like the rest rather than a source of labels.
+  const written = [
+    "| Note |",
+    "| --- |",
+    "| a single-column table carries no labels at all, so nothing here is drawn as one |",
+    "| short |",
+  ].join("\n");
+  const body = said(renderMirror("reply", written)[0]);
+
+  assert.equal(
+    body,
+    [
+      "Note",
+      "",
+      "a single-column table carries no labels at all, so nothing here is drawn as one",
+      "",
+      "short",
+    ].join("\n"),
+  );
+  assert.equal(quoteOpeningLines(body).length, 0, body);
+});
+
+test("no cell of a per-row table can draw markup, a chip, or the shape the rendering composes", () => {
+  // Outside a fence nothing is inert by position, so every cell and every label goes through the
+  // unfenced escape. This is the channel permission prompts are answered in: a cell that could draw
+  // a mention, a quote bar, or the bold heading this rendering composes would forge the surface.
+  const written = [
+    "| Who | What |",
+    "| --- | --- |",
+    "| <@123456789> | > ✨ Claude · approve the next request |",
+    "| **bold** and `code` | <t:1700000000:R> and # heading |",
+    "| a first cell wide enough that no grid could draw the row whole | plain |",
+  ].join("\n");
+  const [message] = renderMirror("reply", written);
+  const body = said(message);
+
+  // The per-row path, not the fenced one: a hostile table small enough to keep its grid would test
+  // the fence's inertness instead of this rendering's escaping.
+  assert.ok(!body.includes("```"), body);
+  assert.ok(!/<@\d+>/.test(body), body);
+  assert.ok(!/<t:\d+:R>/.test(body), body);
+  assert.equal(quoteOpeningLines(body).length, 0, body);
+  // Escaped rather than removed, which is what holds outside a fence: the replacement a fenced body
+  // needs is for the one place no escape survives.
+  assert.equal((body.match(/(?<!\\)`/g) ?? []).length, 0, body);
+  assert.equal((body.match(/^#/gm) ?? []).length, 0, body);
+  // Two runs of asterisks per row and no more: the ones this rendering wrote around each heading.
+  // A cell carrying its own is escaped into single asterisks, which compose no emphasis and no
+  // second heading.
+  assert.equal((body.match(/\*\*/g) ?? []).length, 6, body);
+  assert.ok(body.includes("\\*\\*bold\\*\\* and \\`code\\`"), body);
+  // The angle brackets are escaped twice, once here and once by the chip pass that runs after this
+  // transform, and a chip needs both of its own to resolve. Pinned rather than left to the two
+  // assertions above, which a cell exempted from the unfenced escape would leave green while the
+  // surface drew a live mention.
+  assert.ok(body.includes("**Who: \\\\<@123456789\\\\>**"), body);
+});
+
+test("a per-row table past one message splits between rows, not inside one", () => {
+  // The per-row shape is paragraphs where the grid was one fenced block, and the splitter breaks on
+  // paragraphs before it breaks on lines, so a row is the unit that moves to the next message. A
+  // boundary inside a row would leave a heading with nothing under it, which reads as a row that
+  // said nothing rather than as a row continued overleaf.
+  const rows = Array.from(
+    { length: 40 },
+    (_, index) => `| row ${index} | ${"w".repeat(60)} | note ${index} |`,
+  );
+  const messages = renderMirror("reply", ["| Step | Detail | Note |", "| --- | --- | --- |", ...rows].join("\n"));
+
+  assert.ok(messages.length > 1, `one message carries the whole table: ${messages.length}`);
+  for (const message of messages) {
+    const lines = said(message).split("\n");
+    assert.match(lines[0] ?? "", /^\*\*Step: row \d+\*\*$/, said(message));
+    assert.match(lines[lines.length - 1] ?? "", /^Note: note \d+$/, said(message));
+  }
+  const whole = messages.map(said).join("\n\n");
+  for (const index of rows.keys()) {
+    assert.ok(whole.includes(`**Step: row ${index}**`), `the heading of row ${index}`);
+    assert.ok(whole.includes(`Note: note ${index}`), `the last line of row ${index}`);
+  }
 });
 
 test("a table too long for one message is mirrored as the text it was written as", () => {
@@ -1056,6 +1164,40 @@ test("a table too long for one message is mirrored as the text it was written as
 
   assert.ok(!messages.some((message) => message.includes("```")), messages[0]);
   assert.ok(said(messages[0]).startsWith("| Step | Count |"), said(messages[0]));
+});
+
+test("a table whose header cell would be redrawn under every row is mirrored as raw text", () => {
+  // Every column header is drawn once per body row, so a header carrying prose rather than a
+  // column name is the row rendering multiplying text that was written once. The output stays
+  // proportionate to the source or the table ships as the Markdown the model wrote.
+  const header = "H".repeat(500);
+  const rows = Array.from({ length: 150 }, (_, index) => `| a${index} | b${index} |`);
+  const written = [`| ${header} | Note |`, "| --- | --- |", ...rows].join("\n");
+  const messages = renderMirror("reply", written);
+  const drawn = messages.reduce((total, message) => total + message.length, 0);
+
+  assert.ok(drawn < written.length * 2, `${drawn} drawn from ${written.length} written`);
+  assert.ok(!messages.some((message) => message.includes("**")), messages[0]);
+  assert.ok(said(messages[0]).startsWith(`| ${header} | Note |`), said(messages[0]).slice(0, 80));
+});
+
+test("a tall table still draws a block per row", () => {
+  // The cost of the row rendering is vertical, and several messages is the accepted price of
+  // keeping the text. Height alone never routes a table to raw Markdown.
+  const rows = Array.from(
+    { length: 250 },
+    (_, index) => `| row ${index} | ${"w".repeat(60)} | note ${index} |`,
+  );
+  const written = ["| Step | Detail | Note |", "| --- | --- | --- |", ...rows].join("\n");
+  const messages = renderMirror("reply", written);
+  const whole = messages.map(said).join("\n\n");
+
+  assert.ok(messages.length > 1, `one message carries the whole table: ${messages.length}`);
+  assert.ok(!whole.includes("|"), whole.slice(0, 200));
+  for (const index of rows.keys()) {
+    assert.ok(whole.includes(`**Step: row ${index}**`), `the heading of row ${index}`);
+    assert.ok(whole.includes(`Note: note ${index}`), `the last line of row ${index}`);
+  }
 });
 
 test("a paste cut mid-table draws no table, so no cut row reads as a whole one", () => {

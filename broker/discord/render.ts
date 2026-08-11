@@ -784,7 +784,7 @@ const DELIMITER_CELL = /^:?-+:?$/;
 export const tableParses = { count: 0 };
 
 /**
- * How many rows the table transform has neutralized and measured for a block, counted on the same
+ * How many rows the table transform has neutralized and measured for drawing, counted on the same
  * reasoning as `tableParses` and for the same kind of test.
  *
  * Reading a run cheaply is only half the bound. A run whose every line is a well-formed row clears
@@ -809,8 +809,9 @@ function tableCells(line: string): string[] | null {
  * The width each column is padded to, given what its cells want and the room they share.
  *
  * Every column that fits under a common cap keeps its natural width, and the ones past that cap are
- * cut to it, so the room a narrow column does not need goes to the columns that do. A table whose
- * natural width is inside the budget is padded to its cells and nothing is cut.
+ * held to it, so the room a narrow column does not need goes to the columns that do. A cap below
+ * what a column's cells want is what routes a table out of the grid entirely, since a grid drawn
+ * there would have to cut a cell.
  */
 function columnCaps(widths: readonly number[], budget: number): number[] {
   let cap = Math.max(...widths);
@@ -820,7 +821,10 @@ function columnCaps(widths: readonly number[], budget: number): number[] {
   return widths.map((width) => Math.min(width, cap));
 }
 
-/** One cell drawn in its column: cut to the column's width, then padded to it. */
+/**
+ * One cell drawn in its column: padded to the column's width, and held to it. A grid is only drawn
+ * where every column is as wide as its cells want, so the bound is a guard rather than a cut.
+ */
 function paddedCell(cell: string, width: number, alignment: ColumnAlignment): string {
   const shown = fit(cell, width);
   const room = Math.max(width - [...shown].length, 0);
@@ -831,7 +835,109 @@ function paddedCell(cell: string, width: number, alignment: ColumnAlignment): st
 }
 
 /**
- * A run of pipe-carrying lines drawn as one fenced block, or `null` when it is not a whole table.
+ * The widest a column header grows before its table is left as the text it was written as.
+ *
+ * A header is drawn once per body row, so its length is spent as many times as the table is tall.
+ * The headers a table carries name their columns and run to about twenty characters, so a cell
+ * past this one is prose rather than a column name, and a table headed by prose is not one worth
+ * drawing a block per row.
+ */
+const MAX_ROW_LABEL_WIDTH = 40;
+
+/**
+ * How much longer than the text it replaces a per-row rendering may be.
+ *
+ * The shape costs text by design: a heading and a label are drawn where the source wrote a pipe,
+ * which on most tables is a fraction more and on a tall one of one-character cells reaches about
+ * five times the source. Past this the growth is no longer the shape's own cost, and the Markdown
+ * the model wrote is what ships.
+ */
+const MAX_ROW_TABLE_GROWTH = 8;
+
+/**
+ * The most text one per-row rendering may draw, in UTF-16 units.
+ *
+ * Fifty messages is past where the shape is a reading aid, whatever made it that long, and this
+ * bound holds whether or not the growth bound above is the right number.
+ */
+const MAX_ROW_TABLE_LENGTH = 50 * MAX_MESSAGE_LENGTH;
+
+/**
+ * The room the rows being redrawn take as Markdown: every cell, the pipe and the spaces around it
+ * each cell is written between, and a newline a row. The delimiter row is not among them, and the
+ * cells are read as they were written where the output is measured after the escape, so this reads
+ * a little under what the model actually wrote, which holds the growth bound on the tight side
+ * rather than the loose one.
+ */
+function tableSourceLength(rows: readonly string[][]): number {
+  return rows.reduce(
+    (total, row) => total + row.reduce((sum, cell) => sum + cell.length, 0) + 3 * row.length + 1,
+    0,
+  );
+}
+
+/**
+ * A table drawn as one block per row: the row's first cell as its heading, and every other column
+ * as a `label: value` line under it, the label being that column's header. `null` when the rows
+ * compose nothing at all, when a header is too long to be drawn under every row, or when what they
+ * compose is out of proportion to the text it replaces, each of which leaves the table as the text
+ * it was written as.
+ *
+ * Nothing here is inert by position, because none of it is inside a fence. So every cell and every
+ * label goes through the unfenced escape, which is what stops a cell from drawing a mention, a
+ * quote bar, a backtick, or the emphasis the headings are composed from. That escape's whitespace
+ * collapse is the other half of it: a cell cannot compose a line of its own, so it cannot forge a
+ * heading or a label either.
+ *
+ * A cell that neutralizes to nothing draws no line, because a label standing on its own reads as a
+ * value that went missing rather than one that was never written, and a row whose first cell is
+ * empty draws no heading. A single-column table has no labels to draw, so its rows are drawn as the
+ * lines of text they are, the header row among them: there is no second column for it to name.
+ *
+ * The heading carries its own column's header too, so a table drawn this way loses no word the
+ * model wrote. Every other column names itself on its line, and a first column that named itself
+ * nowhere would be the one dimension the reader had to infer, in a shape whose whole purpose is
+ * that nothing is dropped.
+ */
+function perRowTable(rows: readonly string[][]): string | null {
+  const header = rows[0] ?? [];
+  const labels = header.map((cell) => inertText(cell));
+  // Only where the labels are drawn: a single-column table names no column, so its first row is a
+  // line of text like the rest and is drawn once however long it is.
+  if (labels.length > 1 && labels.some((label) => [...label].length > MAX_ROW_LABEL_WIDTH)) {
+    return null;
+  }
+  const blocks =
+    labels.length <= 1
+      ? rows.map((row) => inertText(row[0] ?? ""))
+      : rows.slice(1).map((row) => {
+          const heading = inertText(row[0] ?? "");
+          const named = labels[0] === "" || heading === "" ? heading : `${labels[0] ?? ""}: ${heading}`;
+          const lines = heading === "" ? [] : [`**${named}**`];
+          for (const [column, cell] of row.entries()) {
+            if (column === 0) continue;
+            const value = inertText(cell);
+            if (value === "") continue;
+            const label = labels[column] ?? "";
+            lines.push(label === "" ? value : `${label}: ${value}`);
+          }
+          return lines.join("\n");
+        });
+  const drawn = blocks.filter((block) => block !== "").join("\n\n");
+  if (drawn === "") return null;
+  if (drawn.length > MAX_ROW_TABLE_LENGTH) return null;
+  return drawn.length > tableSourceLength(rows) * MAX_ROW_TABLE_GROWTH ? null : drawn;
+}
+
+/**
+ * A run of pipe-carrying lines drawn as a table, or `null` when it is not a whole one.
+ *
+ * Two shapes, and which one is drawn is decided by whether the grid could carry the text: a table
+ * whose columns all fit the block's width is drawn as one fenced block, and one that would have to
+ * cut a cell to fit is drawn a block per row instead, or left as raw text where the rows compose
+ * more than the row rendering is worth. A cut cell is the whole of what the row said gone, which is
+ * the same argument the length bound below already makes for leaving an over-long table as raw
+ * text: one axis refusing to lie while the other lied quietly is what the two shapes here settle.
  *
  * Whole means all of it: a header row, a delimiter row of dashes under it, at least one body row,
  * and the same cell count on every one of them. What a block is gets decided from the whole block,
@@ -881,18 +987,21 @@ function tableBlock(rows: readonly (string[] | null)[], start: number): string |
     return trails ? "right" : "left";
   });
   tableRowsDrawn.count += body.length + 1;
-  const drawn = [header, ...body].map((row) => (row ?? []).map((cell) => inertBlock(cell)));
+  const cells = [header, ...body].map((row) => row ?? []);
+  const drawn = cells.map((row) => row.map((cell) => inertBlock(cell)));
 
   // The separators are spent before the columns are: they are what makes the block read as a table
   // at all, so the cells share what is left rather than the whole width.
   const budget = MAX_BLOCK_WIDTH - (columns - 1) * TABLE_SEPARATOR.length;
   if (budget < columns) return null;
-  const widths = columnCaps(
-    Array.from({ length: columns }, (_, column) =>
-      Math.max(...drawn.map((row) => [...(row[column] ?? "")].length)),
-    ),
-    budget,
+  const natural = Array.from({ length: columns }, (_, column) =>
+    Math.max(...drawn.map((row) => [...(row[column] ?? "")].length)),
   );
+  const widths = columnCaps(natural, budget);
+  // A column held under what its cells want is a cell about to be cut, so the row rendering takes
+  // it. Measured on the cells as they are drawn rather than as they were written, the same reading
+  // the grid pads on, so what decides the shape is what a reader would have seen.
+  if (widths.some((width, column) => width < (natural[column] ?? 0))) return perRowTable(cells);
 
   const block = fenced(
     drawn.map((row) =>
@@ -906,12 +1015,15 @@ function tableBlock(rows: readonly (string[] | null)[], start: number): string |
 }
 
 /**
- * Mirrored text with every Markdown table in it redrawn as a fenced aligned block.
+ * Mirrored text with every Markdown table in it redrawn as the shape its width allows: a fenced
+ * aligned block where the columns fit, a block per row where they do not.
  *
  * Discord renders no Markdown table: the pipes and the dashes arrive as themselves, which is a
- * shape the operator reads with effort on a phone. A fence renders no Markdown either, and that is
- * what makes it the fit: the columns line up in a monospace grid, and the cell text inside is
- * already inert.
+ * shape the operator reads with effort on a phone. A fence answers that where the table is narrow
+ * enough for one: the columns line up in a monospace grid, and the cell text inside is already
+ * inert. Past that width the grid could only be had by cutting cells, so the text is kept and the
+ * grid is what is given up, and where keeping it a row at a time would cost far more text than the
+ * table is written in, the Markdown the model wrote is what ships.
  *
  * Only text outside an existing fence is examined, on the file's one reading of where a fence is,
  * so a table the model wrote inside a code block stays exactly as it wrote it and nothing here can
@@ -963,14 +1075,15 @@ function blockedTables(text: string): string {
 }
 
 /**
- * Mirrored conversation text made ready for a thread: its tables redrawn as fenced blocks, then its
- * chip and quote syntax neutralized.
+ * Mirrored conversation text made ready for a thread: its tables redrawn, then its chip and quote
+ * syntax neutralized.
  *
  * One seam for both the paths mirrored text reaches Discord by, the messages a run posts and the
  * merge that grows a narration block, so a table cannot draw one way when a chunk opens a message
  * and another way when it grows one. The table transform runs first because it reads and writes
  * ordinary Markdown: run after the escape, it would measure and pad cells around backslashes the
- * fence it draws renders as themselves.
+ * fence it draws renders as themselves. The escape running second is also the second cover on
+ * unfenced cell text, which the table transform has already put through the unfenced escape itself.
  */
 function mirrorBody(value: string): string {
   return withoutChips(withTablesBlocked(value));
