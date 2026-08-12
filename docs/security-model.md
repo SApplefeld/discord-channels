@@ -496,6 +496,19 @@ Where the two readings do differ, the cost is bounded to a chip left unescaped i
 project called code and Discord called prose, which `allowed_mentions` still keeps from pinging
 anyone. Operator check E is what confirms the rendering half against the real client.
 
+**What the narrower rule deliberately leaves live, and what that admits.** Emphasis, headings,
+spoilers, and the masked link form `[text](url)` all survive into a thread, and the masked link is
+the one with a security consequence: Discord renders it for a bot's own messages, so conversation
+text can post a link whose visible words name one destination and whose target is another, in the
+channel permission prompts are answered in. It is live because the readable label is the useful half
+of a link on this surface, where an artifact address is long and says nothing about itself, and a
+bare URL auto-links whether or not the masked form is escaped. So the choice is between a labelled
+link and an unlabelled one, never between a link and none. The accepted risk is bounded by what a
+link cannot do: it draws no mention pill, no timestamp chip, no quote bar, and no copy of the
+attribution, so it cannot impersonate this broker or the operator, and following one is an act the
+operator takes rather than an approval the thread can extract. Nothing here is a permission grant,
+which is answered by a component or by a typed reply and never by a link.
+
 `processToken` never reaches either.
 
 ## Files that must not be writable
