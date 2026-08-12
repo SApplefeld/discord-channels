@@ -77,11 +77,19 @@ test("a two-question ask renders a select each and one control row", () => {
     }),
   ]);
 
+  // Every question draws its options in the body, not only in the menu it is answered through. The
+  // menu caps a label and a description at a hundred units each and a phone ellipsizes what is left
+  // inside it, so a menu is the picker and this is the reading copy.
   assert.deepEqual(content.split("\n"), [
     `<@${OPERATOR}> ❓ **2 questions** · answer here or at the console`,
     "",
     "**1. Timing** · Ship the migration now?",
+    "1. **Now**",
+    "2. **After the backup**",
+    "",
     "**2. Hosts** · Which hosts get the change? *(pick any)*",
+    "1. **NEO**",
+    "2. **TRINITY**",
     "",
     TYPED_ANSWER_FOOTER,
   ]);
@@ -125,6 +133,36 @@ test("a two-question ask renders a select each and one control row", () => {
   // The third way to answer, which no component on this message shows: a typed reply, which the
   // inbound router reads as the whole ask's answer for as long as the hold stands.
   assert.ok(content.endsWith(TYPED_ANSWER_FOOTER), content);
+});
+
+test("a description too long for a select menu still reaches the body whole", () => {
+  // The whole point of drawing options in the body. Two thirds of the descriptions real
+  // AskUserQuestion calls carry run past Discord's hundred-unit ceiling on a select option's
+  // description, and the median runs to about 160, so the menu is where an option's reasoning goes
+  // to be cut. The body has no such ceiling and wraps to the reader's own window.
+  const reasoning = `it ${"costs a rebuild and a re-run of the whole suite, ".repeat(6)}so it is slow`;
+  assert.ok(
+    reasoning.length > MAX_OPTION_DESCRIPTION_LENGTH * 2,
+    "the fixture has to be past the menu's ceiling for this to prove anything",
+  );
+
+  const { content, components: rows } = prompt([
+    asked({ multiSelect: true, options: [{ label: "Rebuild", description: reasoning }] }),
+  ]);
+
+  // Multi-select, so this is the menu path: the layout that carried its options nowhere but inside
+  // the component before.
+  assert.equal(rows[0].components[0].type, 3, "a multi-select is answered through a menu");
+  assert.ok(content.includes(reasoning), content);
+
+  // And the menu still holds its own field to Discord's limit, because a message with one field
+  // over it is refused whole. The two are different widths of the same text, which is exactly why
+  // the reader keeps it at neither.
+  const [option] = (rows[0].components[0] as unknown as { options: Array<{ description: string }> })
+    .options;
+  assert.equal([...option.description].length, MAX_OPTION_DESCRIPTION_LENGTH);
+  assert.ok(reasoning.startsWith(option.description.slice(0, -1)), option.description);
+  assert.ok(content.length <= MAX_MESSAGE_LENGTH, `${String(content.length)} units of content`);
 });
 
 test("an option description rides in the select, and an absent one renders as absent", () => {

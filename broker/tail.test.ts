@@ -1435,7 +1435,7 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
           multiSelect: false,
           options: [
             { label: "Ship now (Recommended)", description: "the backup is an hour out" },
-            { label: "Wait for the window", description: "d".repeat(400) },
+            { label: "Wait for the window", description: "d".repeat(1_200) },
           ],
         },
         {
@@ -1457,10 +1457,11 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
         multiSelect: false,
         options: [
           { label: "Ship now (Recommended)", description: "the backup is an hour out" },
-          // Bounded at the reader, at Discord's own ceiling on the field it renders in: nothing
-          // reads a description but a display surface, and the whole message is refused when one
-          // field is over its limit.
-          { label: "Wait for the window", description: "d".repeat(100) },
+          // Bounded at the reader, but well above any one surface's field limit: two surfaces draw
+          // this text at two different widths, so the reader's bound only keeps an unbounded one out
+          // of the held entries and the digests taken over them, and each surface cuts to its own
+          // room. A real description, which runs to a few hundred code points, survives it whole.
+          { label: "Wait for the window", description: "d".repeat(1_000) },
         ],
       },
       {

@@ -1,10 +1,18 @@
 // The interactive question message: what a question the desk is holding looks like in the thread,
 // and how a tap on it comes back.
 //
-// One message per ask. The text carries the mention and a numbered title line per question, and the
-// components carry the answering: a string select per question, or, for the single-question ask
-// small enough to fit one row, the options themselves as buttons so the phone answer is one tap. A
-// control row closes the message with Send answers and Answer at console.
+// One message per ask, and the split through it is reading against answering. The text is the
+// reading copy: the mention, a title line per question, and that question's options numbered under
+// it with the gloss the call wrote for each. The components are the picker: a string select per
+// question, or, for the single-question ask small enough to fit one row, the options themselves as
+// buttons so the phone answer is one tap. A control row closes the message with Send answers and
+// Answer at console.
+//
+// The split is what keeps the ask readable. Discord caps a select option's label and description at
+// a hundred units each and a button's label at eighty, refuses a message whole for one field over,
+// and ellipsizes what survives to the width of a menu opened on a phone. None of that reaches the
+// text, which wraps to the reader's own window, so the options are drawn there whole and the
+// components are left to do nothing but carry the tap.
 //
 // Two rules run through everything here. Every string a question contributes is untrusted
 // conversation content, so it reaches a label or a description through `inertLabel`, which strips
@@ -48,16 +56,55 @@ export const MAX_BUTTON_LABEL_LENGTH = 80;
 export const MAX_FAST_PATH_OPTIONS = MAX_BUTTONS_PER_ROW - 1;
 
 /**
- * Room for a question and its header in the message text.
+ * Room for a question, its header, and one option's gloss in the message text.
  *
- * Tighter than the notice's own question cap, and it is the whole-message bound rather than a
- * readability choice: four questions at these caps, plus the typed-answer footer both layouts
- * carry, compose to 1,826 UTF-16 units against the 1,900 ceiling, where the notice's 500 would
- * compose past it. The options are not in the text on this path, which is what buys the room back;
- * they are in the select menus, where each carries its description too.
+ * The body is the reading surface and the components are the picker, which is what sets these. A
+ * select option's own fields stop at Discord's ceilings, narrow enough that a real description
+ * arrives cut and a phone ellipsizes what survives inside the open menu, and there is nothing this
+ * renderer can do about either. The body has no such ceiling and wraps to the reader's own window,
+ * so it is where an option is actually read, and these caps are set from the measured shape of real
+ * `AskUserQuestion` calls rather than from any wire limit: questions and descriptions both run to
+ * about 400 code points at the ninetieth percentile, and both caps clear that.
+ *
+ * They do not hold the message inside one Discord message on their own, and are not asked to. The
+ * per-question budget below owns that, and it is what lets these be generous.
  */
-const MAX_PROMPT_QUESTION_LENGTH = 300;
+const MAX_PROMPT_QUESTION_LENGTH = 500;
 const MAX_PROMPT_HEADER_LENGTH = 100;
+const MAX_BODY_DESCRIPTION_LENGTH = 400;
+
+/**
+ * What the head and the footer are allowed to cost, so the questions can be given the rest.
+ *
+ * Reserved rather than measured, because the budget has to be known before the head is composed:
+ * the mention is at most a couple of dozen units and the headline a couple of dozen more, and the
+ * footer is a fixed string. Both together sit inside this with room to spare, and the spare is the
+ * slack that keeps the assembled message under the ceiling whatever rounding the split leaves.
+ */
+const PROMPT_FURNITURE_ROOM = 200;
+
+/**
+ * The room a question's own block gets, given how many share the message.
+ *
+ * An equal share rather than first-come, which is the notice's rule, and the difference is what the
+ * two messages are for: the notice sends the operator to a console that has the whole question, so a
+ * question past the cut losing its text costs nothing, while this message is the one being answered,
+ * and a question drawn nowhere in the body is one the operator would be picking an option for
+ * without having read it. An equal share guarantees every question some text, and the option loop
+ * inside it guarantees that whatever text is drawn is drawn whole.
+ */
+function questionRoom(count: number): number {
+  return Math.floor((MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM) / Math.max(count, 1));
+}
+
+/**
+ * The room a question's own text gets inside its share, so a long question cannot spend the share
+ * its options are drawn in. The floor is what keeps a four-question ask from drawing a question
+ * cut to nothing; the cap is the readability bound above, which binds whenever the share is roomy.
+ */
+function titleRoom(room: number): number {
+  return Math.max(Math.min(MAX_PROMPT_QUESTION_LENGTH, room - 250), 80);
+}
 
 /** Separates a question's header from its text, as the card and the notice separate their fields. */
 const SEPARATOR = "·";
@@ -227,16 +274,78 @@ function renderableOptions(asked: AskedQuestion): Array<{ label: string; at: num
   return drawable;
 }
 
-/** The title line for one question: its number, its header, and the question itself. */
-function titleLine(asked: AskedQuestion, number: number | null, multiple: boolean): string {
+/**
+ * The title line for one question: its number, its header, and the question itself.
+ *
+ * `room` is what the question text is held to, which the prompt narrows as an ask grows and the
+ * terminal states leave at the readability cap: those messages carry no options, so nothing there
+ * is competing with the question for the line.
+ */
+function titleLine(
+  asked: AskedQuestion,
+  number: number | null,
+  multiple: boolean,
+  room: number = MAX_PROMPT_QUESTION_LENGTH,
+): string {
   const header = asked.header === null ? "" : inertField(asked.header, MAX_PROMPT_HEADER_LENGTH);
   const numbered = number === null ? "" : `${String(number)}.`;
   const bold = [numbered, header].filter((part) => part !== "").join(" ");
-  const question = inertField(asked.question, MAX_PROMPT_QUESTION_LENGTH);
+  const question = inertField(asked.question, room);
   const suffix = multiple ? " *(pick any)*" : "";
   return bold === ""
     ? `**${question}**${suffix}`
     : `**${bold}** ${SEPARATOR} ${question}${suffix}`;
+}
+
+/** What a question's block ends with when its share had no room for the rest of its options. */
+function moreOptionsTail(count: number): string {
+  return `_(+${String(count)} more in the menu below)_`;
+}
+
+/**
+ * One option as the body draws it: its position, its label, and whatever gloss the call wrote.
+ *
+ * The gloss is the reason this rendering exists. A description is where an option says what
+ * choosing it costs, so it is the field the operator actually decides on, and the select menu it
+ * otherwise lives in shows it cut to a hundred units and ellipsized to the width of an open menu on
+ * a phone. Here it wraps to the reader's own window, at a cap set from what real calls carry.
+ */
+function optionLine(asked: AskedQuestion, at: number, position: number): string {
+  const description = asked.options[at].description;
+  const gloss =
+    description === null
+      ? ""
+      : ` ${SEPARATOR} ${inertField(description, MAX_BODY_DESCRIPTION_LENGTH)}`;
+  const shown = inertField(asked.options[at].label, MAX_OPTION_LABEL_LENGTH);
+  return `${String(position + 1)}. **${shown}**${gloss}`;
+}
+
+/**
+ * The lines one question contributes to the body: its title, then its options under it, as many as
+ * its share holds whole.
+ *
+ * One helper for both layouts, so an option cannot read one way where it is drawn as a button and
+ * another way where it is drawn in a menu. Options go on whole and the first that would not leave
+ * room for the marker ends the block, `renderQuestionNotice`'s rule: an option half-drawn is a
+ * choice described by the front of a sentence, which is worse than one the marker sends to the menu
+ * honestly. Every option is in the components either way; this is the reading copy, not the picker.
+ */
+function questionLines(asked: AskedQuestion, number: number | null, room: number): string[] {
+  const title = titleLine(asked, number, asked.multiSelect, titleRoom(room));
+  const lines = [title];
+  let used = title.length;
+  const drawable = renderableOptions(asked);
+  for (const [position, { at }] of drawable.entries()) {
+    const line = optionLine(asked, at, position);
+    const marker = moreOptionsTail(drawable.length - position);
+    if (used + 1 + line.length + 1 + marker.length > room) {
+      lines.push(marker);
+      return lines;
+    }
+    lines.push(line);
+    used += 1 + line.length;
+  }
+  return lines;
 }
 
 /** One question's select menu, with the operator's current choices marked as its defaults. */
@@ -289,12 +398,17 @@ function button(customId: string, label: string, style: 1 | 2): Button {
 /**
  * The interactive message for one held ask: the text, and the rows that answer it.
  *
- * The row budget is what shapes this. Discord takes five action rows, `AskUserQuestion` asks at
- * most four questions, and one select each plus the control row is exactly five, so the maximum ask
- * fits without a page. The fast path spends the budget the other way: a single single-select
- * question with at most four options draws them as buttons in one row, with their descriptions in
- * the message text as a numbered list, because the answer is then one tap on a phone rather than a
- * menu to open first.
+ * The row budget is what shapes the components. Discord takes five action rows, `AskUserQuestion`
+ * asks at most four questions, and one select each plus the control row is exactly five, so the
+ * maximum ask fits without a page. The fast path spends the budget the other way: a single
+ * single-select question with at most four options draws them as buttons in one row, because the
+ * answer is then one tap on a phone rather than a menu to open first.
+ *
+ * The body is the same on both paths and does not depend on that choice: every question draws its
+ * own title and its own options, because what the operator reads to decide is the ask, not the
+ * widget the ask happens to have been given. Each question gets an equal share of the message, and
+ * inside its share the options go on whole until the share runs out. So what is drawn is complete,
+ * and what did not fit is named and still answerable in the components.
  *
  * `selections` are the labels the desk has accumulated for each question, which is what makes an
  * edit of this message show the operator their own choices back.
@@ -312,62 +426,52 @@ export function renderQuestionPrompt(input: {
     !questions[0].multiSelect &&
     renderableOptions(questions[0]).length <= MAX_FAST_PATH_OPTIONS;
 
+  const count = questions.length;
+  const rows: ActionRow[] = [];
   if (fast) {
-    const asked = questions[0];
-    const drawable = renderableOptions(asked);
-    const lines = [
-      `${mention}❓ **Waiting on you** ${SEPARATOR} answer here or at the console`,
-      "",
-      titleLine(asked, null, false),
-    ];
-    for (const [position, { at }] of drawable.entries()) {
-      const description = asked.options[at].description;
-      const gloss =
-        description === null
-          ? ""
-          : ` ${SEPARATOR} ${inertField(description, MAX_OPTION_DESCRIPTION_LENGTH)}`;
-      const shown = inertField(asked.options[at].label, MAX_OPTION_LABEL_LENGTH);
-      lines.push(`${String(position + 1)}. **${shown}**${gloss}`);
-    }
-    lines.push("", TYPED_ANSWER_FOOTER);
-    const row: ActionRow = {
+    rows.push({
       type: 1,
       components: [
         // Bounded from the raw label again rather than reusing the drawable one: a button's label
         // and a select option's are different Discord fields with different ceilings, and a message
         // carrying one field over its own limit is refused whole.
-        ...drawable.map(({ at }) =>
+        ...renderableOptions(questions[0]).map(({ at }) =>
           button(
             `${PREFIX}:${entryId}:0:${String(at)}`,
-            inertLabel(asked.options[at].label, MAX_BUTTON_LABEL_LENGTH),
+            inertLabel(questions[0].options[at].label, MAX_BUTTON_LABEL_LENGTH),
             1,
           ),
         ),
         button(`${PREFIX}:${entryId}:console`, "Answer at console", 2),
       ],
-    };
-    return { content: lines.join("\n"), components: [row] };
+    });
+  } else {
+    for (const [at, asked] of questions.entries()) {
+      rows.push(selectRow(entryId, asked, at, input.selections[at] ?? []));
+    }
+    rows.push({
+      type: 1,
+      components: [
+        button(`${PREFIX}:${entryId}:send`, "Send answers", 1),
+        button(`${PREFIX}:${entryId}:console`, "Answer at console", 2),
+      ],
+    });
   }
 
-  const count = questions.length;
-  const lines = [
-    `${mention}❓ **${String(count)} question${count === 1 ? "" : "s"}** ${SEPARATOR} ` +
-      "answer here or at the console",
-    "",
-  ];
-  const rows: ActionRow[] = [];
+  // One body for both layouts. What differs between them is which components answer the ask, not
+  // what the operator reads to decide, and the reading copy used to exist only on the button path:
+  // an ask that took a menu carried its options nowhere but inside the menus, where Discord caps
+  // each field at a hundred units and a phone ellipsizes what is left. Drawing them here is what
+  // makes a menu a picker rather than the only place the ask can be read.
+  const headline = fast
+    ? "**Waiting on you**"
+    : `**${String(count)} question${count === 1 ? "" : "s"}**`;
+  const lines = [`${mention}❓ ${headline} ${SEPARATOR} answer here or at the console`];
+  const room = questionRoom(count);
   for (const [at, asked] of questions.entries()) {
-    lines.push(titleLine(asked, at + 1, asked.multiSelect));
-    rows.push(selectRow(entryId, asked, at, input.selections[at] ?? []));
+    lines.push("", ...questionLines(asked, count === 1 ? null : at + 1, room));
   }
   lines.push("", TYPED_ANSWER_FOOTER);
-  rows.push({
-    type: 1,
-    components: [
-      button(`${PREFIX}:${entryId}:send`, "Send answers", 1),
-      button(`${PREFIX}:${entryId}:console`, "Answer at console", 2),
-    ],
-  });
   return { content: lines.join("\n"), components: rows };
 }
 

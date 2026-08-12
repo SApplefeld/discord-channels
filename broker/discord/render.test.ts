@@ -1121,11 +1121,14 @@ test("no cell of a per-row table can draw markup, a chip, or the shape the rende
   // needs is for the one place no escape survives.
   assert.equal((body.match(/(?<!\\)`/g) ?? []).length, 0, body);
   assert.equal((body.match(/^#/gm) ?? []).length, 0, body);
-  // Two runs of asterisks per row and no more: the ones this rendering wrote around each heading.
-  // A cell carrying its own is escaped into single asterisks, which compose no emphasis and no
-  // second heading.
-  assert.equal((body.match(/\*\*/g) ?? []).length, 6, body);
-  assert.ok(body.includes("\\*\\*bold\\*\\* and \\`code\\`"), body);
+  // Eight runs of asterisks: two per row for the three headings this rendering wrote, and two more
+  // from the cell that was written in bold, which reaches the operator bold. That is the one thing
+  // a cell may now compose that it could not before, and it is the line mirrored prose already sits
+  // on: the escape stops content that renders as a broker surface, not content that reads like one.
+  // A chip, a quote bar, a spoiler, a heading, and a fence are all still unreachable, which is what
+  // every other assertion in this test pins.
+  assert.equal((body.match(/\*\*/g) ?? []).length, 8, body);
+  assert.ok(body.includes("**bold** and \\`code\\`"), body);
   // The angle brackets are escaped twice, once here and once by the chip pass that runs after this
   // transform, and a chip needs both of its own to resolve. Pinned rather than left to the two
   // assertions above, which a cell exempted from the unfenced escape would leave green while the

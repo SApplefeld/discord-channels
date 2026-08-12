@@ -70,6 +70,29 @@ export function inertText(value: string): string {
 }
 
 /**
+ * Display syntax a table cell drawn outside a fence may not carry, which is `MARKDOWN` less the
+ * emphasis marks.
+ *
+ * Emphasis is what the model wrote the cell in, and the per-row rendering is the one table shape
+ * with no fence to make it inert by position, so escaping it there reaches the operator as a visible
+ * asterisk in front of every bold word a comparison table contains. Every character that can draw a
+ * chip, a quote bar, a spoiler, a heading, or a fence is still escaped; what is given up is that a
+ * cell can compose text reading like the bold heading this rendering draws around a row. That is the
+ * trade `inertMessage` already makes for mirrored prose, on its own reasoning: what the escape stops
+ * is content that renders as a broker surface, not content that reads like one. A cell is the same
+ * class of text as the prose around it, so it is held to the same line.
+ */
+const CELL_MARKDOWN = /[\\`|<>#[\]()]/g;
+
+/**
+ * Untrusted text for a table cell drawn outside a fence: visible, and escaped everywhere the shape
+ * of the surface could be changed, but not where only its emphasis could.
+ */
+function inertCell(value: string): string {
+  return visible(value).replace(CELL_MARKDOWN, (character) => `\\${character}`);
+}
+
+/**
  * Untrusted text for a thread name. Thread names render no markdown, so escaping it there would
  * only put backslashes in front of ordinary characters.
  */
@@ -493,11 +516,26 @@ const MAX_QUESTION_HEADER_LENGTH = 100;
 export const MAX_OPTION_LABEL_LENGTH = 100;
 
 /**
- * Room for an option's description, Discord's own ceiling on a select option's description field.
- * A message carrying one field over its limit is refused whole, so the cap is a wire requirement
+ * Room for an option's description inside a select menu, Discord's own ceiling on that field. A
+ * message carrying one field over its limit is refused whole, so the cap is a wire requirement
  * rather than a readability choice.
+ *
+ * It bounds the menu and nothing else. The description a reader keeps is `MAX_HELD_DESCRIPTION_LENGTH`
+ * below, because the message body draws the same text with no such ceiling over it.
  */
 export const MAX_OPTION_DESCRIPTION_LENGTH = 100;
+
+/**
+ * The most of an option's description the reader keeps, in code points.
+ *
+ * Far above the select field's own ceiling, and that gap is the point: a description is where an
+ * option says what choosing it costs, so it is the field the operator actually decides on. Bounding
+ * it at the menu's limit would mean the text was gone before any surface could choose to draw more,
+ * and the body has room for it. Measured against the real distribution of `AskUserQuestion` calls,
+ * whose longest description runs under 700 code points, so this holds every one of them whole while
+ * still bounding what a held entry and the digest taken over it can carry.
+ */
+export const MAX_HELD_DESCRIPTION_LENGTH = 1_000;
 
 /**
  * One option of an `AskUserQuestion` question: the label the answer is given as, and the short
@@ -505,8 +543,11 @@ export const MAX_OPTION_DESCRIPTION_LENGTH = 100;
  *
  * The label is held verbatim, because it is the string an answer is submitted as and Claude Code
  * matches it against the option the call declared; a bounded copy would submit an answer the picker
- * never offered. The description is bounded at the reader, since nothing reads it but a display
- * surface with a hard field limit, and null when the call carried none.
+ * never offered. The description is bounded at the reader too, but generously, at
+ * `MAX_HELD_DESCRIPTION_LENGTH` rather than at any one surface's field limit: two surfaces draw it
+ * at two different widths, so the reader's bound is what keeps an unbounded one out of the held
+ * entries and the digests taken over them, and each surface cuts to its own room. Null when the call
+ * carried none.
  */
 export type AskedOption = {
   label: string;
@@ -913,10 +954,11 @@ function tableSourceLength(rows: readonly string[][]): number {
  * it was written as.
  *
  * Nothing here is inert by position, because none of it is inside a fence. So every cell and every
- * label goes through the unfenced escape, which is what stops a cell from drawing a mention, a
- * quote bar, a backtick, or the emphasis the headings are composed from. That escape's whitespace
- * collapse is the other half of it: a cell cannot compose a line of its own, so it cannot forge a
- * heading or a label either.
+ * label goes through `inertCell`, which is what stops a cell from drawing a mention, a quote bar, a
+ * spoiler, a heading, or a fence. Its whitespace collapse is the other half of it: a cell cannot
+ * compose a line of its own, so it cannot forge a label line either. Emphasis is deliberately left
+ * live, so a cell reaches the operator in the bold or the italics the model wrote it in; what that
+ * gives up, and why it is the same line mirrored prose already sits on, is on `CELL_MARKDOWN`.
  *
  * A cell that neutralizes to nothing draws no line, because a label standing on its own reads as a
  * value that went missing rather than one that was never written, and a row whose first cell is
@@ -930,7 +972,7 @@ function tableSourceLength(rows: readonly string[][]): number {
  */
 function perRowTable(rows: readonly string[][]): string | null {
   const header = rows[0] ?? [];
-  const labels = header.map((cell) => inertText(cell));
+  const labels = header.map((cell) => inertCell(cell));
   // Only where the labels are drawn: a single-column table names no column, so its first row is a
   // line of text like the rest and is drawn once however long it is.
   if (labels.length > 1 && labels.some((label) => [...label].length > MAX_ROW_LABEL_WIDTH)) {
@@ -938,14 +980,14 @@ function perRowTable(rows: readonly string[][]): string | null {
   }
   const blocks =
     labels.length <= 1
-      ? rows.map((row) => inertText(row[0] ?? ""))
+      ? rows.map((row) => inertCell(row[0] ?? ""))
       : rows.slice(1).map((row) => {
-          const heading = inertText(row[0] ?? "");
+          const heading = inertCell(row[0] ?? "");
           const named = labels[0] === "" || heading === "" ? heading : `${labels[0] ?? ""}: ${heading}`;
           const lines = heading === "" ? [] : [`**${named}**`];
           for (const [column, cell] of row.entries()) {
             if (column === 0) continue;
-            const value = inertText(cell);
+            const value = inertCell(cell);
             if (value === "") continue;
             const label = labels[column] ?? "";
             lines.push(label === "" ? value : `${label}: ${value}`);

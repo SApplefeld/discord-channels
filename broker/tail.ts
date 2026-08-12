@@ -30,9 +30,9 @@
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import {
+  MAX_HELD_DESCRIPTION_LENGTH,
   MAX_MODEL_DETAIL_LENGTH,
   MAX_MODEL_NAME_LENGTH,
-  MAX_OPTION_DESCRIPTION_LENGTH,
 } from "./discord/render.ts";
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
@@ -533,10 +533,12 @@ const MAX_OPTIONS_PER_QUESTION = 4;
  * `multiSelect` is read strictly (anything but `true` reads false), and at most the first four
  * option entries contribute their `label` and their `description`. The description is the one
  * field bounded here rather than at a render site: the label is the string an answer is submitted
- * as, so it is held verbatim, while nothing reads a description but a display surface with a hard
- * field limit, and cutting it at the reader keeps an unbounded one out of the held entries and the
- * digests taken over them. A description that is absent, or empty once the invisible class is
- * stripped and the rest trimmed, reads as null and renders as absent.
+ * as, so it is held verbatim, while an unbounded description would reach the held entries and the
+ * digests taken over them. The bound is `MAX_HELD_DESCRIPTION_LENGTH` rather than any one surface's
+ * field limit, because two surfaces draw this text at two different widths and each cuts to its own
+ * room: bounding it at the narrower one here would spend the wider one's room before it was reached.
+ * A description that is absent, or empty once the invisible class is stripped and the rest trimmed,
+ * reads as null and renders as absent.
  */
 export function askedQuestions(input: unknown): AskedQuestion[] {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
@@ -562,7 +564,7 @@ export function askedQuestions(input: unknown): AskedQuestion[] {
           label,
           description:
             typeof description === "string" && withoutInvisible(description).trim() !== ""
-              ? sliceCodePoints(description, MAX_OPTION_DESCRIPTION_LENGTH)
+              ? sliceCodePoints(description, MAX_HELD_DESCRIPTION_LENGTH)
               : null,
         });
       }
