@@ -1,6 +1,8 @@
 # A prompt answered anywhere stops waiting here
 
-Status: In Progress
+Status: Complete. Confirmed on a live host: a prompt answered at the console lost its buttons, and the
+thread's pause glyph and `needs you` cleared a moment later, which is the refresh tick the state is
+recomputed on.
 Commit model: Review-Only (commit when the operator asks)
 
 ## Why

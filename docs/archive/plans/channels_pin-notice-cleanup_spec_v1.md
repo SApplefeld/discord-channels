@@ -1,6 +1,9 @@
 # The channel stops filling with pin notices
 
-Status: In Progress
+Status: Complete. Confirmed on a live host: the notices go before the operator can see them, and the
+channel is clear of them. That also settles the one thing this round could not establish from code,
+that Discord's message-scoped pin route still announces itself as the classic pin-notice type, and it
+settles it without the diagnostic line ever having to fire.
 Commit model: Review-Only (commit when the operator asks)
 
 ## Why

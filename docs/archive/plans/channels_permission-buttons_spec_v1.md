@@ -1,6 +1,8 @@
 # Answering a permission prompt from the thread
 
-Status: In Progress
+Status: Complete. Confirmed on a live host: a prompt was raised, denied from the thread, and allowed
+from the thread, and the session took both. Section 3's leak is closed under its own plan,
+`channels_prompt-leak_spec_v1.md`.
 Commit model: Review-Only (commit when the operator asks)
 
 ## Why

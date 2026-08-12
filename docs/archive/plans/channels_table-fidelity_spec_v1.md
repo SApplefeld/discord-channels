@@ -1,8 +1,13 @@
 # A mirrored table keeps its text
 
-Status: In Progress. Both sections built, the security pass's critical fixed and its measurement
-reproduced, gate green. One operator look outstanding: a real mirrored table read on a phone. It
-reaches Complete on that look, and archives in the same close-out.
+Status: Complete. Confirmed on a live host: a mirrored table draws whole, with its text intact.
+
+The same round's operator check settled the premise underneath it, and reversed it. A Discord code
+block does not scroll sideways; it wraps to the rendered width of the window it is read in, measured
+at roughly 51 columns on a folded phone, 62 unfolded, 83 on a desktop, and no wrap at all past 120 on
+an ultrawide. The per-row decision stands and its reasoning is stronger for it: a grid wider than the
+reader's window does not cost a drag, it wraps, and a wrapped monospace grid is scrambled columns
+rather than a wide table.
 Commit model: Review-Only (commit when the operator asks)
 
 ## Why

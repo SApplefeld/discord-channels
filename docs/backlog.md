@@ -30,6 +30,15 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   because the clean fix, a single monotonic arrival counter that survives eviction, would make any
   ID-less arrival anywhere end every in-flight run's coalescing. Growing the fleet is the trigger to
   take that trade.
+- A Discord code block wraps to the rendered width of the window it is read in, and never scrolls
+  sideways. Measured on the operator's own devices at roughly 51 columns on a folded phone, 62
+  unfolded, 83 on a desktop, and no wrap at all past 120 on an ultrawide. Recorded here because two
+  decisions in `broker/discord/render.ts` rest on it: `MAX_BLOCK_WIDTH` is set below the narrowest of
+  those so a card's padded columns cannot be scrambled by a wrap, and the permission prompt's tool
+  input is deliberately not wrapped, since no constant is right for a reader whose width is their
+  window. Anyone tempted to widen the card bound should re-run the check first: a ruler of `END|`
+  markers at known columns, read on the narrowest device that matters.
+
 - Two live checks the question-answering round could not close from code, both needing a real held
   question at a console with the thread beside it
   ([`archive/plans/channels_question-answering_spec_v1.md`](archive/plans/channels_question-answering_spec_v1.md)
