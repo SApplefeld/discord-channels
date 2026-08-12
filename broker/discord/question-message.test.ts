@@ -135,6 +135,33 @@ test("a two-question ask renders a select each and one control row", () => {
   assert.ok(content.endsWith(TYPED_ANSWER_FOOTER), content);
 });
 
+test("a terminal state names every question of a maximal ask, inside one message", () => {
+  // These branches carry titles and nothing else, and they enforce no bound of their own. Nothing
+  // downstream fails loudly for them either: the writer neutralizes through `inertMessage`, which
+  // cuts to the ceiling rather than refusing, so a message composed past it posts with its tail
+  // eaten and no marker saying so. The tail is the later questions, on the one message whose job is
+  // telling the operator what is waiting at a console. So the bound is this renderer's to hold.
+  const long = (n: number): AskedQuestion =>
+    asked({
+      question: `Question ${String(n)} ${"and some more of the question text ".repeat(20)}`,
+      header: `Header ${String(n)} ${"H".repeat(90)}`,
+    });
+  const questions = [long(1), long(2), long(3), long(4)];
+
+  for (const state of ["released", "expired", "client-gone", "shutdown", "answered-at-console"] as const) {
+    const text = renderQuestionOutcome({ state, questions, answers: null, response: null });
+    assert.ok(
+      text.length <= MAX_MESSAGE_LENGTH,
+      `${state} composed ${String(text.length)} units against ${String(MAX_MESSAGE_LENGTH)}`,
+    );
+    // Every question named, not just the ones that happened to fit. A closing message that drops
+    // question 4 sends the operator to a console holding a question the thread never mentioned.
+    for (const n of [1, 2, 3, 4]) {
+      assert.ok(text.includes(`Question ${String(n)} `), `${state} lost question ${String(n)}`);
+    }
+  }
+});
+
 test("a description too long for a select menu still reaches the body whole", () => {
   // The whole point of drawing options in the body. Two thirds of the descriptions real
   // AskUserQuestion calls carry run past Discord's hundred-unit ceiling on a select option's
@@ -477,6 +504,7 @@ test("every terminal state rewrites the message, and the answered one carries wh
 
   const closed = (state: "released" | "expired" | "client-gone" | "shutdown"): string[] =>
     renderQuestionOutcome({ state, questions, answers: null, response: null }).split("\n");
+
 
   // Every release state carries the questions on: this edit replaces the thread's only copy of
   // them, and the console the operator is being sent to is where they are.

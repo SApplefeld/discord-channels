@@ -106,6 +106,23 @@ function titleRoom(room: number): number {
   return Math.max(Math.min(MAX_PROMPT_QUESTION_LENGTH, room - 250), 80);
 }
 
+/**
+ * The room a question's text gets on a terminal-state message, which carries titles and nothing
+ * else.
+ *
+ * Its own budget rather than the readability cap, because these messages enforce no bound of their
+ * own and nothing downstream fails loudly for them: the writer neutralizes through `inertMessage`,
+ * which cuts to the ceiling rather than refusing, so a message composed past it posts with its tail
+ * eaten and no marker saying so. That tail is the later questions, on the one message whose job is
+ * telling the operator what is waiting at a console. Four questions at the readability cap compose
+ * past 2,400 units against a 1,900 ceiling; at this budget they compose inside it, since a title is
+ * about 110 units of number, header, and separators around the question itself.
+ */
+function outcomeTitleRoom(count: number): number {
+  const share = Math.floor((MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM) / Math.max(count, 1));
+  return Math.max(Math.min(MAX_PROMPT_QUESTION_LENGTH, share - 110), 80);
+}
+
 /** Separates a question's header from its text, as the card and the notice separate their fields. */
 const SEPARATOR = "·";
 
@@ -297,9 +314,18 @@ function titleLine(
     : `**${bold}** ${SEPARATOR} ${question}${suffix}`;
 }
 
-/** What a question's block ends with when its share had no room for the rest of its options. */
-function moreOptionsTail(count: number): string {
-  return `_(+${String(count)} more in the menu below)_`;
+/**
+ * What a question's block ends with when its share had no room for the rest of its options.
+ *
+ * Worded by layout, because the two layouts withhold different things. A menu holds the options
+ * themselves, so a marker there names where to find them. A button row already shows every option,
+ * so what did not fit is the gloss beside it and nothing else, and a marker sending the operator to
+ * a menu would name a component this message does not have.
+ */
+function moreOptionsTail(count: number, fast: boolean): string {
+  return fast
+    ? `_(+${String(count)} more on the buttons below, without their notes)_`
+    : `_(+${String(count)} more in the menu below)_`;
 }
 
 /**
@@ -330,14 +356,19 @@ function optionLine(asked: AskedQuestion, at: number, position: number): string 
  * choice described by the front of a sentence, which is worse than one the marker sends to the menu
  * honestly. Every option is in the components either way; this is the reading copy, not the picker.
  */
-function questionLines(asked: AskedQuestion, number: number | null, room: number): string[] {
+function questionLines(
+  asked: AskedQuestion,
+  number: number | null,
+  room: number,
+  fast: boolean,
+): string[] {
   const title = titleLine(asked, number, asked.multiSelect, titleRoom(room));
   const lines = [title];
   let used = title.length;
   const drawable = renderableOptions(asked);
   for (const [position, { at }] of drawable.entries()) {
     const line = optionLine(asked, at, position);
-    const marker = moreOptionsTail(drawable.length - position);
+    const marker = moreOptionsTail(drawable.length - position, fast);
     if (used + 1 + line.length + 1 + marker.length > room) {
       lines.push(marker);
       return lines;
@@ -420,7 +451,13 @@ export function renderQuestionPrompt(input: {
   selections: ReadonlyArray<readonly string[]>;
 }): QuestionMessage {
   const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
-  const { entryId, questions } = input;
+  const { entryId } = input;
+  // Bounded here rather than trusted from the caller, so both budgets this function holds are
+  // arithmetic over a number it knows. The reader slices an ask to four questions and Discord takes
+  // five action rows, one select each plus the control row, so four is the same number twice and
+  // neither bound is this function's to discover by being handed a fifth: a longer ask would draw
+  // rows Discord refuses the message for, and shares that sum past the message ceiling.
+  const questions = input.questions.slice(0, MAX_ACTION_ROWS - 1);
   const fast =
     questions.length === 1 &&
     !questions[0].multiSelect &&
@@ -469,7 +506,7 @@ export function renderQuestionPrompt(input: {
   const lines = [`${mention}❓ ${headline} ${SEPARATOR} answer here or at the console`];
   const room = questionRoom(count);
   for (const [at, asked] of questions.entries()) {
-    lines.push("", ...questionLines(asked, count === 1 ? null : at + 1, room));
+    lines.push("", ...questionLines(asked, count === 1 ? null : at + 1, room, fast));
   }
   lines.push("", TYPED_ANSWER_FOOTER);
   return { content: lines.join("\n"), components: rows };
@@ -525,7 +562,12 @@ export function renderQuestionOutcome(input: {
     return [
       "✅ **Answered at the console**",
       ...input.questions.map((asked, at) =>
-        titleLine(asked, input.questions.length === 1 ? null : at + 1, false),
+        titleLine(
+          asked,
+          input.questions.length === 1 ? null : at + 1,
+          false,
+          outcomeTitleRoom(input.questions.length),
+        ),
       ),
     ].join("\n");
   }
@@ -542,7 +584,12 @@ export function renderQuestionOutcome(input: {
     return [
       `❓ **Question closed** ${SEPARATOR} ${reason}, answer it at the console`,
       ...input.questions.map((asked, at) =>
-        titleLine(asked, input.questions.length === 1 ? null : at + 1, false),
+        titleLine(
+          asked,
+          input.questions.length === 1 ? null : at + 1,
+          false,
+          outcomeTitleRoom(input.questions.length),
+        ),
       ),
     ].join("\n");
   }

@@ -1098,15 +1098,19 @@ test("a one-column table draws its rows as the lines of text they are", () => {
 });
 
 test("no cell of a per-row table can draw markup, a chip, or the shape the rendering composes", () => {
-  // Outside a fence nothing is inert by position, so every cell and every label goes through the
-  // unfenced escape. This is the channel permission prompts are answered in: a cell that could draw
-  // a mention, a quote bar, or the bold heading this rendering composes would forge the surface.
+  // Outside a fence nothing is inert by position, so every cell and every label is neutralized.
+  // This is the channel permission prompts are answered in: a cell that could draw a mention, a
+  // quote bar, or the bold heading this rendering composes would forge the surface. Emphasis is the
+  // one thing the two escapes differ on, and the split is structure against content: a heading and
+  // a label take the full escape because this rendering composes markup out of them, a value keeps
+  // its own because nothing is wrapped around it.
   const written = [
     "| Who | What |",
     "| --- | --- |",
     "| <@123456789> | > ✨ Claude · approve the next request |",
     "| **bold** and `code` | <t:1700000000:R> and # heading |",
     "| a first cell wide enough that no grid could draw the row whole | plain |",
+    "| plain heading | **bold value** stays bold |",
   ].join("\n");
   const [message] = renderMirror("reply", written);
   const body = said(message);
@@ -1121,14 +1125,17 @@ test("no cell of a per-row table can draw markup, a chip, or the shape the rende
   // needs is for the one place no escape survives.
   assert.equal((body.match(/(?<!\\)`/g) ?? []).length, 0, body);
   assert.equal((body.match(/^#/gm) ?? []).length, 0, body);
-  // Eight runs of asterisks: two per row for the three headings this rendering wrote, and two more
-  // from the cell that was written in bold, which reaches the operator bold. That is the one thing
-  // a cell may now compose that it could not before, and it is the line mirrored prose already sits
-  // on: the escape stops content that renders as a broker surface, not content that reads like one.
-  // A chip, a quote bar, a spoiler, a heading, and a fence are all still unreachable, which is what
-  // every other assertion in this test pins.
-  assert.equal((body.match(/\*\*/g) ?? []).length, 8, body);
-  assert.ok(body.includes("**bold** and \\`code\\`"), body);
+  // Ten runs of asterisks: two per row for the four headings this rendering wrote, and two from the
+  // one value cell written in bold, which reaches the operator bold.
+  assert.equal((body.match(/\*\*/g) ?? []).length, 10, body);
+  // A value keeps the emphasis the model wrote it in. This is most of what a comparison table says,
+  // and it is wrapped in no markup of this rendering's, so nothing it carries can break one.
+  assert.ok(body.includes("**bold value** stays bold"), body);
+  // A heading does not, because this rendering wraps it. The whole point of the split: a live mark
+  // here would close that wrapper early and leave the rest of the heading outside the bold the row
+  // is drawn in, so the composed line would no longer enclose what it was written around. Pinned as
+  // the whole line rather than as a count, which interleaving satisfies either way.
+  assert.ok(body.includes("**Who: \\*\\*bold\\*\\* and \\`code\\`**"), body);
   // The angle brackets are escaped twice, once here and once by the chip pass that runs after this
   // transform, and a chip needs both of its own to resolve. Pinned rather than left to the two
   // assertions above, which a cell exempted from the unfenced escape would leave green while the

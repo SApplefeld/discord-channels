@@ -953,12 +953,20 @@ function tableSourceLength(rows: readonly string[][]): number {
  * compose is out of proportion to the text it replaces, each of which leaves the table as the text
  * it was written as.
  *
- * Nothing here is inert by position, because none of it is inside a fence. So every cell and every
- * label goes through `inertCell`, which is what stops a cell from drawing a mention, a quote bar, a
- * spoiler, a heading, or a fence. Its whitespace collapse is the other half of it: a cell cannot
- * compose a line of its own, so it cannot forge a label line either. Emphasis is deliberately left
- * live, so a cell reaches the operator in the bold or the italics the model wrote it in; what that
- * gives up, and why it is the same line mirrored prose already sits on, is on `CELL_MARKDOWN`.
+ * Nothing here is inert by position, because none of it is inside a fence. So nothing reaches the
+ * output unneutralized, and what stops a cell drawing a mention, a quote bar, a spoiler, a heading,
+ * or a fence is the same escape in both cases. The whitespace collapse is the other half of it: a
+ * cell cannot compose a line of its own, so it cannot forge a label line either.
+ *
+ * Where the two escapes differ is emphasis, and the split is structure against content. A value is
+ * content and keeps the bold or the italics the model wrote it in, through `inertCell`, because that
+ * is most of what a comparison table says and it is wrapped in no markup of this rendering's. A
+ * heading and every label are structure and take the full escape: the heading is composed inside
+ * emphasis this rendering writes, where a surviving mark would close the wrapper early, and a label
+ * is redrawn on every row, where one would flip the parity of the composed marks once per row. What
+ * a value can still do is leave its own emphasis unbalanced, which re-attributes bold within the one
+ * message it is in; that is the line mirrored prose already sits on, and narrower, since prose keeps
+ * its spoilers and masked links live where a cell keeps neither.
  *
  * A cell that neutralizes to nothing draws no line, because a label standing on its own reads as a
  * value that went missing rather than one that was never written, and a row whose first cell is
@@ -972,7 +980,11 @@ function tableSourceLength(rows: readonly string[][]): number {
  */
 function perRowTable(rows: readonly string[][]): string | null {
   const header = rows[0] ?? [];
-  const labels = header.map((cell) => inertCell(cell));
+  // Labels take the full escape, unlike the values beside them, because a label is structure rather
+  // than content: the first names the row inside the emphasis this rendering composes, and every
+  // other is redrawn on every row of the table. An emphasis mark surviving in one would therefore
+  // break that wrapper, or flip the parity of the composed marks once per row.
+  const labels = header.map((cell) => inertText(cell));
   // Only where the labels are drawn: a single-column table names no column, so its first row is a
   // line of text like the rest and is drawn once however long it is.
   if (labels.length > 1 && labels.some((label) => [...label].length > MAX_ROW_LABEL_WIDTH)) {
@@ -982,7 +994,11 @@ function perRowTable(rows: readonly string[][]): string | null {
     labels.length <= 1
       ? rows.map((row) => inertCell(row[0] ?? ""))
       : rows.slice(1).map((row) => {
-          const heading = inertCell(row[0] ?? "");
+          // The one cell this rendering wraps in emphasis of its own, so the one cell that may not
+          // carry any: a mark surviving here would close the wrapper early and leave the rest of the
+          // heading outside the bold the row is drawn in. A value below is wrapped in nothing, which
+          // is what lets it keep the emphasis the model wrote it with.
+          const heading = inertText(row[0] ?? "");
           const named = labels[0] === "" || heading === "" ? heading : `${labels[0] ?? ""}: ${heading}`;
           const lines = heading === "" ? [] : [`**${named}**`];
           for (const [column, cell] of row.entries()) {
