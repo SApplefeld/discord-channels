@@ -227,6 +227,21 @@ invisible and no blockquote. A line-leading `>` inside a fence renders as a visi
 the accepted cost of escaping it unconditionally so the attribution cannot be forged even if the
 fence model is wrong. Step 5's stale-install refusal passed on this host before the re-install.
 
+Two later readings on the same client extend this, both taken by drawing rulers into a live thread
+and reading them back.
+
+A fenced block wraps to the rendered width of the window it is read in and never scrolls sideways:
+roughly 51 columns on a folded phone, 62 unfolded, 83 on a desktop, and no wrap at all past 120 on an
+ultrawide. So no column constant is right for every reader, which is why the permission prompt's tool
+input is drawn whole, and why the card's width bound sits below the narrowest of those rather than
+being a comfort figure.
+
+A fenced block honors no backslash escape, in either direction: an unescaped backslash is drawn as
+itself and consumes nothing after it, and a doubled one arrives doubled. The visible `\>` above is the
+same fact read from the other side. This is why nothing inside a fence is escaped and why a backtick
+is replaced rather than escaped, and it is what makes a Windows path in a tool input read as the path
+that was written.
+
 One cosmetic finding, recorded rather than fixed here: the attribution line is a blockquote and
 Discord continues a blockquote onto the lines that follow it, so a mirrored prompt renders entirely
 inside quote bars while a reply does not, because a reply's leading code fence ends the quote.

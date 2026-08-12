@@ -555,11 +555,12 @@ test("a field inside the fence shows its own characters, with no escape a fence 
 
 test("no crafted field can break out of the fence or compose a body line of its own", () => {
   // A fenced body carries no backtick at all, which is the only bound a crafted field cannot
-  // compose around: Discord processes a backslash escape inside a fence, so an escaped backtick
-  // arrives as a real one, and three of those close the block and put the rest of the card outside
-  // it. The backslash is escaped rather than replaced, because that same processing is what draws a
-  // Windows path readably. The newline dies in the invisible strip, so no field composes a body
-  // line of its own.
+  // compose around. Escaping one would not do it: a fenced block honors no backslash escape, so an
+  // escaped backtick arrives as a backslash and a live backtick, and three of those close the block
+  // and put the rest of the card outside it. Replacement is the property that holds. Nothing else
+  // is escaped here for the same reason the backtick cannot be, and a backslash therefore draws as
+  // itself, which is what makes a Windows path read as the path that was written. The newline dies
+  // in the invisible strip, so no field composes a body line of its own.
   const card = renderCard(
     view({
       host: "before\nafter",
@@ -681,14 +682,15 @@ test("Discord's chip syntax in a tool-input preview reads as its characters", ()
 });
 
 test("eight characters of the session id are eight, however many need escaping", () => {
-  // The raw id is sliced before it is neutralized. Sliced after, every escaped character would
-  // spend two of the eight, and two ids differing only past the escapes would draw one prefix on
-  // the surface the operator tells threads apart by.
+  // The raw id is sliced before it is neutralized, so eight characters of an id are eight on the
+  // card. A fenced field draws a backslash as itself, so these pass through, and what can still
+  // change a field's length is the whitespace collapse: sliced after that, two ids differing only
+  // past the collapse would draw one prefix on the surface the operator tells threads apart by.
   const first = renderCard(view({ sessionId: String.raw`\\\\aaaa-rest` }), "working", NOW);
   const second = renderCard(view({ sessionId: String.raw`\\\\bbbb-rest` }), "working", NOW);
 
-  assert.equal(value(first, "Session"), String.raw`\\\\\\\\aaaa`);
-  assert.equal(value(second, "Session"), String.raw`\\\\\\\\bbbb`);
+  assert.equal(value(first, "Session"), String.raw`\\\\aaaa`);
+  assert.equal(value(second, "Session"), String.raw`\\\\bbbb`);
   assert.notEqual(value(first, "Session"), value(second, "Session"));
 });
 
@@ -1233,8 +1235,11 @@ test("no table cell can compose a pill, a chip, or a fence delimiter", () => {
 });
 
 test("a cell is neutralized before it is padded, so the columns line up on what is drawn", () => {
-  // A backslash doubles inside a fence, and a backtick becomes an apostrophe. Measured after that
-  // and not before, or the row carrying one draws a character wider than the column it sits in.
+  // The columns are measured on the drawn form and not the written one, because the drawn form is
+  // what the reader lines up. A backtick becomes an apostrophe and a whitespace run collapses to
+  // one space, so a cell measured before either draws a different width than the column it sits in.
+  // A backslash is not one of the characters that changes: a fenced block honors no escape, so it
+  // is drawn as itself, which is what makes a path in a cell read as the path that was written.
   const written = [
     "| Path | Note |",
     "| --- | --- |",
@@ -1245,7 +1250,7 @@ test("a cell is neutralized before it is padded, so the columns line up on what 
 
   const separators = lines.slice(1, -1).map((line) => line.indexOf("|"));
   assert.deepEqual(separators, [separators[0], separators[0], separators[0]], lines.join("\n"));
-  assert.ok(lines.includes("C:\\\\ops | one"), lines.join("\n"));
+  assert.ok(lines.includes("C:\\ops | one"), lines.join("\n"));
 });
 
 test("a run of pipe-carrying lines that is no table costs one parse per line", () => {

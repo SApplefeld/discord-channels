@@ -393,9 +393,10 @@ test("an account label is bounded, and one that neutralizes to nothing falls bac
 
 test("no crafted cache string can break out of a fenced block", () => {
   // A fenced body carries no backtick at all, which is the only bound a crafted field cannot compose
-  // around: Discord processes a backslash escape inside a fence, so an escaped backtick arrives as a
-  // real one and three of those close the block. This is narrower than a card-wide ban because a
-  // bold line is not a fence: a backtick there is escaped and inert, which the label tests pin.
+  // around. Escaping one would not do it: a fenced block honors no backslash escape, so an escaped
+  // backtick arrives as a backslash and a live backtick, and three of those close the block. This is
+  // narrower than a card-wide ban because a bold line is not a fence: a backtick there is escaped and
+  // inert, which the label tests pin.
   const body = card(
     {
       available: true,

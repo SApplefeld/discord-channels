@@ -112,9 +112,6 @@ export function inertField(value: string, limit: number): string {
  */
 const BLOCK_BACKTICK = "'";
 
-/** The one character a fenced block still gives meaning to that survives as itself: the backslash. */
-const BLOCK_ESCAPE = /\\/g;
-
 /** Every backtick, whatever it sits beside. None of them reaches a fenced body. */
 const BLOCK_FENCE = /`/g;
 
@@ -127,25 +124,22 @@ const BLOCK_FENCE = /`/g;
  * the newline is in the invisible class it strips, and any whitespace run left over collapses to
  * one space.
  *
- * Two characters still need handling, and they need opposite handling.
+ * One character needs handling, and escaping is not what handles it.
  *
- * A backslash is escaped, because Discord processes a backslash escape inside a fence, measured in
- * a real client: an unescaped one would consume the character after it, and a Windows path is
- * exactly the string that pays for that.
+ * A fenced block honors no backslash escape, which is a property of the client rather than of
+ * Markdown generally and is why nothing here escapes anything: a backslash is drawn as itself and
+ * consumes nothing after it, so a Windows path reads as the path that was written, while a doubled
+ * one would reach the operator doubled. That matters most on the tool input of a permission prompt,
+ * where the characters on screen are the thing being approved.
  *
- * A backtick is replaced rather than escaped, because Discord processes those same escapes: a
- * fenced line carrying the escaped form `\`\`\`` arrives at the reader as a real triple backtick,
- * which closes the block and renders everything after it as live markdown. Escaping was the
- * previous shape here and it was measured to fail in a real client, so replacement is the property
- * that actually holds, and a longer opening fence is not an alternative: Discord opens a block on
- * exactly three backticks and reads a fourth as content, so an inner triple closes a four-backtick
- * fence too. What a fenced body carries after this is no backtick at all, which is the only bound
- * that cannot be composed around.
+ * A backtick is therefore replaced rather than escaped, since an escape of one would arrive as a
+ * backslash and a live backtick. Every backtick becomes the substitute above, so a fenced body
+ * carries none at all, and that is the only bound here that cannot be composed around. A longer
+ * opening fence is not an alternative: a block opens on exactly three backticks and reads a fourth
+ * as content, so an inner triple closes a four-backtick fence too.
  */
 export function inertBlock(value: string): string {
-  return visible(value)
-    .replace(BLOCK_ESCAPE, "\\\\")
-    .replace(BLOCK_FENCE, BLOCK_BACKTICK);
+  return visible(value).replace(BLOCK_FENCE, BLOCK_BACKTICK);
 }
 
 /** The `inertField` pairing for a fenced line: block-inert, and bounded on the escaped text. */
