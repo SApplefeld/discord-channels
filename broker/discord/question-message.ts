@@ -84,18 +84,65 @@ const MAX_BODY_DESCRIPTION_LENGTH = 400;
 const PROMPT_FURNITURE_ROOM = 200;
 
 /**
- * The room a question's own block gets, given how many share the message.
+ * The room every question's block is allowed, given what each of them wants and the room they share.
  *
- * An equal share rather than first-come, which is the notice's rule, and the difference is what the
- * two messages are for: the notice sends the operator to a console that has the whole question, so a
- * question past the cut losing its text costs nothing, while this message is the one being answered,
- * and a question drawn nowhere in the body is one the operator would be picking an option for
- * without having read it. An equal share guarantees every question some text, and the option loop
- * inside it guarantees that whatever text is drawn is drawn whole.
+ * The notice's rule is first-come, and this message cannot take it: the notice sends the operator to
+ * a console that holds the whole question, where a question past the cut loses nothing that matters,
+ * while this is the message being answered, and a question drawn nowhere in the body is one whose
+ * options would be picked unread. So every question is guaranteed a share.
+ *
+ * An equal share is the obvious way to guarantee one and it is the wrong one, because what a
+ * question wants varies by more than the count does: measured against the real asks this host has
+ * held, an equal share spilled options out of four asks whose whole message still had hundreds of
+ * units unspent, one of them at 1,005 units against a 1,900 ceiling. What was missing was not room,
+ * it was the room a two-option question did not want going to the four-option question beside it.
+ *
+ * So this is `columnCaps`'s rule, which the fenced-table renderer already shares a width by: find the
+ * highest ceiling the budget can carry, let every question under it have exactly what it asked for,
+ * and hold the rest to it. A question spills only when its own need is past a ceiling that the whole
+ * message could not raise, which is the only honest reason to spill.
  */
-function questionRoom(count: number): number {
-  return Math.floor((MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM) / Math.max(count, 1));
+function questionRooms(needs: readonly number[], budget: number): number[] {
+  const spent = (limit: number): number =>
+    needs.reduce((total, need) => total + Math.min(need, limit), 0);
+  let cap = Math.max(...needs, MIN_QUESTION_ROOM);
+  while (cap > MIN_QUESTION_ROOM && spent(cap) > budget) cap -= 1;
+  return needs.map((need) => Math.min(need, cap));
 }
+
+/**
+ * The floor a share never goes below, whatever the questions want.
+ *
+ * Set above what a question's own furniture costs at the title floor: a number, a header at its cap,
+ * the separators between them, a question at `titleRoom`'s floor, the multi-select suffix, and the
+ * marker line, which is about 256 units in the worst case. Below that a block could compose past the
+ * share it was given, and the guarantee this whole split rests on is that it never does. Four floors
+ * sit well inside the budget, so the floor can never be the thing that overruns the message.
+ */
+const MIN_QUESTION_ROOM = 280;
+
+/** What a question's drawn block costs, in the units its share is measured in. */
+function blockCost(lines: readonly string[]): number {
+  const [title, ...rest] = lines;
+  return (title?.length ?? 0) + rest.reduce((total, line) => total + 1 + line.length, 0);
+}
+
+/**
+ * Room added to what a question wants, so that a share equal to its want really draws it whole.
+ *
+ * The option loop keeps back room for the marker an undrawn option would need, and it decides that
+ * one option at a time, before it knows whether the ones after it will fit. A share measured from a
+ * block that needed no marker would therefore be a share the loop spends a marker's width of and
+ * then falls short by, spilling the last option of a question the message had exactly enough room
+ * for. This is that width: the widest marker either layout writes, and the newline before it.
+ */
+const MARKER_ROOM = 60;
+
+/**
+ * A room no block reaches, for measuring what a question would draw if nothing held it back. The
+ * need it yields is what `questionRooms` shares the message out against.
+ */
+const UNBOUNDED_ROOM = Number.MAX_SAFE_INTEGER;
 
 /**
  * The room a question's own text gets inside its share, so a long question cannot spend the share
@@ -368,9 +415,13 @@ function questionLines(
   const drawable = renderableOptions(asked);
   for (const [position, { at }] of drawable.entries()) {
     const line = optionLine(asked, at, position);
-    const marker = moreOptionsTail(drawable.length - position, fast);
-    if (used + 1 + line.length + 1 + marker.length > room) {
-      lines.push(marker);
+    // Room kept back for the marker this option's own drawing would make necessary, which is none
+    // where it is the last: a marker after the final option would name nothing left to name, and
+    // reserving for one would spill an option whose only problem was a line that does not exist.
+    const left = drawable.length - position - 1;
+    const reserve = left === 0 ? 0 : 1 + moreOptionsTail(left, fast).length;
+    if (used + 1 + line.length + reserve > room) {
+      lines.push(moreOptionsTail(drawable.length - position, fast));
       return lines;
     }
     lines.push(line);
@@ -437,9 +488,11 @@ function button(customId: string, label: string, style: 1 | 2): Button {
  *
  * The body is the same on both paths and does not depend on that choice: every question draws its
  * own title and its own options, because what the operator reads to decide is the ask, not the
- * widget the ask happens to have been given. Each question gets an equal share of the message, and
- * inside its share the options go on whole until the share runs out. So what is drawn is complete,
- * and what did not fit is named and still answerable in the components.
+ * widget the ask happens to have been given. Every question gets the share `questionRooms` allows
+ * it, which is everything it wants wherever the message can carry that, and inside its share the
+ * options go on whole until the share runs out. So what is drawn is complete, what did not fit is
+ * named and still answerable in the components, and a question spills only where the message really
+ * had no room for it rather than because a neighbour was holding room it never wanted.
  *
  * `selections` are the labels the desk has accumulated for each question, which is what makes an
  * edit of this message show the operator their own choices back.
@@ -504,10 +557,45 @@ export function renderQuestionPrompt(input: {
     ? "**Waiting on you**"
     : `**${String(count)} question${count === 1 ? "" : "s"}**`;
   const lines = [`${mention}❓ ${headline} ${SEPARATOR} answer here or at the console`];
-  const room = questionRoom(count);
-  for (const [at, asked] of questions.entries()) {
-    lines.push("", ...questionLines(asked, count === 1 ? null : at + 1, room, fast));
+  const numbered = (at: number): number | null => (count === 1 ? null : at + 1);
+  // What each question would draw unheld, then the shares that fit those wants inside one message.
+  // Measured before anything is drawn, because a share cannot be decided from a question in
+  // isolation: what one does not want is what another gets.
+  const budget = MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM;
+  const rooms = questionRooms(
+    questions.map(
+      (asked, at) =>
+        blockCost(questionLines(asked, numbered(at), UNBOUNDED_ROOM, fast)) + MARKER_ROOM,
+    ),
+    budget,
+  );
+  const blocks = questions.map((asked, at) =>
+    questionLines(asked, numbered(at), rooms[at] ?? MIN_QUESTION_ROOM, fast),
+  );
+
+  // One refinement round, because a share is only spendable in whole options. A block stops at the
+  // last option that fits and leaves the rest of its share unspent, and that remainder is room the
+  // next option of some other question would have fit in: measured over the real asks this host has
+  // held, a four-question ask spilled at 1,005 units of a 1,900 message with the rest of its budget
+  // stranded that way. So what the blocks did not use goes back to the ones that ran short.
+  //
+  // Each is regrown from what it actually spent rather than from what it was allowed, which is what
+  // makes the total provably no larger than the budget: the sum of what was spent plus the whole of
+  // what was not is the budget itself. One round rather than a loop, since a second recovers only
+  // the remainder of a remainder, and a fixed round needs no argument that it terminates.
+  let spare = budget - blocks.reduce((total, block) => total + blockCost(block), 0);
+  for (const [at, block] of blocks.entries()) {
+    if (spare <= 0) break;
+    if (block.length - 1 >= renderableOptions(questions[at]).length) continue;
+    // The whole remainder is offered rather than a share of it, and what this block does not take
+    // passes to the next that ran short. An even split is what fails here: an option line runs to
+    // several hundred units, so a quarter of the remainder is usually too little to fit one more of
+    // anything, and four questions each holding a quarter draw exactly what they drew before.
+    const grown = questionLines(questions[at], numbered(at), blockCost(block) + spare, fast);
+    spare -= blockCost(grown) - blockCost(block);
+    blocks[at] = grown;
   }
+  for (const block of blocks) lines.push("", ...block);
   lines.push("", TYPED_ANSWER_FOOTER);
   return { content: lines.join("\n"), components: rows };
 }

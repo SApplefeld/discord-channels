@@ -135,6 +135,63 @@ test("a two-question ask renders a select each and one control row", () => {
   assert.ok(content.endsWith(TYPED_ANSWER_FOOTER), content);
 });
 
+test("a question gets the room it wants wherever the message can carry it", () => {
+  // The share is what each question asked for, not a slice of the count. Two questions, one wanting
+  // far more than the other: an equal split would spill the big one while the small one sat on room
+  // it never wanted, and the whole message would still be nowhere near the ceiling.
+  const gloss = (n: number): string => `${"a reason the option is worth taking, ".repeat(n)}and so on`;
+  const big = asked({
+    header: "Big",
+    question: "The question with four long options?",
+    options: [1, 2, 3, 4].map((n) => ({ label: `Option ${String(n)}`, description: gloss(9) })),
+  });
+  const small = asked({ header: "Small", question: "Short?", options: options("Yes", "No") });
+
+  const { content } = prompt([big, small]);
+
+  assert.ok(content.length <= MAX_MESSAGE_LENGTH, `${String(content.length)} units of content`);
+  // Every option of both questions drawn, gloss and all, and no marker: the message had the room,
+  // and the room was where it was wanted.
+  for (const n of [1, 2, 3, 4]) assert.ok(content.includes(`**Option ${String(n)}**`), content);
+  assert.equal((content.match(/more in the menu below/g) ?? []).length, 0, content);
+  assert.ok(content.includes(gloss(9)), "the long gloss rides whole");
+});
+
+test("no shape of ask composes a prompt past the message ceiling", () => {
+  // The split makes the bound arithmetic over what the questions wanted rather than over the count,
+  // so it is worth proving over shapes rather than reasoning about one. Every combination of counts,
+  // option counts, and field widths, at the caps and past them.
+  const wide = "w".repeat(2_000);
+  let worst = 0;
+  for (const count of [1, 2, 3, 4]) {
+    for (const optionCount of [0, 1, 2, 4]) {
+      for (const multiSelect of [false, true]) {
+        const questions = Array.from({ length: count }, (_, at) =>
+          asked({
+            question: `${String(at)} ${wide}`,
+            header: wide,
+            multiSelect,
+            options: Array.from({ length: optionCount }, (_, n) => ({
+              label: `${String(n)} ${wide}`,
+              description: wide,
+            })),
+          }),
+        );
+        const { content, components: rows } = prompt(questions);
+        worst = Math.max(worst, content.length);
+        assert.ok(
+          content.length <= MAX_MESSAGE_LENGTH,
+          `${String(count)}q ${String(optionCount)}opt multi=${String(multiSelect)} composed ${String(content.length)}`,
+        );
+        assert.ok(rows.length <= MAX_ACTION_ROWS, `${String(rows.length)} rows`);
+      }
+    }
+  }
+  // Reported so a change that quietly spends the remaining slack is visible as a number rather than
+  // only as the day the ceiling is finally crossed.
+  assert.ok(worst > 0 && worst <= MAX_MESSAGE_LENGTH, `worst observed ${String(worst)}`);
+});
+
 test("a terminal state names every question of a maximal ask, inside one message", () => {
   // These branches carry titles and nothing else, and they enforce no bound of their own. Nothing
   // downstream fails loudly for them either: the writer neutralizes through `inertMessage`, which
