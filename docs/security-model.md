@@ -228,11 +228,27 @@ Each thread gets 1 mention and 4 posts per 60 seconds: past the first, the alert
 mentioning; past the fourth, it is dropped and one rate-limited, content-free log line says so.
 The window's stamps are deliberately separate from the permission prompt's window, because shared
 stamps would let a forged run of questions spend the prompt window's slots and push a real
-permission prompt into drop, converting a ping nuisance into a parked session. The post ceiling is
-also what bounds this path's spend of the steering writer's budget, the bucket permission prompts
-ride, so a crafted transcript cannot starve the approval channel through it. The alert composes at
-most one Discord message, naming how many further questions wait at the console when the content
-would not fit, so the mention and the alert line always survive.
+permission prompt into drop, converting a ping nuisance into a parked session. The alert itself
+composes at most one Discord message, naming how many further questions wait at the console when
+the content would not fit, so the mention and the alert line always survive.
+
+An ask no single message can carry posts its overflow as plain continuation messages, up to 6 of
+them, so what one admitted ask spends on the create-message bucket is no longer one post. Those
+continuations carry their own per-thread window of 8 posts per 60 seconds, with its own stamps,
+separate from both the alert window's and the permission prompt's for the same reason those two
+are separate. So the question surface's whole ceiling against the bucket permission prompts ride
+is 4 alert posts plus 8 continuation posts per thread per 60 seconds, and that pair is what bounds
+it, rather than the alert ceiling alone. A refused continuation releases the hold to the console
+rather than leaving a marker pointing at text that never arrived, so the refusal costs a thread
+answer, never a parked session. Posts within one ask are paced, because the count ceiling bounds a
+window and not a burst, and the create-message budget is one instance shared across every thread:
+a burst dense enough to earn a 429 would block the alert route in every thread until it lifts.
+
+Two residues are accepted rather than fixed. A continuation posted before a mid-ask refusal stays
+in the thread, since continuations are never edited, so a released ask can leave framed question
+text above a message rewritten to the console line; the text is neutralized and mentions nothing,
+so what it costs is thread clutter. And the pacing narrows the burst rather than proving it away,
+since Discord does not publish the bucket it is paced against.
 
 **A forged question post is mostly a second door to a capability a token holder already had, with
 one exception named below.** The broker's scheduled task runs as the operator at limited

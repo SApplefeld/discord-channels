@@ -35,6 +35,7 @@ import {
   MAX_MODEL_CHANGE_ALERTS_PER_WINDOW,
   MAX_MODEL_CHANGE_PINGS_PER_WINDOW,
   MAX_QUESTION_ALERTS_PER_WINDOW,
+  MAX_QUESTION_CONTINUATIONS_PER_WINDOW,
   MAX_QUESTION_PINGS_PER_WINDOW,
   createAlertVolume,
   createPermissionDesk,
@@ -306,6 +307,26 @@ export function createPromptEdits(): PromptEdits {
 }
 
 /**
+ * The pause held before each continuation post of one ask.
+ *
+ * The per-thread window bounds how many continuations an hour of asks may post; it bounds no burst,
+ * and the resource underneath is burst-sensitive. A create-message 429 is not waited out here: the
+ * transport rejects on it, the writer counts the rejection as a block on its post budget, and that
+ * budget is one instance shared by every thread's replies, notices, and alerts, so a burst dense
+ * enough to earn a 429 in one thread silences the permission prompts in all of them until it lifts.
+ *
+ * Sized against an assumed create-message allowance of five posts per five seconds per channel.
+ * That allowance is inferred, not published: Discord documents no number for this bucket, and the
+ * budget this pace protects exists precisely because the limit is only knowable from the headers
+ * Discord returns. At this pace an ask's alert and the continuations behind it place at most five
+ * posts in any five-second window. What it costs is latency, this pace once per continuation, so an
+ * ask at `MAX_CONTINUATION_MESSAGES` waits that many multiples of it before its interactive prompt
+ * appears. That is the trade this one knob makes: move it up to buy more headroom against the
+ * bucket, down to buy back the wait.
+ */
+export const CONTINUATION_POST_PACE_MS = 1_200;
+
+/**
  * Turns the notice a question's alert landed as into the interactive message that answers it, or
  * releases the hold so the question lands on today's behavior.
  *
@@ -316,19 +337,35 @@ export function createPromptEdits(): PromptEdits {
  * the hold is created in, so by the time Discord answers, the desk either holds this ask or never
  * will.
  *
+ * An ask no single message can carry rides continuation messages, and they are posted before the
+ * edit that references them: the interactive message's spill markers say the rest is continued
+ * below, so a marker drawn above messages that never arrived sends the operator hunting for text
+ * that does not exist. An ask that fits posts nothing at all. The posts are spaced by
+ * `CONTINUATION_POST_PACE_MS` and the hold is re-read before each one, so an ask answered, expired,
+ * or shut down partway through stops posting where it stands.
+ *
  * Every branch but the upgrade releases the hold, and all of them land on today's behavior, an
  * alerted phone and a console picker: a post that came back with no message id has nothing to edit,
  * an ask this thread cannot answer faithfully would be parked behind components that never finish
- * or answer with a map the session cannot read, and a refused upgrade would leave a readable
- * message with no controls above a four-hour hold, which is the one outcome worse than no hold at
- * all. The one branch that releases nothing is the ask the desk no longer holds, where there is
- * nothing left to release.
+ * or answer with a map the session cannot read, a continuation the thread refused would leave the
+ * marker above it pointing at nothing, and a refused upgrade would leave a readable message with no
+ * controls above a four-hour hold, which is the one outcome worse than no hold at all. What releases
+ * nothing is the ask the desk no longer holds or has already drawn a message for, where this call
+ * noted nothing on the entry and has nothing to undo, and the ask whose hold ended while its
+ * continuations were posting or under the edit, where the close-out has already run.
+ *
+ * The two releases that follow a noted alert name the entry rather than the session and digest. The
+ * continuation posts are a window several round trips wide, and a session whose hold ends inside it
+ * can re-post the same ask and be given a new entry carrying the same digest, which a release by
+ * digest would end instead of this one.
  */
 export function questionUpgrade(options: {
   desk: {
     held: (sessionId: string, digest: string) => QuestionEntryView | null;
     release: (sessionId: string, digest?: string) => boolean;
+    releaseEntry: (entryId: string) => boolean;
     noteAlert: (sessionId: string, digest: string, alert: QuestionAlert) => string | null;
+    entry: (entryId: string) => QuestionEntryView | null;
   };
   edit: (
     threadId: string,
@@ -336,6 +373,14 @@ export function questionUpgrade(options: {
     text: string,
     components: readonly ActionRow[],
   ) => Promise<CallOutcome<null>>;
+  /**
+   * Posts one plain message into the ask's thread, which is how a continuation lands. One message
+   * per call and never split: the texts arrive already bounded under the message ceiling, so a
+   * seam that split one would break the packing the renderer did.
+   */
+  post: (threadId: string, text: string) => Promise<CallOutcome<{ messageId: string | null }>>;
+  /** The pause between continuation posts. Injected the way `now` is, so a test drives the pacing. */
+  wait: (ms: number) => Promise<void>;
   drawing: PromptEdits;
   operatorId: string;
   log: (message: string) => void;
@@ -358,9 +403,10 @@ export function questionUpgrade(options: {
       options.desk.release(sessionId, digest);
       return;
     }
-    // The read that decides the edit is safe to make: the entry is live and carries no message yet,
-    // and nothing between here and the edit yields, so the edit cannot be issued for an ask that
-    // ended in between. What can end under the edit is handled by the ordering `drawing` keeps.
+    // The entry is live here and carries no message yet, which is what makes the alert safe to note
+    // and the components safe to address. The hold can end between this line and the edit, because
+    // the continuation posts below are round trips to Discord: what keeps the edit off a message the
+    // desk has closed out is the re-read inside `draw`, not this read.
     const entryId = options.desk.noteAlert(sessionId, digest, { threadId, messageId });
     if (entryId === null) return;
     const prompt = renderQuestionPrompt({
@@ -369,18 +415,102 @@ export function questionUpgrade(options: {
       questions,
       selections: questions.map(() => []),
     });
-    const upgraded = await options.drawing.draw(entryId, () =>
-      options.edit(threadId, messageId, prompt.content, prompt.components),
-    );
-    if (upgraded.status === "ok") return;
+    // The overflow goes up first and in order, so the markers the edit below draws always point at
+    // messages already in the thread. A refused post ends the upgrade instead of skipping the text:
+    // the release's own terminal edit rewrites this message into the line naming the console, which
+    // is what the reader gets in place of a prompt whose markers name nothing.
+    for (const [at, text] of prompt.continuations.entries()) {
+      await options.wait(CONTINUATION_POST_PACE_MS);
+      // Read after the pace and before every post, because each post is a round trip and the hold
+      // can be answered, expire, or be released by a shutdown across any of them. Posting on is
+      // three costs for an ask nobody is waiting on: create-message budget the permission prompts
+      // share, slots of the continuation window a later legitimate ask in this thread needs, and a
+      // run of "continued from above" messages under a message the close-out has already rewritten
+      // to say the question is closed. Nothing is released here, because the close-out has run.
+      if (options.desk.entry(entryId) === null) return;
+      const posted = await options.post(threadId, text);
+      if (posted.status === "ok") continue;
+      const released = options.desk.releaseEntry(entryId);
+      // Counts, the session id, and the transport's error class only: the message that failed to
+      // post is question text, and conversation content never appears in the broker log at any
+      // level. What the release answered is reported rather than assumed, because the hold can have
+      // ended while this post was on the wire.
+      options.log(
+        `broker: session ${sessionId}'s question could not post continuation ${String(at + 1)} of ` +
+          `${String(prompt.continuations.length)} and ` +
+          (released ? "released its hold" : "found its hold already ended") +
+          ": " +
+          (posted.status === "rate-limited" ? "rate limited" : posted.error),
+      );
+      return;
+    }
+    const upgraded = await options.drawing.draw(entryId, async () => {
+      // Read inside the queue and with nothing yielding between this line and the edit, the way a
+      // tap-refresh reads: the continuation posts above hold this call open across several round
+      // trips, and an entry that resolved or expired inside them is one whose message has already
+      // been rewritten to its terminal state. Drawing the prompt onto it now would put live
+      // components over a closed ask, which is a row of taps that report failures.
+      const live = options.desk.entry(entryId);
+      if (live === null || live.alert === null) return null;
+      return options.edit(threadId, messageId, prompt.content, prompt.components);
+    });
+    // The ask that ended mid-posting leaves nothing to release: its close-out has already run.
+    if (upgraded === null || upgraded.status === "ok") return;
     // The release's own terminal edit rewrites this message: the alert is on the entry by now, so
     // what the operator ends up reading is the closed-out line naming the console, not the notice
     // this edit failed to replace.
-    options.desk.release(sessionId, digest);
+    const released = options.desk.releaseEntry(entryId);
     options.log(
-      `broker: session ${sessionId}'s question kept the plain notice and released its hold: ` +
+      `broker: session ${sessionId}'s question kept the plain notice and ` +
+        (released ? "released its hold" : "found its hold already ended") +
+        ": " +
         (upgraded.status === "rate-limited" ? "rate limited" : upgraded.error),
     );
+  };
+}
+
+/**
+ * The seam a question's continuation messages are posted through: the plain reply route, under a
+ * per-thread window of its own.
+ *
+ * The window is why this is a function rather than the writer's `reply` handed straight to the
+ * upgrade. `reply`, `notice`, and `alert` spend one create-message budget, and `alert` is the route
+ * a permission prompt rides, so what bounds the question surface's spend against the approval
+ * channel is the count of posts one thread's questions may make. An admitted ask costs one alert
+ * plus up to `MAX_CONTINUATION_MESSAGES` continuations, and the alert window bounds only the first
+ * of those, so the continuations carry a ceiling of their own here.
+ *
+ * Its own window instance, never the question alert's or the permission desk's: shared stamps would
+ * let a run of one class spend the other's slots and push it into drop, the starvation the damping
+ * exists to prevent. Both ceilings are set to the same number because a continuation carries no
+ * mention: there is nothing for the quiet tier to mean here, and the only outcome that matters is
+ * the refusal.
+ *
+ * A refusal is reported as a failed write rather than a silent skip, because the caller's answer to
+ * a continuation that did not land is to release the hold: the interactive message's markers name
+ * the continuations, so a marker with nothing under it is worse than the console picker the release
+ * falls back to. The refusal names no thread and no content, so the caller's log line stays as
+ * content-free as every other one on this path.
+ */
+export function continuationPosts(options: {
+  reply: (threadId: string, text: string) => Promise<CallOutcome<{ messageId: string | null }>>;
+  now: () => number;
+}): (threadId: string, text: string) => Promise<CallOutcome<{ messageId: string | null }>> {
+  const volume = createAlertVolume({
+    now: options.now,
+    pingCeiling: MAX_QUESTION_CONTINUATIONS_PER_WINDOW,
+    postCeiling: MAX_QUESTION_CONTINUATIONS_PER_WINDOW,
+    windowMs: ALERT_WINDOW_MS,
+  });
+  return async (threadId, text) => {
+    if (volume(threadId) === "drop") {
+      return {
+        status: "failed",
+        error: "the question continuations are over their window",
+        rate: NO_RATE_INFO,
+      };
+    }
+    return options.reply(threadId, text);
   };
 }
 
@@ -982,6 +1112,19 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       desk: questionDesk,
       edit: (threadId, messageId, text, components) =>
         steeringWriter.edit(threadId, messageId, text, components),
+      // The overflow of an ask no single message can carry, posted plainly and paced by its own
+      // per-thread window so a long ask cannot spend the create-message budget the permission
+      // prompts ride.
+      post: continuationPosts({
+        reply: (threadId, text) => steeringWriter.reply(threadId, text),
+        now: Date.now,
+      }),
+      // Unreferenced, so a broker stopping mid-ask is not held open by the pace: the posting stops
+      // where the process does, and the hold behind it is released by the shutdown either way.
+      wait: (ms) =>
+        new Promise((resolve) => {
+          setTimeout(resolve, ms).unref();
+        }),
       drawing,
       operatorId: gate.operatorId,
       log: note,

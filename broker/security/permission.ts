@@ -128,6 +128,25 @@ export const MAX_QUESTION_PINGS_PER_WINDOW = 1;
 export const MAX_QUESTION_ALERTS_PER_WINDOW = 4;
 
 /**
+ * Continuation messages one thread's questions may post at all in a window.
+ *
+ * A question whose ask outgrows one message posts its overflow as plain follow-up messages, and
+ * those spend the same create-message budget the permission prompts ride, so the ceiling that
+ * bounds the question surface's spend against the approval channel has to count them. Eight rather
+ * than the alert window's four: one ask may compose up to `MAX_CONTINUATION_MESSAGES` of them, so a
+ * ceiling under that number would break the feature on exactly the long asks it exists for, while
+ * eight holds one thread's worst case to twelve posts a window, well under the twenty-eight an
+ * ungated seven-post ask would allow.
+ *
+ * Its own window instance wherever it is built, never the question alert's or the permission
+ * desk's: shared stamps would let one class spend another's slots. Past it the post is refused and
+ * the hold is released to the console, the direction every delivery failure on this path takes,
+ * because the message the refusal would leave undrawn is named by a marker in the interactive
+ * message above it.
+ */
+export const MAX_QUESTION_CONTINUATIONS_PER_WINDOW = 8;
+
+/**
  * Distinct model-change alerts one thread may ping with in a window.
  *
  * One, because a genuine forced downgrade is rare and its cost is duration, which the session

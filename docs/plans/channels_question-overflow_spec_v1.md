@@ -85,7 +85,14 @@ earlier section.
   permission prompts use. The question path's per-thread window admits 4 alerts per 60 seconds and
   bounded create-message spend only because each admitted alert cost exactly one post. Continuation
   posts must be gated under that same per-thread window, or a crafted ask multiplies the question
-  surface's spend against the approval channel by up to sevenfold.
+  surface's spend against the approval channel by up to sevenfold. Decided 2026-08-13 with the
+  operator: continuations get their own per-thread window of 8 posts per 60 seconds, separate from
+  the alert window's 4. Worst-case spend per thread falls from 28 posts per 60 seconds to 12, a
+  legitimate long ask still posts whole, and a crafted flood has its continuations dropped and the
+  hold released to the console, the fail direction every delivery failure here already takes.
+  Counting continuations against the alert window itself was weighed and declined: an ask needing
+  five or more continuations could then never post them, breaking the feature on exactly the long
+  asks that motivated it.
 - **`docs/security-model.md` states the post ceiling as the thing preventing approval-channel
   starvation.** Any change to what one admitted ask may post amends that document in the same
   changeset, so the doc an auditor reads describes the real ceiling.
@@ -161,6 +168,14 @@ proceeds exactly as today. Any continuation post failing (refused, rate-limited,
 releases the hold with the ask's digest and logs a count-only line, landing exactly where a
 failed upgrade edit lands today: the terminal rewrite sends the reader to the console. Zero
 continuations means zero posts and today's path untouched.
+
+The posts are spaced by `CONTINUATION_POST_PACE_MS` and the hold is re-read before each one. The
+window ceiling bounds a count over 60 seconds and not a burst, and the create-message budget is one
+instance shared across every thread, so an unpaced run of posts dense enough to earn a 429 would
+block the alert route in every thread until it lifted. Re-reading before each post is what stops an
+ask that was answered, expired, or shut down partway through from spending budget, window slots, and
+thread space on a hold nobody is waiting on. A continuation failure releases by entry id rather than
+by digest, so a hold that ended mid-posting cannot have its successor released in its place.
 
 One race is this section's to close, with a test: today nothing yields between the held-entry
 read and the prompt edit (the code says so and leans on it), and sequential continuation posts
@@ -240,5 +255,43 @@ second full review round; the finishing pass reviews the whole changeset.
 Stamps: adjudicated 1 surfaced, stamped 2 (`escaping-untrusted-text-for-discord`,
 `three-stop-mirror-claim-tests-flake-only-in-parallel-runs`)
 Next: 2. Delivery wiring
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-13
+Completed: 2. Delivery wiring
+Implemented By: implementer-opus, with one review-fix round resumed on the same agent
+Metrics: 1 review round (adversarial + blind at fable, security at its default); NEEDS_CONTEXT 0; escalations 0; advisor opus
+Decisions / Surprises: The operator decided the rate question on 2026-08-13 (continuations get their
+own per-thread window of 8 per 60 seconds, recorded with its rationale in Standing Brief
+Amendments). Review then found the window bounds a count and not a burst: the create-message budget
+is a single instance shared across every thread, so an unpaced run of posts dense enough to earn a
+429 would block the alert route, which permission prompts ride, in every thread until it lifted.
+Answered with `CONTINUATION_POST_PACE_MS`, one knob at 1,200ms, sized against an assumed and
+explicitly inferred allowance of 5 posts per 5 seconds, since Discord publishes no number for that
+bucket. A maximal six-continuation ask now takes 7.2 seconds before its interactive prompt appears.
+Second surprise: the continuation loop had no liveness check, so a hold ending mid-posting kept
+posting under its own close-out. The cosmetic reading of that (odd-looking thread) is not why it
+matters; the dead posts spend the continuation window, so a later legitimate long ask in the same
+thread could be refused and released to the console, breaking the feature on exactly the asks it
+exists for.
+Review Findings: 2 Critical addressed, both the same one converged on by the adversarial and
+security reviewers: `docs/security-model.md` still claimed the 4-post alert ceiling bounded this
+path's spend of the bucket permission prompts ride, which this change makes false. Amended in the
+main thread, since the docs guard blocks subagent writes there. 2 Major addressed: the missing
+per-post liveness check (converged, adversarial and blind) and the burst pacing (security). 5 Minor
+addressed: release by entry id rather than digest so a mid-posting close-out cannot release a
+successor holding the same ask, a log line that claimed a release it never checked, ordering tests
+that could not distinguish sequential from concurrent posting and would have stayed green under a
+`Promise.all` regression, a test comment overclaiming what it locked, and two change-narrative
+comments. 1 Minor accepted and documented rather than fixed: continuations posted before a mid-ask
+refusal stay in the thread, since continuations are never edited, so a released ask can leave framed
+question text above a message rewritten to the console line. Named in the security model as an
+accepted residue. 1 Minor left alone as out of scope: `steeringWriter.reply` does not end a thread's
+narration block the way `notice` and `alert` do, which is pre-existing drift on that verb.
+Process note: my blind-reviewer dispatch included one diff-describing sentence, which violates that
+reviewer's input contract. It flagged the sentence and reviewed the diff alone, so the round stands,
+but the dispatch was mine to get right.
+Stamps: none surfaced
+Next: finishing-work
 Commit Model: Commit-and-Push
 

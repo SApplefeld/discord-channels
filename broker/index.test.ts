@@ -8,6 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
 import {
+  CONTINUATION_POST_PACE_MS,
+  continuationPosts,
   createPromptEdits,
   modelChangeNotice,
   questionCloseOut,
@@ -23,7 +25,17 @@ import type { SessionRecord } from "./registry.ts";
 import { createQuestionDesk } from "./question-desk.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { CallOutcome, DiscordTransport } from "./discord/transport.ts";
-import { createAlertVolume } from "./security/permission.ts";
+import {
+  MAX_CONTINUATION_MESSAGES,
+  renderQuestionPrompt,
+} from "./discord/question-message.ts";
+import {
+  ALERT_WINDOW_MS,
+  MAX_QUESTION_ALERTS_PER_WINDOW,
+  MAX_QUESTION_CONTINUATIONS_PER_WINDOW,
+  MAX_QUESTION_PINGS_PER_WINDOW,
+  createAlertVolume,
+} from "./security/permission.ts";
 import { questionDigest } from "./tail.ts";
 import { createUsageCard } from "./usage/thread.ts";
 import { loadUsageBinding } from "./usage/binding.ts";
@@ -547,13 +559,20 @@ type Edit = { messageId: string; text: string; components: readonly unknown[] };
 /**
  * The alert-then-upgrade sequence over a real desk, with the close-out wired to the same barrier
  * the broker wires it to, so the two edits race here exactly as they race in production.
+ *
+ * `wire` is the one log both seams write to, in the order Discord would have seen them: an ordering
+ * claim read off two separate arrays is two length claims and no ordering at all.
  */
 function upgradeUnderTest(input: {
   questions: AskedQuestion[];
   questionsInput: unknown[];
   edit?: (components: readonly unknown[]) => Promise<CallOutcome<null>>;
+  post?: (text: string) => Promise<CallOutcome<{ messageId: string | null }>>;
 }) {
   const landed: Edit[] = [];
+  const posted: string[] = [];
+  const paced: number[] = [];
+  const wire: string[] = [];
   const logged: string[] = [];
   const drawing = createPromptEdits();
   const write = async (
@@ -564,6 +583,17 @@ function upgradeUnderTest(input: {
   ): Promise<CallOutcome<null>> => {
     const outcome = await (input.edit ?? (async () => OK))(components);
     landed.push({ messageId, text, components });
+    wire.push(components.length > 0 ? "prompt edit" : "stripped edit");
+    return outcome;
+  };
+  const post = async (
+    _threadId: string,
+    text: string,
+  ): Promise<CallOutcome<{ messageId: string | null }>> => {
+    const outcome = await (input.post ?? (async () => POSTED))(text);
+    if (outcome.status !== "ok") return outcome;
+    posted.push(text);
+    wire.push("continuation post");
     return outcome;
   };
   const desk = createQuestionDesk({
@@ -579,18 +609,61 @@ function upgradeUnderTest(input: {
   const upgrade = questionUpgrade({
     desk,
     edit: write,
+    post,
+    // Recorded rather than slept: what the pace is worth is that it is asked for before every post,
+    // which a test reads off the record without spending the seconds a real one would.
+    wait: async (ms) => {
+      paced.push(ms);
+    },
     drawing,
     operatorId: OPERATOR,
     log: (line) => logged.push(line),
   });
-  return { desk, upgrade, landed, logged, bodies: held.bodies, drawing, write };
+  return { desk, upgrade, landed, posted, paced, wire, logged, bodies: held.bodies, drawing, write };
 }
 
 const OK: CallOutcome<null> = { status: "ok", value: null, rate: NO_RATE_INFO };
 
+const POSTED: CallOutcome<{ messageId: string | null }> = {
+  status: "ok",
+  value: { messageId: "msg-continuation" },
+  rate: NO_RATE_INFO,
+};
+
+/**
+ * An ask no single message can carry: four questions, each with four options whose glosses run to
+ * the reading cap, which is what makes the render yield continuations at all. The tests below assert
+ * the count they got against what the renderer composed, because an ask that turned out to fit would
+ * pass every ordering claim here on zero posts.
+ */
+function longAsk(): AskedQuestion[] {
+  return [0, 1, 2, 3].map((at) => ({
+    question: `Question ${String(at)}: ${"which way should this one go, and why ".repeat(12)}`,
+    header: `Q${String(at)}`,
+    multiSelect: false,
+    options: [0, 1, 2, 3].map((option) => ({
+      label: `Option ${String(at)}-${String(option)}`,
+      description: `${"a gloss that runs on past what one message can hold ".repeat(10)}`,
+    })),
+  }));
+}
+
+/** The payload's own array for `longAsk`, which the answerable check reads the option counts off. */
+function longAskInput(): unknown[] {
+  return longAsk().map((asked) => ({
+    question: asked.question,
+    header: asked.header,
+    multiSelect: false,
+    options: asked.options.map((option) => ({
+      label: option.label,
+      description: option.description,
+    })),
+  }));
+}
+
 test("a landed notice becomes the interactive prompt the hold is answered through", async () => {
   const questions = ask("Ship it?");
-  const { upgrade, landed, bodies, desk } = upgradeUnderTest({
+  const { upgrade, landed, posted, wire, bodies, desk } = upgradeUnderTest({
     questions,
     questionsInput: askInput("Ship it?"),
   });
@@ -600,6 +673,8 @@ test("a landed notice becomes the interactive prompt the hold is answered throug
   assert.equal(landed.length, 1);
   assert.equal(landed[0].messageId, "msg-1");
   assert.ok(landed[0].components.length > 0, "the components are what the upgrade is for");
+  assert.deepEqual(posted, [], "an ask one message carries whole posts nothing beside it");
+  assert.deepEqual(wire, ["prompt edit"], "and the thread sees exactly the one write it saw before");
   assert.deepEqual(bodies, [], "and the hold still stands, waiting on a tap");
   assert.equal(desk.entry("not-an-entry"), null, "and only its own opaque id reaches it");
 });
@@ -705,6 +780,320 @@ test("a hold that ends under the upgrade edit is closed out after it, never bene
     harness.landed.map((edit) => edit.components.length > 0),
     [true, false],
     "the prompt lands, and the close-out that strips it lands after",
+  );
+});
+
+test("an ask past one message posts its continuations before the prompt that names them", async () => {
+  // The interactive message's markers say the rest is continued below, so the order is the whole
+  // guarantee: a prompt drawn first is a marker pointing at messages not yet in the thread, and one
+  // whose posts then fail points at messages that never arrive.
+  const questions = longAsk();
+  const composed = renderQuestionPrompt({
+    operatorId: OPERATOR,
+    entryId: "a1b2c3d4e5f6",
+    questions,
+    selections: questions.map(() => []),
+  }).continuations;
+  assert.ok(composed.length >= 2, "the ask under test has to actually spill for any of this to hold");
+  let issued = 0;
+  const { upgrade, posted, paced, wire, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    // The first post answers a turn of the event loop later than the rest. Posts awaited one at a
+    // time are unaffected; a dispatch that started them together would have the others answer
+    // first, so the order below is the sequence and not an artefact of every mock resolving in call
+    // order on the microtask queue.
+    post: async () => {
+      issued += 1;
+      if (issued === 1) await new Promise((resolve) => setImmediate(resolve));
+      return POSTED;
+    },
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+
+  assert.deepEqual(posted, composed, "every continuation the render composed, in the order it did");
+  assert.deepEqual(
+    wire,
+    [...composed.map(() => "continuation post"), "prompt edit"],
+    "and the prompt is the last thing on the wire, never the first",
+  );
+  assert.deepEqual(
+    paced,
+    composed.map(() => CONTINUATION_POST_PACE_MS),
+    "each post waits out the pace first, so the burst one ask makes is spread",
+  );
+  assert.deepEqual(bodies, [], "the hold stands: the ask is now readable whole and answerable");
+});
+
+test("a continuation the thread refused releases the hold instead of marking absent text", async () => {
+  const questions = longAsk();
+  const composed = renderQuestionPrompt({
+    operatorId: OPERATOR,
+    entryId: "a1b2c3d4e5f6",
+    questions,
+    selections: questions.map(() => []),
+  }).continuations;
+  assert.ok(composed.length >= 3, "the refusal has to leave continuations behind it to be dropped");
+  let issued = 0;
+  const { upgrade, landed, posted, wire, logged, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    post: async () => {
+      issued += 1;
+      return issued === 2 ? { status: "failed", error: "HTTP 400", rate: NO_RATE_INFO } : POSTED;
+    },
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    posted,
+    composed.slice(0, 1),
+    "the continuation before the refused one stands, and nothing behind it was posted anyway",
+  );
+  assert.deepEqual(bodies, [{}], "the no-decision body, which renders the console picker");
+  assert.ok(
+    landed.every((edit) => edit.components.length === 0),
+    "no marker-bearing prompt was ever drawn, so no marker points at text that is not there",
+  );
+  assert.deepEqual(wire[wire.length - 1], "stripped edit", "the close-out is the last write");
+  assert.equal(logged.length, 1);
+  assert.match(
+    logged[0],
+    /^broker: session session-a's question could not post continuation 2 of \d+ and released its hold: HTTP 400$/,
+  );
+  assert.ok(!logged[0].includes("which way should this one go"), logged[0]);
+});
+
+test("a hold that ends while its continuations post stops posting and draws nothing", async () => {
+  // The posts are round trips, and the hold can expire or be answered at the console across any one
+  // of them. The message is rewritten to its terminal state when that happens, so a prompt edit
+  // landing afterwards would put a row of taps back over an ask nothing holds any more, and every
+  // further post spends the create-message budget and a window slot a later ask needs, to write
+  // "continued from above" under a message that now says the question is closed.
+  const questions = longAsk();
+  const composed = renderQuestionPrompt({
+    operatorId: OPERATOR,
+    entryId: "a1b2c3d4e5f6",
+    questions,
+    selections: questions.map(() => []),
+  }).continuations;
+  assert.ok(composed.length >= 4, "there have to be posts left for the ended hold to stop");
+  let issued = 0;
+  const harness = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    post: async () => {
+      issued += 1;
+      if (issued === 2) {
+        // The hold ends while this post is on the wire, which is the whole of the race.
+        harness.desk.release("session-a");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return POSTED;
+    },
+  });
+
+  await harness.upgrade({
+    sessionId: "session-a",
+    threadId: "thread-1",
+    messageId: "msg-1",
+    questions,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(harness.bodies, [{}], "the release answered the session with the console picker");
+  assert.deepEqual(
+    harness.posted,
+    composed.slice(0, 2),
+    "the post the hold ended under is the last one: nothing is written for an ask nobody holds",
+  );
+  assert.ok(
+    harness.landed.every((edit) => edit.components.length === 0),
+    "the close-out stripped the message and nothing drew components back onto it",
+  );
+  assert.deepEqual(harness.logged, [], "an ask that ended has nothing left to release or report");
+});
+
+test("a refused continuation whose hold ended under it reports what the release found", async () => {
+  // Two failures in the same window: the post came back refused and the hold ended while it was on
+  // the wire. The line says which one it was, because the release it names returns an answer and a
+  // log that asserts a release it never made is a log that reads wrong at the one moment it matters.
+  const questions = longAsk();
+  let issued = 0;
+  const harness = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    post: async () => {
+      issued += 1;
+      if (issued < 2) return POSTED;
+      harness.desk.release("session-a");
+      await new Promise((resolve) => setImmediate(resolve));
+      return { status: "rate-limited", rate: NO_RATE_INFO };
+    },
+  });
+
+  await harness.upgrade({
+    sessionId: "session-a",
+    threadId: "thread-1",
+    messageId: "msg-1",
+    questions,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(harness.bodies, [{}], "the hold that ended is what answered the session");
+  assert.equal(harness.logged.length, 1);
+  assert.match(
+    harness.logged[0],
+    /^broker: session session-a's question could not post continuation 2 of \d+ and found its hold already ended: rate limited$/,
+  );
+});
+
+test("a refused continuation ends its own entry, never the successor holding the same ask", async () => {
+  // The posts hold this call open for several round trips, and a session whose hold ends inside that
+  // window re-asks: the same questions produce the same digest, so a release named by session and
+  // digest would end the new hold, whose own alert is up and answerable, on the strength of the old
+  // one's failure.
+  const questions = longAsk();
+  const successor = heldResponse();
+  let issued = 0;
+  const harness = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    post: async () => {
+      issued += 1;
+      if (issued < 2) return POSTED;
+      harness.desk.release("session-a");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(
+        harness.desk.hold("session-a", questions, longAskInput(), successor.response, true),
+        true,
+        "the session re-asks the same question while this post is on the wire",
+      );
+      return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+    },
+  });
+
+  await harness.upgrade({
+    sessionId: "session-a",
+    threadId: "thread-1",
+    messageId: "msg-1",
+    questions,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(harness.bodies, [{}], "the ask this call was upgrading is the one that ended");
+  assert.deepEqual(successor.bodies, [], "and the ask asked after it is still held, still answerable");
+});
+
+test("continuation posts past their per-thread window are refused, and release the hold", async () => {
+  // The refusal is a delivery failure like any other here: the continuations it would have written
+  // are named by markers in the prompt, so the fail direction is the console, never a prompt drawn
+  // over text the window dropped.
+  const questions = longAsk();
+  const posts = continuationPosts({ reply: async () => POSTED, now: () => 1_000 });
+  const spent = MAX_QUESTION_CONTINUATIONS_PER_WINDOW - 2;
+  for (let at = 0; at < spent; at += 1) {
+    assert.equal((await posts("thread-1", "an earlier ask's continuation")).status, "ok");
+  }
+  const { upgrade, landed, posted, logged, bodies } = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    post: (text) => posts("thread-1", text),
+  });
+
+  await upgrade({ sessionId: "session-a", threadId: "thread-1", messageId: "msg-1", questions });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(posted.length, 2, "what was left of the window, and no more");
+  assert.deepEqual(bodies, [{}], "and the ask goes to the console rather than to a partial reading");
+  assert.ok(
+    landed.every((edit) => edit.components.length === 0),
+    "the prompt naming the dropped continuations is never drawn",
+  );
+  assert.equal(logged.length, 1);
+  assert.match(
+    logged[0],
+    /^broker: session session-a's question could not post continuation 3 of \d+ and released its hold: the question continuations are over their window$/,
+  );
+});
+
+test("the continuation window holds per thread and admits again a window later", async () => {
+  let at = 1_000;
+  const posts = continuationPosts({ reply: async () => POSTED, now: () => at });
+  for (let spent = 0; spent < MAX_QUESTION_CONTINUATIONS_PER_WINDOW; spent += 1) {
+    assert.equal((await posts("thread-1", "a continuation")).status, "ok");
+  }
+  assert.equal((await posts("thread-1", "one past the ceiling")).status, "failed");
+  assert.equal(
+    (await posts("thread-2", "another thread's ask")).status,
+    "ok",
+    "one thread's flood buys no silence in another's",
+  );
+
+  at += ALERT_WINDOW_MS;
+  assert.equal(
+    (await posts("thread-1", "the next window's ask")).status,
+    "ok",
+    "and a flood locks a thread out for a window, never for good",
+  );
+});
+
+test("the continuation window spends no slot of the question alert's, and none of it spends theirs", async () => {
+  // What keeps these two apart is structural: `continuationPosts` builds its window inside itself,
+  // so no caller can hand it the alert's. What this pins is the pair of ceilings each stops at, so a
+  // ceiling moved onto the wrong constant is caught here. Sharing stamps would let a spilling ask's
+  // continuations push real question alerts into drop, and the alert route is the one permission
+  // prompts ride.
+  const alerts = createAlertVolume({
+    now: () => 1_000,
+    pingCeiling: MAX_QUESTION_PINGS_PER_WINDOW,
+    postCeiling: MAX_QUESTION_ALERTS_PER_WINDOW,
+    windowMs: ALERT_WINDOW_MS,
+  });
+  const posts = continuationPosts({ reply: async () => POSTED, now: () => 1_000 });
+
+  for (let spent = 0; spent < MAX_QUESTION_CONTINUATIONS_PER_WINDOW; spent += 1) {
+    assert.equal((await posts("thread-1", "a continuation")).status, "ok");
+  }
+  assert.equal((await posts("thread-1", "one past the ceiling")).status, "failed");
+  assert.equal(alerts("thread-1"), "ping", "the alert window never saw those posts");
+  for (let spent = 1; spent < MAX_QUESTION_ALERTS_PER_WINDOW; spent += 1) alerts("thread-1");
+  assert.equal(alerts("thread-1"), "drop", "and its own ceiling is where it stops");
+});
+
+test("one ask's paced posts stay inside the create-message allowance the pace is sized against", () => {
+  // The assumed allowance the pace is set from: five create-message posts per five seconds in one
+  // channel. Discord publishes no number for this bucket, so this is the conservative floor the
+  // constant is argued against rather than a measured limit, and it is written here so moving the
+  // pace without re-arguing the burst goes red. The ask's own alert is the post at zero, and each
+  // continuation follows one pace behind the last, so the densest five seconds hold the alert plus
+  // however many paces fit under it.
+  const assumedPosts = 5;
+  const assumedWindowMs = 5_000;
+  const densest = 1 + Math.floor(assumedWindowMs / CONTINUATION_POST_PACE_MS);
+
+  assert.ok(
+    densest <= assumedPosts,
+    `a pace of ${String(CONTINUATION_POST_PACE_MS)}ms puts ${String(densest)} posts in ` +
+      `${String(assumedWindowMs)}ms, past the ${String(assumedPosts)} it is sized for`,
+  );
+  assert.ok(
+    CONTINUATION_POST_PACE_MS * MAX_CONTINUATION_MESSAGES <= 10_000,
+    "and the longest ask still reaches its prompt in seconds, which is what the operator waits out",
+  );
+});
+
+test("the continuation window admits one whole ask's worth of continuations", () => {
+  // A bound that is only correct relative to another: the window has to be wide enough for the most
+  // continuations one ask can compose, or the feature breaks on exactly the long asks it exists for,
+  // with every such ask refused partway and released to the console.
+  assert.ok(
+    MAX_QUESTION_CONTINUATIONS_PER_WINDOW >= MAX_CONTINUATION_MESSAGES,
+    `${String(MAX_QUESTION_CONTINUATIONS_PER_WINDOW)} continuation posts a window cannot carry an ` +
+      `ask composing ${String(MAX_CONTINUATION_MESSAGES)}`,
   );
 });
 
