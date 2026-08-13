@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_QUESTIONS_PER_ASK } from "../tail.ts";
 import {
+  MAX_HELD_DESCRIPTION_LENGTH,
   MAX_MESSAGE_LENGTH,
   MAX_OPTION_DESCRIPTION_LENGTH,
   MAX_OPTION_LABEL_LENGTH,
@@ -13,8 +14,10 @@ import type { AskedOption, AskedQuestion } from "./render.ts";
 import {
   CLOSED_NOTICE,
   MAX_ACTION_ROWS,
+  MAX_BODY_DESCRIPTION_LENGTH,
   MAX_BUTTONS_PER_ROW,
   MAX_BUTTON_LABEL_LENGTH,
+  MAX_CONTINUATION_MESSAGES,
   TYPED_ANSWER_FOOTER,
   answerableFromThread,
   autoSubmits,
@@ -64,6 +67,19 @@ function prompt(questions: readonly AskedQuestion[], selections: string[][] = []
 /** Every component of a rendered message, flattened, for the cap assertions. */
 function components(rows: readonly ActionRow[]): Array<Record<string, unknown>> {
   return rows.flatMap((row) => row.components as unknown as Array<Record<string, unknown>>);
+}
+
+/**
+ * Whether some continuation carries this exact text as a whole line. Line identity is the no-cut
+ * guarantee: an option present only as a prefix of itself is a decision made on half a sentence.
+ */
+function carriesLine(continuations: readonly string[], line: string): boolean {
+  return continuations.some((message) => message.split("\n").includes(line));
+}
+
+/** A plain gloss long enough that a handful of them outgrow one message. */
+function longGloss(seed: string): string {
+  return `${seed} `.repeat(650).trim();
 }
 
 test("a two-question ask renders a select each and one control row", () => {
@@ -153,7 +169,7 @@ test("a question gets the room it wants wherever the message can carry it", () =
   // Every option of both questions drawn, gloss and all, and no marker: the message had the room,
   // and the room was where it was wanted.
   for (const n of [1, 2, 3, 4]) assert.ok(content.includes(`**Option ${String(n)}**`), content);
-  assert.equal((content.match(/more in the menu below/g) ?? []).length, 0, content);
+  assert.equal((content.match(/_\(/g) ?? []).length, 0, content);
   assert.ok(content.includes(gloss(9)), "the long gloss rides whole");
 });
 
@@ -370,6 +386,344 @@ test("the maximum ask stays inside every Discord cap it could blow", () => {
       assert.ok(
         [...(option.description ?? "")].length <= MAX_OPTION_DESCRIPTION_LENGTH,
         option.description,
+      );
+    }
+  }
+});
+
+test("an ask that fits one message yields no continuations, on both layouts", () => {
+  // The common case, which must not grow follow-up posts: the exact bytes of these fixtures are
+  // pinned by the tests above, so what this locks is that a fitting ask posts nothing extra and
+  // carries no marker pointing at messages that do not exist.
+  const selects = prompt([
+    asked({ header: "Timing" }),
+    asked({ question: "Which hosts get the change?", multiSelect: true }),
+  ]);
+  assert.deepEqual(selects.continuations, []);
+  assert.ok(!selects.content.includes("_("), selects.content);
+
+  const buttons = prompt([asked()]);
+  assert.deepEqual(buttons.continuations, []);
+  assert.ok(!buttons.content.includes("_("), buttons.content);
+});
+
+test("a spilled option's whole gloss rides a continuation, split only at line boundaries", () => {
+  // The defect this surface exists to close: an option the body had no room for used to be
+  // readable only inside the menu, cut to a hundred units. Four options wanting far more than one
+  // message pushes three of them below, and each arrives as the exact line the body would have
+  // drawn, however many messages the block has to span.
+  const glosses = ["a", "b", "c", "d"].map((seed) => longGloss(seed));
+  const { content, continuations } = prompt([
+    asked({
+      multiSelect: true,
+      options: glosses.map((gloss, at) => ({
+        label: `Option ${String(at + 1)}`,
+        description: gloss,
+      })),
+    }),
+  ]);
+
+  // The body draws what fits and marks the rest as held whole below, never as menu content.
+  assert.ok(content.includes(`1. **Option 1** · ${glosses[0]}`), content.slice(0, 200));
+  assert.ok(content.includes("_(+3 more, in full below or at the console)_"), content);
+  assert.ok(!content.includes(glosses[1]), "a spilled gloss is not in the body");
+
+  // Every spilled option reads whole below, as the exact line the body composer writes: the block
+  // outgrows one message, so it spans several, and no line is cut to make one fit.
+  for (const [at, gloss] of glosses.entries()) {
+    assert.ok(
+      carriesLine(continuations, `${String(at + 1)}. **Option ${String(at + 1)}** · ${gloss}`),
+      `option ${String(at + 1)} is not whole in any continuation`,
+    );
+  }
+  assert.ok(continuations.length >= 2, `${String(continuations.length)} messages for a 5,300-unit block`);
+  for (const message of continuations) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${String(message.length)} units`);
+    // Every message carries the broker's own framing, `ATTRIBUTION`'s rule for split replies: a
+    // message scrolled to on a phone opens on the broker's words, never on model-chosen text
+    // drawn bold in the channel where approvals are answered.
+    assert.ok(message.startsWith("❓ **Question continued from above**\n"), message.slice(0, 60));
+  }
+  // Under the cap there is no overflow tail: every option is drawn, so there is nothing to count.
+  assert.ok(!continuations.join("\n").includes("not drawn here"), continuations.join("\n"));
+});
+
+test("a question whose own text is cut in the body continues whole below", () => {
+  // The other way a block is held back: not an option that would not fit, but the question text
+  // itself, which `titleRoom` narrows inside a tight share. A cut question with no marker and no
+  // continuation is a question the operator answers from its front third without knowing it.
+  const question = `Should we ${"weigh the cost carefully ".repeat(58)}and then decide`.padEnd(
+    1_500,
+    "?",
+  );
+  assert.equal([...question].length, 1_500, "the fixture sits exactly at the question cap");
+
+  // One question at the cap with one short option: the body cannot carry the title whole even
+  // with the whole message to itself.
+  const single = prompt([asked({ question, options: options("Yes") })]);
+  assert.ok(
+    single.content.includes("_(question continued in full below or at the console)_"),
+    single.content.slice(-200),
+  );
+  assert.ok(!single.content.includes(question), "the body's copy is cut");
+  assert.ok(
+    single.continuations.join("\n").includes(question),
+    "the whole question text reads in a continuation",
+  );
+
+  // Four of them: each share is a quarter of the message, so each question draws a fraction of
+  // itself in the body, and all four must continue below. Shorter than the cap by more than the
+  // numbering prefix, so the continuation's own readability bound is not what cuts them.
+  const wide = (n: number): string =>
+    `Q${String(n)} ${"weigh the cost carefully ".repeat(55)}and then decide?`;
+  const four = prompt(
+    [1, 2, 3, 4].map((n) => asked({ question: wide(n), options: options(`Yes to ${String(n)}`) })),
+  );
+  const joined = four.continuations.join("\n");
+  for (const n of [1, 2, 3, 4]) {
+    assert.ok(joined.includes(wide(n)), `question ${String(n)} is not whole below`);
+  }
+  for (const message of four.continuations) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${String(message.length)} units`);
+    assert.ok(message.startsWith("❓ **Question continued from above**\n"), message.slice(0, 60));
+  }
+});
+
+test("the fast path's marker sends the notes below, and the continuation carries them", () => {
+  // The buttons already show every option's label, so what the fast layout withholds is only the
+  // gloss beside a label, and its marker says exactly that. The continuation still redraws the
+  // whole block, labels included, so it reads on its own.
+  const rebuild = longGloss("r");
+  const patch = longGloss("p");
+  const { content, components: rows, continuations } = prompt([
+    asked({
+      options: [
+        { label: "Rebuild", description: rebuild },
+        { label: "Patch", description: patch },
+      ],
+    }),
+  ]);
+
+  assert.equal(rows.length, 1, "two options and the release button share one row");
+  assert.ok(
+    content.includes("_(+1 more on the buttons, notes in full below or at the console)_"),
+    content,
+  );
+  assert.ok(!content.includes(patch), "the spilled gloss is not in the body");
+  assert.ok(carriesLine(continuations, `2. **Patch** · ${patch}`), "the spilled note reads whole below");
+  for (const message of continuations) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${String(message.length)} units`);
+  }
+});
+
+test("a marker rides exactly the questions a continuation carries", () => {
+  // A continuation repeats nothing that drew whole: the operator scrolling below the prompt finds
+  // the spilled question in full and not a second copy of the one they already read.
+  const big = asked({
+    header: "Big",
+    question: "The one whose options outgrow the message?",
+    options: ["a", "b", "c", "d"].map((seed, at) => ({
+      label: `Option ${String(at + 1)}`,
+      description: longGloss(seed),
+    })),
+  });
+  const small = asked({ header: "Small", question: "Short?", options: options("Yes", "No") });
+  const { content, continuations } = prompt([big, small]);
+
+  const marks = (content.match(/in full below or at the console/g) ?? []).length;
+  assert.equal(marks, 1, "one marker, on the one question that spilled");
+  const joined = continuations.join("\n");
+  assert.ok(joined.includes("**1. Big**"), "the spilled question is redrawn whole, number and all");
+  assert.ok(!joined.includes("**2. Small**"), "the question that drew whole is not repeated");
+  assert.ok(!joined.includes("**Yes**"), joined.slice(0, 200));
+});
+
+test("a continuation escapes untrusted content exactly as the body does", () => {
+  // A continuation lands in the channel where tool approvals are answered, so an unescaped field
+  // there is a forgery surface: a mention pill, a live link, a quote bar. Every field reaches a
+  // continuation through the same composer as the body, which is what these lock.
+  const hostile = "@everyone [x](https://evil.example) <@999999999999999999> **bold** ".repeat(12);
+  const { content, continuations } = prompt([
+    asked({
+      multiSelect: true,
+      options: [
+        { label: "Safe", description: `f ${"filler ".repeat(128)}`.trim() },
+        { label: "Risky", description: hostile },
+      ],
+    }),
+  ]);
+
+  assert.ok(!content.includes("@everyone"), "the hostile option spilled out of the body");
+  const joined = continuations.join("\n");
+  assert.ok(joined.includes("Risky"), "the spilled option is below");
+  // Markdown arrives escaped, so it renders as the characters it contains rather than as syntax.
+  assert.ok(joined.includes("\\[x\\]\\(https://evil.example\\)"), joined.slice(0, 300));
+  assert.ok(joined.includes("\\*\\*bold\\*\\*"), joined.slice(0, 300));
+  // No unescaped mention syntax at all: the broker's own mention rides the interactive message,
+  // never a continuation. `@everyone` survives as text on purpose; the transport's
+  // `allowed_mentions` is what stops it pinging, exactly as in the body.
+  assert.equal([...joined.matchAll(/(?<!\\)<@/g)].length, 0, joined.slice(0, 300));
+  assert.ok(joined.includes("@everyone"), joined.slice(0, 300));
+});
+
+test("the adversarial maximum ends inside the cap, with the honest overflow tail", () => {
+  // Four questions of four options with every field pinned at its anti-abuse cap compose tens of
+  // thousands of units, several times the continuation budget. The fixture is markdown-heavy on
+  // purpose: escaping expands it, so this walks the escape-then-bound path with hostile input
+  // rather than plain filler of the right length.
+  const hostile = (seed: string): string => `${seed}\`*_<>[]|~ `.repeat(200);
+  const maximal = (n: number): AskedQuestion =>
+    asked({
+      question: hostile(`q${String(n)}`),
+      header: hostile(`h${String(n)}`),
+      multiSelect: true,
+      options: [1, 2, 3, 4].map((o) => ({
+        label: hostile(`l${String(n)}${String(o)}`),
+        description: hostile(`d${String(n)}${String(o)}`),
+      })),
+    });
+  const { content, continuations } = prompt([maximal(1), maximal(2), maximal(3), maximal(4)]);
+
+  assert.ok(content.length <= MAX_MESSAGE_LENGTH, `${String(content.length)} units of content`);
+  assert.equal(continuations.length, MAX_CONTINUATION_MESSAGES);
+  for (const message of continuations) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${String(message.length)} units`);
+  }
+  // The last message ends by counting what was not drawn and naming the surface that has it all;
+  // no earlier message carries the tail, because until the cap bites there is nothing to count.
+  assert.match(
+    continuations[continuations.length - 1],
+    /_\(\+\d+ more options are not drawn here, read the ask in full at the console\)_$/,
+  );
+  for (const message of continuations.slice(0, -1)) {
+    assert.ok(!message.includes("not drawn here"), message.slice(-200));
+  }
+});
+
+test("the overflow tail rides inside the last message's ceiling, not past it", () => {
+  // The tail's room has to be held back while the last allowed message is packed: appended after
+  // the packer has filled it, the one message whose job is honesty is the one Discord refuses.
+  // The glosses here are sized so two option lines fill a message to within less than a tail's
+  // width of the ceiling, which is exactly the shape where reserving late instead of early breaks.
+  const gloss = (seed: string): string => `${seed} `.repeat(294).trim();
+  const dense = (n: number): AskedQuestion =>
+    asked({
+      question: `Q${String(n)}?`,
+      header: `H${String(n)}`,
+      multiSelect: true,
+      options: ["a", "b", "c", "d"].map((seed, at) => ({
+        label: `Option ${String(at + 1)}`,
+        description: gloss(`${seed}${String(n)}`),
+      })),
+    });
+  const { continuations } = prompt([dense(1), dense(2), dense(3), dense(4)]);
+
+  assert.equal(continuations.length, MAX_CONTINUATION_MESSAGES);
+  for (const message of continuations) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${String(message.length)} units`);
+    // A separator lands between drawn lines only: a message opening or closing on a blank line is
+    // a separator whose other side went to a different message.
+    assert.ok(!message.startsWith("\n") && !message.endsWith("\n"), JSON.stringify(message.slice(-40)));
+  }
+  assert.match(
+    continuations[continuations.length - 1],
+    /_\(\+\d+ more options are not drawn here, read the ask in full at the console\)_$/,
+  );
+});
+
+test("the refinement round restores a block missing exactly one option", () => {
+  // A drawn block that ends on a marker carries one line more than its options, and the round
+  // that hands unspent room back has to count options, not lines: counting the marker as an
+  // option reads a block missing exactly one as whole and skips it, leaving that option below
+  // when the message had the room all along. The first question here misses exactly one option
+  // whose line the spare covers; the second misses one the spare cannot cover, so it stays below.
+  const first = asked({
+    header: "One",
+    question: "Pick the first lane?",
+    options: [
+      { label: "Alpha", description: "a ".repeat(290).trim() },
+      { label: "Beta", description: "b ".repeat(90).trim() },
+    ],
+  });
+  const second = asked({
+    header: "Two",
+    question: "Pick the second lane?",
+    options: [
+      { label: "Gamma", description: "c ".repeat(290).trim() },
+      { label: "Delta", description: "d ".repeat(110).trim() },
+    ],
+  });
+  const third = asked({ header: "Three", question: "Short?", options: options("Yes", "No") });
+  const { content, continuations } = prompt([first, second, third]);
+
+  assert.ok(content.length <= MAX_MESSAGE_LENGTH, `${String(content.length)} units of content`);
+  assert.ok(
+    content.includes(`2. **Beta** · ${"b ".repeat(90).trim()}`),
+    "the returned room draws the one option the marker replaced",
+  );
+  assert.equal((content.match(/_\(/g) ?? []).length, 1, "one marker, on the one question still held back");
+  const joined = continuations.join("\n");
+  assert.ok(!joined.includes("**1. One**"), "the restored question is not repeated below");
+  assert.ok(joined.includes("**2. Two**"), "the question still held back rides below");
+  assert.ok(!joined.includes("**3. Three**"), joined.slice(0, 200));
+});
+
+test("re-rendering with selections redraws identical text and identical continuations", () => {
+  // Continuations are posted once and never edited, so every tap-refresh of the interactive
+  // message must compose the same text and the same markers: a selection reaches the picker's
+  // defaults and nothing else.
+  const question = asked({
+    multiSelect: true,
+    options: ["a", "b", "c", "d"].map((seed, at) => ({
+      label: `Option ${String(at + 1)}`,
+      description: longGloss(seed),
+    })),
+  });
+  const blank = prompt([question]);
+  const chosen = prompt([question], [["Option 2"]]);
+
+  assert.equal(chosen.content, blank.content);
+  assert.deepEqual(chosen.continuations, blank.continuations);
+  // And the selection really landed, so the identity above is not two renders that both ignored it.
+  const menu = chosen.components[0].components[0] as unknown as {
+    options: Array<{ default?: boolean }>;
+  };
+  assert.equal(menu.options[1].default, true);
+});
+
+test("the intake bound on a description and the body's reading cap move together", () => {
+  // The cross-component pin. Intake bounds a description with a bare slice (`sliceCodePoints`,
+  // no ellipsis) before any renderer sees it, and this renderer marks its own cuts by ending the
+  // block on a marker. A held bound below the reading cap would make intake the narrower cut and
+  // the silent one: a description between the two would arrive cut mid-sentence and be drawn in
+  // the body and the continuation looking whole.
+  assert.ok(
+    MAX_HELD_DESCRIPTION_LENGTH >= MAX_BODY_DESCRIPTION_LENGTH,
+    `held ${String(MAX_HELD_DESCRIPTION_LENGTH)} is narrower than drawn ${String(MAX_BODY_DESCRIPTION_LENGTH)}`,
+  );
+});
+
+test("the widest line the caps can compose still fits a continuation message", () => {
+  // The packer places a first line into an empty message unchecked, so "no line is ever cut"
+  // rests on the field caps keeping every composable line inside a message's room after the
+  // framing line. This pins that relationship at the maximal shapes: a cap raised past what one
+  // message carries goes red here rather than as a refused post in production.
+  const over = "x".repeat(2_000);
+  const maximal = asked({
+    question: over,
+    header: over,
+    multiSelect: true,
+    options: [1, 2, 3, 4].map((n) => ({ label: `${String(n)} ${over}`, description: over })),
+  });
+  const { continuations } = prompt([maximal, maximal, maximal, maximal]);
+
+  assert.ok(continuations.length > 0, "the maximal ask spills");
+  for (const message of continuations) {
+    const [framing, ...rest] = message.split("\n");
+    for (const line of rest) {
+      assert.ok(
+        framing.length + 1 + line.length <= MAX_MESSAGE_LENGTH,
+        `a ${String(line.length)}-unit line cannot ride one message with the framing`,
       );
     }
   }

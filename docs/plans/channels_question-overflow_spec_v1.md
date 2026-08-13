@@ -71,13 +71,51 @@ Security posture unchanged: every continuation field is untrusted conversation c
 through `inertField`; no question content in any log line; continuation failure logs carry
 counts and session ids only.
 
+## Standing Brief Amendments
+
+Folded into every later section's dispatch brief. Each earned its place from a review finding on an
+earlier section.
+
+- **A constant that must track another constant gets a cross-component pin.** Two components
+  agreeing is not two checks: where a bound on one surface is only correct relative to a bound on
+  another (an intake cap against a render cap, a field cap against the message ceiling), assert the
+  relationship in a test so a later move goes red at the constant rather than in production.
+- **Continuation posts spend the create-message bucket that permission prompts ride.**
+  `steeringWriter`'s `reply`, `notice`, and `alert` share one post budget, and `alert` is the write
+  permission prompts use. The question path's per-thread window admits 4 alerts per 60 seconds and
+  bounded create-message spend only because each admitted alert cost exactly one post. Continuation
+  posts must be gated under that same per-thread window, or a crafted ask multiplies the question
+  surface's spend against the approval channel by up to sevenfold.
+- **`docs/security-model.md` states the post ceiling as the thing preventing approval-channel
+  starvation.** Any change to what one admitted ask may post amends that document in the same
+  changeset, so the doc an auditor reads describes the real ceiling.
+
 ## Sections of Work
 
 ### 1. Continuation rendering
 
 Model: fable
 
-`broker/discord/question-message.ts` and `broker/discord/question-message.test.ts`.
+`broker/discord/question-message.ts` and `broker/discord/question-message.test.ts`, plus
+`broker/discord/render.ts` and `broker/tail.test.ts` for the intake cap below.
+
+A question spills in two ways, and both reach the continuations: its options can run past its share,
+and its own text can be cut by `titleRoom`. Each ends its block with a marker of its own, so a block
+never ends looking whole when it is not, and the spill predicate is the marker rather than the
+option count.
+
+Every continuation opens with a fixed framing line that interpolates no untrusted content and stays
+true after the hold ends. Without one a continuation's first line is the spilled question's own
+words, drawn bold, at the top of a broker-authored message in the channel where tool approvals are
+answered, and continuations are never edited, so that line would stand indefinitely. This is
+`ATTRIBUTION`'s rule for split replies: a message scrolled to on a phone carries its own framing or
+it carries none.
+
+The intake bound on a description (`MAX_HELD_DESCRIPTION_LENGTH`) sits at no less than the body's
+reading cap. Intake cuts with a bare slice and no ellipsis while a render site marks its own cuts,
+so an intake bound below the reading cap hands every surface a description cut mid-sentence that
+draws looking whole, which is the decision-on-half-a-sentence this plan exists to end. A test pins
+the two constants in the required order.
 
 `renderQuestionPrompt` additionally yields the continuation texts for the ask it rendered:
 zero strings when every block drew whole, otherwise one or more messages, each within
@@ -167,4 +205,40 @@ message are taps that report failures.
 None.
 
 ## Chapters
+
+### Chapter 1 - 2026-08-13
+Completed: 1. Continuation rendering
+Implemented By: implementer-fable, with one review-fix round resumed on the same agent
+Metrics: 1 review round (adversarial + blind at fable, security at its default); NEEDS_CONTEXT 0; escalations 0; advisor opus
+Decisions / Surprises: The section's headline promise failed for the question-text field itself.
+Spill detection keyed only on the options marker, so a question whose own text was cut by
+`titleRoom` produced no marker and no continuation. Reproduced before the fix: four cap-length
+questions drew 174 of 1,500 characters each with zero continuations, roughly 5,300 units readable
+nowhere. Raising the question cap made this worse than before the change, since the old 500-unit cap
+bounded the silent loss at about 325 units. A question now carries its own spill marker and the
+predicate is the marker, not the option count. Second surprise: raising the body description cap to
+1,500 inverted it against the intake cap of 1,000 in `render.ts`, where the cut is a bare slice with
+no ellipsis, so real descriptions would have been cut invisibly. Both are the "two components
+agreeing is not two checks" shape, and both now carry cross-component pins. `MARKER_ROOM` is derived
+from the marker strings rather than stated as a number, so a rewording cannot silently reintroduce
+the spill it prevents; it moved from 60 to 68 when the markers were reworded to survive the
+continuation cap.
+Review Findings: 2 Critical addressed. (a) The title-truncation gap above, found independently by
+the adversarial and blind reviewers and reproduced by probe before the fix. (b) The blind reviewer's
+"nothing posts the continuations" is Section 2's wiring by design, not a defect; it is real while
+Section 1 stands alone on origin, and Section 2 follows immediately in this effort. 3 Major
+addressed: the intake cap inversion, the missing continuation framing line (an unframed continuation
+opens on model-chosen bold text in the approval channel and is never edited), and the security
+reviewer's post-budget finding, which arms only when posting lands and is carried into Section 2 as
+a Standing Brief Amendment with its `docs/security-model.md` obligation. 3 Minor addressed: marker
+wording that stays true past the continuation cap, a test pin coupling the field caps to the message
+ceiling, and an off-by-one in the refinement round that counted the marker line as an option.
+Deviation from spec: file scope expanded to `broker/discord/render.ts` (the intake constant) and
+`broker/tail.test.ts` (its forced test consumer); the spec section is updated to match. The section's
+fix round was verified by re-running the gates and re-running the original probe rather than by a
+second full review round; the finishing pass reviews the whole changeset.
+Stamps: adjudicated 1 surfaced, stamped 2 (`escaping-untrusted-text-for-discord`,
+`three-stop-mirror-claim-tests-flake-only-in-parallel-runs`)
+Next: 2. Delivery wiring
+Commit Model: Commit-and-Push
 

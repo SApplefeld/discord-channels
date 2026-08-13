@@ -1,12 +1,14 @@
 // The interactive question message: what a question the desk is holding looks like in the thread,
 // and how a tap on it comes back.
 //
-// One message per ask, and the split through it is reading against answering. The text is the
-// reading copy: the mention, a title line per question, and that question's options numbered under
-// it with the gloss the call wrote for each. The components are the picker: a string select per
-// question, or, for the single-question ask small enough to fit one row, the options themselves as
-// buttons so the phone answer is one tap. A control row closes the message with Send answers and
-// Answer at console.
+// One interactive message per ask, and the split through it is reading against answering. The text
+// is the reading copy: the mention, a title line per question, and that question's options numbered
+// under it with the gloss the call wrote for each. The components are the picker: a string select
+// per question, or, for the single-question ask small enough to fit one row, the options themselves
+// as buttons so the phone answer is one tap. A control row closes the message with Send answers and
+// Answer at console. An ask too long for one message's text spills, and what spills rides plain
+// continuation messages the caller posts below the interactive one: the render yields their texts
+// alongside the message, each carrying in full every question block the body could not.
 //
 // The split is what keeps the ask readable. Discord caps a select option's label and description at
 // a hundred units each and a button's label at eighty, refuses a message whole for one field over,
@@ -62,16 +64,26 @@ export const MAX_FAST_PATH_OPTIONS = MAX_BUTTONS_PER_ROW - 1;
  * select option's own fields stop at Discord's ceilings, narrow enough that a real description
  * arrives cut and a phone ellipsizes what survives inside the open menu, and there is nothing this
  * renderer can do about either. The body has no such ceiling and wraps to the reader's own window,
- * so it is where an option is actually read, and these caps are set from the measured shape of real
- * `AskUserQuestion` calls rather than from any wire limit: questions and descriptions both run to
- * about 400 code points at the ninetieth percentile, and both caps clear that.
+ * so it is where an option is actually read.
  *
- * They do not hold the message inside one Discord message on their own, and are not asked to. The
- * per-question budget below owns that, and it is what lets these be generous.
+ * The question and description caps are anti-abuse bounds on untrusted conversation content, not
+ * layout bounds: what one message cannot carry rides the continuation messages below it, so the
+ * only job left to these is stopping a hostile field from making the broker compose without limit.
+ * Each is set to what one message carries alongside its own furniture, so any field a single
+ * message could ever hold arrives whole. The header cap is tighter because a header is a label by
+ * design, drawn bold on the title line, and a heading the width of a paragraph is a paragraph.
+ *
+ * They do not hold the message inside one Discord message, and are not asked to. The per-question
+ * budget below owns that.
  */
-const MAX_PROMPT_QUESTION_LENGTH = 500;
+const MAX_PROMPT_QUESTION_LENGTH = 1_500;
 const MAX_PROMPT_HEADER_LENGTH = 100;
-const MAX_BODY_DESCRIPTION_LENGTH = 400;
+/**
+ * Exported for the pin against `MAX_HELD_DESCRIPTION_LENGTH`: the intake bound cuts with a bare
+ * slice while this surface's cuts end a block on a marker, so intake must never be the narrower
+ * of the two or a description arrives cut mid-sentence looking whole.
+ */
+export const MAX_BODY_DESCRIPTION_LENGTH = 1_500;
 
 /**
  * What the head and the footer are allowed to cost, so the questions can be given the rest.
@@ -115,7 +127,7 @@ function questionRooms(needs: readonly number[], budget: number): number[] {
  *
  * Set above what a question's own furniture costs at the title floor: a number, a header at its cap,
  * the separators between them, a question at `titleRoom`'s floor, the multi-select suffix, and the
- * marker line, which is about 256 units in the worst case. Below that a block could compose past the
+ * marker line, which is about 271 units in the worst case. Below that a block could compose past the
  * share it was given, and the guarantee this whole split rests on is that it never does. Four floors
  * sit well inside the budget, so the floor can never be the thing that overruns the message.
  */
@@ -135,8 +147,19 @@ function blockCost(lines: readonly string[]): number {
  * block that needed no marker would therefore be a share the loop spends a marker's width of and
  * then falls short by, spilling the last option of a question the message had exactly enough room
  * for. This is that width: the widest marker either layout writes, and the newline before it.
+ *
+ * Measured from the marker strings themselves rather than stated as a number, because a number
+ * would have to track wording it never references: a marker reworded one unit wider than the
+ * constant reintroduces the exact spill this room exists to prevent. Three digits is wider than
+ * any option count the reader admits, so the measurement covers every count the markers can name.
  */
-const MARKER_ROOM = 60;
+const MARKER_ROOM =
+  1 +
+  Math.max(
+    moreOptionsTail(999, true).length,
+    moreOptionsTail(999, false).length,
+    questionTail().length,
+  );
 
 /**
  * A room no block reaches, for measuring what a question would draw if nothing held it back. The
@@ -269,8 +292,21 @@ type StringSelect = {
 
 export type ActionRow = { type: 1; components: Array<Button | StringSelect> };
 
-/** What the interactive message is: the content Discord renders and the rows under it. */
-export type QuestionMessage = { content: string; components: ActionRow[] };
+/**
+ * What the interactive message is: the content Discord renders, the rows under it, and the plain
+ * continuation texts the caller posts below it.
+ *
+ * Continuations are empty for the ask whose every question drew whole in the body. Otherwise each
+ * string is one message-ready text within `MAX_MESSAGE_LENGTH`, and together they carry the full
+ * block of every question whose body block ended in a spill marker: number, header, question, and
+ * every option with its whole gloss, so the spilled part of the ask reads in the thread rather
+ * than only inside a menu that cuts every field to a hundred units.
+ */
+export type QuestionMessage = {
+  content: string;
+  components: ActionRow[];
+  continuations: string[];
+};
 
 /**
  * Whether this ask can be answered from the thread at all.
@@ -364,15 +400,45 @@ function titleLine(
 /**
  * What a question's block ends with when its share had no room for the rest of its options.
  *
- * Worded by layout, because the two layouts withhold different things. A menu holds the options
- * themselves, so a marker there names where to find them. A button row already shows every option,
- * so what did not fit is the gloss beside it and nothing else, and a marker sending the operator to
- * a menu would name a component this message does not have.
+ * Both wordings point at the two surfaces that hold the withheld text whole, and never at the
+ * menu: the menu is the picker, and every field inside it is cut to a hundred units and
+ * ellipsized to the width of a phone, so it is the one place a marker must not send a reader to
+ * decide from. "Below or at the console" rather than "below" alone, because the console holds
+ * every ask whole unconditionally while the continuations are capped in number: past the cap a
+ * late question's block may not reach them, and the marker has to stay true for it. The layouts
+ * still differ in what they say is withheld: a button row already shows every option's label, so
+ * what rides below for it is the notes beside them and nothing else.
  */
 function moreOptionsTail(count: number, fast: boolean): string {
   return fast
-    ? `_(+${String(count)} more on the buttons below, without their notes)_`
-    : `_(+${String(count)} more in the menu below)_`;
+    ? `_(+${String(count)} more on the buttons, notes in full below or at the console)_`
+    : `_(+${String(count)} more, in full below or at the console)_`;
+}
+
+/**
+ * What a question's block ends with when its own text, rather than an option, was held back.
+ *
+ * `titleRoom` narrows a question's text inside a tight share, and a cut with no marker would read
+ * as the whole question: the operator would answer the front third of a sentence without a cue
+ * that there is more. So a block never ends looking whole when it is not; whichever field the
+ * share cut, the block ends on a marker and the full block rides below. Worded like the options
+ * marker, and like it naming the console too, for the ask past the continuation cap.
+ */
+function questionTail(): string {
+  return "_(question continued in full below or at the console)_";
+}
+
+/**
+ * Whether this drawn block ends held back, on any marker this module writes.
+ *
+ * Recognized by the line's opening, which is exact over the closed set of lines a block is made
+ * of: a title opens with bold marks, an option with its position digit, and only a marker opens
+ * with an underscore, which no untrusted field can lead a line with because every field arrives
+ * markdown-escaped.
+ */
+function heldBack(block: readonly string[]): boolean {
+  const last = block[block.length - 1];
+  return last !== undefined && last.startsWith("_(");
 }
 
 /**
@@ -400,7 +466,7 @@ function optionLine(asked: AskedQuestion, at: number, position: number): string 
  * One helper for both layouts, so an option cannot read one way where it is drawn as a button and
  * another way where it is drawn in a menu. Options go on whole and the first that would not leave
  * room for the marker ends the block, `renderQuestionNotice`'s rule: an option half-drawn is a
- * choice described by the front of a sentence, which is worse than one the marker sends to the menu
+ * choice described by the front of a sentence, which is worse than one the marker sends below
  * honestly. Every option is in the components either way; this is the reading copy, not the picker.
  */
 function questionLines(
@@ -409,17 +475,27 @@ function questionLines(
   room: number,
   fast: boolean,
 ): string[] {
+  // A title narrower than the one the readability cap allows is itself held back, and it is what
+  // decides how this block may end: a block whose question was cut never ends looking whole, so
+  // the question tail is reserved for and appended exactly as the options marker is.
+  const whole = titleLine(asked, number, asked.multiSelect);
   const title = titleLine(asked, number, asked.multiSelect, titleRoom(room));
+  const cut = title !== whole;
   const lines = [title];
   let used = title.length;
   const drawable = renderableOptions(asked);
   for (const [position, { at }] of drawable.entries()) {
     const line = optionLine(asked, at, position);
-    // Room kept back for the marker this option's own drawing would make necessary, which is none
-    // where it is the last: a marker after the final option would name nothing left to name, and
-    // reserving for one would spill an option whose only problem was a line that does not exist.
+    // Room kept back for the marker this option's own drawing would make necessary: the options
+    // marker while options remain, the question tail after the last where the title was cut, and
+    // nothing where the block would end whole, since a marker there would name nothing.
     const left = drawable.length - position - 1;
-    const reserve = left === 0 ? 0 : 1 + moreOptionsTail(left, fast).length;
+    const reserve =
+      left > 0
+        ? 1 + moreOptionsTail(left, fast).length
+        : cut
+          ? 1 + questionTail().length
+          : 0;
     if (used + 1 + line.length + reserve > room) {
       lines.push(moreOptionsTail(drawable.length - position, fast));
       return lines;
@@ -427,7 +503,121 @@ function questionLines(
     lines.push(line);
     used += 1 + line.length;
   }
+  if (cut) lines.push(questionTail());
   return lines;
+}
+
+/**
+ * The most continuation messages one ask may post.
+ *
+ * A bound on what untrusted conversation content can make the broker write into a thread, not a
+ * room any real ask reaches: six messages is around eleven thousand units of reading copy, and the
+ * maximum ask the reader admits composes short of that unless its fields are pinned at their own
+ * anti-abuse caps. Past it the last continuation ends with the tail below, and the components
+ * still carry every option, so nothing past the cap is unanswerable, only unread here.
+ */
+export const MAX_CONTINUATION_MESSAGES = 6;
+
+/** What the last continuation ends with when the cap left options undrawn, counting them. */
+function continuationTail(count: number): string {
+  return `_(+${String(count)} more options are not drawn here, read the ask in full at the console)_`;
+}
+
+/**
+ * What every continuation message opens with: `ATTRIBUTION`'s rule for split replies, applied to
+ * question text. A message scrolled to on a phone carries its own framing or it carries none, and
+ * an unframed continuation would open on a spilled question's own words, bold, in the channel
+ * where tool approvals are answered: model-chosen text drawn as if the broker were saying it.
+ *
+ * Fixed text that interpolates nothing untrusted, and it claims nothing that goes stale:
+ * continuations are never edited, so unlike the interactive message, which is rewritten to a
+ * terminal state at close-out, this line stands as thread history and must stay true after the
+ * hold ends.
+ */
+const CONTINUATION_HEADER = "❓ **Question continued from above**";
+
+/**
+ * The continuation texts for the blocks the body could not carry, packed into whole messages.
+ *
+ * Every message opens with the framing line and pays for it out of its own ceiling. Under it,
+ * lines go on whole and in order, a blank line between blocks as the body separates them, and a
+ * message closes at the last line that fits: no line is ever cut, because every line this module
+ * composes is bounded under a message's remaining room by the field caps above, and an option cut
+ * mid-sentence is the exact reading this surface exists to prevent. A block longer than one
+ * message spans several, still line by line.
+ *
+ * The cap is enforced with its own honesty: when packing would run past it, the last allowed
+ * message is refilled with the tail's room held back first, so the count of undrawn options rides
+ * inside the ceiling rather than being appended past it. The room is reserved at the width the
+ * count could be, which is never narrower than the count it turns out to be.
+ */
+function continuationMessages(blocks: ReadonlyArray<readonly string[]>): string[] {
+  // Annotated so the overflow tail can count what it cut in options rather than lines: a dropped
+  // title is a heading, a dropped option line is a choice the operator cannot read here.
+  const lines: Array<{ text: string; option: boolean }> = [];
+  for (const block of blocks) {
+    if (lines.length > 0) lines.push({ text: "", option: false });
+    for (const [at, text] of block.entries()) lines.push({ text, option: at > 0 });
+  }
+  if (lines.length === 0) return [];
+
+  // What the packed lines may spend per message, after the framing line and its newline: the
+  // framing is furniture on every message, so it is paid before any content is placed.
+  const room = MAX_MESSAGE_LENGTH - CONTINUATION_HEADER.length - 1;
+  const framed = (message: readonly string[]): string =>
+    [CONTINUATION_HEADER, ...message].join("\n");
+  // A separator earns its keep only between drawn lines: one left at a message's edge, where the
+  // block beside it went to another message, would open or close a post with a blank line.
+  const closed = (message: string[]): string[] => {
+    while (message[message.length - 1] === "") message.pop();
+    return message;
+  };
+  const messages: string[][] = [];
+  // Where each message's first line sits in `lines`, which is what lets the overflow pass below
+  // restart the last allowed message from exactly the content it held.
+  const starts: number[] = [];
+  let current: string[] = [];
+  let used = 0;
+  for (const [at, line] of lines.entries()) {
+    if (current.length === 0 && line.text === "") continue;
+    if (current.length > 0 && used + 1 + line.text.length > room) {
+      messages.push(closed(current));
+      current = [];
+      used = 0;
+      if (line.text === "") continue;
+    }
+    if (current.length === 0) starts.push(at);
+    current.push(line.text);
+    used += (current.length === 1 ? 0 : 1) + line.text.length;
+  }
+  if (current.length > 0) messages.push(closed(current));
+  if (messages.length <= MAX_CONTINUATION_MESSAGES) {
+    return messages.map(framed);
+  }
+
+  // Refill the last allowed message from what it and everything after it held. The reserve is
+  // measured at the full count of options still undrawn when this message opens, and the count
+  // the tail finally names is never larger, so the reserved width always covers the written one.
+  const remaining = lines.slice(starts[MAX_CONTINUATION_MESSAGES - 1]);
+  let undrawn = remaining.filter((line) => line.option).length;
+  const reserve = 1 + continuationTail(undrawn).length;
+  const kept = messages.slice(0, MAX_CONTINUATION_MESSAGES - 1).map(framed);
+  const last: string[] = [];
+  let spent = 0;
+  for (const line of remaining) {
+    if (last.length === 0 && line.text === "") continue;
+    const cost = (last.length === 0 ? 0 : 1) + line.text.length;
+    // The first line that does not fit ends the drawing outright rather than letting a shorter
+    // later line slip past it: skipping ahead would draw a question's fourth option while
+    // dropping its third, and the tail's count only reads as "the rest" when it is the rest.
+    if (spent + cost + reserve > room) break;
+    last.push(line.text);
+    spent += cost;
+    if (line.option) undrawn -= 1;
+  }
+  closed(last).push(continuationTail(undrawn));
+  kept.push(framed(last));
+  return kept;
 }
 
 /** One question's select menu, with the operator's current choices marked as its defaults. */
@@ -493,6 +683,12 @@ function button(customId: string, label: string, style: 1 | 2): Button {
  * options go on whole until the share runs out. So what is drawn is complete, what did not fit is
  * named and still answerable in the components, and a question spills only where the message really
  * had no room for it rather than because a neighbour was holding room it never wanted.
+ *
+ * What does spill is still read in the thread: every question whose block ends on a marker,
+ * whichever field its share cut, is redrawn whole in the continuation texts this render yields
+ * alongside the message, and the marker names them. The continuations depend on the questions
+ * alone, so a redraw of the message with new selections yields the same texts, which the caller
+ * already posted and never edits.
  *
  * `selections` are the labels the desk has accumulated for each question, which is what makes an
  * edit of this message show the operator their own choices back.
@@ -562,11 +758,15 @@ export function renderQuestionPrompt(input: {
   // Measured before anything is drawn, because a share cannot be decided from a question in
   // isolation: what one does not want is what another gets.
   const budget = MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM;
+  // The unheld blocks serve twice: their costs are the wants the shares are split against, and the
+  // ones whose held drawing spilled are the continuation copy, redrawn by the same composer so an
+  // option cannot read one way in the body and another way below it. Composed from the questions
+  // alone, never from `selections`, which is what makes a tap-refresh redraw identical text.
+  const unheld = questions.map((asked, at) =>
+    questionLines(asked, numbered(at), UNBOUNDED_ROOM, fast),
+  );
   const rooms = questionRooms(
-    questions.map(
-      (asked, at) =>
-        blockCost(questionLines(asked, numbered(at), UNBOUNDED_ROOM, fast)) + MARKER_ROOM,
-    ),
+    unheld.map((block) => blockCost(block) + MARKER_ROOM),
     budget,
   );
   const blocks = questions.map((asked, at) =>
@@ -586,7 +786,11 @@ export function renderQuestionPrompt(input: {
   let spare = budget - blocks.reduce((total, block) => total + blockCost(block), 0);
   for (const [at, block] of blocks.entries()) {
     if (spare <= 0) break;
-    if (block.length - 1 >= renderableOptions(questions[at]).length) continue;
+    // The lines under the title are the drawn options, less the marker where the block ends on
+    // one: counting a marker as an option would read a block missing exactly one option as whole
+    // and skip it, when that one option is what the spare most often fits.
+    const drawn = block.length - 1 - (heldBack(block) ? 1 : 0);
+    if (drawn >= renderableOptions(questions[at]).length) continue;
     // The whole remainder is offered rather than a share of it, and what this block does not take
     // passes to the next that ran short. An even split is what fails here: an option line runs to
     // several hundred units, so a quarter of the remainder is usually too little to fit one more of
@@ -595,9 +799,17 @@ export function renderQuestionPrompt(input: {
     spare -= blockCost(grown) - blockCost(block);
     blocks[at] = grown;
   }
+  // A question is held back exactly when its drawn block ends on a marker, whichever field the
+  // share cut: an option that did not fit, or the question's own text. Those questions ride below
+  // in full; the ones that drew whole are not repeated.
+  const spilled = blocks.flatMap((block, at) => (heldBack(block) ? [unheld[at]] : []));
   for (const block of blocks) lines.push("", ...block);
   lines.push("", TYPED_ANSWER_FOOTER);
-  return { content: lines.join("\n"), components: rows };
+  return {
+    content: lines.join("\n"),
+    components: rows,
+    continuations: continuationMessages(spilled),
+  };
 }
 
 /** What an ephemeral nudge says when Send arrives with a question still unanswered. */

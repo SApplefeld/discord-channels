@@ -1435,7 +1435,7 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
           multiSelect: false,
           options: [
             { label: "Ship now (Recommended)", description: "the backup is an hour out" },
-            { label: "Wait for the window", description: "d".repeat(1_200) },
+            { label: "Wait for the window", description: "d".repeat(1_600) },
           ],
         },
         {
@@ -1461,7 +1461,7 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
           // this text at two different widths, so the reader's bound only keeps an unbounded one out
           // of the held entries and the digests taken over them, and each surface cuts to its own
           // room. A real description, which runs to a few hundred code points, survives it whole.
-          { label: "Wait for the window", description: "d".repeat(1_000) },
+          { label: "Wait for the window", description: "d".repeat(1_500) },
         ],
       },
       {

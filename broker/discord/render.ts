@@ -531,11 +531,15 @@ export const MAX_OPTION_DESCRIPTION_LENGTH = 100;
  * Far above the select field's own ceiling, and that gap is the point: a description is where an
  * option says what choosing it costs, so it is the field the operator actually decides on. Bounding
  * it at the menu's limit would mean the text was gone before any surface could choose to draw more,
- * and the body has room for it. Measured against the real distribution of `AskUserQuestion` calls,
- * whose longest description runs under 700 code points, so this holds every one of them whole while
- * still bounding what a held entry and the digest taken over it can carry.
+ * and the body has room for it. An anti-abuse bound on what a held entry and the digest taken over
+ * it can carry, not a layout bound, and it sits at no less than the widest room any surface draws
+ * the text in (the question body's reading cap): the cut here is a bare slice with no ellipsis,
+ * while a render site marks its own cuts, so intake being the narrower bound would hand every
+ * surface a description cut mid-sentence that draws looking whole. The real distribution of
+ * `AskUserQuestion` calls runs far below it, with the longest measured description under 700 code
+ * points.
  */
-export const MAX_HELD_DESCRIPTION_LENGTH = 1_000;
+export const MAX_HELD_DESCRIPTION_LENGTH = 1_500;
 
 /**
  * One option of an `AskUserQuestion` question: the label the answer is given as, and the short
