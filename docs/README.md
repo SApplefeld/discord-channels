@@ -20,8 +20,11 @@ arrives as one line rather than its whole report. All of it is built and install
 
 ## Plans
 
-No open plans. Everything specified so far is built, and what is left needing a human is in
-[`backlog.md`](backlog.md).
+Open plans:
+
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_question-overflow_spec_v1.md`](plans/channels_question-overflow_spec_v1.md) | In Progress | A question prompt too long for one Discord message is readable in full: overflow posts as plain continuation messages below the interactive one, body markers point at them instead of at the 100-unit select menu, and reading-copy caps rise from layout bounds to anti-abuse bounds. |
 
 Archived plans, most recent first.
 

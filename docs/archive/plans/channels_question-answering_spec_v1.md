@@ -11,6 +11,10 @@ Created: 2026-08-09
   ask-time question alert and the `PreToolUse` hook entry this design turns into an answer
   channel. This plan begins where that one's backlog entry ("Answering a console question from
   the thread") left off; the entry is absorbed here.
+- [`../../plans/channels_question-overflow_spec_v1.md`](../../plans/channels_question-overflow_spec_v1.md):
+  extends this plan's interactive message so an ask too long for one Discord message posts its
+  overflow as plain continuation messages, readable in full instead of cut inside the select
+  menu.
 
 ## Goal
 
