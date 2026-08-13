@@ -233,7 +233,7 @@ composes at most one Discord message, naming how many further questions wait at 
 the content would not fit, so the mention and the alert line always survive.
 
 An ask no single message can carry posts its overflow as plain continuation messages, up to 6 of
-them, so what one admitted ask spends on the create-message bucket is no longer one post. Those
+them, so what one admitted ask spends on the create-message bucket is more than a single post. Those
 continuations carry their own per-thread window of 8 posts per 60 seconds, with its own stamps,
 separate from both the alert window's and the permission prompt's for the same reason those two
 are separate. So the question surface's whole ceiling against the bucket permission prompts ride

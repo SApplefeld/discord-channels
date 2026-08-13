@@ -532,10 +532,10 @@ export const MAX_OPTION_DESCRIPTION_LENGTH = 100;
  * option says what choosing it costs, so it is the field the operator actually decides on. Bounding
  * it at the menu's limit would mean the text was gone before any surface could choose to draw more,
  * and the body has room for it. An anti-abuse bound on what a held entry and the digest taken over
- * it can carry, not a layout bound, and it sits at no less than the widest room any surface draws
- * the text in (the question body's reading cap): the cut here is a bare slice with no ellipsis,
- * while a render site marks its own cuts, so intake being the narrower bound would hand every
- * surface a description cut mid-sentence that draws looking whole. The real distribution of
+ * it can carry, not a layout bound, and it is set roomily enough that any field one message can
+ * carry arrives whole. The reader cuts to it through `fit`, so a description this bound shortens
+ * reaches every surface already marked: nothing downstream of the reader can tell a text it was
+ * handed whole from one that was cut, so the cut says so itself. The real distribution of
  * `AskUserQuestion` calls runs far below it, with the longest measured description under 700 code
  * points.
  */
@@ -699,9 +699,16 @@ export function threadName(view: SessionView, state: SurfaceState): string {
 
 /**
  * Truncates to a length in code points, never in UTF-16 units: cutting an astral-plane character
- * in half leaves a lone surrogate, which is not valid UTF-8 for the request body.
+ * in half leaves a lone surrogate, which is not valid UTF-8 for the request body. The cut is marked
+ * with an ellipsis paid for out of the limit, so what comes back is inside the bound and says it is
+ * not the whole text.
+ *
+ * Exported because one cut is made before any renderer sees the text: the reader bounds an option's
+ * description at intake, and a text arriving here already cut has nothing left to tell this function
+ * it was. One implementation of the mark rather than a second beside the intake site, so the two
+ * cuts cannot come to disagree about what a shortened string looks like.
  */
-function fit(value: string, limit: number): string {
+export function fit(value: string, limit: number): string {
   // No room is no text: the cut marker is a character of its own, and drawn where nothing fits it
   // would put the line it sits in a character past the bound that was measured for it.
   if (limit <= 0) return "";

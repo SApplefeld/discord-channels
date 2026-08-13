@@ -3,7 +3,7 @@
 // would otherwise blow, and a component id names an entry and nothing else.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_QUESTIONS_PER_ASK } from "../tail.ts";
+import { MAX_QUESTIONS_PER_ASK, askedQuestions } from "../tail.ts";
 import {
   MAX_HELD_DESCRIPTION_LENGTH,
   MAX_MESSAGE_LENGTH,
@@ -593,7 +593,7 @@ test("the adversarial maximum ends inside the cap, with the honest overflow tail
   // no earlier message carries the tail, because until the cap bites there is nothing to count.
   assert.match(
     continuations[continuations.length - 1],
-    /_\(\+\d+ more options are not drawn here, read the ask in full at the console\)_$/,
+    /_\(the rest of this ask is not drawn here, including \d+ of its options, read it in full at the console\)_$/,
   );
   for (const message of continuations.slice(0, -1)) {
     assert.ok(!message.includes("not drawn here"), message.slice(-200));
@@ -625,9 +625,19 @@ test("the overflow tail rides inside the last message's ceiling, not past it", (
     // a separator whose other side went to a different message.
     assert.ok(!message.startsWith("\n") && !message.endsWith("\n"), JSON.stringify(message.slice(-40)));
   }
-  assert.match(
-    continuations[continuations.length - 1],
-    /_\(\+\d+ more options are not drawn here, read the ask in full at the console\)_$/,
+  const joined = continuations.join("\n");
+  // The shape the sentence has to be honest about: the cap bites partway through the third
+  // question, so the fourth's own title is undrawn too and no count of options stands for it.
+  assert.ok(!joined.includes("**4. H4**"), "the fourth question's block is past the cap entirely");
+  const undrawn = [1, 2, 3, 4].flatMap((n) =>
+    ["a", "b", "c", "d"].filter((seed) => !joined.includes(gloss(`${seed}${String(n)}`))),
+  ).length;
+  assert.ok(undrawn > 0, "there is something for the tail to count");
+  assert.ok(
+    continuations[continuations.length - 1].endsWith(
+      `_(the rest of this ask is not drawn here, including ${String(undrawn)} of its options, read it in full at the console)_`,
+    ),
+    continuations[continuations.length - 1].slice(-200),
   );
 });
 
@@ -691,16 +701,33 @@ test("re-rendering with selections redraws identical text and identical continua
   assert.equal(menu.options[1].default, true);
 });
 
-test("the intake bound on a description and the body's reading cap move together", () => {
-  // The cross-component pin. Intake bounds a description with a bare slice (`sliceCodePoints`,
-  // no ellipsis) before any renderer sees it, and this renderer marks its own cuts by ending the
-  // block on a marker. A held bound below the reading cap would make intake the narrower cut and
-  // the silent one: a description between the two would arrive cut mid-sentence and be drawn in
-  // the body and the continuation looking whole.
+test("a description longer than any surface draws reaches the reader marked as cut", () => {
+  // The cross-component property, driven end to end rather than asserted between two constants:
+  // the real intake reader parses the call, and the real renderer draws what it held. A cut this
+  // ask's reader makes is invisible to every surface downstream of it, so the reader is where the
+  // mark has to be applied, and a description past both bounds must arrive carrying it.
+  //
+  // The fixture is a plain run of one letter, deliberately: no markdown to expand under escaping,
+  // no whitespace to collapse, and short enough a title that the block draws whole. So the only
+  // thing that can put a cut marker on this line is the cut itself, never a spill of the body's
+  // budget and never the escape pass overrunning the reading cap.
+  const filler = "d".repeat(Math.max(MAX_HELD_DESCRIPTION_LENGTH, MAX_BODY_DESCRIPTION_LENGTH) + 100);
+  assert.ok(filler.length > MAX_HELD_DESCRIPTION_LENGTH, "the fixture has to outrun the intake bound");
+  assert.ok(filler.length > MAX_BODY_DESCRIPTION_LENGTH, "and the widest room any surface draws it in");
+
+  const held = askedQuestions({
+    questions: [{ question: "Ship it?", options: [{ label: "Now", description: filler }] }],
+  });
   assert.ok(
-    MAX_HELD_DESCRIPTION_LENGTH >= MAX_BODY_DESCRIPTION_LENGTH,
-    `held ${String(MAX_HELD_DESCRIPTION_LENGTH)} is narrower than drawn ${String(MAX_BODY_DESCRIPTION_LENGTH)}`,
+    held[0].options[0].description?.endsWith("…"),
+    "what the reader kept says it is not the whole description",
   );
+
+  const { content, continuations } = prompt(held);
+  const gloss = content.split("\n").find((line) => line.includes("**Now**"));
+  assert.ok(gloss !== undefined, content.slice(0, 200));
+  assert.ok(gloss.endsWith("…"), `the drawn gloss ends whole-looking: ${gloss.slice(-40)}`);
+  assert.deepEqual(continuations, [], "and the block drew inside the body, so no marker rides it");
 });
 
 test("the widest line the caps can compose still fits a continuation message", () => {

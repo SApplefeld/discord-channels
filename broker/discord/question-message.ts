@@ -79,9 +79,8 @@ export const MAX_FAST_PATH_OPTIONS = MAX_BUTTONS_PER_ROW - 1;
 const MAX_PROMPT_QUESTION_LENGTH = 1_500;
 const MAX_PROMPT_HEADER_LENGTH = 100;
 /**
- * Exported for the pin against `MAX_HELD_DESCRIPTION_LENGTH`: the intake bound cuts with a bare
- * slice while this surface's cuts end a block on a marker, so intake must never be the narrower
- * of the two or a description arrives cut mid-sentence looking whole.
+ * Exported for the pin that drives a description past every bound in the path and reads what the
+ * reader is left holding: whichever bound cut it, the drawn gloss carries the mark saying so.
  */
 export const MAX_BODY_DESCRIPTION_LENGTH = 1_500;
 
@@ -518,9 +517,17 @@ function questionLines(
  */
 export const MAX_CONTINUATION_MESSAGES = 6;
 
-/** What the last continuation ends with when the cap left options undrawn, counting them. */
+/**
+ * What the last continuation ends with when the cap left part of the ask undrawn.
+ *
+ * The packing stops outright at the first line the cap has no room for, so what is missing is the
+ * whole remainder of the ask and not a selection out of it, and the sentence says exactly that. The
+ * number counts the options in that remainder, which is what the reader is deciding between; it is
+ * named as part of the rest rather than as the rest itself, because a question's own title can be
+ * among the undrawn lines and no count of options would stand for it.
+ */
 function continuationTail(count: number): string {
-  return `_(+${String(count)} more options are not drawn here, read the ask in full at the console)_`;
+  return `_(the rest of this ask is not drawn here, including ${String(count)} of its options, read it in full at the console)_`;
 }
 
 /**
@@ -615,7 +622,10 @@ function continuationMessages(blocks: ReadonlyArray<readonly string[]>): string[
     spent += cost;
     if (line.option) undrawn -= 1;
   }
-  closed(last).push(continuationTail(undrawn));
+  // The trim first, then the tail: a separator left at the end of the packing would put the count
+  // under a blank line, and the tail is the last thing this message says either way.
+  closed(last);
+  last.push(continuationTail(undrawn));
   kept.push(framed(last));
   return kept;
 }

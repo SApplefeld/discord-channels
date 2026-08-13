@@ -179,7 +179,19 @@ a session parked on a picker reaches a phone without a long narration run ahead 
 becoming a ping primitive for whatever can write transcript lines. That alert then upgrades in
 place: one edit turns the notice into the interactive message, a select per question carrying the
 option descriptions the console picker shows, buttons instead when the ask is a single question of
-at most four options, and a control row to send or to hand the question back to the console. A
+at most four options, and a control row to send or to hand the question back to the console. An ask
+no single message can carry spills, and what spills rides plain continuation messages, at most six
+of them, posted below the notice before that edit runs: the interactive message's markers say the
+rest is readable in full below or at the console, so they are drawn only over messages already in
+the thread, and they stay true for the late question the six-message cap leaves undrawn. Those
+posts are spaced 1,200 milliseconds apart and each one is preceded by a fresh read of the hold, so
+an ask answered, expired, or shut down part way through stops posting where it stands, and a post
+Discord refuses releases the hold instead of leaving a marker pointing at nothing. The edit itself
+runs inside the ordered drawing queue behind its own liveness read, the way a tap-refresh does,
+because the posts ahead of it are a window several round trips wide in which the hold can end. The
+continuation texts are composed from the questions alone, never from the operator's accumulated
+selections, so a redraw after a tap yields the same texts, which the caller has already posted and
+never edits. A
 press arrives as an `INTERACTION_CREATE` gateway event, passes the same one-account allowlist every
 inbound message passes before it touches any state, and resolves against an opaque
 server-minted entry reference rather than anything the press itself carries, so what a press can

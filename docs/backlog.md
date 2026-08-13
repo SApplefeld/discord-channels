@@ -9,6 +9,11 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 
 ## Active
 
+An item carries its parked date once it has one, and ages from it: past 90 days it gets a
+promote, retire, or keep call at the next close-out. Every item below this line was parked between
+2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
+and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
+
 - Run operator check F (`operator-checks.md`), now the side-by-side fidelity watch: console beside
   thread, one long turn, on SCOTT and on NEO with both restarted onto this code. It covers the
   coalesced surface (one growing `(edited)` message under one header, and a typed message breaking
@@ -48,6 +53,21 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
   with no picker on either surface. Second, clearing a multi-select back to nothing and re-picking
   before submitting, the one interaction path where Discord's own component state, not the desk's,
   decides what arrives.
+- One live check the question-overflow round could not close from code, needing a real session and a
+  phone ([`archive/plans/channels_question-overflow_spec_v1.md`](archive/plans/channels_question-overflow_spec_v1.md)
+  is the delivered plan). Provoke a long ask, or wait for a real one, and read the thread on the
+  phone: the interactive message plus its continuation messages, every option's gloss readable in
+  full, and the pickers still answering the ask end to end. An option still cut anywhere in the
+  thread reopens the rendering section; a marker standing over a continuation that never arrived
+  reopens the delivery section. Worth watching the timing too, since a maximal six-continuation ask
+  now takes about 7.2 seconds between the alert and the controls appearing, and that pace is one
+  constant (`CONTINUATION_POST_PACE_MS`) if it reads as too slow in practice.
+- A dangling sentence in `security-model.md`, in the `GET /sessions` paragraph: "Those are model
+  ids, a token count, and upstream's own refusal category and consent answer" follows a sentence
+  about card-versus-route disclosure and has no antecedent left, so a reader cannot tell what
+  "those" names. Predates the question-overflow round, which is why that round left it alone rather
+  than guessing at the missing clause. Whoever fixes it should read the surrounding paragraph
+  against `GET /sessions`'s actual field list rather than inferring the lost sentence.
 - Fold the five duplicated `createRepeatLog` implementations into one. The rate-limited repeat
   logger is hand-copied into `broker/tail.ts`, `broker/question-desk.ts`,
   `broker/routing/interactions.ts`, `broker/discord/pins.ts`, and `broker/usage/thread.ts`, each

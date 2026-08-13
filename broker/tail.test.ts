@@ -1461,7 +1461,9 @@ test("an AskUserQuestion call yields its questions, bounded and parsed, descript
           // this text at two different widths, so the reader's bound only keeps an unbounded one out
           // of the held entries and the digests taken over them, and each surface cuts to its own
           // room. A real description, which runs to a few hundred code points, survives it whole.
-          { label: "Wait for the window", description: "d".repeat(1_500) },
+          // The cut is marked and the mark is paid for out of the bound, because this cut happens
+          // before any surface sees the text: an unmarked one draws looking like the whole gloss.
+          { label: "Wait for the window", description: `${"d".repeat(1_499)}…` },
         ],
       },
       {

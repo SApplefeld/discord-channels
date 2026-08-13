@@ -917,6 +917,61 @@ test("a hold that ends while its continuations post stops posting and draws noth
   assert.deepEqual(harness.logged, [], "an ask that ended has nothing left to release or report");
 });
 
+test("a hold that ends inside the last continuation's round trip is never drawn on afterwards", async () => {
+  // The window only the read inside the drawing queue closes. Every continuation lands, so the
+  // loop's own check before each post has run for the last time before the hold ends, and the
+  // close-out registers while that final post is still on the wire. A prompt edit does not queue
+  // behind a close-out already registered for the entry: it runs its callback where it stands. So
+  // the read inside that callback is the whole of what keeps a row of live components off a message
+  // the close-out has just rewritten to say the question is closed.
+  const questions = longAsk();
+  const composed = renderQuestionPrompt({
+    operatorId: OPERATOR,
+    entryId: "a1b2c3d4e5f6",
+    questions,
+    selections: questions.map(() => []),
+  }).continuations;
+  assert.ok(composed.length >= 2, "the ask under test has to spill for the last post to be a race");
+  let issued = 0;
+  const harness = upgradeUnderTest({
+    questions,
+    questionsInput: longAskInput(),
+    post: async () => {
+      issued += 1;
+      if (issued === composed.length) {
+        // The hold ends under the last post, which is past every check but the one inside the draw.
+        harness.desk.release("session-a");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return POSTED;
+    },
+  });
+
+  await harness.upgrade({
+    sessionId: "session-a",
+    threadId: "thread-1",
+    messageId: "msg-1",
+    questions,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    harness.posted,
+    composed,
+    "every continuation landed: the release fell inside the last one's round trip, not before it",
+  );
+  assert.deepEqual(harness.bodies, [{}], "the release answered the session with the console picker");
+  assert.ok(
+    harness.landed.every((edit) => edit.components.length === 0),
+    "and nothing drew components onto the message the close-out had already rewritten",
+  );
+  assert.ok(
+    !harness.wire.includes("prompt edit") && harness.wire.includes("stripped edit"),
+    `the close-out is the only edit this ask ever gets: ${harness.wire.join(", ")}`,
+  );
+  assert.deepEqual(harness.logged, [], "an ask that ended has nothing left to release or report");
+});
+
 test("a refused continuation whose hold ended under it reports what the release found", async () => {
   // Two failures in the same window: the post came back refused and the hold ended while it was on
   // the wire. The line says which one it was, because the release it names returns an answer and a

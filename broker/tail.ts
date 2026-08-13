@@ -33,11 +33,12 @@ import {
   MAX_HELD_DESCRIPTION_LENGTH,
   MAX_MODEL_DETAIL_LENGTH,
   MAX_MODEL_NAME_LENGTH,
+  fit,
 } from "./discord/render.ts";
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
-import { sliceCodePoints, withoutInvisible } from "./sanitize.ts";
+import { withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
 import type { Sketch } from "./similarity.ts";
 
@@ -537,6 +538,10 @@ const MAX_OPTIONS_PER_QUESTION = 4;
  * digests taken over them. The bound is `MAX_HELD_DESCRIPTION_LENGTH` rather than any one surface's
  * field limit, because two surfaces draw this text at two different widths and each cuts to its own
  * room: bounding it at the narrower one here would spend the wider one's room before it was reached.
+ * The cut is made through `fit`, which marks it, because this one is made before any surface sees
+ * the text: a description shortened here and then drawn inside a surface's own room draws looking
+ * whole, and an option decided on the front of a sentence with no cue that there is more is the
+ * reading the whole question surface exists to prevent.
  * A description that is absent, or empty once the invisible class is stripped and the rest trimmed,
  * reads as null and renders as absent.
  */
@@ -564,7 +569,7 @@ export function askedQuestions(input: unknown): AskedQuestion[] {
           label,
           description:
             typeof description === "string" && withoutInvisible(description).trim() !== ""
-              ? sliceCodePoints(description, MAX_HELD_DESCRIPTION_LENGTH)
+              ? fit(description, MAX_HELD_DESCRIPTION_LENGTH)
               : null,
         });
       }

@@ -1,13 +1,13 @@
 # Channels: a question prompt is read whole, however long it runs
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Fable Spend: S1, the reviewer bumps on S2, finishing reviews
 Created: 2026-08-13
 
 ## Related
 
-- [`../archive/plans/channels_question-answering_spec_v1.md`](../archive/plans/channels_question-answering_spec_v1.md):
+- [`channels_question-answering_spec_v1.md`](channels_question-answering_spec_v1.md):
   built the interactive question message this plan extends. That round's budget work
   (`questionRooms`, the refinement pass) shares one message well; this plan covers the ask that
   no single message can carry.
@@ -118,11 +118,15 @@ answered, and continuations are never edited, so that line would stand indefinit
 `ATTRIBUTION`'s rule for split replies: a message scrolled to on a phone carries its own framing or
 it carries none.
 
-The intake bound on a description (`MAX_HELD_DESCRIPTION_LENGTH`) sits at no less than the body's
-reading cap. Intake cuts with a bare slice and no ellipsis while a render site marks its own cuts,
-so an intake bound below the reading cap hands every surface a description cut mid-sentence that
-draws looking whole, which is the decision-on-half-a-sentence this plan exists to end. A test pins
-the two constants in the required order.
+The intake bound on a description (`MAX_HELD_DESCRIPTION_LENGTH`) cuts through the same marked cut
+the render sites use, so a description intake shortens reaches every surface already carrying its
+mark. An ordering between the intake bound and the reading cap is not what protects the reader, and
+resting on one is how a description cut mid-sentence draws looking whole: the bounds measure
+different strings, intake on raw code points and a render site on escaped text, and the escape can
+shrink as well as grow, so no ordering of the two numbers makes the render cut reliably the binding
+one. The mark is what survives every later transform. A behavioral test pins it by driving the real
+reader and the real renderer, rather than comparing the constants, which is a check that passes on
+the configuration that fails.
 
 `renderQuestionPrompt` additionally yields the continuation texts for the ask it rendered:
 zero strings when every block drew whole, otherwise one or more messages, each within
@@ -293,5 +297,53 @@ reviewer's input contract. It flagged the sentence and reviewed the diff alone, 
 but the dispatch was mine to get right.
 Stamps: none surfaced
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-13
+Completed: finishing-work (QA, security review, final adversarial review, docs curation, close-out)
+Implemented By: main session, with implementer-opus on the finishing-review fixes
+Metrics: QA PASS; 1 finishing review round (adversarial and security at fable); 1 fix round; NEEDS_CONTEXT 0; escalations 0; advisor opus
+Decisions / Surprises: The whole-changeset adversarial pass found a defect neither per-section round
+could see, because it lived at the seam between them. Raising the render cap to 1,500 and the intake
+cap to 1,500 made them equal, and equality reintroduced the unmarked mid-sentence cut in the band
+above the cap: intake cut a description with a bare slice and no ellipsis, the renderer's own cut
+then had nothing left to trigger on, and the operator read a sentence that stopped mid-thought and
+looked complete. Reproduced by probe before the fix (a 1,600-character description cut to exactly
+1,500, no mark anywhere in the rendered text). Worse, the cross-component pin written in Section 1 to
+catch exactly this asserted `>=` and so passed on the equal-constants configuration that fails, and
+it compared a raw-code-point bound against an escaped-text bound as though they measured the same
+string. Fixed by marking the cut at intake rather than by re-ordering the constants: `visible()`
+collapses whitespace, so a raw-length cut can shrink below the render cap afterward and escape the
+mark again, and no ordering of two bounds that measure different strings is reliable. The mark
+survives every later transform, which the ordering never could. The constant pin is replaced by a
+behavioral test driving the real reader and the real renderer.
+Second finding: the race guard Section 2 added, which the spec required be closed "with a test", was
+exercised by no test. Every existing test hit an earlier guard first, so deleting the inner re-read
+left the suite green. The window where it is the sole protection (the hold ending during the last
+continuation post's round trip) now has its own test, verified red with the guard deleted and green
+with it restored.
+Lesson worth carrying: both defects are the same shape the Standing Brief Amendments already named,
+two components agreeing rather than two checks, and both got past a per-section round that was
+looking for exactly that shape. What caught them was reading the two sections together.
+Review Findings: QA PASS on every acceptance criterion in both sections, with the live-Discord and
+phone items correctly classified operator-only. Security review CLEAR: both per-section Criticals
+verified closed as built, the amended security model true in both directions, the rate windows and
+pacing genuinely bounding a forged ask, escaping complete on every new path, and `npm audit` clean.
+Its 2 Minors are accepted residues already named in the security model (pacing is per ask, so long
+asks in different threads can still interleave against the shared budget) or reading-precision (the
+overflow tail's count), the latter fixed in the same round. Final adversarial review returned 2
+Major, both fixed and re-verified, and 1 Minor (a mutation written to read as a query), fixed.
+Drift adjudications: docs-curator returned DRIFT: NONE, with three docs updated for omissions rather
+than disagreements (`operations.md`, `architecture.md`, and one word in `security-model.md`). No
+`Class: mistake` items, so nothing stopped. Two things I caught reviewing the curator's own output: a
+147-column line breaking the file's wrap convention, fixed, and a dangling sentence in
+`security-model.md` that predates this effort, left alone rather than guessed at and routed to the
+backlog.
+Operator-pending: one live check, carried to `docs/backlog.md` as an active item. Provoke a long ask
+on a live session and read the thread on the phone. An option still cut anywhere reopens the
+rendering section; a marker standing over a continuation that never arrived reopens the delivery
+section.
+Stamps: adjudicated 1 surfaced across the effort, stamped 2
+Next: none, effort complete
 Commit Model: Commit-and-Push
 

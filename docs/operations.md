@@ -201,6 +201,26 @@ alert arrives at answer time, which tells you what was asked but not that anythi
 _Typing a reply here answers in your own words instead._
 ```
 
+**A long ask is readable in full below its controls.** The broker composes a message to at most
+**1,900** units, Discord's own ceiling less room for a cut marker, and an ask past that spills: a
+question whose options or whose own text the body could not draw ends its block on a marker saying
+the rest is readable in full below or at the console. What spilled is posted as plain messages
+under the interactive one, each opening `❓ Question continued from above`
+and carrying the whole block of every spilled question: its number, its header, its question text,
+and every option with the full gloss the call wrote for it. One ask posts at most **6** of them.
+Past that the last one ends by naming how many options it did not draw and sending you to the
+console; the pickers still offer every option either way, so nothing past the cap is unanswerable,
+only unread in the thread.
+
+The continuations land before the controls appear, and they are spaced **1,200 milliseconds** apart
+so a run of posts cannot crowd the budget permission prompts ride. A maximal ask therefore takes
+about **7.2 seconds** between the alert and the interactive message. They are never edited and never
+deleted, so they stand as thread history after the ask closes, which is also why an ask released
+part way through posting can leave continuation text above a message that now names the console. A
+post Discord refuses ends the upgrade rather than skipping the text: the hold is released, the
+message rewrites to the console line, and the log names which post of how many failed. A marker
+pointing at a message that never arrived would send you hunting for text that does not exist.
+
 **Answer it from the thread.** Pick from a question's menu, or tap a button when the ask is a
 single question with a handful of options, then Send; a single-question ask sends on the one tap.
 Typing a reply instead answers the whole ask in your own words. Whichever way you answer, the
@@ -235,6 +255,12 @@ writer tier as a permission prompt, with its own per-thread window:
 but stops pinging; past the post ceiling it is dropped and the log says so. A real session asks
 questions minutes apart, so hitting either ceiling means a runaway or forged transcript rather
 than a session you are failing to hear.
+
+Continuations are counted in a second window of their own, **8 posts per thread per minute**, with
+its own stamps rather than the alert's. One maximal ask fits inside it; two asks needing six
+continuations each in the same thread inside a minute do not, so the second has its remaining posts
+refused and its hold released to the console. The whole question surface therefore costs one thread
+at most 4 alert posts plus 8 continuation posts a minute.
 
 ## The fleet usage card
 
@@ -442,6 +468,16 @@ transcript text:
   without this line the only symptom would be narration quietly stopping for every session.
 - `tail: <reason> occurred N more time(s) in the last 60000ms`: a repeat of one of the lines above,
   aggregated into one summary line rather than logged once per poll.
+
+**Two `broker:` lines report a question that alerted and then could not be made answerable**, both
+naming a session ID, counts, and the transport's error class and never any question text. `broker:
+session <id>'s question could not post continuation N of M and released its hold` means an ask too
+long for one message lost one of the plain messages carrying its overflow, so the hold went to the
+console rather than leaving a marker over text that never arrived. `broker: session <id>'s question
+kept the plain notice and released its hold` means the edit that turns the alert into the
+interactive message was refused, so the thread carries the alert and the console carries the picker.
+Either line ends with `found its hold already ended` instead when the ask closed while the write was
+on the wire, which is not a failure to act on: the close-out already ran.
 
 Two of the routing layer's drop lines report a mirrored reply suppressed as a duplicate, and neither
 is a lost reply. `routing: the mirrored reply from session <id> was dropped, the tailer already posted the
