@@ -20,7 +20,11 @@ arrives as one line rather than its whole report. All of it is built and install
 
 ## Plans
 
-Open plans: none.
+Open plans:
+
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_board-card_spec_v1.md`](plans/channels_board-card_spec_v1.md) | In Progress | A third persistent card, "Fleet: Board": a deterministic, zero-token live state view of plan execution, one row per open plan across configured project roots, rendered from the kit's frozen plan-doc contract plus the goal event stream and edited in place on the usage card's pattern. Design approved 2026-08-16; awaiting an execution session. |
 
 Archived plans, most recent first.
 
