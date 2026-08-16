@@ -686,24 +686,56 @@ function fallbackDetail(value: unknown): string | null {
 }
 
 /**
- * The context a turn ran against: the three input figures of its usage block, summed. Null unless
- * every one of them is present as a finite, non-negative number, so a shape that grew a field or
- * renamed one contributes nothing rather than a total that is quietly short. The per-field
- * finiteness check keeps `1e999`, which JSON.parse reads as Infinity, out of the sum; the check
- * on the total is its own lock, because three individually finite figures near the top of the
- * double range still add to Infinity.
+ * The three input figures of one request's usage object, summed. Null unless every one of them is
+ * present as a finite, non-negative number, so a shape that grew a field or renamed one
+ * contributes nothing rather than a total that is quietly short. The per-field finiteness check
+ * keeps `1e999`, which JSON.parse reads as Infinity, out of the sum; the check on the total is its
+ * own lock, because three individually finite figures near the top of the double range still add
+ * to Infinity.
+ */
+function summedContextFields(value: unknown): number | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const fields = value as Record<string, unknown>;
+  let total = 0;
+  for (const field of CONTEXT_FIELDS) {
+    const entry = fields[field];
+    if (typeof entry !== "number" || !Number.isFinite(entry) || entry < 0) return null;
+    total += entry;
+  }
+  if (!Number.isFinite(total)) return null;
+  return total;
+}
+
+/**
+ * The context a turn ran against.
+ *
+ * A turn that took several internal iterations carries a `usage.iterations` array, and the
+ * top-level cache figures are then sums across those iterations rather than any single request's,
+ * while `input_tokens` is not aggregated the same way, so no arithmetic on the top level recovers
+ * the real figure. The reading there is one iteration outright: the largest, not the last. The
+ * two are identical on every observed row, but a turn ending on a small internal call would make
+ * the last entry understate the context, and the largest can only overstate by the iterations'
+ * spread. The kit's compaction gate reads the same rule for the same reason (`consumedFromUsage`
+ * in its `kit-compact-gate.js`), so this card and that gate cannot read one row two ways.
+ *
+ * One unreadable iteration makes the whole reading illegible rather than being skipped, so a
+ * malformed array cannot quietly narrow the set being maximized. A turn without the array, which
+ * is every single-iteration turn, reads the top level: there it is the request itself.
  */
 function contextTokens(usage: unknown): number | null {
   if (typeof usage !== "object" || usage === null || Array.isArray(usage)) return null;
   const fields = usage as Record<string, unknown>;
-  let total = 0;
-  for (const field of CONTEXT_FIELDS) {
-    const value = fields[field];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
-    total += value;
+  const iterations = fields["iterations"];
+  if (Array.isArray(iterations) && iterations.length > 0) {
+    let largest: number | null = null;
+    for (const entry of iterations) {
+      const sum = summedContextFields(entry);
+      if (sum === null) return null;
+      if (largest === null || sum > largest) largest = sum;
+    }
+    return largest;
   }
-  if (!Number.isFinite(total)) return null;
-  return total;
+  return summedContextFields(usage);
 }
 
 /** The two system subtypes that record a forced downgrade, and which path each one is. */

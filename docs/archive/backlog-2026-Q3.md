@@ -69,3 +69,14 @@ the live backlog carries active items only.
   that mutates credentials and spends a shared request budget, plus the model, context size and
   subagent roster on each session's own card. The operator-only deploy and walk survive on the live
   backlog rather than here.
+
+## Completed 2026-08-16
+
+- **The status card's context figure no longer doubles on a multi-iteration turn.** `contextTokens()`
+  in `broker/tail.ts` reads one iteration of `usage.iterations` when the array is present and
+  non-empty, and the top-level fields otherwise; the iteration chosen is the largest rather than
+  the last, mirroring the kit compaction gate's `consumedFromUsage` rule and its fail-direction
+  argument exactly, so the card and the gate cannot read one transcript row two ways. (The parked
+  note said "last entry"; the kit's shipped rule is largest, and matching the shipped rule won.)
+  Two regression tests pin the largest-iteration read and the malformed-array refusal, both watched
+  red before the fix.

@@ -14,23 +14,6 @@ promote, retire, or keep call at the next close-out. Every item below this line 
 2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
-- The status card's context figure reads roughly double on a multi-iteration turn (parked
-  2026-08-15, found from the claude-kit side). `contextTokens()` in `broker/tail.ts` sums the three
-  top-level fields of `message.usage`, but on a turn that took several internal iterations the
-  top-level cache figures are the SUM across those iterations rather than the final request, so the
-  total describes no single request. Verified against a real transcript row: a row whose top-level
-  fields sum to 710,223 is three iterations of roughly 355,000 each, its top-level
-  `cache_read_input_tokens` of 708,291 being exactly the iterations' 353,812 + 0 + 354,479. Note
-  `input_tokens` is NOT aggregated the same way, which is why dividing the total is not the fix.
-  Frequency: 27 of 430 main-thread rows in one long session, about 6 percent. The fix is to read the
-  last entry of `usage.iterations` when the array is present and non-empty, and the top-level fields
-  otherwise, since the last iteration is the final request and therefore the real context. The kit's
-  compaction gate carried the identical bug and took that fix in
-  `plugins/claude-kit/hooks/kit-compact-gate.js` (`consumedFromUsage`), with tests pinning both
-  directions, so there is a worked reference. Priority is low here and deliberately so: this number
-  is informational on a status card, where being wrong costs a raised eyebrow. It was load-bearing
-  in the kit, where a compaction decision rides on it, which is why it was fixed there first.
-
 - Run operator check F (`operator-checks.md`), now the side-by-side fidelity watch: console beside
   thread, one long turn, on SCOTT and on NEO with both restarted onto this code. It covers the
   coalesced surface (one growing `(edited)` message under one header, and a typed message breaking

@@ -161,9 +161,10 @@ function askUserQuestion(
 
 /**
  * An assistant line carrying the two facts the session card reads: the model that produced the
- * turn, and the usage block whose three input figures sum to the live context size. The real shape,
- * with the sibling counters and the nested objects a live line carries, so a reader that summed the
- * wrong keys would be caught here.
+ * turn, and the usage block the live context size is read from: the three input figures summed on
+ * a single-iteration turn, one iteration's own figures when the caller passes an `iterations`
+ * array. The real shape, with the sibling counters and the nested objects a live line carries, so
+ * a reader that summed the wrong keys would be caught here.
  */
 function assistantTurn(
   model: string,
@@ -3590,6 +3591,84 @@ test("an assistant line reports the model that ran it and the context its usage 
   assert.deepEqual(readings, [
     { sessionId: SESSION, reading: { model: "claude-fable-5", contextTokens: 181_380 } },
   ]);
+});
+
+test("a multi-iteration turn reports one iteration's context, the largest, never the top-level sum", async (t) => {
+  // The measured shape: on a turn that took several internal iterations, the top-level cache
+  // figures are sums across the iterations, so the top level here adds to 710,223 while no single
+  // request was near that. The largest iteration is deliberately the middle one, so a reader that
+  // picked the last entry instead of the largest is caught here too.
+  const file = transcriptFile(t);
+  const { tailer, readings } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantTurn("claude-fable-5", {
+      input_tokens: 1_932,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 708_291,
+      iterations: [
+        { input_tokens: 2, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 353_812 },
+        { input_tokens: 1_930, cache_creation_input_tokens: 353_000, cache_read_input_tokens: 0 },
+        { input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 354_479 },
+      ],
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(readings, [
+    { sessionId: SESSION, reading: { model: "claude-fable-5", contextTokens: 354_930 } },
+  ]);
+});
+
+test("a malformed iterations array yields no reading; an empty one reads the top level", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, readings, posts } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    // One readable entry beside one that is not: the whole reading is illegible rather than the
+    // readable entry standing for the turn, so a malformed array cannot narrow the set being
+    // maximized. The narration on the line still reaches the thread.
+    assistantTurn(
+      "claude-fable-5",
+      {
+        input_tokens: 1,
+        cache_creation_input_tokens: 1,
+        cache_read_input_tokens: 1,
+        iterations: [
+          { input_tokens: 9, cache_creation_input_tokens: 9, cache_read_input_tokens: 9 },
+          "not an object",
+        ],
+      },
+      "a malformed iteration",
+    ) +
+      // An empty array is a turn the array says nothing about: the top level is the request.
+      assistantTurn(
+        "claude-fable-5",
+        {
+          input_tokens: 2,
+          cache_creation_input_tokens: 61_378,
+          cache_read_input_tokens: 120_000,
+          iterations: [],
+        },
+        "an empty iterations array",
+      ),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(readings, [
+    { sessionId: SESSION, reading: { model: "claude-fable-5", contextTokens: 181_380 } },
+  ]);
+  assert.equal(posts.length, 2, "the narration on both lines still reaches the thread");
 });
 
 test("a line missing the model or any one usage figure reports nothing at all", async (t) => {
