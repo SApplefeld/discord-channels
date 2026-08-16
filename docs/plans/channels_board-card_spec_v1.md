@@ -125,6 +125,22 @@ would be. A configured root with no open plans draws nothing; a card with nothin
 in one line rather than being absent, accepting the same deleted-card-undetected residual the usage
 card documents.
 
+## Standing Brief Amendments
+
+Folded into every dispatch brief from here on. Each is a finding class the review of an earlier
+section surfaced more than once, so the guard belongs in the brief rather than in one more fix.
+
+- **Bound the work a tick can do.** Never write a pass whose cost is the product of two quantities
+  that both come from another program's file. The broker has one event loop, and the card runs on a
+  timer, so a stall here is a stall on the channel where approvals are answered.
+- **A comment asserts a system property, so it is a claim.** Verify it against the code you are
+  leaving behind, and re-read every comment you touch. A comment promising a property the code does
+  not have is a defect in this codebase, not a nit.
+- **Compare Windows paths case-insensitively and separator-normalized, as strings.** Never reach the
+  filesystem to decide whether two paths name the same place.
+- **Bound and validate every intake field before it enters kept state, timestamps included.** A
+  field that only gets a length cap still reaches a comparison that silently yields false forever.
+
 ## Sections of Work
 
 ### 1. The plan reader
@@ -199,8 +215,12 @@ A "Fleet board card" section in `docs/architecture.md` beside the usage card's, 
 feeds, the deterministic-renderer property, the configured-roots rule and why paths are never
 derived, the torn-read hold, and the blocked marker's clear rules. Knobs added to `operations.md`
 tunables and `install.md` where `CHANNEL_USAGE_CARD` appears. `docs/README.md` opening paragraph
-gains the third surface in one clause. Inline because implementer subagents cannot write under
-`docs/` in this harness.
+gains the third surface in one clause. `docs/security-model.md` gains the paragraph parallel to the
+fleet card's, naming the two files the card opens, the string-only root matching, that no field of
+either file becomes a path, and that the event stream's `project` is dropped rather than carried:
+that doc is read as the control inventory, and the card adds two foreign-file readers, a new
+environment-variable path override, and a new class of content crossing to Discord. Inline because
+implementer subagents cannot write under `docs/` in this harness.
 
 ## Out of Scope
 
@@ -229,4 +249,57 @@ gains the third surface in one clause. Inline because implementer subagents cann
 
 ## Chapters
 
-(Appended by executing-work as sections complete.)
+### Chapter 1 - 2026-08-16
+Completed: 1. The plan reader
+Implemented By: implementer-opus, with a second implementer-opus round for the review findings and a
+third for the re-review's four
+Metrics: 2 review rounds; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: Two contract questions the reviewers could not settle were settled from the
+engine's own source rather than inferred. The engine's H2 pattern is `^##\s+(.+)$`
+(`PlanDocParser.cs:128`), so a `##foo` line does not end a block there; our reader had been ending
+the block on it, a real divergence now fixed. The engine strips a UTF-8 BOM because it reads through
+`File.ReadAllText` (`PhysicalHarvestFileSystem.cs:65`), so our BOM strip is correct and confirmed
+rather than assumed. A plan doc with no `Status:` header above its first `##` yields a `malformed`
+failure rather than a reading, so a doc caught mid-write holds its last good parse instead of
+drawing with an invented status. The sweep now stats before reading and takes a caller-supplied
+`heldParse` seam, which is what the spec's mtime-gated refresh actually needs; the original API could
+not express it. Terminal plans are returned flagged, not filtered, because the membership rule is the
+renderer's.
+Review Findings: One Critical addressed: `parsePlan` was quadratic in file content, measured at
+16,565 ms of event-loop-blocking parse on a 3 MB in-cap doc, now 47 ms via an indexed matcher that a
+2,079-case fuzz confirms equivalent to the contract's three forms. Majors addressed: the missing
+mtime-gate seam, the unbounded per-root file count (now capped at 64 with the drop count surfaced
+rather than silent). Minors addressed: short-read loop, case-insensitive `.md`, PII contract on the
+returned structs naming `stem` as the loggable identity, the FIFO-swap note, `fstat`-after-read
+removed by stating before reading. Minor noted, not fixed: `broker/usage/cache.ts` carries the same
+single-`readSync` shape and is deliberately out of scope here.
+Stamps: adjudicated 1, stamped 1 (`stop-mirror-claim-tests-flake-in-isolation-too`)
+Next: 2. The event reader (delivered in this same changeset; see Chapter 2)
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-16
+Completed: 2. The event reader
+Implemented By: implementer-sonnet, with two implementer-opus fix rounds shared with Section 1
+Metrics: 2 review rounds; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: Built in parallel with Section 1 on disjoint files, which held: neither agent
+touched the other's. The reader keeps the matched configured root rather than the event's own
+`project` text, which drops the operator's OS username from held state entirely. Rotation is detected
+by file identity as well as size, because a replacement file that has already regrown past the old
+offset is invisible to a size check; the identity is built from a bigint stat, since `Number(ino)` is
+lossy at NTFS FileId magnitudes (measured: an ulp of 1024 on this volume). Timestamps must carry an
+explicit offset, mirroring `broker/usage/cache.ts:170`: a bare `Date.parse` reads an offset-less
+stamp as host-local, which would shift the blocked marker's clear comparison by hours.
+Review Findings: Majors addressed: a line longer than the read cap wedged the reader permanently,
+freezing every event behind it; the byte offset was computed over a lossily re-encoded buffer, so
+invalid UTF-8 let the file's writer steer where the next read began; root matching was neither
+case-folded nor separator-normalized on Windows, silently dropping every event on a drive-letter case
+difference; `project` was truncated before matching, so a long real path could never match its own
+root; `ts` was neither bounded nor validated; the documented reference-equality change signal was
+false; the kept map grew without bound. Minors addressed: ambiguous key separator, blank
+`USERPROFILE`, surrogate-splitting bound, an unused exported constant dropped, the `malformed`
+counter's doc made exactly true. Residual named in the module and accepted per the spec's
+shrink-means-full-reset choice: `kit-events.jsonl.old` is never read, so events appended between the
+last consumed offset and a rotation are lost.
+Stamps: adjudicated 1, stamped 1 (shared with Chapter 1's boundary sweep)
+Next: 3. The renderer
+Commit Model: Commit-and-Push
