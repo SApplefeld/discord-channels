@@ -740,6 +740,17 @@ export function fit(value: string, limit: number): string {
 export const MAX_BLOCK_WIDTH = 46;
 
 /**
+ * The glyph a card's filled bar cells are drawn in.
+ *
+ * U+2014 is a typographic character rather than a box-drawing one, so whether consecutive ones tile
+ * into an unbroken line or leave hairline gaps between them is a property of the font the reader's
+ * client draws with, and only a real client settles it. `─` (U+2500) is the swap where they do not
+ * tile. It lives here, beside the width bound, because every card that draws a bar reads this one
+ * constant: the swap is one edit, and no card can be drawn in a glyph the others are not.
+ */
+export const BAR_GLYPH = "—";
+
+/**
  * The widest a label column grows, whatever sits in it.
  *
  * The column is padded to the longest label a body actually carries, and this is what keeps one

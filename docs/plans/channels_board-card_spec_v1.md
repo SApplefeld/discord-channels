@@ -130,9 +130,13 @@ card documents.
 Folded into every dispatch brief from here on. Each is a finding class the review of an earlier
 section surfaced more than once, so the guard belongs in the brief rather than in one more fix.
 
-- **Bound the work a tick can do.** Never write a pass whose cost is the product of two quantities
-  that both come from another program's file. The broker has one event loop, and the card runs on a
-  timer, so a stall here is a stall on the channel where approvals are answered.
+- **Bound the work a tick can do, on every axis, and bound before you transform.** Two axes carry
+  foreign-file content, not one: the number of items, and the bytes in any single field. A pass
+  whose cost is the product of two file-derived counts is the obvious failure; the quieter one is a
+  transform that walks a whole megabyte-capable field and only then cuts it to nine columns, which
+  measured at multi-second stalls twice in this effort. Cut first, then escape, pad, or collapse.
+  The broker has one event loop and the card runs on a timer, so a stall here is a stall on the
+  channel where approvals are answered.
 - **A comment asserts a system property, so it is a claim.** Verify it against the code you are
   leaving behind, and re-read every comment you touch. A comment promising a property the code does
   not have is a defect in this codebase, not a nit.
@@ -302,4 +306,52 @@ shrink-means-full-reset choice: `kit-events.jsonl.old` is never read, so events 
 last consumed offset and a rotation are lost.
 Stamps: adjudicated 1, stamped 1 (shared with Chapter 1's boundary sweep)
 Next: 3. The renderer
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-16
+Completed: 3. The renderer
+Implemented By: implementer-opus, one build round and one seven-item fix round
+Metrics: 1 review round (adversarial + blind + security in parallel); NEEDS_CONTEXT 0; escalations 0;
+consults 0
+Decisions / Surprises: Two deliberate departures from the mock in "The shape", both argued and both
+accepted. Empty bar cells are spaces rather than `░`, because U+2591 is East-Asian-Ambiguous width and
+renders at two columns on a client configured for a CJK font, which would break the alignment the bar
+exists to carry. The blocked marker is ASCII on the row's second line (`(blocked 3h 0m)`) rather than
+`⏸` mid-line-one, for the same width reason plus the age being the useful part. The bar glyph moved to
+`broker/discord/render.ts` as `BAR_GLYPH` so the two cards cannot drift; `BAR_CELLS` stayed local to
+each card, since the two bars are sized independently.
+The reviewers contradicted each other outright: the adversarial reviewer asserted no unbounded work
+and that the module header's linearity claim was true, while the blind and security reviewers each
+*measured* the same code stalling. Measurement won. The header's claim was the defect, not the
+reviewer's disagreement about it.
+Review Findings: Majors addressed: neutralizing before bounding walked a megabyte-capable `Status:`
+and `Next:` in full before cutting to nine and 120 columns, measured at 519 ms for eight plans and up
+to 8,165 ms at four roots, on the broker's only event loop and on the channel where approvals are
+answered (fixed at the `plans.ts` intake locus, collapse-then-slice in that order so the kept prefix
+is a prefix of the meaningful text, which also stops the held-parse cache retaining megabyte strings;
+after: 0.4 to 1.9 ms); a `goal-blocked` stamped in the future permanently defeated the mtime clear
+rule, so a single bad stamp would pin the marker forever (clamped to `now`); the footer claimed to be
+anchored to the oldest thing drawn but reduced over every plan including the terminal ones the card
+hides. Minors addressed: `planName` was not idempotent, so `foo.md.md` joined to the wrong event; a
+`Status:` of nine bar glyphs forged a full progress bar; the no-parse table was an unguarded
+object-literal lookup on a data-driven key; the adversarial corpus bounded shape but never scale,
+which is how the megabyte finding survived 29 tests (a cost counter now pins that one render's
+neutralized units against the intake caps rather than the file's size, its discrimination proved by
+raising the caps to 4 MiB and watching the pin fail).
+Residuals named in comments and accepted: a padded untrusted column can exceed display width, bounded
+in consequence because a fenced block wraps rather than scrolling sideways; and the project label is
+the last segment of a configured root, so a root at or one level under a home directory would draw the
+operator's OS username.
+Gate: baseline 1274/1273/0 fail/1 skipped, now 1281/1280/0/1. Judged across 21 full runs: ten carried
+a red, and every red that was named was a member of the four known `broker/tail.test.ts` Stop-mirror
+flakes. The board's own three test files never went red in any run, isolated (10/10) or under the full
+suite. The project memory recording that flake was corrected this session on two counts its own
+evidence contradicted: the rate varies far more between sampling sessions than the single figure it
+carried, and a run can carry more than one member.
+Stamps: adjudicated 3, stamped 3 (`discord-code-blocks-wrap-to-window-width`,
+`discord-length-ceilings-differ-by-direction`,
+`ordering-two-bounds-is-not-a-control-marking-the-cut-is`)
+Next: 4. The thread, the config, and the wiring. Two items carried forward from this section's review:
+confirm the board card's create and edit routes carry `allowed_mentions` suppression, and note that
+enforcing `heldParse` staleness is the caller's job and so lands in that section.
 Commit Model: Commit-and-Push

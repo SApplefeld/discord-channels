@@ -32,6 +32,7 @@
 // takes: there a crafted address could otherwise draw a mention pill, a heading of its own, or a
 // fence delimiter, and an unescaped asterisk could close the emphasis it sits inside.
 import {
+  BAR_GLYPH,
   FENCE_COST,
   MAX_BLOCK_WIDTH,
   MAX_CARD_LENGTH,
@@ -124,19 +125,16 @@ const SESSIONS_HEADER = sectionLabel("Sessions");
 const NO_ACCOUNTS = `⚠ usage unavailable ${SEPARATOR} the usage cache holds no accounts`;
 
 /**
- * The bar every row leads with, and the glyph its filled cells are drawn in.
+ * How many cells the bar every row leads with is drawn in.
  *
  * A fixed area, so every column after it stands still whatever the value is, and fifteen cells wide
  * because that is what the block's width bound leaves once the label column, the percentage, a
  * reset clause and a marker have taken theirs. It is the row's whole reason for being wider: a
  * length is read at a glance, where a number has to be converted first.
  *
- * U+2014 is a typographic character rather than a box-drawing one, so whether consecutive ones tile
- * into an unbroken line or leave hairline gaps between them is a property of the font the reader's
- * client draws with, and only a real client settles it. `─` (U+2500) is the swap where they do not
- * tile.
+ * The count is this card's own geometry, unlike the glyph the cells are drawn in, which every card
+ * that draws a bar shares.
  */
-export const BAR_GLYPH = "—";
 export const BAR_CELLS = 15;
 
 /** What holds a row's clause off the percentage before it, and the percentage off the bar. */

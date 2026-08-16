@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_BLOCK_WIDTH, MAX_CARD_LENGTH } from "../discord/render.ts";
+import { BAR_GLYPH, MAX_BLOCK_WIDTH, MAX_CARD_LENGTH } from "../discord/render.ts";
 import type { SessionView, StateThresholds } from "../discord/state.ts";
 import type { UsageAccount, UsageReading, UsageUnavailableReason } from "./cache.ts";
 import {
   BAR_CELLS,
-  BAR_GLYPH,
   MAX_ACCOUNT_LABEL_LENGTH,
   PCT_WIDTH,
   WARNING_PCT,

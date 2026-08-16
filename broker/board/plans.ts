@@ -43,11 +43,25 @@ export const MAX_PLAN_FILE_BYTES = 1024 * 1024;
  */
 export const MAX_PLANS_PER_ROOT = 64;
 
+/**
+ * What the two free-form values a plan doc carries are held to before they leave a parse.
+ *
+ * Both are single lines of a file this module reads whole, so either can arrive as the entire
+ * megabyte the read cap allows. These caps sit generously above anything a renderer draws (the board
+ * card cuts a status to nine columns and a `Next:` to a hundred and twenty), so presentation stays
+ * the renderer's, and far below what a caller could afford to hold: a held parse is kept in memory
+ * across ticks and folded back into every sweep, so a megabyte reaching it is a megabyte re-walked
+ * by every consumer on every tick.
+ */
+export const MAX_INTAKE_STATUS_LENGTH = 120;
+export const MAX_INTAKE_NEXT_LENGTH = 400;
+
 /** The parsed contract values of one plan doc, with no knowledge of where the text came from. */
 export type PlanParse = {
   /**
-   * The `Status:` value verbatim. The renderer draws a non-terminal status as its own text, so the
-   * raw string rides out beside the flag rather than being reduced to it.
+   * The `Status:` value, whitespace-collapsed and held to `MAX_INTAKE_STATUS_LENGTH`. The renderer
+   * draws a non-terminal status as its own text, so the string rides out beside the flag rather than
+   * being reduced to it.
    */
   status: string;
   /** True only when the status equals `Complete` as the whole string, case-insensitive. */
@@ -57,8 +71,9 @@ export type PlanParse = {
   /** How many of those sections some Chapter's first `Completed:` line registers. */
   completed: number;
   /**
-   * The highest-numbered Chapter's first `Next:` value, free-form prose held raw. Bounding and
-   * neutralizing it is the renderer's job, because this value is model-written text.
+   * The highest-numbered Chapter's first `Next:` value: free-form prose, whitespace-collapsed and
+   * held to `MAX_INTAKE_NEXT_LENGTH`. Neutralizing it stays the renderer's job, because this value
+   * is model-written text.
    */
   next: string | null;
 };
@@ -251,6 +266,31 @@ function registers(section: Section, completions: Completions): boolean {
   return completions.numbers.has(section.number) || completions.titles.has(section.title);
 }
 
+// Every run of whitespace in a value, which is what stands between a bound on its length and a bound
+// on the text a reader gets out of it.
+const WHITESPACE_RUN = /\s+/g;
+
+/**
+ * A free-form value as it leaves the parse: whitespace collapsed to single spaces, then cut to a
+ * length in code points.
+ *
+ * That order is the whole of it. A renderer collapses whitespace before it draws, so cutting the raw
+ * text first would keep a prefix that is whitespace and hand on a value whose meaningful text was
+ * dropped for spaces. Collapsing first makes what is kept a prefix of what a reader would have seen.
+ *
+ * The collapse walks the whole value once, which is a megabyte at worst. That cost is paid here
+ * rather than by the renderer because a parse is mtime-gated: a file that has not moved is never
+ * read or parsed again, where a renderer runs on every refresh tick over whatever the last parse
+ * held.
+ */
+function bounded(value: string, limit: number): string {
+  const collapsed = value.replace(WHITESPACE_RUN, " ").trim();
+  // A code point takes at most two UTF-16 units, so this prefix holds at least `limit` of them and
+  // the array the cut is made on stays small whatever the value's size. Cutting on code points is
+  // what keeps an astral character from being left as half of itself.
+  return [...collapsed.slice(0, limit * 2)].slice(0, limit).join("");
+}
+
 /**
  * The contract values of one plan doc, or null when the text carries no `Status:` header above its
  * first `##` heading. Null rather than a default status, because a doc without that header is
@@ -263,8 +303,9 @@ export function parsePlan(text: string): PlanParse | null {
   // files through a decoder that strips it too.
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
 
-  const status = statusValue(lines);
-  if (status === null) return null;
+  const header = statusValue(lines);
+  if (header === null) return null;
+  const status = bounded(header, MAX_INTAKE_STATUS_LENGTH);
 
   const sections = sectionHeadings(lines);
   const chapters = chapterEntries(lines);
@@ -285,7 +326,10 @@ export function parsePlan(text: string): PlanParse | null {
     terminal: status.toLowerCase() === "complete",
     sections: sections.length,
     completed: sections.filter((section) => registers(section, completions)).length,
-    next: latest === null ? null : latest.next,
+    next:
+      latest === null || latest.next === null
+        ? null
+        : bounded(latest.next, MAX_INTAKE_NEXT_LENGTH),
   };
 }
 
@@ -386,7 +430,7 @@ function planFiles(root: string): { names: string[]; dropped: number } {
 
 /**
  * The current reading of every plan doc under the configured roots, terminal plans included: the
- * membership rule is the renderer's, which draws every non-terminal plan with its status verbatim.
+ * membership rule is the renderer's, which draws every non-terminal plan with its status as text.
  *
  * Every listed file is stat'd; a file the caller already holds a parse for at that exact
  * modification time and size is folded in from the caller's hold rather than opened, so a refresh

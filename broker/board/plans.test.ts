@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { MAX_PLANS_PER_ROOT, MAX_PLAN_FILE_BYTES, parsePlan, sweepPlans } from "./plans.ts";
+import {
+  MAX_INTAKE_NEXT_LENGTH,
+  MAX_INTAKE_STATUS_LENGTH,
+  MAX_PLANS_PER_ROOT,
+  MAX_PLAN_FILE_BYTES,
+  parsePlan,
+  sweepPlans,
+} from "./plans.ts";
 
 // Every fixture here is a synthetic plan doc. The rules under test are the kit's frozen v1 machine
 // contract, which an external engine parses from the same files, so a test that let a value close a
@@ -270,6 +277,32 @@ test("a plan with no Chapters has no Next and no closed sections", () => {
   assert.equal(parsed.next, null);
   assert.equal(parsed.completed, 0);
   assert.equal(parsed.sections, 2);
+});
+
+test("a megabyte-sized Status and Next are bounded before they leave the parse", () => {
+  // A plan file is capped at a megabyte and one line of it can be the whole of that, so these two
+  // free-form values are the two fields that can arrive enormous. Bounding them here is what keeps a
+  // megabyte out of a caller's held parse and out of every renderer downstream of it.
+  const huge = "a".repeat(2 * MAX_PLAN_FILE_BYTES);
+  const parsed = parsePlan(
+    plan({ status: huge, chapters: ["### Chapter 1", `Next: ${huge}`].join("\n") }),
+  );
+
+  assert.ok(parsed);
+  assert.equal(parsed.status.length, MAX_INTAKE_STATUS_LENGTH);
+  assert.equal(parsed.next?.length, MAX_INTAKE_NEXT_LENGTH);
+  assert.equal(parsed.terminal, false);
+});
+
+test("a value's whitespace is collapsed before it is bounded, so the prefix kept is meaningful", () => {
+  const spaced = `head${" ".repeat(4 * MAX_INTAKE_NEXT_LENGTH)}tail`;
+  const parsed = parsePlan(
+    plan({ status: `  ${spaced}`, chapters: ["### Chapter 1", `Next:   ${spaced}`].join("\n") }),
+  );
+
+  assert.ok(parsed);
+  assert.equal(parsed.status, "head tail");
+  assert.equal(parsed.next, "head tail");
 });
 
 test("the sweep reads docs/plans only, one level deep, carrying stem and mtime", () => {
