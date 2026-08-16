@@ -1,6 +1,6 @@
 # Channels: the fleet board card
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Created: 2026-08-16
 
@@ -449,4 +449,52 @@ so the suite was re-run rather than assumed.
 Stamps: adjudicated 0, stamped 0
 Next: the whole-effort finishing pass (QA verification, finishing reviews, docs curation), then the
 plan flips to Complete and archives.
+Commit Model: Commit-and-Push
+
+### Chapter 6 - 2026-08-16 (close-out)
+Completed: the whole-effort finishing pass. Plan flipped to Complete and archived.
+Verification: a QA pass drove the shipped code rather than reading it, rendering real cards from real
+temp plan trees for a normal fleet, an empty one, a torn read, a blocked plan, and an overflowing one,
+and confirmed the two load-bearing spec properties by call-graph trace: nothing between a plan file
+and the card is a model call, and exactly two feeds are read. Verdict PASS. Nothing in Out of Scope
+was built.
+Reviews: whole-changeset adversarial and security passes, both at the tier above the writer. Security
+returned CLEAR; adversarial returned approved with concerns. Both independently found the same Major,
+and it was in prose I wrote: `operations.md` claimed an over-cap plan is "not opened at all", which
+`plans.ts` contradicts in as many words, since the size cap is deliberately not enforced at the stat
+and the file is opened and read to the cap before being refused whole. The card's own row text
+repeated it. Both corrected; the true and more useful property is that the file is refused whole
+rather than parsed as a prefix, so a truncated document never reaches the card looking complete.
+Also fixed in the finishing round: a project block sorted after the plan-bearing roots and jumped to
+its configured slot the tick its first plan parsed, contradicting the comment that said a row keeps
+its place; the byte offset after stepping over an over-cap event line landed mid-line, so the next
+window's leading fragment could be parsed as a whole record and, if it happened to decode, kept as a
+real event; `CHANNEL_BOARD_EVENTS_PATH` skipped the fixed-directory validation the knob beside it
+applies for exactly the reasons that apply here too; the not-built branch for a missing Discord
+transport was the one of three that did not say why; the per-root directory listing was the last
+uncapped per-tick cost, running over every entry of a directory another program writes (now gated on
+the directory's own modification time, measured 10.0 ms to 0.6 ms at 20,000 entries, with a settle
+window so a file created inside the mtime clock's granule cannot hide); and the tracked-plan eviction
+was insertion-ordered rather than least-recently-updated.
+That listing fix first shipped as a module-global map, which was sent back. `sweepPlans` takes its
+other two holds as caller-owned seams precisely so hold state is visible and per-instance, and a third
+hold hidden in module state contradicted that, carried a doc comment claiming a bound it did not have
+once two sweepers exist, and leaked across instances. It now rides the same seam, pinned by a test
+that goes red against the old shape.
+Two measurement claims from reviewers did not reproduce and are recorded as unreproduced rather than
+carried forward: a churning root's worst tick (claimed about 1.9 s, measured 145 to 166 ms) and the
+20,000-entry listing cost (claimed 57 ms, measured 10 ms). The fixes stood on their own arguments.
+Curation: the docs-curator was deliberately not dispatched. Its drift report is the artifact the
+adversarial pass had already produced, claim by claim against the as-built code, and acting on that
+finding was this round's work; a curator would have re-derived it while rewriting freshly reviewed
+prose.
+Gate: effort baseline 1200/1199/0 fail/1 skipped; final 1334/1333/0/1, three consecutive clean full
+runs, `tsc --noEmit` clean. Across the session the known `broker/tail.test.ts` Stop-mirror flake
+cluster was the only source of red at any point, and no board, config, pins, index, or installer test
+went red in any run.
+What only the operator can verify: the card read on a phone, folded and unfolded, for horizontal drag
+and whether the bar glyph tiles into an unbroken line in their client's font; and a real `/kit-goal`
+run driven to a blocked stop and resumed, against the synthetic events used here. Both are on the
+Operator Verification list and neither is reachable from a test host.
+Stamps: adjudicated 3, stamped 3 (recorded in Chapter 3)
 Commit Model: Commit-and-Push

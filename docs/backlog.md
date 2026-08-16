@@ -68,11 +68,19 @@ and none carries a date of its own. An item added from here on carries `(parked 
   "those" names. Predates the question-overflow round, which is why that round left it alone rather
   than guessing at the missing clause. Whoever fixes it should read the surrounding paragraph
   against `GET /sessions`'s actual field list rather than inferring the lost sentence.
-- Fold the five duplicated `createRepeatLog` implementations into one. The rate-limited repeat
+- Fold the six duplicated `createRepeatLog` implementations into one. The rate-limited repeat
   logger is hand-copied into `broker/tail.ts`, `broker/question-desk.ts`,
-  `broker/routing/interactions.ts`, `broker/discord/pins.ts`, and `broker/usage/thread.ts`, each
-  with its own window constant, so a fix to the throttling behavior has to be found in five places.
-  Low risk and no behavior change wanted; purely the drift that a sixth copy would make worse.
+  `broker/routing/interactions.ts`, `broker/discord/pins.ts`, `broker/usage/thread.ts`, and
+  `broker/board/thread.ts`, each with its own window constant, so a fix to the throttling behavior
+  has to be found in six places. Low risk and no behavior change wanted; purely drift. The board
+  card's round took the sixth copy deliberately, on the codebase's own precedent that a small
+  terminal mechanism is duplicated per surface, and named three copies as the extraction threshold.
+  That threshold is now well past, so this is the round that should collapse them.
+- The board card's binding module is a near-duplicate of the usage card's. `broker/board/binding.ts`
+  and `broker/usage/binding.ts` differ only in identifiers and their header paragraphs. Accepted
+  deliberately at the time, on the same per-surface-duplication precedent, with a fourth card named
+  as the point to extract. If one ever lands, the shape to build is a single card-binding module
+  taking a label.
 - **Deploy the two delivered rounds and walk them, in this order.** Everything below needs a real
   host, a real Discord client, or a phone, and none of it can be closed from code. The delivered
   plans are
@@ -99,6 +107,18 @@ and none carries a date of its own. An item added from here on carries `(parked 
      rather than reading fresh.
   8. On a host with zero sessions and no claude-swap, confirm the static body means a deleted card
      goes undetected until restart.
+  9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`) and read it on a
+     phone in the same pass as check 2, for horizontal drag and for whether its bar tiles into an
+     unbroken line. Its bar reads the same `BAR_GLYPH` constant, so one swap moves both cards. The
+     delivered plan is
+     [`archive/plans/channels_board-card_spec_v1.md`](archive/plans/channels_board-card_spec_v1.md).
+  10. Drive a real `/kit-goal` run to a blocked stop and confirm the board card draws the blocked
+     marker, then resume it and confirm the marker clears. The clear rules were exercised only
+     against synthetic events, in both directions, and the live event stream is the one thing a test
+     host cannot supply.
+  11. Confirm the board card takes and keeps a pin beside the usage card. The pin list's permanent
+     slot became a list for this, and that arithmetic was verified against a test double rather than
+     a live channel's pin ceiling.
 - Confirm what Discord does with a rename on a still-archived thread. Inferred, never established:
   after the archive-revive fix, a session woken by hook traffic alone leaves the broker's archived
   flag cleared while Discord's thread may still be archived. If Discord refuses the rename as a

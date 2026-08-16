@@ -127,7 +127,7 @@ const NOTHING_OPEN = "No open plans in the configured projects.";
  * wrote. `NO_PARSE_FALLBACK` is what a reason from outside the union draws. */
 const NO_PARSE = new Map<PlanFailureReason, string>([
   ["unreadable", "cannot be read"],
-  ["oversized", "too large to open"],
+  ["oversized", "too large to read"],
   ["malformed", "does not parse"],
 ]);
 
@@ -413,18 +413,24 @@ type BlockItem = { lines: string[]; plans: number };
 type ProjectSection = { label: string; items: BlockItem[]; plans: number };
 
 /**
- * The card's projects, in the order the sweep presented them, each carrying only what it has to
- * draw.
+ * The card's projects in the order they were configured, each carrying only what it has to draw.
+ *
+ * A project holds that place whatever kind of entry it has in it, rows or a plan that would not
+ * parse or a note that its listing was cut. Ordering by what the sweep managed to parse would sink a
+ * project whose one plan has never parsed below every project with a readable plan, and lift it back
+ * up the tick that plan first parses.
  *
  * Roots are grouped by their configured string rather than by a normalized form, because every root
  * on every input here came from the one configured list the sweep and the event reader were both
- * handed. A project with nothing to draw gets no entry at all, which is what leaves a configured
- * root with no open plans drawing nothing rather than an empty block.
+ * handed. A root on those inputs the configured list does not name is drawn after the ones it does
+ * rather than dropped. A project with nothing to draw gets no entry at all, which is what leaves a
+ * configured root with no open plans drawing nothing rather than an empty block.
  *
  * A project is labelled by the last segment of its configured root, so a root configured at or one
  * level under a home directory draws the operator's OS username into a channel.
  */
 function sections(
+  roots: readonly string[],
   plans: readonly BoardPlan[],
   failures: readonly PlanFailure[],
   truncated: readonly PlanTruncation[],
@@ -440,12 +446,13 @@ function sections(
     0,
   );
 
-  const order: string[] = [];
+  const order: string[] = [...new Set(roots)];
+  const configured = new Set(order);
   const byRoot = new Map<string, BlockItem[]>();
   const place = (root: string): BlockItem[] => {
     const held = byRoot.get(root);
     if (held !== undefined) return held;
-    order.push(root);
+    if (!configured.has(root)) order.push(root);
     const fresh: BlockItem[] = [];
     byRoot.set(root, fresh);
     return fresh;
@@ -473,15 +480,17 @@ function sections(
     if (dropped > 0) place(cut.root).push({ lines: [truncationLine(dropped)], plans: dropped });
   }
 
-  return order.map((root, index) => {
-    const named = inertField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
-    const items = byRoot.get(root) ?? [];
-    return {
-      label: `**${named === "" ? unnamedProject(index) : named}**`,
-      items,
-      plans: items.reduce((sum, item) => sum + item.plans, 0),
-    };
-  });
+  return order
+    .filter((root) => (byRoot.get(root)?.length ?? 0) > 0)
+    .map((root, index) => {
+      const named = inertField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
+      const items = byRoot.get(root) ?? [];
+      return {
+        label: `**${named === "" ? unnamedProject(index) : named}**`,
+        items,
+        plans: items.reduce((sum, item) => sum + item.plans, 0),
+      };
+    });
 }
 
 /**
@@ -526,6 +535,10 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
  * inputs compose the same bytes.
  */
 export function renderBoardCard(input: {
+  /** The configured project roots, in the order the card draws their blocks. A root with nothing to
+   * draw takes no block, and a root on any other input here that this list does not name is drawn
+   * after the ones it does. */
+  roots: readonly string[];
   plans: readonly BoardPlan[];
   /** The plans this tick could not read and the caller holds no parse for. One the caller does hold
    * a parse for belongs in `plans` marked held, where it draws its last good row. */
@@ -548,6 +561,7 @@ export function renderBoardCard(input: {
   };
 
   const projects = sections(
+    input.roots,
     input.plans,
     input.failures,
     input.truncated,

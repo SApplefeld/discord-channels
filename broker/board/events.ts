@@ -8,7 +8,11 @@
 // tick that hits the cap mid-line leaves those trailing bytes for the next tick: the offset
 // advances past complete, newline-terminated lines. The one exception is a line longer than the cap
 // itself, which no single window can ever complete; that window is counted malformed and stepped
-// over, because waiting for a newline that cannot arrive would wedge the reader on it for good.
+// over, because waiting for a newline that cannot arrive would wedge the reader on it for good. The
+// step leaves the offset inside that line, so the reader carries a flag saying so and discards the
+// bytes ahead of the next newline before it parses anything: the tail of a stepped-over line is a
+// fragment of a record, and a fragment that happened to be valid JSON of the right shape would
+// otherwise be kept as an event its own line never carried.
 //
 // A rotation shows up either as the file's identity changing or as its size falling below the
 // offset, and either one restarts the read at the top. Events appended between the last consumed
@@ -66,7 +70,8 @@ export const MAX_TS_CHARS = 40;
 export const MAX_EVENTS_READ_BYTES = 128 * 1024;
 
 /**
- * The most (root, plan) pairs the kept state carries, oldest insertion evicted to make room.
+ * The most (root, plan) pairs the kept state carries, the pair whose latest event landed longest ago
+ * evicted to make room.
  *
  * `plan` comes from another program's file and its distinct values are unbounded, so without this
  * the map grows for as long as the broker runs and every tick's copy of it grows with it. The
@@ -92,6 +97,12 @@ export type EventReaderState = {
   offset: number;
   identity: string | null;
   /**
+   * True when `offset` sits inside a line whose beginning was stepped over, which happens only for a
+   * line longer than the whole read cap. The next read discards its bytes up to the first newline, so
+   * the tail of that line is never parsed as a record of its own.
+   */
+  midLine: boolean;
+  /**
    * The running count of skipped intake: one per complete line that failed to parse into the
    * expected shape, and one per full window stepped over for a line longer than the read cap. A
    * line that long raises the count once for every window it spans, because a window that holds no
@@ -104,7 +115,7 @@ export type EventReaderState = {
 /** A fresh reader with nothing consumed yet, the correct starting point for a file never read
  * before and equally correct for one that does not exist. */
 export function initialEventState(): EventReaderState {
-  return { offset: 0, identity: null, malformed: 0, latest: new Map() };
+  return { offset: 0, identity: null, midLine: false, malformed: 0, latest: new Map() };
 }
 
 /** Where a tick's read resumes from: the bytes already consumed and the file identity they were
@@ -410,13 +421,22 @@ export function readEvents(
       // recreating it. Either way the next successful read should start from the top of whatever
       // file appears there.
       return {
-        state: { offset: 0, identity: null, malformed: previous.malformed, latest: previous.latest },
+        state: {
+          offset: 0,
+          identity: null,
+          midLine: false,
+          malformed: previous.malformed,
+          latest: previous.latest,
+        },
         unreadable: false,
       };
     }
     return { state: previous, unreadable: true };
   }
 
+  // The flag rides the offset, so a read that restarted at the top of a rotated file drops it: those
+  // bytes are the beginning of a line, whatever the old offset stood in the middle of.
+  const midLine = previous.midLine && result.start === previous.offset;
   const bytes = result.bytes;
   const lastNewline = bytes.lastIndexOf(0x0a);
   if (lastNewline === -1) {
@@ -428,6 +448,7 @@ export function readEvents(
         state: {
           offset: result.start + bytes.length,
           identity: result.identity,
+          midLine: true,
           malformed: previous.malformed + 1,
           latest: previous.latest,
         },
@@ -440,6 +461,7 @@ export function readEvents(
       state: {
         offset: result.start,
         identity: result.identity,
+        midLine,
         malformed: previous.malformed,
         latest: previous.latest,
       },
@@ -448,7 +470,9 @@ export function readEvents(
   }
 
   const index = comparableRoots(roots);
-  const complete = bytes.subarray(0, lastNewline).toString("utf8");
+  // What the tail of a stepped-over line ends at, and where a whole line therefore begins.
+  const from = midLine ? bytes.indexOf(0x0a) + 1 : 0;
+  const complete = bytes.subarray(from, lastNewline).toString("utf8");
   let latest = previous.latest;
   let malformed = previous.malformed;
 
@@ -466,8 +490,12 @@ export function readEvents(
     // The copy is made on the first event actually kept, so a tick that keeps none returns the
     // previous map itself and a caller comparing by reference sees nothing moved.
     if (latest === previous.latest) latest = new Map(previous.latest);
+    // Deleted before it is set, because a map keeps a key in the slot it was first inserted at: a
+    // pair kept fresh by a run that blocks over and over would otherwise stand at the old end of the
+    // map and give way ahead of pairs nothing has said anything about for days.
     const key = eventKey(root, parsed.plan);
-    if (!latest.has(key) && latest.size >= MAX_TRACKED_PLANS) {
+    latest.delete(key);
+    if (latest.size >= MAX_TRACKED_PLANS) {
       const oldest = latest.keys().next();
       if (oldest.done !== true) latest.delete(oldest.value);
     }
@@ -482,7 +510,13 @@ export function readEvents(
   }
 
   return {
-    state: { offset: result.start + lastNewline + 1, identity: result.identity, malformed, latest },
+    state: {
+      offset: result.start + lastNewline + 1,
+      identity: result.identity,
+      midLine: false,
+      malformed,
+      latest,
+    },
     unreadable: false,
   };
 }

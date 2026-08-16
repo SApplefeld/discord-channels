@@ -338,7 +338,8 @@ fix is in the document rather than here.
 
 Cost per refresh is small and bounded. A file is opened only when its modification time or size has
 moved, and a file that fails to parse is held shut on the same terms rather than being re-read every
-tick. Plans above 256 KB are not opened at all and draw a row saying so; a real plan runs tens of KB.
+tick. A plan above 256 KB is refused whole rather than parsed as a prefix, and draws a row saying so,
+so a truncated document never reaches the card as if it were complete; a real plan runs tens of KB.
 Each root contributes at most 64 plan files.
 
 ## What a session card says about its model

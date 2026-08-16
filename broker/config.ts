@@ -115,8 +115,8 @@ export type BrokerConfig = {
   /** How often the fleet is re-swept and re-rendered. An edit is spent only when it changed. */
   boardCardRefreshMs: number;
   /** The kit's goal event stream, resolved from `CHANNEL_BOARD_EVENTS_PATH` or from the home
-   * directory. Absent on disk is the ordinary case, not an error: the card then draws no blocked
-   * markers. */
+   * directory, and absolute either way. Absent on disk is the ordinary case, not an error: the card
+   * then draws no blocked markers. */
   boardEventsPath: string;
 };
 
@@ -307,13 +307,13 @@ function taskNotificationMode(raw: string | undefined): "brief" | "full" | "off"
   );
 }
 
-// A Windows path names the same directory from every process only when it leads with a drive letter
-// or a UNC root. `path.isAbsolute` takes a leading separator as well, and `\one` resolves against
+// A Windows path names the same place from every process only when it leads with a drive letter or a
+// UNC root. `path.isAbsolute` takes a leading separator as well, and `\one` resolves against
 // whichever drive the broker was launched from, which under a scheduled task is no drive the
 // operator chose.
 const WINDOWS_ROOT = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
 
-/** True only for an entry that names one directory whatever the process's launch state was. */
+/** True only for a value that names one file or directory whatever the process's launch state was. */
 function namesOneDirectory(root: string): boolean {
   if (!path.isAbsolute(root)) return false;
   return process.platform === "win32" ? WINDOWS_ROOT.test(root) : true;
@@ -357,6 +357,28 @@ function projectRoots(raw: string | undefined): readonly string[] {
     roots.push(root);
   }
   return roots;
+}
+
+/**
+ * The kit's goal event stream: the configured path, or the one under the home directory when nothing
+ * names another.
+ *
+ * A configured path is held to the same rule a project root is, and for the same reason: a relative
+ * or drive-relative path resolves against whatever directory or drive the broker was launched from,
+ * which under a scheduled task is neither of the operator's choosing, and a card reading the wrong
+ * file (or reading nothing and drawing no blocked markers at all) is a card nobody can reason about
+ * from the value they wrote. The computed default is absolute already.
+ *
+ * The refusal never echoes the value: this path typically sits under the operator's own profile, and
+ * this message reaches the log file.
+ */
+function eventsPath(env: NodeJS.ProcessEnv): string {
+  const configured = env.CHANNEL_BOARD_EVENTS_PATH?.trim();
+  if (configured === undefined || configured === "") return defaultEventsPath(env);
+  if (!namesOneDirectory(configured)) {
+    throw new Error("expected an absolute path, the value names no fixed file");
+  }
+  return configured;
 }
 
 /**
@@ -445,6 +467,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     ),
     // Read here rather than where the file is opened, so the installer's env allowlist pin, which
     // scans this file for the knobs it must carry, sees this one too.
-    boardEventsPath: env.CHANNEL_BOARD_EVENTS_PATH?.trim() || defaultEventsPath(env),
+    boardEventsPath: eventsPath(env),
   };
 }

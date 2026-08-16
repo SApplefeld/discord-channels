@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
   parsePlan,
   sweepPlans,
 } from "./plans.ts";
+import type { PlanDirectoryListing, PlanSweep } from "./plans.ts";
 
 // Every fixture here is a synthetic plan doc. The rules under test are the kit's frozen v1 machine
 // contract, which an external engine parses from the same files, so a test that let a value close a
@@ -53,6 +54,27 @@ function scratch(): Scratch {
       return file;
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
+ * One caller of the sweep that holds its directory listings the way the board card does: handed to
+ * each sweep and rebuilt from what that sweep returned, so the hold belongs to this sweeper alone.
+ */
+function sweeping(roots: readonly string[]): { sweep: () => PlanSweep } {
+  let listings = new Map<string, PlanDirectoryListing>();
+  return {
+    sweep: () => {
+      const previous = listings;
+      const swept = sweepPlans(roots, {
+        heldListing: (dir, mtimeMs) => {
+          const listed = previous.get(dir);
+          return listed === undefined || listed.mtimeMs !== mtimeMs ? undefined : listed;
+        },
+      });
+      listings = new Map(swept.listings.map((listed) => [listed.dir, listed]));
+      return swept;
+    },
   };
 }
 
@@ -375,7 +397,7 @@ test("a root with no docs/plans directory sweeps to nothing rather than to a fai
   try {
     rmSync(path.join(held.root, "docs"), { recursive: true, force: true });
     const swept = sweepPlans([held.root, path.join(held.root, "absent")]);
-    assert.deepEqual(swept, { readings: [], failures: [], truncated: [] });
+    assert.deepEqual(swept, { readings: [], failures: [], truncated: [], listings: [] });
   } finally {
     held.cleanup();
   }
@@ -557,6 +579,77 @@ test("the extension test ignores case, and one root contributes at most MAX_PLAN
     }
   } finally {
     held.cleanup();
+  }
+});
+
+test("a plans directory that has not moved is not listed again, and one that has is", () => {
+  const held = scratch();
+  const sweeper = sweeping([held.root]);
+  try {
+    const plans = path.join(held.root, "docs", "plans");
+    held.write("alpha_spec_v1.md", plan());
+    // A directory listed while it is still is one whose listing can be held: a listing of one that
+    // just changed is taken again next tick, since the clock granule it was stamped in could hide a
+    // name added a moment later.
+    const still = new Date(Date.now() - 60_000);
+    utimesSync(plans, still, still);
+
+    const first = sweeper.sweep();
+    assert.deepEqual(first.readings.map((reading) => reading.stem), ["alpha_spec_v1"]);
+
+    // A name added and the directory's own time put back where it was, which is the whole of what a
+    // held listing is keyed on. A sweep that listed the directory again would find the second plan.
+    held.write("beta_spec_v1.md", plan());
+    utimesSync(plans, still, still);
+    const second = sweeper.sweep();
+    assert.deepEqual(
+      second.readings.map((reading) => reading.stem),
+      ["alpha_spec_v1"],
+      "the unmoved directory was not read again, so the sweep is the held listing",
+    );
+
+    // The ordinary case: a plan written into the directory moves it, and the next sweep sees both.
+    held.write("gamma_spec_v1.md", plan());
+    const third = sweeper.sweep();
+    assert.deepEqual(
+      third.readings.map((reading) => reading.stem).sort(),
+      ["alpha_spec_v1", "beta_spec_v1", "gamma_spec_v1"],
+      "a directory that moved is listed again, so a new plan is picked up",
+    );
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("two sweepers hold their listings apart, and neither takes the other's", () => {
+  // The hold is the caller's, which is what lets two of them run in one process. Kept inside the
+  // sweep instead, it would be one map for both, and each sweeper's pass would discard the other's
+  // entry: every sweeper but the last to run would list its directory again on every tick.
+  const one = scratch();
+  const two = scratch();
+  const sweepers = [sweeping([one.root]), sweeping([two.root])];
+  try {
+    const still = new Date(Date.now() - 60_000);
+    for (const held of [one, two]) {
+      held.write("alpha_spec_v1.md", plan());
+      utimesSync(path.join(held.root, "docs", "plans"), still, still);
+    }
+
+    sweepers[0]?.sweep();
+    sweepers[1]?.sweep();
+
+    // A name added to the first sweeper's directory with that directory's time put back, so only a
+    // sweeper that listed it again finds the second plan.
+    one.write("beta_spec_v1.md", plan());
+    utimesSync(path.join(one.root, "docs", "plans"), still, still);
+    assert.deepEqual(
+      sweepers[0]?.sweep().readings.map((reading) => reading.stem),
+      ["alpha_spec_v1"],
+      "the second sweeper's pass left the first sweeper's held listing where it was",
+    );
+  } finally {
+    one.cleanup();
+    two.cleanup();
   }
 });
 

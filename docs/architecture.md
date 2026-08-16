@@ -355,7 +355,7 @@ project and plan, which is where the blocked marker comes from.
 Paths are never derived from what either file says. The configured roots are the only path input;
 the one join is a root with a directory entry's own name, which cannot contain a separator, so no
 field of a plan document or an event can steer a read. Roots are compared as strings,
-case-insensitively and separator-normalized, never by asking the filesystem whether two paths name
+separator-normalized and case-folded on Windows, never by asking the filesystem whether two paths name
 the same place, and the configured spelling and the folded form come from one shared normalizer so
 the two readers cannot disagree about which root an event belongs to.
 

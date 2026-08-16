@@ -124,7 +124,7 @@ function reading(overrides: Partial<PlanReading> = {}): PlanReading {
 }
 
 function swept(readings: PlanReading[], failures: PlanFailure[] = []): PlanSweep {
-  return { readings, failures, truncated: [] };
+  return { readings, failures, truncated: [], listings: [] };
 }
 
 const NO_EVENTS = (previous: EventReaderState): ReadEventsResult => ({
@@ -271,6 +271,41 @@ test("a plan this broker has never parsed draws as unread rather than as a held 
   assert.match(calls.posts[0] ?? "", /beta_spec_v1 \(cannot be read\)/);
 });
 
+test("a project holds its configured place with no parsed plan in it at all", async () => {
+  // A project whose one plan has never parsed has nothing but a failure line to draw, and a card that
+  // ordered its blocks by whatever it managed to parse would sink that project below every other one
+  // and then jump it back up the tick its plan first parses.
+  const OTHER = path.join(os.tmpdir(), "channels-board-second-project");
+  let parses = false;
+  const { calls, card } = board({
+    roots: [ROOT, OTHER],
+    binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
+    sweep: () =>
+      parses
+        ? swept([reading({ stem: "alpha_spec_v1" }), reading({ stem: "beta_spec_v1", root: OTHER })])
+        : swept(
+            [reading({ stem: "beta_spec_v1", root: OTHER })],
+            [{ root: ROOT, path: planFile("alpha_spec_v1"), stem: "alpha_spec_v1", reason: "malformed" }],
+          ),
+  });
+
+  const projects = (body: string): string[] =>
+    body.split("\n").filter((line) => /^\*\*/.test(line)).map((line) => line.replaceAll("*", ""));
+
+  await card.tick();
+  assert.deepEqual(projects(calls.edits[0]?.card ?? ""), [
+    path.basename(ROOT),
+    path.basename(OTHER),
+  ], "the project with only a failure to draw is still the first one configured");
+
+  parses = true;
+  await card.tick();
+  assert.deepEqual(projects(calls.edits[1]?.card ?? ""), [
+    path.basename(ROOT),
+    path.basename(OTHER),
+  ], "and it does not move the tick its plan starts parsing");
+});
+
 test("a held parse is handed back only while the file has not moved", async (t) => {
   // The staleness rule is this caller's to enforce: the sweep takes whatever parse it is handed for a
   // path, so a hold returned for a file that has been rewritten would draw the old plan forever.
@@ -349,7 +384,7 @@ test("a plan that failed is not opened again until it moves, whatever it failed 
   );
   const drawn = calls.edits[0]?.card ?? "";
   assert.match(drawn, /torn_spec_v1 \(does not parse\)/);
-  assert.match(drawn, /huge_spec_v1 \(too large to open\)/);
+  assert.match(drawn, /huge_spec_v1 \(too large to read\)/);
   assert.match(drawn, /shut_spec_v1 \(cannot be read\)/);
 
   reads.length = 0;
@@ -377,6 +412,62 @@ test("a plan that failed is not opened again until it moves, whatever it failed 
   reads.length = 0;
   await card.tick();
   assert.deepEqual(reads, [], "a plan that went bad and has not moved since is not read again");
+});
+
+test("one card's held listing is its own, and a second card does not take it away", async (t) => {
+  // The listing hold is the caller's: handed to the sweep and rebuilt from what the sweep returns.
+  // Held inside the sweep instead, it would be one map for every card in the process, and each card's
+  // pass would discard the other's entry. Every card but the last to run would then list its plans
+  // directory again on every tick, which is the pass over an unbounded directory the hold exists to
+  // spend once.
+  const roots = ["one", "two"].map((name) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), `channels-board-listing-${name}-`));
+    mkdirSync(path.join(dir, "docs", "plans"), { recursive: true });
+    return dir;
+  });
+  t.after(() => {
+    for (const dir of roots) rmSync(dir, { recursive: true, force: true });
+  });
+  const doc = "Status: In Progress\n\n## Sections of Work\n### 1. One\n\n## Chapters\n### Chapter 1\nNext: onward\n";
+  const plans = (dir: string): string => path.join(dir, "docs", "plans");
+  // A directory that has been still for longer than the settle window is one whose listing is held,
+  // and one time for all of them, since the directory's own time is what a hold is keyed on.
+  const still = new Date(Date.now() - 60_000);
+  const settled = (dir: string): void => {
+    utimesSync(plans(dir), still, still);
+  };
+  for (const dir of roots) {
+    writeFileSync(path.join(plans(dir), "alpha_spec_v1.md"), doc, "utf8");
+    settled(dir);
+  }
+
+  const cards = roots.map((dir) =>
+    board({
+      roots: [dir],
+      eventsPath: path.join(dir, "kit-events.jsonl"),
+      binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
+      sweep: (options) => sweepPlans([dir], options),
+    }),
+  );
+
+  await cards[0]?.card.tick();
+  // The second card runs between the first card's two passes, which is what two cards in one process
+  // do on a shared refresh timer.
+  await cards[1]?.card.tick();
+
+  // A name added to the first card's directory, with the directory's own time put back where it was,
+  // which is the whole of what a held listing is keyed on. A card that listed again would find it.
+  writeFileSync(path.join(plans(roots[0] ?? ""), "beta_spec_v1.md"), doc, "utf8");
+  settled(roots[0] ?? "");
+  await cards[0]?.card.tick();
+
+  const drawn = cards[0]?.calls.edits[(cards[0]?.calls.edits.length ?? 1) - 1]?.card ?? "";
+  assert.match(drawn, /alpha_spec_v1/);
+  assert.doesNotMatch(
+    drawn,
+    /beta_spec_v1/,
+    "the first card still holds its own listing, so it did not list the directory again",
+  );
 });
 
 test("a plan that is gone from the disk is gone from the held parses too", async () => {
@@ -711,13 +802,15 @@ test("the knob off constructs nothing: no thread, no timer, and no file read of 
   assert.equal(calls.posts.length + calls.opens.length + calls.edits.length, 0);
 });
 
-test("no Discord configured constructs nothing even with the knob on", () => {
+test("no Discord configured constructs nothing even with the knob on, and says why once", () => {
+  const logged: string[] = [];
   let sweeps = 0;
   let bindingReads = 0;
   let timers = 0;
   const built = createBoardCard({
     enabled: true,
     transport: null,
+    log: (message) => logged.push(message),
     roots: [ROOT],
     eventsPath: path.join(ROOT, "kit-events.jsonl"),
     binding: () => {
@@ -741,6 +834,27 @@ test("no Discord configured constructs nothing even with the knob on", () => {
   assert.equal(sweeps, 0);
   assert.equal(bindingReads, 0);
   assert.equal(timers, 0);
+  // An operator who switched the card on where Discord is misconfigured gets the condition named
+  // rather than a silently missing card. Nothing of the configuration itself is written.
+  assert.deepEqual(logged, ["board card: Discord is not configured, the card is not built"]);
+});
+
+test("the knob off says nothing at all, since nothing was asked for", () => {
+  const logged: string[] = [];
+  const built = createBoardCard({
+    enabled: false,
+    transport: null,
+    roots: [],
+    eventsPath: path.join(ROOT, "kit-events.jsonl"),
+    binding: () => null,
+    refreshMs: 60_000,
+    now: () => START,
+    log: (message) => logged.push(message),
+    readEvents: NO_EVENTS,
+  });
+
+  assert.equal(built, null);
+  assert.deepEqual(logged, []);
 });
 
 test("the knob on with no project roots builds nothing and says why, once", () => {

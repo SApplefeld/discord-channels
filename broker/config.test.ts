@@ -292,4 +292,16 @@ test("the board's event stream is the kit's own file unless an override names an
     "D:\\feeds\\events.jsonl",
     "the override is taken as written, since it is the operator's own path",
   );
+
+  // The same rule the project roots are held to, for the same reason: a relative path resolves
+  // against whatever directory the broker was launched from, and a drive-relative one against
+  // whatever drive, neither of which a scheduled task lets the operator choose.
+  for (const raw of ["events.jsonl", ".\\events.jsonl", "..\\feeds\\events.jsonl", "\\feeds\\events.jsonl", "/feeds/events.jsonl"]) {
+    assert.throws(() => loadConfig({ CHANNEL_BOARD_EVENTS_PATH: raw }), /absolute path/, raw);
+  }
+  // And the refusal never echoes the value: this path sits under the operator's own profile.
+  assert.throws(
+    () => loadConfig({ CHANNEL_BOARD_EVENTS_PATH: "..\\secret-user-path\\events.jsonl" }),
+    (error: Error) => !/secret-user-path/.test(error.message),
+  );
 });

@@ -526,9 +526,11 @@ test("the board card knob builds nothing on a broker with no discord configured"
   );
   await broker.stop();
 
-  // A broker with no Discord writes nothing at startup, so the log file need not exist at all.
+  // A broker with no Discord names that one condition at startup and nothing else on the card's
+  // account: no binding is read, which is what the corrupt file above would report.
   const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
-  assert.doesNotMatch(logged, /board card/);
+  assert.match(logged, /board card: Discord is not configured, the card is not built/);
+  assert.doesNotMatch(logged, /board card binding/);
   assert.equal(readFileSync(bindingFile, "utf8"), "{not json", "the file is not touched either");
 });
 

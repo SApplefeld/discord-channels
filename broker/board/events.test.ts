@@ -303,7 +303,37 @@ test("the kept map is the previous instance when a tick keeps nothing and a new 
   }
 });
 
-test("the kept map stops at MAX_TRACKED_PLANS, evicting the oldest insertion", () => {
+test("a pair kept fresh survives the eviction a pair nothing has said anything about does not", () => {
+  const held = scratch();
+  try {
+    // Insertion order is not update order: a run that blocks over and over refreshes its pair every
+    // time, and evicting by first insertion would drop that live pair ahead of pairs whose last event
+    // landed days ago.
+    let body = "";
+    for (let i = 0; i < MAX_TRACKED_PLANS; i += 1) body += line({ plan: `plan-${i}.md` });
+    body += line({ plan: "plan-0.md", event: "goal-complete" });
+    body += line({ plan: "newcomer.md" });
+    writeFileSync(held.file, body, "utf8");
+
+    const result = readEvents(initialEventState(), [ROOT], { path: held.file });
+    assert.equal(result.state.latest.size, MAX_TRACKED_PLANS);
+    assert.equal(
+      result.state.latest.get(eventKey(ROOT, "plan-0.md"))?.event,
+      "goal-complete",
+      "the pair whose event was refreshed is still tracked",
+    );
+    assert.equal(
+      result.state.latest.has(eventKey(ROOT, "plan-1.md")),
+      false,
+      "and the pair updated longest ago is the one that gave way",
+    );
+    assert.ok(result.state.latest.has(eventKey(ROOT, "newcomer.md")));
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("the kept map stops at MAX_TRACKED_PLANS, evicting the pair updated longest ago", () => {
   const held = scratch();
   try {
     let body = "";
@@ -366,6 +396,40 @@ test("a line longer than the whole read cap is counted malformed and stepped ove
       "goal-complete",
     );
     assert.ok(state.malformed >= 1, "the over-cap line is counted, not silently dropped");
+    assert.equal(state.offset, heldFileLength(held.file));
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("the tail of a stepped-over line is never read as a record of its own", () => {
+  const held = scratch();
+  try {
+    // The step over an over-cap line leaves the offset inside it, so the next window opens on that
+    // line's tail. Here the tail is a whole valid event line: nothing about a fragment stops it
+    // parsing, and a reader that parsed from the window's first byte would keep an event no line of
+    // this file ever carried.
+    const smuggled = line({ plan: "docs/plans/smuggled_spec_v1.md", event: "goal-complete" });
+    writeFileSync(
+      held.file,
+      "x".repeat(500) + smuggled + line({ plan: "docs/plans/honest_spec_v1.md" }),
+      "utf8",
+    );
+
+    let state = initialEventState();
+    for (let i = 0; i < 10; i += 1) {
+      state = readEvents(state, [ROOT], { path: held.file, maxBytes: 500 }).state;
+    }
+    assert.equal(
+      state.latest.has(eventKey(ROOT, "docs/plans/smuggled_spec_v1.md")),
+      false,
+      "the fragment of the over-cap line is discarded, not kept as an event",
+    );
+    assert.equal(
+      state.latest.get(eventKey(ROOT, "docs/plans/honest_spec_v1.md"))?.event,
+      "goal-blocked",
+      "and the whole line behind it is still consumed",
+    );
     assert.equal(state.offset, heldFileLength(held.file));
   } finally {
     held.cleanup();

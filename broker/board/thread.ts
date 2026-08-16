@@ -15,15 +15,20 @@
 // dropped and retried on the next tick, because the next tick recomputes the whole desired card from
 // live state: a queued edit would land later carrying ages that had stopped being true.
 //
-// A pass costs one stat per plan file and a read of only the files whose modification time or size
-// moved, because this module holds what every file it has read yielded and hands it back to the
-// sweep under exactly the stat it was read at. A file that moved by a byte fails that comparison and
-// is read again, which is what keeps a held parse from outliving the bytes it describes.
+// A pass costs one stat per plans directory, one stat per plan file, and a read of only the files
+// whose modification time or size moved, because this module holds what every file it has read
+// yielded and hands it back to the sweep under exactly the stat it was read at. A file that moved by
+// a byte fails that comparison and is read again, which is what keeps a held parse from outliving
+// the bytes it describes.
 //
 // Failure is held on the same terms as a parse. A file that is unreadable, over the read cap, or
 // carries no `Status:` header would otherwise be opened and read in full on every tick for as long
-// as it sits there, since no parse of it can ever match the stat a later tick sees. Both holds are
-// rebuilt from each sweep rather than added to, so a file gone from the disk is gone from both.
+// as it sits there, since no parse of it can ever match the stat a later tick sees. A plans
+// directory's listing is held on those terms too, keyed on the directory's own modification time,
+// since nothing caps how many entries a directory another program writes can hold. All three holds
+// live here rather than in the sweep, so a second card in this process has its own and neither sees
+// the other's; and all three are rebuilt from each sweep rather than added to, so a file gone from
+// the disk is gone from every one of them.
 //
 // A plan doc mid-write by a live session parses as a failure for a tick. Its last good parse is
 // drawn again under a marker whose age climbs, the same discipline the usage card applies to an
@@ -38,6 +43,7 @@ import { initialEventState, readEvents } from "./events.ts";
 import type { EventReaderState, ReadEventsResult } from "./events.ts";
 import { sweepPlans } from "./plans.ts";
 import type {
+  PlanDirectoryListing,
   PlanFailure,
   PlanFailureReason,
   PlanParse,
@@ -229,7 +235,13 @@ type HeldFailure = { reason: PlanFailureReason; mtimeMs: number; sizeBytes: numb
  */
 export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   const log = options.log ?? ((): void => {});
-  if (!options.enabled || options.transport === null) return null;
+  if (!options.enabled) return null;
+  if (options.transport === null) {
+    // Each of the two conditions that can hold with the knob on says which one it was, because the
+    // operator sees the same nothing either way: an enabled card and no card in the channel.
+    log("board card: Discord is not configured, the card is not built");
+    return null;
+  }
   if (options.roots.length === 0) {
     // Said once, at the one moment it can be said: the knob is on and there is a channel to draw in,
     // so an operator who enabled the card and left the project list empty gets the reason rather than
@@ -254,9 +266,11 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   // How long a failure of one kind counts toward its ceiling, in wall time.
   const decayMs = options.refreshMs * DECAY_PASSES;
 
-  // Where each configured root sits in the card, so a row keeps its place whether it was read this
-  // tick or redrawn from a hold. The sweep returns its readings and its failures in two lists, and a
-  // plan moving between them on a torn read would otherwise move on the card too.
+  // Where each configured root sits, which is the order the plans of one sweep are handed to the
+  // renderer in. The sweep returns its readings and its failures in two lists, and a plan moving
+  // between them on a torn read would otherwise move on the card too. Which project block comes
+  // first is the renderer's own, taken from this same configured list, so a project keeps its place
+  // whatever kind of entry it has.
   const rootOrder = new Map(roots.map((root, index): [string, number] => [root, index]));
 
   // Three routes, three budgets. A message create, a thread create, and a message edit report their
@@ -283,6 +297,10 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   // The last failure of every plan file the last pass saw, on the same terms and with the same
   // bound: rebuilt from each sweep, so it holds at most one entry per file that sweep returned.
   let failedHolds = new Map<string, HeldFailure>();
+  // The listing of every plans directory the last pass read, keyed by that directory, on those same
+  // terms: rebuilt from each sweep, so a root that is no longer swept is gone from it and the map
+  // stays bounded by the roots this card is configured with.
+  let listingHolds = new Map<string, PlanDirectoryListing>();
   let events = initialEventState();
   let rebuilds = 0;
   let rebuiltAt: number | null = null;
@@ -409,13 +427,15 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
    * A parse is handed back to the sweep only under the exact modification time and size it was read
    * at, so a file that moved is read again and a held parse never describes bytes that are gone. A
    * failure is handed back on the same terms, so an unchanged file that cannot be read or parsed
-   * costs a stat rather than a read. A plan that failed this tick and has a parse held for it is
+   * costs a stat rather than a read, and a plans directory's listing on the same terms against that
+   * directory's own modification time. A plan that failed this tick and has a parse held for it is
    * drawn from that parse under its own age; one with none is handed to the renderer as a failure,
    * which is the row saying the card has nothing for it.
    */
   function readFleet(at: number): { plans: BoardPlan[]; failures: PlanFailure[]; sweep: PlanSweep } {
     const previous = holds;
     const previouslyFailed = failedHolds;
+    const previouslyListed = listingHolds;
     const swept = sweep({
       heldParse: (file, mtimeMs, sizeBytes) => {
         const held = previous.get(file);
@@ -431,7 +451,16 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
         }
         return failed.reason;
       },
+      heldListing: (dir, mtimeMs) => {
+        const listed = previouslyListed.get(dir);
+        if (listed === undefined || listed.mtimeMs !== mtimeMs) return undefined;
+        return { names: listed.names, dropped: listed.dropped };
+      },
     });
+    listingHolds = new Map(swept.listings.map((listed): [string, PlanDirectoryListing] => [
+      listed.dir,
+      listed,
+    ]));
 
     const kept = new Map<string, Held>();
     const keptFailures = new Map<string, HeldFailure>();
@@ -509,6 +538,7 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
     }
 
     const card = renderBoardCard({
+      roots,
       plans: fleet.plans,
       failures: fleet.failures,
       truncated: fleet.sweep.truncated,

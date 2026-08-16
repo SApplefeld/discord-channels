@@ -449,7 +449,7 @@ programs, and renders their content into the channel where approvals are answere
 bound what that content can do. No field of either file is ever used as a path: the configured roots
 are the only path input, and the single join is a root with a directory entry's own name, which
 cannot contain a separator, so nothing a plan document or an event says can steer a read outside the
-directory being swept. Roots are matched as strings, case-insensitively and separator-normalized,
+directory being swept. Roots are matched as strings, separator-normalized and case-folded on Windows,
 never by asking the filesystem whether two paths name the same place, and both readers fold through
 one shared normalizer so they cannot disagree about which root an event belongs to. And the event
 stream's `project` field, an absolute path that ordinarily embeds the operator's own account name, is
@@ -461,8 +461,15 @@ What does cross is the project label, which is the last segment of a configured 
 at or one level under a home directory therefore draws the account name into the channel, and that is
 the operator's choice of root rather than a property the card can fix. The label is also the one
 field on this card outside a fence, so it takes the full markdown neutralization rather than the
-lighter fenced-field escape, and the card's routes suppress mentions, which together mean a crafted
-filename can draw no mention pill, no heading, and no fence delimiter.
+lighter fenced-field escape, and the card's routes suppress mentions, which together mean neither a
+crafted directory name there nor a crafted filename in a fenced row can draw a mention pill, a
+heading, or a fence delimiter.
+
+What the operator's own configuration can still reach is worth stating, because these knobs sit in
+the access-controlled `broker.env` rather than in anything an attacker supplies. A project root may
+name a UNC share, in which case the sweep opens outbound SMB under the broker's own credentials once
+a tick, and the event stream path is taken as given. Both are the same trust class as any other value
+in that file, which the model already treats as equivalent to code execution on the host.
 
 **A channel event reaches the model at the keyboard's standing.** The relay's instructions describe
 the sender gate rather than commanding trust: a message is delivered only after the broker has

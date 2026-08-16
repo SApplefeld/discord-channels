@@ -56,6 +56,7 @@ function event(overrides: Partial<BoardEvent> = {}): BoardEvent {
 }
 
 function card(input: {
+  roots?: readonly string[];
   plans?: readonly BoardPlan[];
   failures?: readonly PlanFailure[];
   truncated?: readonly PlanTruncation[];
@@ -63,6 +64,9 @@ function card(input: {
   now?: number;
 }): string {
   return renderBoardCard({
+    // Empty unless a test names the configured list, which leaves every root on the inputs drawn in
+    // the order it first appears.
+    roots: input.roots ?? [],
     plans: input.plans ?? [],
     failures: input.failures ?? [],
     truncated: input.truncated ?? [],
@@ -376,7 +380,7 @@ test("a plan the card holds no parse for draws one line saying why", () => {
 
   assert.deepEqual(fencedLines(body), [
     "torn (does not parse)",
-    "huge (too large to open)",
+    "huge (too large to read)",
     "gone (cannot be read)",
   ]);
 });

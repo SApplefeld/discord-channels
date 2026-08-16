@@ -152,6 +152,13 @@ export type SweepPlansOptions = {
     mtimeMs: number,
     sizeBytes: number,
   ) => PlanFailureReason | undefined;
+  /**
+   * The listing this caller already holds for the plans directory `dir` at exactly this modification
+   * time, or undefined when it holds none. Returning one skips the directory read entirely, which is
+   * what keeps a directory somebody filled with entries from costing a pass over all of them on every
+   * tick: `MAX_PLANS_PER_ROOT` bounds what is stat'd and read, not what is listed.
+   */
+  heldListing?: (dir: string, mtimeMs: number) => PlanListing | undefined;
   /** The one read this module performs. Injected so a test can pin which files are opened. */
   readPlan?: (file: string) => PlanRead;
 };
@@ -164,12 +171,26 @@ export type SweepPlansOptions = {
  */
 export type PlanTruncation = { root: string; dropped: number };
 
+/** One plans directory's contents: the plan files it holds, and how many the per-root cap left out. */
+export type PlanListing = { names: readonly string[]; dropped: number };
+
+/**
+ * One swept plans directory's listing and the modification time it describes.
+ *
+ * A caller keeping it can hand it back through `heldListing` and spend a stat of the directory
+ * rather than a pass over every entry in it. Only a directory that has been still for
+ * `LISTING_SETTLE_MS` comes back here, so what a caller holds is only ever what is safe to hold.
+ */
+export type PlanDirectoryListing = PlanListing & { dir: string; mtimeMs: number };
+
 export type PlanSweep = {
   readings: PlanReading[];
   failures: PlanFailure[];
   /** The roots whose listing was cut by the cap, in the order they were configured. Empty when
    * every root's plans fit, which is the ordinary case. */
   truncated: PlanTruncation[];
+  /** The listings this sweep may be handed back next tick, in the order the roots were configured. */
+  listings: PlanDirectoryListing[];
 };
 
 // The contract's readers are anchored to the start of the line and case-sensitive, so these are
@@ -430,37 +451,88 @@ function readPlanFile(file: string): PlanRead {
 const MARKDOWN_SUFFIX = /\.md$/i;
 
 /**
+ * How still a plans directory has to have been before its listing is held for a later tick.
+ *
+ * A directory's modification time moves when a name is added to it or taken out of it, but the clock
+ * it is stamped from advances in granules of milliseconds, so a file created in the same granule the
+ * listing recorded would leave a stamp the next tick reads as unmoved and a plan invisible until
+ * something else touched the directory. A listing of a directory that has just changed is therefore
+ * not held at all; it is taken again next tick, by which time the directory is still and the listing
+ * can be held for as long as it stays that way.
+ */
+const LISTING_SETTLE_MS = 2_000;
+
+/**
+ * The modification time of one plans directory, or null when it cannot be stat'd at all.
+ *
+ * Taken before the listing, the direction `statPlanFile` takes and for the same reason: a name added
+ * between the two leaves a recorded time older than the listing, so the next tick sees the directory
+ * move and reads it again.
+ */
+function statPlansDirectory(dir: string): number | null {
+  try {
+    return statSync(dir).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The plan files directly under one root's `docs/plans`, by name, in a stable order and bounded by
  * `MAX_PLANS_PER_ROOT`, alongside how many names the bound left out.
+ *
+ * A directory the caller holds a listing for at exactly this modification time yields that listing
+ * again, so an unchanged fleet costs one stat of the directory rather than a pass over every entry
+ * in it. Every listing the caller may hold for the next tick is collected in `listed`, the reused
+ * ones included, so a hold rebuilt from it keeps a still directory held for as long as it stays that
+ * way.
  *
  * A root whose directory is missing or unreadable lists nothing, and that is not a failure: a
  * project with no plans directory has no open plans. The listing is one level deep and files only,
  * so `docs/archive/` and any nested directory are outside it by construction.
  */
-function planFiles(root: string): { names: string[]; dropped: number } {
+function planFiles(
+  dir: string,
+  held: SweepPlansOptions["heldListing"],
+  listed: PlanDirectoryListing[],
+): PlanListing {
+  const movedAt = statPlansDirectory(dir);
+  const holding = movedAt === null ? undefined : held?.(dir, movedAt);
+  if (movedAt !== null && holding !== undefined) {
+    listed.push({ dir, mtimeMs: movedAt, ...holding });
+    return holding;
+  }
+
+  const listedAt = Date.now();
+  let named: string[];
   try {
-    const named = readdirSync(path.join(root, "docs", "plans"), { withFileTypes: true })
+    named = readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && MARKDOWN_SUFFIX.test(entry.name))
       .map((entry) => entry.name)
       .sort();
-    return {
-      names: named.slice(0, MAX_PLANS_PER_ROOT),
-      dropped: Math.max(0, named.length - MAX_PLANS_PER_ROOT),
-    };
   } catch {
     return { names: [], dropped: 0 };
   }
+  const names = named.slice(0, MAX_PLANS_PER_ROOT);
+  const dropped = Math.max(0, named.length - MAX_PLANS_PER_ROOT);
+  if (movedAt !== null && movedAt + LISTING_SETTLE_MS <= listedAt) {
+    listed.push({ dir, mtimeMs: movedAt, names, dropped });
+  }
+  return { names, dropped };
 }
 
 /**
  * The current reading of every plan doc under the configured roots, terminal plans included: the
  * membership rule is the renderer's, which draws every non-terminal plan with its status as text.
  *
- * Every listed file is stat'd; a file the caller already holds a parse for at that exact
- * modification time and size is folded in from the caller's hold rather than opened, and one the
- * caller already saw fail at that exact stat yields that failure again rather than being opened, so
- * a refresh tick over an unchanged fleet costs one stat per plan and no reads at all whether or not
- * every plan in it parses.
+ * Every hold is the caller's, handed in and handed back: a plans directory the caller holds a
+ * listing for at that exact modification time is not read, a file the caller already holds a parse
+ * for at that exact modification time and size is folded in from the caller's hold rather than
+ * opened, and one the caller already saw fail at that exact stat yields that failure again rather
+ * than being opened. So a refresh tick over an unchanged fleet costs one stat of each plans
+ * directory, one stat per plan, and no listing and no reads at all whether or not every plan in it
+ * parses. Nothing is held between calls here, so two callers in one process never see each other's
+ * work.
  *
  * It does not throw for one bad file, and it does not drop one either. Each failed path comes back
  * named so the caller can redraw whatever it last parsed for that path under an aging marker, which
@@ -473,11 +545,13 @@ export function sweepPlans(roots: readonly string[], options: SweepPlansOptions 
   const failures: PlanFailure[] = [];
   const truncated: PlanTruncation[] = [];
 
+  const listings: PlanDirectoryListing[] = [];
   for (const root of roots) {
-    const listing = planFiles(root);
+    const dir = path.join(root, "docs", "plans");
+    const listing = planFiles(dir, options.heldListing, listings);
     if (listing.dropped > 0) truncated.push({ root, dropped: listing.dropped });
     for (const name of listing.names) {
-      const file = path.join(root, "docs", "plans", name);
+      const file = path.join(dir, name);
       const stem = name.replace(MARKDOWN_SUFFIX, "");
       const moved = statPlanFile(file);
       if (moved === null) {
@@ -511,5 +585,5 @@ export function sweepPlans(roots: readonly string[], options: SweepPlansOptions 
       readings.push({ ...parsed, ...where });
     }
   }
-  return { readings, failures, truncated };
+  return { readings, failures, truncated, listings };
 }
