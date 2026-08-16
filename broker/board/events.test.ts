@@ -520,9 +520,15 @@ test("a ts without an explicit offset is malformed, and either offset form is ke
   }
 });
 
-test("defaultEventsPath honors CHANNEL_BOARD_EVENTS_PATH and falls back to ~/.claude/kit-events.jsonl", () => {
-  const withOverride = defaultEventsPath({ CHANNEL_BOARD_EVENTS_PATH: "D:\\custom\\events.jsonl" } as NodeJS.ProcessEnv);
-  assert.equal(withOverride, "D:\\custom\\events.jsonl");
+test("defaultEventsPath resolves ~/.claude/kit-events.jsonl and reads no knob of its own", () => {
+  // The `CHANNEL_BOARD_EVENTS_PATH` override is broker/config.ts's to read and apply, so that the
+  // installer's allowlist pin, which scans that file for the knobs it must carry, sees it. Reading
+  // it here as well would put the knob back outside the pin's sight.
+  const knobbed = defaultEventsPath({
+    CHANNEL_BOARD_EVENTS_PATH: "D:\\custom\\events.jsonl",
+    USERPROFILE: "D:\\Users\\op",
+  } as NodeJS.ProcessEnv);
+  assert.equal(knobbed, path.join("D:\\Users\\op", ".claude", "kit-events.jsonl"));
 
   const withoutOverride = defaultEventsPath({ USERPROFILE: "D:\\Users\\op" } as NodeJS.ProcessEnv);
   assert.equal(withoutOverride, path.join("D:\\Users\\op", ".claude", "kit-events.jsonl"));

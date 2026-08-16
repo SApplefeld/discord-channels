@@ -1,6 +1,7 @@
 // Configuration bounds that nothing at runtime would report as wrong.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import {
   DEFAULT_QUESTION_HOLD_MS,
   RELAY_READ_TIMEOUT_MS,
@@ -208,4 +209,87 @@ test("the model-change tier knob is off by default and refuses a value it cannot
   assert.equal(loadConfig({ CHANNEL_MODEL_CHANGE_ALERT: "on" }).modelChangeAlert, true);
   assert.equal(loadConfig({ CHANNEL_MODEL_CHANGE_ALERT: "off" }).modelChangeAlert, false);
   assert.throws(() => loadConfig({ CHANNEL_MODEL_CHANGE_ALERT: "yse" }), /expected one of/);
+});
+
+test("the board card knob is off by default and refuses a spelling it cannot read", () => {
+  // The card sweeps the plan docs of every configured project and opens a thread of its own in the
+  // operator's channel. Neither belongs on a host that never asked for it.
+  assert.equal(loadConfig({}).boardCard, false);
+  assert.equal(loadConfig({ CHANNEL_BOARD_CARD: "on" }).boardCard, true);
+  assert.equal(loadConfig({ CHANNEL_BOARD_CARD: "off" }).boardCard, false);
+  for (const raw of ["ture", "enabled", "2"]) {
+    assert.throws(() => loadConfig({ CHANNEL_BOARD_CARD: raw }), /expected one of/, raw);
+  }
+});
+
+test("the board's project list is semicolon-separated, absolute, and never derived", () => {
+  assert.deepEqual(loadConfig({}).boardProjects, [], "no list is an empty list, not a default root");
+  assert.deepEqual(loadConfig({ CHANNEL_BOARD_PROJECTS: "   " }).boardProjects, []);
+  assert.deepEqual(
+    loadConfig({ CHANNEL_BOARD_PROJECTS: "D:\\one; D:\\two ;" }).boardProjects,
+    ["D:\\one", "D:\\two"],
+    "entries are trimmed and a trailing separator means what it looks like",
+  );
+  assert.deepEqual(
+    loadConfig({ CHANNEL_BOARD_PROJECTS: "D:\\one;D:\\one" }).boardProjects,
+    ["D:\\one"],
+    "a root written twice is one root, not two passes over the same plans",
+  );
+
+  // Two spellings of one directory are one root, compared the way the event reader compares one: a
+  // survivor here draws a second project block whose rows never take a blocked marker, because the
+  // reader folds the spellings together and keys its events to the first.
+  for (const [raw, kept] of [
+    ["D:\\one;d:\\one", "D:\\one"],
+    ["d:\\one;D:\\one", "d:\\one"],
+    ["D:\\one;D:\\one\\", "D:\\one"],
+    ["D:\\one\\;D:\\one", "D:\\one\\"],
+    ["D:\\one;D:/one", "D:\\one"],
+    ["D:/one;D:\\one", "D:/one"],
+  ] as const) {
+    assert.deepEqual(
+      loadConfig({ CHANNEL_BOARD_PROJECTS: raw }).boardProjects,
+      [kept],
+      `${raw} names one directory, and the first spelling of it is the one drawn`,
+    );
+  }
+
+  // A relative root resolves against whatever directory the broker was launched from, and a
+  // drive-relative one against whatever drive it was launched from. Under a scheduled task neither
+  // is of the operator's choosing.
+  for (const raw of ["projects", "D:\\one;..\\two", "./one", "\\one", "/one"]) {
+    assert.throws(() => loadConfig({ CHANNEL_BOARD_PROJECTS: raw }), /absolute project roots/, raw);
+  }
+  // The refusal names the entry's position and never its text: a project root typically embeds the
+  // operator's OS username, and this message reaches the log file.
+  assert.throws(
+    () => loadConfig({ CHANNEL_BOARD_PROJECTS: "D:\\one;..\\secret-user-path" }),
+    (error: Error) => /entry 2 of 2/.test(error.message) && !/secret-user-path/.test(error.message),
+  );
+});
+
+test("the board card refresh is a minute by default and refuses a value outside its bounds", () => {
+  assert.equal(loadConfig({}).boardCardRefreshMs, 60_000);
+  assert.equal(loadConfig({ CHANNEL_BOARD_CARD_REFRESH_MS: "5000" }).boardCardRefreshMs, 5_000);
+  assert.equal(
+    loadConfig({ CHANNEL_BOARD_CARD_REFRESH_MS: "3600000" }).boardCardRefreshMs,
+    3_600_000,
+  );
+  for (const raw of ["4999", "3600001", "0", "-1", "1.5", "soon"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_BOARD_CARD_REFRESH_MS: raw }),
+      /expected an integer/,
+      raw,
+    );
+  }
+});
+
+test("the board's event stream is the kit's own file unless an override names another", () => {
+  const resolved = loadConfig({ USERPROFILE: "D:\\home\\op" }).boardEventsPath;
+  assert.equal(resolved, path.join("D:\\home\\op", ".claude", "kit-events.jsonl"));
+  assert.equal(
+    loadConfig({ CHANNEL_BOARD_EVENTS_PATH: "D:\\feeds\\events.jsonl" }).boardEventsPath,
+    "D:\\feeds\\events.jsonl",
+    "the override is taken as written, since it is the operator's own path",
+  );
 });

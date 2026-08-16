@@ -28,8 +28,11 @@ import { loadBindings, saveBindings } from "./discord/bindings.ts";
 import { createUsageCard } from "./usage/thread.ts";
 import type { UsageCardChannel, UsageCardOptions } from "./usage/thread.ts";
 import { loadUsageBinding, saveUsageBinding } from "./usage/binding.ts";
+import { createBoardCard } from "./board/thread.ts";
+import type { BoardCardOptions } from "./board/thread.ts";
+import { loadBoardBinding, saveBoardBinding } from "./board/binding.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
-import type { CallOutcome, ThreadMessenger } from "./discord/transport.ts";
+import type { CallOutcome, DiscordTransport, ThreadMessenger } from "./discord/transport.ts";
 import {
   ALERT_WINDOW_MS,
   MAX_MODEL_CHANGE_ALERTS_PER_WINDOW,
@@ -616,6 +619,47 @@ export function usageCardWiring(options: {
   };
 }
 
+/**
+ * What the fleet board card is built from: the three conditions it exists under, the two feeds it
+ * reads on every pass, and where the thread it owns is persisted.
+ *
+ * Assembled here rather than inline for the reason the usage card's wiring is: it is the seam between
+ * this broker and the card, and `startBroker` builds its card from this function and from nothing
+ * else, so the seam a test reaches is the one production runs.
+ *
+ * The binding gets its own file beside the usage card's, since the two cards are independent surfaces
+ * built under separate knobs.
+ */
+export function boardCardWiring(options: {
+  config: Pick<
+    BrokerConfig,
+    "stateFile" | "boardCard" | "boardProjects" | "boardCardRefreshMs" | "boardEventsPath"
+  >;
+  /** Null when no Discord is configured, which is one of the three ways the card is not built. */
+  transport: DiscordTransport | null;
+  log: (message: string) => void;
+  onError: (message: string) => void;
+}): BoardCardOptions {
+  const file = path.join(path.dirname(options.config.stateFile), "board-card.json");
+  return {
+    enabled: options.config.boardCard,
+    transport: options.transport,
+    roots: options.config.boardProjects,
+    eventsPath: options.config.boardEventsPath,
+    binding: () => loadBoardBinding(file, { log: options.log }),
+    onBind: (binding) => {
+      try {
+        saveBoardBinding(file, binding);
+      } catch (error) {
+        options.onError(`broker: cannot write the board card binding to ${file}: ${String(error)}`);
+      }
+    },
+    refreshMs: options.config.boardCardRefreshMs,
+    now: Date.now,
+    log: options.log,
+  };
+}
+
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
   // it. The logger writes the same lines to a rotating file too, when one is configured, because a
@@ -673,6 +717,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // conditions decided in one place, and the pin reconcile that reads this runs on the surface's
   // refresh timer, which starts before that.
   let fleetCard: () => string | null = () => null;
+  // The fleet board card's own message, on the same terms and for the same reason.
+  let boardCardMessage: () => string | null = () => null;
+  // The channel's permanent pins: the broker's standing cards, in the order they take their slots,
+  // and each named only while it has a message to name. A card a knob left unbuilt, and one Discord
+  // has reported gone until it is rebuilt, hold no slot at all.
+  const permanentCards = (): string[] =>
+    [fleetCard(), boardCardMessage()].filter((messageId): messageId is string => messageId !== null);
   let messenger: ThreadMessenger = {
     postToThread: async () => ({
       status: "failed",
@@ -974,6 +1025,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // of the two conditions the card is built under, and the card is built after this block rather
   // than inside it so that both conditions are decided in one place the tests can drive.
   let usageChannel: UsageCardChannel | null = null;
+  // What the board card needs from Discord, on the same terms: it draws no session state, so the
+  // transport is the whole of it.
+  let cardTransport: DiscordTransport | null = null;
   if (discord !== null) {
     // Imported here rather than at the top so that discord.js, the one dependency with a network
     // client in it, is loaded only by a broker that is actually configured to reach Discord.
@@ -1040,7 +1094,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         // spends no Discord call here at all.
         .then(() =>
           pinKeeper.reconcile({
-            permanent: fleetCard(),
+            permanent: permanentCards(),
             live: surface.livePins(),
             known: surface.knownPins(),
           }),
@@ -1054,6 +1108,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       });
     }, discord.refreshIntervalMs);
     threadFor = (sessionId) => surface.threadFor(sessionId);
+    cardTransport = transport;
     usageChannel = {
       transport,
       // The same windows the session threads title themselves from, so one session cannot read as
@@ -1299,6 +1354,33 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     note(`broker: the fleet usage card refreshes every ${config.usageCardRefreshMs}ms`);
   }
 
+  // The board card, under all three of its conditions: the knob, a configured channel, and at least
+  // one project root. Off any of those ways means the machinery is absent rather than idle, so
+  // nothing opens a thread, nothing runs on a timer, and no plan doc or event stream is read.
+  const boardCard = createBoardCard(
+    boardCardWiring({
+      config,
+      transport: cardTransport,
+      log: note,
+      onError: (message) => {
+        console.error(message);
+        logger.error(message);
+      },
+    }),
+  );
+  if (boardCard !== null) {
+    // The second card the channel keeps pinned permanently. Read through the card rather than from
+    // the binding file, so a card Discord reported gone stops being pinned until it is rebuilt.
+    boardCardMessage = () => boardCard.cardMessage();
+    // Started after the listener is bound, for the reason the usage card is: a broker that never
+    // bound leaves no timer editing a Discord thread on behalf of a process that is about to throw.
+    boardCard.start();
+    note(
+      `broker: the fleet board card sweeps ${config.boardProjects.length} project(s) every ` +
+        `${config.boardCardRefreshMs}ms`,
+    );
+  }
+
   async function stop(): Promise<void> {
     clearInterval(sweep);
     clearInterval(heartbeat);
@@ -1309,6 +1391,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // for a broker that has already dropped its gateway. What it returns is the drain, awaited
     // beside the others.
     const cardDrain = usageCard === null ? null : usageCard.stop();
+    // The board card's timer goes down in the same synchronous block, and for the same reason.
+    const boardDrain = boardCard === null ? null : boardCard.stop();
     if (gateway !== null) await gateway.stop();
     // Clearing the timer does not cancel the pass already running, which may still be waiting on a
     // Discord call and will write the bindings file when it returns. The tailer's pass is awaited
@@ -1318,6 +1402,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // The card's pass may still be waiting on a Discord edit, and its binding write follows that
     // call's return.
     if (cardDrain !== null) await cardDrain;
+    if (boardDrain !== null) await boardDrain;
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();

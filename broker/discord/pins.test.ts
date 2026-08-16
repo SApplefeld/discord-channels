@@ -85,11 +85,15 @@ function keeperWith(pins: ChannelPins, logged: string[] = [], now = () => START)
 
 /**
  * An intended set. What is live is a card this broker knows by definition, so the recognized set is
- * that plus the permanent card and whatever stale cards a case names: the sweep reaches only what is
+ * that plus the permanent cards and whatever stale cards a case names: the sweep reaches only what is
  * in it, which is what leaves a pin the operator made by hand alone.
  */
-function intended(permanent: string | null, live: string[], stale: string[] = []): IntendedPins {
-  const known = [...live, ...stale, ...(permanent === null ? [] : [permanent])];
+function intended(
+  permanent: readonly string[],
+  live: string[],
+  stale: string[] = [],
+): IntendedPins {
+  const known = [...live, ...stale, ...permanent];
   return { permanent, live, known: [...new Set(known)] };
 }
 
@@ -100,7 +104,7 @@ test("a divergent pin list converges: what is missing is pinned, what is stale i
   const room = channel(["4000", "4001", "4009"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4001", "4002"], ["4009"]));
+  await keeper.reconcile(intended(["4000"], ["4001", "4002"], ["4009"]));
 
   assert.deepEqual(room.unpinned, ["4009"], "a pin whose session is gone is dropped");
   assert.deepEqual(room.pinned, ["4002"], "a live session missing from the list is pinned");
@@ -115,7 +119,7 @@ test("a pin the broker did not make is left alone, and its own stale card is sti
   const room = channel(["4000", "4009", "9999"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", [], ["4009"]));
+  await keeper.reconcile(intended(["4000"], [], ["4009"]));
 
   assert.deepEqual(room.unpinned, ["4009"], "the exited session's own card is still swept");
   assert.ok(room.list.includes("9999"), "and the operator's own pin is left where they put it");
@@ -125,7 +129,7 @@ test("the fleet card stays pinned across a pass that changes every session pin",
   const room = channel(["4000", "4005"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4007"], ["4005"]));
+  await keeper.reconcile(intended(["4000"], ["4007"], ["4005"]));
 
   assert.deepEqual(room.unpinned, ["4005"]);
   assert.deepEqual(room.pinned, ["4007"]);
@@ -136,11 +140,11 @@ test("a session that exits drops out of the pin list on the next pass", async ()
   const room = channel([]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended(null, ["4001", "4002"]));
+  await keeper.reconcile(intended([], ["4001", "4002"]));
   assert.deepEqual(room.pinned, ["4001", "4002"]);
 
   // The exit: the surface stops reporting that card as live, which is the whole input this reads.
-  await keeper.reconcile(intended(null, ["4001"], ["4002"]));
+  await keeper.reconcile(intended([], ["4001"], ["4002"]));
   assert.deepEqual(room.unpinned, ["4002"]);
   assert.deepEqual(room.list, ["4001"]);
 });
@@ -152,12 +156,12 @@ test("two identical passes over a converged channel spend nothing at all", async
   const room = channel([]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4001"]));
+  await keeper.reconcile(intended(["4000"], ["4001"]));
   const spent = room.calls();
   assert.equal(spent, 3, "one read, two pins");
 
-  await keeper.reconcile(intended("4000", ["4001"]));
-  await keeper.reconcile(intended("4000", ["4001"]));
+  await keeper.reconcile(intended(["4000"], ["4001"]));
+  await keeper.reconcile(intended(["4000"], ["4001"]));
   assert.equal(room.calls(), spent, "a converged pass costs no call, the read included");
 });
 
@@ -169,15 +173,15 @@ test("a session that exits and comes back costs one call per transition and noth
   const room = channel([]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended(null, ["4001"]));
-  await keeper.reconcile(intended(null, [], ["4001"]));
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended([], ["4001"]));
+  await keeper.reconcile(intended([], [], ["4001"]));
+  await keeper.reconcile(intended([], ["4001"]));
   assert.deepEqual(room.pinned, ["4001", "4001"], "one pin per pass that asked for it");
   assert.deepEqual(room.unpinned, ["4001"], "and one unpin for the pass that did not");
 
   // The pass that follows the flap costs nothing, which is what keeps a settled channel settled.
   const spent = room.calls();
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended([], ["4001"]));
   assert.equal(room.calls(), spent);
 });
 
@@ -191,7 +195,7 @@ test("at the pin ceiling the oldest live sessions keep their pins and the shortf
   // Ten past the ceiling, offered newest first so nothing here can pass by accident of order.
   const live = Array.from({ length: MAX_CHANNEL_PINS + 10 }, (_, at) => String(6000 + at)).reverse();
 
-  await keeper.reconcile(intended("5000", live));
+  await keeper.reconcile(intended(["5000"], live));
 
   assert.equal(room.pinned.length, MAX_CHANNEL_PINS, "the channel takes no more than fifty");
   assert.equal(room.pinned[0], "5000", "the permanent card is pinned before any session is");
@@ -204,6 +208,61 @@ test("at the pin ceiling the oldest live sessions keep their pins and the shortf
   const shortfall = logged.filter((line) => line.includes("pin ceiling"));
   assert.equal(shortfall.length, 1, logged.join("\n"));
   assert.match(shortfall[0], /11 live session\(s\) are left unpinned/);
+});
+
+test("every permanent card is pinned ahead of the sessions and none is evicted at the ceiling", async () => {
+  // Two standing cards is what this broker carries: the fleet usage card and the fleet board. Both
+  // are outside the ceiling, so the arithmetic that decides what the sessions get has to count them
+  // both, and a channel already full of session pins must still give both of them up rather than
+  // leave one unpinned.
+  const room = channel([]);
+  const logged: string[] = [];
+  const keeper = keeperWith(room.pins, logged);
+  const live = Array.from({ length: MAX_CHANNEL_PINS }, (_, at) => String(6000 + at));
+
+  await keeper.reconcile(intended(["5000", "5001"], live));
+
+  assert.equal(room.pinned.length, MAX_CHANNEL_PINS, "the channel takes no more than fifty");
+  assert.deepEqual(
+    room.pinned.slice(0, 2),
+    ["5000", "5001"],
+    "both permanent cards are pinned before any session is",
+  );
+  assert.deepEqual(
+    room.pinned.slice(2, 4),
+    ["6000", "6001"],
+    "and the sessions follow them oldest first",
+  );
+  assert.match(
+    logged.filter((line) => line.includes("pin ceiling"))[0] ?? "",
+    /2 live session\(s\) are left unpinned/,
+    "the two slots the permanent cards hold are the two the sessions lose",
+  );
+
+  // A later pass over a full channel keeps them: they are in the intended set, so nothing unpins
+  // them, and a card that is already pinned costs no second pin. The session that stopped being live
+  // is still one of this broker's own cards, which is what puts it in reach of the sweep.
+  await keeper.reconcile(intended(["5000", "5001"], live.slice(1), [live[0] ?? ""]));
+  assert.deepEqual(room.unpinned, ["6000"], "only the session that stopped being live is dropped");
+  assert.ok(room.list.includes("5000") && room.list.includes("5001"));
+});
+
+test("a permanent card the session surface never names is still one of this broker's own", async () => {
+  // The recognized set comes from the thread bindings, and no binding will ever name a standing
+  // card. Left out of what the keeper recognizes, each one is counted as a pin somebody else made
+  // and eats a slot out of the budget the live sessions are given.
+  const room = channel(["5000", "5001"]);
+  const keeper = keeperWith(room.pins);
+  const live = Array.from({ length: MAX_CHANNEL_PINS }, (_, at) => String(6000 + at));
+
+  await keeper.reconcile({ permanent: ["5000", "5001"], live, known: live });
+
+  assert.equal(room.list.length, MAX_CHANNEL_PINS, "the channel ends full rather than short");
+  assert.equal(
+    room.pinned.length,
+    MAX_CHANNEL_PINS - 2,
+    "the two standing cards were already pinned, and the sessions get every slot left",
+  );
 });
 
 /** The channel with Discord's own ceiling enforced: a pin past fifty is refused and stays refused. */
@@ -229,7 +288,7 @@ test("pins the operator made by hand hold their slots, and the keeper budgets wh
   const keeper = keeperWith(withCeiling(room), logged);
   const live = Array.from({ length: MAX_CHANNEL_PINS }, (_, at) => String(6000 + at));
 
-  await keeper.reconcile(intended("5000", live));
+  await keeper.reconcile(intended(["5000"], live));
 
   assert.equal(
     room.pinned.length,
@@ -258,7 +317,7 @@ test("without the permission every write is refused, one line names it, and noth
   const keeper = keeperWith(room.pins, logged);
 
   for (let pass = 0; pass < 6; pass += 1) {
-    await keeper.reconcile(intended("4000", ["4001"], ["4009"]));
+    await keeper.reconcile(intended(["4000"], ["4001"], ["4009"]));
   }
 
   assert.deepEqual(room.list, ["4009"], "the channel's pins are exactly what they were");
@@ -272,7 +331,7 @@ test("without the permission every write is refused, one line names it, and noth
 
   // And a route that has given up is not read for either: a stopped keeper costs no calls at all.
   const spent = room.calls();
-  await keeper.reconcile(intended("4000", ["4001", "4002"], ["4009"]));
+  await keeper.reconcile(intended(["4000"], ["4001", "4002"], ["4009"]));
   assert.equal(room.reads, spent - refusals + 1, "one more read, and no further writes");
   assert.equal(room.pinned.length + room.unpinned.length, refusals);
 });
@@ -283,7 +342,7 @@ test("with the permission granted the same intended set pins, from the same star
   const room = channel(["4009"]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", ["4001"], ["4009"]));
+  await keeper.reconcile(intended(["4000"], ["4001"], ["4009"]));
 
   assert.deepEqual(room.unpinned, ["4009"]);
   assert.deepEqual(room.pinned, ["4000", "4001"]);
@@ -295,10 +354,10 @@ test("a fleet card rebuilt under a new id takes the pin with it", async () => {
   const room = channel([]);
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended("4000", []));
+  await keeper.reconcile(intended(["4000"], []));
   assert.deepEqual(room.pinned, ["4000"]);
 
-  await keeper.reconcile(intended("4100", [], ["4000"]));
+  await keeper.reconcile(intended(["4100"], [], ["4000"]));
   assert.deepEqual(room.unpinned, ["4000"]);
   assert.deepEqual(room.pinned, ["4000", "4100"]);
 });
@@ -312,13 +371,13 @@ test("a partial page holds the pins back and is retried, while its unpins still 
   room.hasMore = true;
   const keeper = keeperWith(room.pins);
 
-  await keeper.reconcile(intended(null, ["4001"], ["4009"]));
+  await keeper.reconcile(intended([], ["4001"], ["4009"]));
   assert.deepEqual(room.unpinned, ["4009"]);
   assert.deepEqual(room.pinned, [], "nothing is pinned against a list that was not read whole");
 
   // The next pass sees a whole page, and the unchanged intended set is retried rather than skipped.
   room.hasMore = false;
-  await keeper.reconcile(intended(null, ["4001"], ["4009"]));
+  await keeper.reconcile(intended([], ["4001"], ["4009"]));
   assert.deepEqual(room.pinned, ["4001"]);
 });
 
@@ -328,10 +387,10 @@ test("a pin dropped for an empty bucket is retried on the next pass, not left un
   const keeper = keeperWith(room.pins);
   room.nextPin = { status: "rate-limited", rate: { ...NO_RATE_INFO, retryAfterMs: 0 } };
 
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended([], ["4001"]));
   assert.deepEqual(room.list, [], "the pin did not land");
 
-  await keeper.reconcile(intended(null, ["4001"]));
+  await keeper.reconcile(intended([], ["4001"]));
   assert.deepEqual(room.list, ["4001"]);
 });
 
@@ -347,8 +406,8 @@ test("a rejected token stops the keeper rather than being retried", async () => 
     permanent: true,
   };
 
-  await keeper.reconcile(intended(null, ["4001"]));
-  await keeper.reconcile(intended(null, ["4002"]));
+  await keeper.reconcile(intended([], ["4001"]));
+  await keeper.reconcile(intended([], ["4002"]));
 
   assert.equal(room.reads, 1, "no call is made after the credential was refused");
   assert.equal(logged.filter((line) => line.includes("token was rejected")).length, 1);
@@ -369,7 +428,7 @@ test("a message that is gone is not counted as a refusal of the route", async ()
       permanent: true,
       missing: true,
     };
-    await keeper.reconcile(intended(null, [`400${String(pass)}`]));
+    await keeper.reconcile(intended([], [`400${String(pass)}`]));
   }
 
   assert.equal(room.pinned.length, 4, "the route keeps being attempted for later cards");

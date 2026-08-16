@@ -281,11 +281,11 @@ export function createUsageCard(options: UsageCardOptions): UsageCard | null {
       return;
     }
     if (outcome.missing === true) {
-      // The message is gone: an operator deleted it, and its thread went with it. Both identifiers
-      // are dropped so the next tick builds a new card rather than calling a dead one forever. The
-      // stale file is left until that post has an identifier worth persisting, so a broker that
-      // dies in between rebinds to the dead message and finds it missing again, which is the same
-      // self-healing pass one tick later.
+      // The message the card is drawn on is gone, which is what an operator deleting it looks like.
+      // Both identifiers are dropped so the next tick builds a new card rather than calling a dead
+      // one forever, bounded by the rebuild ceiling. The stale file is left until that post has an
+      // identifier worth persisting, so a broker that dies in between rebinds to the dead message
+      // and finds it missing again, which is the same self-healing pass one tick later.
       messageId = null;
       threadId = null;
       rendered = null;

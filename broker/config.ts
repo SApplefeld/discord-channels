@@ -2,6 +2,7 @@
 // pointed at a different port or state file without editing source.
 import os from "node:os";
 import path from "node:path";
+import { comparablePath, defaultEventsPath } from "./board/events.ts";
 
 export type BrokerConfig = {
   /** Bound on 127.0.0.1 only. The listener is never exposed off-box. */
@@ -97,6 +98,26 @@ export type BrokerConfig = {
    * Null leaves the reader on its own default.
    */
   usageCacheRoot: string | null;
+  /**
+   * Whether the broker owns a fleet board card: one thread in the configured channel carrying every
+   * open plan under the configured project roots. Off by default, and off is the absence of the
+   * machinery rather than a check inside it: no thread is created, no refresh timer runs, and no plan
+   * doc or event stream is ever opened.
+   */
+  boardCard: boolean;
+  /**
+   * The project roots the board card sweeps, in the order it draws them. Configuration and never
+   * derived: the card reads `docs/plans` directly under each of these and nothing else, and no value
+   * out of any file it reads is ever used as a path. Empty leaves the card unbuilt even with the knob
+   * on, since there is nothing to sweep.
+   */
+  boardProjects: readonly string[];
+  /** How often the fleet is re-swept and re-rendered. An edit is spent only when it changed. */
+  boardCardRefreshMs: number;
+  /** The kit's goal event stream, resolved from `CHANNEL_BOARD_EVENTS_PATH` or from the home
+   * directory. Absent on disk is the ordinary case, not an error: the card then draws no blocked
+   * markers. */
+  boardEventsPath: string;
 };
 
 /**
@@ -193,6 +214,18 @@ const DEFAULT_USAGE_CARD_REFRESH_MS = 60 * 1000;
 // past 2^31-1 down to 1ms, which would turn an over-large value into a busy loop.
 const MIN_USAGE_CARD_REFRESH_MS = 5 * 1000;
 const MAX_USAGE_CARD_REFRESH_MS = 60 * 60 * 1000;
+// A minute, which is the resolution every age the board card draws is rounded to: a faster refresh
+// buys nothing the operator can see. Its bounds are the fleet card's, and for the same two reasons:
+// the floor keeps a typo from turning the refresh into a stream of Discord edits, and the ceiling
+// both holds the card a live surface and keeps the value inside what setInterval accepts, since Node
+// clamps a delay past 2^31-1 down to 1ms.
+const DEFAULT_BOARD_CARD_REFRESH_MS = 60 * 1000;
+const MIN_BOARD_CARD_REFRESH_MS = 5 * 1000;
+const MAX_BOARD_CARD_REFRESH_MS = 60 * 60 * 1000;
+// One list, one entry per project root. A semicolon rather than a colon or a comma because a Windows
+// path carries a drive letter and a colon with it, and a comma is a legal character in a directory
+// name.
+const PROJECT_SEPARATOR = ";";
 const DEFAULT_RETAIN_TERMINAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SESSIONS = 500;
 const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -274,6 +307,58 @@ function taskNotificationMode(raw: string | undefined): "brief" | "full" | "off"
   );
 }
 
+// A Windows path names the same directory from every process only when it leads with a drive letter
+// or a UNC root. `path.isAbsolute` takes a leading separator as well, and `\one` resolves against
+// whichever drive the broker was launched from, which under a scheduled task is no drive the
+// operator chose.
+const WINDOWS_ROOT = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
+
+/** True only for an entry that names one directory whatever the process's launch state was. */
+function namesOneDirectory(root: string): boolean {
+  if (!path.isAbsolute(root)) return false;
+  return process.platform === "win32" ? WINDOWS_ROOT.test(root) : true;
+}
+
+/**
+ * The board card's project roots, in the order they were written.
+ *
+ * Refuses an entry that does not name one fixed directory rather than resolving one, holding the line
+ * the flag and numeric knobs hold: such a root resolves against whatever directory or drive the
+ * broker was launched from, which under a scheduled task is neither of the operator's choosing, and a
+ * card silently sweeping the wrong tree is a card nobody can reason about from the file they wrote. A
+ * blank entry is not an error, so a list written with a trailing separator means what it looks like.
+ *
+ * The refusal names the entry's position and never its text: a project root typically embeds the
+ * operator's OS username, and this message reaches the log file.
+ *
+ * Two entries naming one directory collapse to the first spelling of it, compared in the form the
+ * board card's event reader compares a root in: separators normalized, a trailing separator dropped,
+ * and case folded on Windows. That is the same form on purpose. A duplicate surviving here is drawn
+ * as a second project block whose rows never take a blocked marker, because the reader folds the two
+ * spellings together and keys its events to the first.
+ */
+function projectRoots(raw: string | undefined): readonly string[] {
+  if (raw === undefined || raw.trim() === "") return [];
+  const seen = new Set<string>();
+  const roots: string[] = [];
+  const written = raw.split(PROJECT_SEPARATOR);
+  for (const [index, entry] of written.entries()) {
+    const root = entry.trim();
+    if (root === "") continue;
+    if (!namesOneDirectory(root)) {
+      throw new Error(
+        `expected absolute project roots separated by "${PROJECT_SEPARATOR}", ` +
+          `entry ${String(index + 1)} of ${String(written.length)} names no fixed directory`,
+      );
+    }
+    const key = comparablePath(root);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(root);
+  }
+  return roots;
+}
+
 /**
  * The state file lives outside the repository by default: the broker is installed as a service
  * and its runtime state is not source.
@@ -347,5 +432,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       DEFAULT_USAGE_CARD_REFRESH_MS,
     ),
     usageCacheRoot: env.CHANNEL_USAGE_CACHE_ROOT?.trim() || null,
+    // Off by default for the reason the fleet card is: the card reads the plan docs of every
+    // configured project and opens a thread of its own in the operator's channel, and neither
+    // belongs on a host that never asked for it.
+    boardCard: strictFlag(env.CHANNEL_BOARD_CARD, false),
+    boardProjects: projectRoots(env.CHANNEL_BOARD_PROJECTS),
+    boardCardRefreshMs: bounded(
+      env.CHANNEL_BOARD_CARD_REFRESH_MS,
+      MIN_BOARD_CARD_REFRESH_MS,
+      MAX_BOARD_CARD_REFRESH_MS,
+      DEFAULT_BOARD_CARD_REFRESH_MS,
+    ),
+    // Read here rather than where the file is opened, so the installer's env allowlist pin, which
+    // scans this file for the knobs it must carry, sees this one too.
+    boardEventsPath: env.CHANNEL_BOARD_EVENTS_PATH?.trim() || defaultEventsPath(env),
   };
 }

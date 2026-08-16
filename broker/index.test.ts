@@ -16,6 +16,7 @@ import {
   questionDelivery,
   questionRefresh,
   questionUpgrade,
+  boardCardWiring,
   startBroker,
   usageCardWiring,
 } from "./index.ts";
@@ -38,6 +39,8 @@ import {
 } from "./security/permission.ts";
 import { questionDigest } from "./tail.ts";
 import { createUsageCard } from "./usage/thread.ts";
+import { createBoardCard } from "./board/thread.ts";
+import { loadBoardBinding } from "./board/binding.ts";
 import { loadUsageBinding } from "./usage/binding.ts";
 
 function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile: string | null }): BrokerConfig {
@@ -62,6 +65,11 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     usageCardRefreshMs: 60_000,
     modelChangeAlert: false,
     usageCacheRoot: null,
+    boardCard: false,
+    boardProjects: [],
+    // Named rather than defaulted, so nothing a test starts can reach the operator's own home.
+    boardEventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
+    boardCardRefreshMs: 60_000,
     ...overrides,
   };
 }
@@ -490,6 +498,96 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
   assert.match(body, /interim mirroring off/, "with the tailer's own state in the footer");
   assert.deepEqual(
     loadUsageBinding(path.join(dir, "usage-card.json")),
+    { messageId: "111111111111111111", threadId: "222222222222222222" },
+    "and the thread it opened is persisted beside the registry snapshot",
+  );
+});
+
+test("the board card knob builds nothing on a broker with no discord configured", async (t) => {
+  // Both of the conditions a unit test can only half reach: with no channel there is nowhere to draw
+  // a card, so the knob and a project list together must still open no thread and start no refresh.
+  //
+  // The state file beside the registry's is deliberately corrupt. Reading it would report itself in
+  // the log, so a card wired to load its binding before it decides whether it exists leaves a trace
+  // here that a broker leaving that file alone cannot produce.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-wiring-"));
+  const logFile = path.join(dir, "broker.log");
+  const bindingFile = path.join(dir, "board-card.json");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(bindingFile, "{not json", "utf8");
+
+  const broker = await startBroker(
+    config({
+      stateFile: path.join(dir, "state.json"),
+      logFile,
+      boardCard: true,
+      boardProjects: [dir],
+    }),
+  );
+  await broker.stop();
+
+  // A broker with no Discord writes nothing at startup, so the log file need not exist at all.
+  const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  assert.doesNotMatch(logged, /board card/);
+  assert.equal(readFileSync(bindingFile, "utf8"), "{not json", "the file is not touched either");
+});
+
+test("the board card's wiring reads this broker's configured projects and binding file", async (t) => {
+  // The seam a unit test of the card cannot reach: the configured roots reaching a real sweep of a
+  // real directory, the events path the config resolved, and the path from a bind back to a snapshot
+  // on disk. A stub transport is what puts all of it in reach without a Discord connection.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-wired-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const project = path.join(dir, "project");
+  mkdirSync(path.join(project, "docs", "plans"), { recursive: true });
+  writeFileSync(
+    path.join(project, "docs", "plans", "wired_spec_v1.md"),
+    "Status: In Progress\n\n## Sections of Work\n### 1. One\n### 2. Two\n\n" +
+      "## Chapters\n### Chapter 1\nCompleted: 1. One\nNext: the second section\n",
+    "utf8",
+  );
+
+  const posts: string[] = [];
+  const transport: DiscordTransport = {
+    postCard: async ({ card }) => {
+      posts.push(card);
+      return { status: "ok", value: { messageId: "111111111111111111" }, rate: NO_RATE_INFO };
+    },
+    openThread: async () => ({
+      status: "ok",
+      value: { threadId: "222222222222222222" },
+      rate: NO_RATE_INFO,
+    }),
+    editCard: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    renameThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    archiveThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+
+  const card = createBoardCard(
+    boardCardWiring({
+      config: {
+        stateFile: path.join(dir, "state.json"),
+        boardCard: true,
+        boardProjects: [project],
+        boardCardRefreshMs: 60_000,
+        // Absent on disk, which is the ordinary case: the card then draws no blocked markers.
+        boardEventsPath: path.join(dir, "kit-events.jsonl"),
+      },
+      transport,
+      log: () => {},
+      onError: () => {},
+    }),
+  );
+  assert.ok(card !== null, "the knob is on, a channel is configured, and a project is named");
+  await card.tick();
+
+  const body = posts[0] ?? "";
+  assert.equal(posts.length, 1);
+  assert.match(body, /\*\*project\*\*/, "the project is labelled by its own root");
+  assert.match(body, /wired_spec_v1/, "and the plan doc under it is what the card draws");
+  assert.match(body, /1\/2/, "with the section count the plan's own Chapter registers");
+  assert.deepEqual(
+    loadBoardBinding(path.join(dir, "board-card.json")),
     { messageId: "111111111111111111", threadId: "222222222222222222" },
     "and the thread it opened is persisted beside the registry snapshot",
   );

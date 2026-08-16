@@ -1,5 +1,6 @@
 // The channel's pin list, held as the roster of what is running: a live session's card is pinned,
-// an exited one's is unpinned, and the fleet usage card stays pinned for as long as it exists.
+// an exited one's is unpinned, and the broker's permanent cards stay pinned for as long as they
+// exist.
 //
 // Reconciled from Discord's own answer rather than from a broker-side flag. The list is read and
 // driven toward the intended set, which is what survives a broker restart, a pin the operator added
@@ -42,17 +43,22 @@ const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 /**
  * The pins this channel is meant to carry.
  *
- * The permanent one is outside the ceiling: it is the fleet usage card, the one card that is always
- * relevant, so it is pinned before any session is and is never given up to make room.
+ * The permanent ones are outside the ceiling: they are the broker's own standing cards, the ones
+ * that are always relevant, so they are pinned before any session is and are never given up to make
+ * room.
  */
 export type IntendedPins = {
-  /** The fleet usage card, or null while this broker has none. */
-  permanent: string | null;
+  /**
+   * The broker's standing cards, in the order they take their slots, and empty while it has none.
+   * A card this broker has not built, or one Discord reported gone, is absent from the list rather
+   * than named, so a slot is held only for a message that exists.
+   */
+  permanent: readonly string[];
   /** The cards of the sessions that are running. Order here is not read; age decides. */
   live: readonly string[];
   /**
-   * Every message this broker recognizes as one of its own cards: the fleet card and every card a
-   * thread binding names, live or not. The sweep reaches exactly this set, so a pin the operator
+   * Every message this broker recognizes as one of its own cards: the permanent cards and every card
+   * a thread binding names, live or not. The sweep reaches exactly this set, so a pin the operator
    * added by hand stays where they put it while an exited session's card is still dropped, because
    * its binding is still there.
    *
@@ -148,7 +154,9 @@ function olderFirst(left: string, right: string): number {
  */
 function signature(intended: IntendedPins): string {
   return [
-    intended.permanent ?? "",
+    // Taken in the order given, unlike the two sets below: the order of the permanent cards is the
+    // order they take their slots in, so a change to it is a change to the intended pin list.
+    intended.permanent.join(","),
     [...intended.live].sort(olderFirst).join(","),
     [...intended.known].sort(olderFirst).join(","),
   ].join("|");
@@ -215,7 +223,7 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
   }
 
   /**
-   * What the channel is meant to carry, in the order the ceiling reads: the permanent card first,
+   * What the channel is meant to carry, in the order the ceiling reads: the permanent cards first,
    * then the live sessions oldest first. Duplicates are collapsed, since one message pinned twice
    * is one pin.
    *
@@ -229,11 +237,12 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
     intended: IntendedPins,
     heldByOthers: number,
   ): { kept: string[]; shortfall: number } {
+    const permanent = new Set(intended.permanent);
     const live = [...new Set(intended.live)]
-      .filter((messageId) => messageId !== intended.permanent)
+      .filter((messageId) => !permanent.has(messageId))
       .sort(olderFirst);
-    const room = MAX_CHANNEL_PINS - heldByOthers - (intended.permanent === null ? 0 : 1);
-    const kept = intended.permanent === null ? [] : [intended.permanent];
+    const room = MAX_CHANNEL_PINS - heldByOthers - permanent.size;
+    const kept = [...permanent];
     kept.push(...live.slice(0, Math.max(room, 0)));
     return { kept, shortfall: live.length - Math.min(live.length, Math.max(room, 0)) };
   }
@@ -258,7 +267,7 @@ export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
 
     // The sweep's whole reach: this broker's own cards, and nothing else in the channel. A pin the
     // operator made by hand is in neither set and is left exactly where they put it.
-    const ourCards = new Set([...intended.known, ...(intended.permanent === null ? [] : [intended.permanent])]);
+    const ourCards = new Set([...intended.known, ...intended.permanent]);
     // Which is also what makes those pins part of the ceiling rather than of the budget: nothing
     // here will ever free their slots. A page that did not carry the whole list undercounts them,
     // and undercounting only widens the budget on a pass that pins nothing anyway.

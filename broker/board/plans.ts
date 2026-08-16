@@ -18,40 +18,47 @@
 // open would block the open until a writer arrived, which is a write inside the operator's own
 // project tree by the operator's own account, the boundary this reader already stands inside.
 //
-// Reads are byte-capped and refused whole: a file over the cap yields a failure rather than its
-// first megabyte, because a recognizer running on a cut copy can manufacture a match the full text
+// Reads are byte-capped and refused whole: a file over the cap yields a failure rather than the
+// prefix that fit, because a recognizer running on a cut copy can manufacture a match the full text
 // does not contain. Failure is a returned value per path, never a throw and never a silent drop, so
 // a caller holding a last-good parse can tell "this plan failed to read this tick" from "this plan
-// is gone". Nothing read here is logged: a failure carries a static reason, and the errors
+// is gone", and a failure carries the stat it was observed at so that caller can skip the file until
+// it moves. Nothing read here is logged: a failure carries a static reason, and the errors
 // themselves are discarded unread because each carries a path under the operator's own profile.
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 
 /**
- * Ceiling on one plan doc. A long plan with a dozen Chapters runs tens of kilobytes, so this is
- * room for far more than a plan the card can render, and past it the file is refused without being
- * parsed at all.
+ * Ceiling on one plan doc: 256 KiB, which is roughly ten times the tens of kilobytes a long plan
+ * with a dozen Chapters runs to. Past it the file is refused without being parsed at all, and the
+ * refusal is drawn on the card as an oversized row rather than dropped, so a plan that outgrows this
+ * is visible rather than silently missing.
+ *
+ * The number is the cost of a churning root, not of one file: a root whose plans all moved between
+ * ticks costs `MAX_PLANS_PER_ROOT` reads of this size plus their parses, on the broker's only event
+ * loop, on the channel where approvals are answered.
  */
-export const MAX_PLAN_FILE_BYTES = 1024 * 1024;
+export const MAX_PLAN_FILE_BYTES = 256 * 1024;
 
 /**
  * The most plan files one root contributes to a sweep, by name order.
  *
  * A curated `docs/plans` holds a handful of open plans, so this is generous headroom. It exists
  * because the sweep runs on a refresh timer: without it, one directory holding thousands of `.md`
- * files would cost a stat and a megabyte-capped read each, every tick.
+ * files would cost a stat each, and a read of up to `MAX_PLAN_FILE_BYTES` for every one of them that
+ * moved.
  */
 export const MAX_PLANS_PER_ROOT = 64;
 
 /**
  * What the two free-form values a plan doc carries are held to before they leave a parse.
  *
- * Both are single lines of a file this module reads whole, so either can arrive as the entire
- * megabyte the read cap allows. These caps sit generously above anything a renderer draws (the board
- * card cuts a status to nine columns and a `Next:` to a hundred and twenty), so presentation stays
- * the renderer's, and far below what a caller could afford to hold: a held parse is kept in memory
- * across ticks and folded back into every sweep, so a megabyte reaching it is a megabyte re-walked
- * by every consumer on every tick.
+ * Both are single lines of a file this module reads whole, so either can arrive as the whole of what
+ * the read cap allows. These caps sit generously above anything a renderer draws (the board card
+ * cuts a status to nine columns and a `Next:` to a hundred and twenty), so presentation stays the
+ * renderer's, and far below what a caller could afford to hold: a held parse is kept in memory across
+ * ticks and folded back into every sweep, so a cap-sized value reaching it is re-walked by every
+ * consumer on every tick.
  */
 export const MAX_INTAKE_STATUS_LENGTH = 120;
 export const MAX_INTAKE_NEXT_LENGTH = 400;
@@ -109,12 +116,17 @@ export type PlanFailureReason = "unreadable" | "oversized" | "malformed";
  * One swept plan doc that yielded no reading. The `reason` is a static word, safe to log and safe
  * to render; `path` carries the same operator profile the reading's does, so `stem` is the
  * loggable identity here too.
+ *
+ * `stat` is the modification time and size the failure was observed at, and it is absent only when
+ * the stat itself is what failed. A caller keeping it can hand it back through `heldFailure` and
+ * spend a stat rather than a whole read on a file that has not moved since it last failed.
  */
 export type PlanFailure = {
   root: string;
   path: string;
   stem: string;
   reason: PlanFailureReason;
+  stat?: { mtimeMs: number; sizeBytes: number };
 };
 
 /** What one capped read yields: the file's text, or why there is none. */
@@ -128,6 +140,18 @@ export type SweepPlansOptions = {
    * present plan comes back every tick, and only the files that moved are opened.
    */
   heldParse?: (file: string, mtimeMs: number, sizeBytes: number) => PlanParse | undefined;
+  /**
+   * The failure this caller already observed for `file` at exactly this modification time and size,
+   * or undefined when it holds none. Returning one skips the read and yields that same failure
+   * again, which is what keeps a file that cannot be read or parsed from being opened in full on
+   * every tick for as long as the broker runs: a file that has not moved fails the way it failed
+   * before, and reading it to learn that costs the whole file.
+   */
+  heldFailure?: (
+    file: string,
+    mtimeMs: number,
+    sizeBytes: number,
+  ) => PlanFailureReason | undefined;
   /** The one read this module performs. Injected so a test can pin which files are opened. */
   readPlan?: (file: string) => PlanRead;
 };
@@ -278,7 +302,7 @@ const WHITESPACE_RUN = /\s+/g;
  * text first would keep a prefix that is whitespace and hand on a value whose meaningful text was
  * dropped for spaces. Collapsing first makes what is kept a prefix of what a reader would have seen.
  *
- * The collapse walks the whole value once, which is a megabyte at worst. That cost is paid here
+ * The collapse walks the whole value once, which is the read cap at worst. That cost is paid here
  * rather than by the renderer because a parse is mtime-gated: a file that has not moved is never
  * read or parsed again, where a renderer runs on every refresh tick over whatever the last parse
  * held.
@@ -433,8 +457,10 @@ function planFiles(root: string): { names: string[]; dropped: number } {
  * membership rule is the renderer's, which draws every non-terminal plan with its status as text.
  *
  * Every listed file is stat'd; a file the caller already holds a parse for at that exact
- * modification time and size is folded in from the caller's hold rather than opened, so a refresh
- * tick over an unchanged fleet costs one stat per plan and no reads at all.
+ * modification time and size is folded in from the caller's hold rather than opened, and one the
+ * caller already saw fail at that exact stat yields that failure again rather than being opened, so
+ * a refresh tick over an unchanged fleet costs one stat per plan and no reads at all whether or not
+ * every plan in it parses.
  *
  * It does not throw for one bad file, and it does not drop one either. Each failed path comes back
  * named so the caller can redraw whatever it last parsed for that path under an aging marker, which
@@ -459,21 +485,27 @@ export function sweepPlans(roots: readonly string[], options: SweepPlansOptions 
         continue;
       }
       const where = { root, path: file, stem, mtimeMs: moved.mtimeMs, sizeBytes: moved.sizeBytes };
+      const stat = { mtimeMs: moved.mtimeMs, sizeBytes: moved.sizeBytes };
 
       const holding = options.heldParse?.(file, moved.mtimeMs, moved.sizeBytes);
       if (holding !== undefined) {
         readings.push({ ...holding, ...where });
         continue;
       }
+      const failedBefore = options.heldFailure?.(file, moved.mtimeMs, moved.sizeBytes);
+      if (failedBefore !== undefined) {
+        failures.push({ root, path: file, stem, reason: failedBefore, stat });
+        continue;
+      }
 
       const held = read(file);
       if ("failed" in held) {
-        failures.push({ root, path: file, stem, reason: held.failed });
+        failures.push({ root, path: file, stem, reason: held.failed, stat });
         continue;
       }
       const parsed = parsePlan(held.text);
       if (parsed === null) {
-        failures.push({ root, path: file, stem, reason: "malformed" });
+        failures.push({ root, path: file, stem, reason: "malformed", stat });
         continue;
       }
       readings.push({ ...parsed, ...where });

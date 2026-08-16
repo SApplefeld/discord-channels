@@ -144,16 +144,19 @@ export type ReadEventsResult = {
 };
 
 /**
- * Where the events file lives: `~/.claude/kit-events.jsonl`, overridable by
- * `CHANNEL_BOARD_EVENTS_PATH`. Resolved the way `broker/usage/cache.ts`'s `defaultUsageRoot` resolves
- * its root, with `env` a parameter throughout so a test never reads the operator's real home.
+ * Where the events file lives when nothing overrides it: `~/.claude/kit-events.jsonl`. Resolved the
+ * way `broker/usage/cache.ts`'s `defaultUsageRoot` resolves its root, with `env` a parameter
+ * throughout so a test never reads the operator's real home.
+ *
+ * The `CHANNEL_BOARD_EVENTS_PATH` override is read in `broker/config.ts` and applied there, beside
+ * every other knob, because the installer's allowlist is pinned against the knobs that file reads: a
+ * knob read anywhere else can be dropped from the allowlist without a test noticing, and a dropped
+ * entry is a knob an installed broker can never receive.
  */
 export function defaultEventsPath(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.CHANNEL_BOARD_EVENTS_PATH;
-  if (override !== undefined && override.trim() !== "") return override;
-  // A blank `USERPROFILE` is treated as absent for the same reason a blank override is: taking it
-  // would build a relative path, which resolves against whatever directory the broker was launched
-  // from rather than against a home directory.
+  // A blank `USERPROFILE` is treated as absent: taking it would build a relative path, which
+  // resolves against whatever directory the broker was launched from rather than against a home
+  // directory.
   const profile = env.USERPROFILE;
   const home = profile !== undefined && profile.trim() !== "" ? profile : os.homedir();
   return path.join(home, ".claude", "kit-events.jsonl");
@@ -256,7 +259,7 @@ const FOLD_PATH_CASE = process.platform === "win32";
 const TRAILING_SEPARATORS = /[\\/]+$/;
 
 /**
- * One path in the form both sides of a root comparison are put into: separators normalized, a
+ * One path in the form every comparison of two roots is made in: separators normalized, a
  * trailing separator dropped so a root configured with one still names the same directory, and case
  * folded where the platform does not distinguish it.
  *
@@ -265,8 +268,13 @@ const TRAILING_SEPARATORS = /[\\/]+$/;
  *
  * This is a string operation throughout. Nothing here opens, resolves, or asks the filesystem
  * anything about a value another program wrote.
+ *
+ * Exported because the configured list is deduplicated through this same form in
+ * `broker/config.ts`. Two spellings of one directory have to collapse there exactly as they match
+ * here, and a second normalizer that could disagree with this one is how a root ends up drawn twice
+ * with the events landing on only one of the two.
  */
-function comparablePath(value: string): string {
+export function comparablePath(value: string): string {
   const normalized = path.normalize(value);
   const trimmed = normalized.replace(TRAILING_SEPARATORS, "") || normalized;
   return FOLD_PATH_CASE ? trimmed.toLowerCase() : trimmed;

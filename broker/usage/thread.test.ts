@@ -185,8 +185,9 @@ test("the first tick posts the card and opens its thread on it, under a fixed na
 });
 
 test("the fleet thread is never archived, whatever the sessions on it are doing", async () => {
-  // The fleet thread is permanent: it is the one card that is always relevant, and it belongs to
-  // this module rather than to the session surface, which closes a thread when its session exits.
+  // The fleet thread is permanent: it carries a standing card rather than one session's state, and
+  // it belongs to this module rather than to the session surface, which closes a thread when its
+  // session exits.
   // Every session on the card being exited is the case that most resembles that trigger, so it is
   // the one driven here, alongside an unreadable cache and a restart onto the same thread.
   const { calls, usage } = card({

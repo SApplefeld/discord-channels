@@ -355,3 +355,62 @@ Next: 4. The thread, the config, and the wiring. Two items carried forward from 
 confirm the board card's create and edit routes carry `allowed_mentions` suppression, and note that
 enforcing `heldParse` staleness is the caller's job and so lands in that section.
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-16
+Completed: 4. The thread, the config, and the wiring
+Implemented By: implementer-opus, one build round and one six-item fix round
+Metrics: 1 review round (adversarial + blind + security in parallel, all at fable); NEEDS_CONTEXT 0;
+escalations 0; consults 0
+Decisions / Surprises: The spec said the wiring lives in the entrypoint; it does not. The usage card is
+built in `broker/index.ts`, and the board card was placed beside it there.
+The pin reconciler's `permanent` slot was `string | null`, built for exactly one always-pinned card, so
+a third persistent surface did not fit. Ruled before dispatch: widen it to `readonly string[]` rather
+than add a second named field, because the ceiling rule (permanent cards are pinned before any session
+and are never given up to make room) is stated once in the arithmetic, and a second field would
+duplicate it and encode a fixed count of two into a module whose premise is reconciling from Discord's
+own answer rather than from broker-side assumptions.
+The board keeps its own binding module rather than generalizing the usage card's, which the implementer
+flagged as the call most likely to draw fire. The adversarial reviewer diffed the two and independently
+reached the same verdict on the codebase's own precedent: small terminal mechanisms are deliberately
+duplicated per surface with a comment owning the choice (the repeat-log limiter three times, the
+snowflake pattern four, the versioned atomic write three), while extraction is reserved for values
+whose drift is user-visible, which is why `BAR_GLYPH` moved in Chapter 3. Third instance is the
+threshold; a fourth card is when to extract.
+The section also turned up a pin the brief never mentioned: the installer's env allowlist is checked
+mechanically against the knobs `broker/config.ts` reads, and the new flag tripped it.
+Review Findings: Majors addressed: a plan file that fails to parse was re-read in full on every tick
+forever, because the hold map cached only successful parses and a failing file could never match one,
+measured at 72 to 105 ms of synchronous stall per tick for an unchanged fleet at one root's file cap
+(a negative cache keyed to the observed stat now shuts it, measured at 1 to 2 ms after the first tick);
+`CHANNEL_BOARD_PROJECTS` deduplicated on exact strings, so two spellings of one directory survived as
+two roots and drew the project twice, the second copy silently never taking a blocked marker because
+the event reader folds roots while the card looks them up by configured spelling (both now fold through
+one exported normalizer, since two normalizers that can disagree is how this class returns); and
+`CHANNEL_BOARD_EVENTS_PATH` sat on the installer allowlist outside the mechanical pin, because the pin
+scans `config.ts` and that knob was read in `events.ts`, so deleting the entry failed no test (the read
+moved to `config.ts`, and the deletion now goes red). Minors addressed: `path.isAbsolute` accepts
+`\one` on Windows, which resolves against the launch drive and defeats the very launch-state
+dependence the refusal exists to prevent; the repeat limiter counted one failing pass once per timer
+fire that joined it, so a single failure logged as several; and `MAX_PLAN_FILE_BYTES` came down from
+1 MiB to 256 KiB, roughly ten times a real plan, halving a churning root's tick cost while an
+over-cap file still surfaces as the visible oversized row rather than vanishing.
+Two comments asserting that deleting a card's message takes its thread with it were reworded to claim
+only what the code does, in this section's file and in the usage sibling. The claim may well be false,
+but neither we nor the reviewer who raised it could confirm Discord's behavior, so it is now asserted
+in neither direction rather than replaced with its opposite.
+The security review's estimate of a churning root's worst tick (about 1.9 s) did not reproduce: the
+implementer measured 145 to 166 ms for that shape on this host, an order of magnitude lower. The cap
+still came down, on the headroom argument rather than on that number, and the number is recorded here
+as unreproduced rather than carried forward as fact.
+Verified independently and clean: the card's create and edit routes both suppress mentions, already
+pinned by a committed test, and the conditional suppression in the adapter governs a route this card
+never calls.
+Gate: baseline 1281/1280/0 fail/1 skipped, now 1327/1326/0/1, four consecutive clean full runs. The
+known `broker/tail.test.ts` Stop-mirror flake cluster fired during the round and not in the final four;
+no board, config, pins, index, or installer test went red in any run.
+Stamps: adjudicated 0, stamped 0
+Next: 5. Documentation. Runs inline in the main thread: subagents are blocked from writing under
+`docs/`. Carried in: the operator should be told that a malformed board knob refuses broker start even
+with the card switched off, and that the card draws the last path segment of each configured root, so
+a root at or one level under a home directory puts the OS username in the channel.
+Commit Model: Commit-and-Push

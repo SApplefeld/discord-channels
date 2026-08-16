@@ -56,6 +56,15 @@ function scratch(): Scratch {
   };
 }
 
+/**
+ * The stat a failure comes back carrying, which is the file's own. A caller holds it to tell whether
+ * a file has moved since it failed, and skips the read of one that has not.
+ */
+function statOf(file: string): { mtimeMs: number; sizeBytes: number } {
+  const stat = statSync(file);
+  return { mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
+}
+
 test("Complete terminates only as the whole string, and the raw status always rides out", () => {
   for (const [status, terminal] of [
     ["Complete", true],
@@ -386,7 +395,7 @@ test("an over-cap file is refused whole, never parsed as a prefix", () => {
     const swept = sweepPlans([held.root]);
     assert.deepEqual(swept.readings, []);
     assert.deepEqual(swept.failures, [
-      { root: held.root, path: file, stem: "huge_spec_v1", reason: "oversized" },
+      { root: held.root, path: file, stem: "huge_spec_v1", reason: "oversized", stat: statOf(file) },
     ]);
   } finally {
     held.cleanup();
@@ -423,7 +432,7 @@ test("an unreadable file is a named failure and the plans beside it still read",
       ["well_spec_v1"],
     );
     assert.deepEqual(swept.failures, [
-      { root: held.root, path: bad, stem: "torn_spec_v1", reason: "unreadable" },
+      { root: held.root, path: bad, stem: "torn_spec_v1", reason: "unreadable", stat: statOf(bad) },
     ]);
   } finally {
     held.cleanup();
@@ -475,6 +484,47 @@ test("a plan the caller already holds at this mtime and size is folded in withou
   }
 });
 
+test("a plan the caller already saw fail at this mtime and size is not opened either", () => {
+  // A failing file has no parse to match a later stat with, so nothing but this gate stops the sweep
+  // from reading it in full on every tick for as long as it sits under a configured root.
+  const held = scratch();
+  try {
+    const file = held.write("torn_spec_v1.md", plan());
+    const stat = statSync(file);
+    const opened: string[] = [];
+    const readPlan = (target: string) => {
+      opened.push(target);
+      return { text: plan() };
+    };
+
+    const gated = sweepPlans([held.root], {
+      readPlan,
+      heldFailure: (target, mtimeMs, sizeBytes) =>
+        target === file && mtimeMs === stat.mtimeMs && sizeBytes === stat.size
+          ? ("malformed" as const)
+          : undefined,
+    });
+    assert.deepEqual(opened, [], "nothing was opened for a plan the caller already saw fail");
+    assert.deepEqual(gated.readings, []);
+    assert.deepEqual(gated.failures, [
+      {
+        root: held.root,
+        path: file,
+        stem: "torn_spec_v1",
+        reason: "malformed",
+        stat: { mtimeMs: stat.mtimeMs, sizeBytes: stat.size },
+      },
+    ]);
+
+    // A caller holding nothing for that stat gets the file read instead.
+    const fresh = sweepPlans([held.root], { readPlan, heldFailure: () => undefined });
+    assert.deepEqual(opened, [file], "the file is opened once the hold no longer matches");
+    assert.equal(fresh.readings[0]?.status, "In Progress");
+  } finally {
+    held.cleanup();
+  }
+});
+
 test("the extension test ignores case, and one root contributes at most MAX_PLANS_PER_ROOT files", () => {
   const held = scratch();
   try {
@@ -518,7 +568,7 @@ test("a file with no Status header is a failure, not a plan with an empty status
     const swept = sweepPlans([held.root]);
     assert.deepEqual(swept.readings, []);
     assert.deepEqual(swept.failures, [
-      { root: held.root, path: file, stem: "torn_spec_v1", reason: "malformed" },
+      { root: held.root, path: file, stem: "torn_spec_v1", reason: "malformed", stat: statOf(file) },
     ]);
   } finally {
     held.cleanup();

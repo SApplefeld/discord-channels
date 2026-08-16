@@ -143,6 +143,11 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     usageCardRefreshMs: 60_000,
     modelChangeAlert: false,
     usageCacheRoot: null,
+    boardCard: false,
+    boardProjects: [],
+    // Named rather than defaulted, so nothing a test starts can reach the operator's own home.
+    boardEventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
+    boardCardRefreshMs: 60_000,
     ...overrides,
   };
 }
