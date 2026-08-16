@@ -101,8 +101,8 @@ is a short card.
 ## The channel's pins, and threads that put themselves away
 
 The channel's pinned messages are the sessions that are running. The broker pins a session's card
-while its session is live, unpins it when the session exits, and keeps the fleet usage card pinned
-permanently, so the pin list answers "what is running right now" without a scroll. It works by
+while its session is live, unpins it when the session exits, and keeps the fleet usage and board
+cards pinned permanently, so the pin list answers "what is running right now" without a scroll. It works by
 reading the channel's own pins each pass and moving them toward that set, which is what survives a
 broker restart and a card rebuilt after a deletion. A pin you added by hand is left alone.
 
@@ -280,8 +280,9 @@ both apply. The key to the markers is drawn at the foot only when a marker is on
 sessions get one more label-and-block pair, omitted when nothing is running, and a card that runs
 out of room names what it dropped rather than ending mid-thought.
 
-The bar's filled cells are drawn in one named constant, `BAR_GLYPH` in `broker/usage/card.ts`,
-currently `—` (U+2014). That is a typographic character rather than a box-drawing one, so whether
+The bar's filled cells are drawn in one named constant, `BAR_GLYPH` in `broker/discord/render.ts`,
+currently `—` (U+2014). Both cards that draw a bar read that one constant, so a swap here moves them
+together. That is a typographic character rather than a box-drawing one, so whether
 consecutive cells tile into an unbroken line or leave hairline gaps between them is a property of
 the font the reading client draws with. `─` (U+2500) is the swap on a client that leaves gaps.
 
@@ -305,6 +306,40 @@ costing nothing. Ages and countdowns are drawn to the minute below a day and to 
 so the honest steady state is about one edit a minute for as long as anything on the card is under
 a day old, and the card genuinely settles only once every reading and session line has aged past
 that mark.
+
+## The fleet board card
+
+One thread named **Fleet: Board** carries a second broker-edited card, answering "what is still open
+and how far has it got" without opening a plan document. It is off unless the host sets both
+`CHANNEL_BOARD_CARD` and `CHANNEL_BOARD_PROJECTS`, and off means nothing is built: no thread, no
+timer, and no file opened.
+
+`CHANNEL_BOARD_PROJECTS` is a semicolon-separated list of absolute project roots. Each is swept for
+`docs/plans/*.md`, and every plan not marked Complete gets a row. A root that is not a fixed
+directory, meaning anything relative or drive-relative that would resolve against whichever drive the
+broker happened to start on, refuses at load: the message names the entry's position rather than its
+text, since a root usually carries your own account name. That refusal stops the broker starting even
+with the card switched off, which is the same strictness the other typed knobs have, so a typo in a
+board value is a start failure rather than a silently missing card. Two spellings of one directory
+collapse to one root.
+
+Each project is a bold label over a fenced block, and the label is the last segment of the root, so
+choose roots whose final segment is the project name. A row carries the plan's filename stem, a
+progress bar and a sections-complete count, and beneath it the time since the document last moved and
+the latest Chapter's `Next:`. A plan the broker cannot parse right now redraws its last good reading
+under a held marker whose age climbs, rather than dropping off the card. A plan whose goal is blocked
+carries the age of the block, cleared when the document moves again or when the goal completes. A
+card that runs out of room names how many plans and projects it dropped.
+
+The card is deterministic and spends no tokens: nothing between a plan file and the card involves a
+model. It also reads the plan-doc contract exactly as the external engine does, sharp edges included,
+so a section the card does not count as done is a section that engine does not count either, and the
+fix is in the document rather than here.
+
+Cost per refresh is small and bounded. A file is opened only when its modification time or size has
+moved, and a file that fails to parse is held shut on the same terms rather than being re-read every
+tick. Plans above 256 KB are not opened at all and draw a row saying so; a real plan runs tens of KB.
+Each root contributes at most 64 plan files.
 
 ## What a session card says about its model
 
@@ -574,6 +609,10 @@ refused by name rather than guessed at.
 | `CHANNEL_USAGE_CARD` | off | Whether the Fleet: Usage thread and its card exist on this host |
 | `CHANNEL_USAGE_CARD_REFRESH_MS` | 60 s | How often the fleet card is re-read and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_USAGE_CACHE_ROOT` | the profile's claude-swap backup | Where the usage cache and account list are read from |
+| `CHANNEL_BOARD_CARD` | off | Whether the Fleet: Board thread and its card exist on this host |
+| `CHANNEL_BOARD_PROJECTS` | none | Semicolon-separated absolute project roots swept for `docs/plans/*.md`; the card builds nothing without at least one |
+| `CHANNEL_BOARD_CARD_REFRESH_MS` | 60 s | How often the board card is re-swept and re-rendered; bounded 5 s to 1 h |
+| `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from, which is what draws the blocked marker |
 | `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to

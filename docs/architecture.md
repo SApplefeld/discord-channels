@@ -80,8 +80,8 @@ Four pieces per host, plus an installer.
   stream open to the broker for the life of the process.
 - **Broker** (`broker/`). The per-host daemon. It owns the bot token, one Discord gateway
   connection, the session registry, the thread bindings, every Discord surface (a session's thread
-  name, its status card, the messages written into it, the fleet usage card's own thread, and the
-  channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live session's own
+  name, its status card, the messages written into it, the fleet usage and board cards' own threads,
+  and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live session's own
   transcript file for mid-turn narration. It runs as a scheduled task at logon.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
@@ -331,13 +331,60 @@ thread title, where a phone's truncation eats everything else, and the rename da
 composed title rather than on the state, so a fan-out draining coalesces instead of spending the
 budget a parked session's own title needs.
 
+## The fleet board card
+
+A third surface answers what the other two cannot: which plans are open across the projects on this
+host, and how far each has got. One more broker-owned thread carries a card edited in place, built
+from `broker/board/`: a sweep that parses plan documents, a tail over the kit's goal event stream, a
+pure renderer, and a thread module owning the lifecycle, on the usage card's pattern.
+
+The renderer is deterministic. No agent, no model call, and no token spend sit anywhere in the path
+between a plan file and the card, so what the card says is what the documents say, and a card that
+disagreed with the plan tree would be a bug rather than a judgment call.
+
+It reads exactly two kinds of file. The first is `docs/plans/*.md` under each configured project
+root, parsed against the kit's frozen v1 plan-doc machine contract: the `Status` header, the sections
+listed under `## Sections of Work`, which of them a Chapter's `Completed:` line closes, and the latest
+Chapter's `Next:`. That contract's sharp edges are reproduced rather than corrected. A foreign `##`
+heading inside the sections block ends it early and drops what follows, and a `Completed:` value
+registers a section only under three exact forms. An external engine reads the same files the same
+way, so a card that quietly disagreed with it about what is done would be the dishonest one. The
+second is the kit's goal event stream, one JSON object per line, tailed by byte offset and keyed by
+project and plan, which is where the blocked marker comes from.
+
+Paths are never derived from what either file says. The configured roots are the only path input;
+the one join is a root with a directory entry's own name, which cannot contain a separator, so no
+field of a plan document or an event can steer a read. Roots are compared as strings,
+case-insensitively and separator-normalized, never by asking the filesystem whether two paths name
+the same place, and the configured spelling and the folded form come from one shared normalizer so
+the two readers cannot disagree about which root an event belongs to.
+
+Cost is bounded because the broker has a single event loop and the card runs on a timer, so a stall
+here is a stall on the channel where approvals are answered. A file is opened only when its
+modification time or size has moved, and that holds for a file that fails to parse exactly as it does
+for one that succeeds: a malformed or oversized document is held shut at the stat it failed at rather
+than being re-read every tick forever. The per-file ceiling is well above a real plan and far below
+what would hurt, the per-root file count is capped, a truncated sweep says on the card what it
+dropped, and each untrusted field is cut to length as it enters rather than after it has been walked
+for escaping.
+
+A torn read is drawn rather than hidden. A plan caught mid-write redraws its last good parse under a
+held marker whose age climbs, so the operator sees staleness instead of a row that silently stopped
+moving. The blocked marker is set by a `goal-blocked` event and cleared by a newer plan modification
+time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
+timestamp would pin the marker permanently.
+
+The project label is the one field that lands outside a fence, where a bold line is live markdown,
+so it takes the same full neutralization the other cards' labels take rather than the lighter escape
+a fenced field needs.
+
 ## What the cards are made of
 
-Both cards draw their bodies inside fenced monospace blocks so their columns line up at a glance,
-with each block's own label outside the fence where Discord still renders it. The two cards label a
-section differently. The session card uses a `###` heading; the fleet card uses a bold paragraph
-line, because Discord puts a margin above a heading and a card carrying one section per account
-pays that margin three or four times, which is air spent instead of numbers. The width they pad to
+Every card draws its body inside fenced monospace blocks so the columns line up at a glance, with
+each block's own label outside the fence where Discord still renders it. They label a section
+differently. The session card uses a `###` heading; the fleet and board cards use a bold paragraph
+line, because Discord puts a margin above a heading and a card carrying one section per account or
+per project pays that margin three or four times, which is air spent instead of numbers. The width they pad to
 is one shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46 columns, and it is a
 phone's constraint rather than a taste: a code block scrolls sideways on a phone rather than
 wrapping, so a card wider than its bound costs a drag to read, which is worse than the ragged lines

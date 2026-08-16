@@ -86,7 +86,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
      itself cannot make. The downgrade marker's glyph beside the state glyph is read in the same
      pass. In the same look, confirm the fleet card's bars draw as unbroken lines rather than dashed
      runs: whether consecutive U+2014 glyphs tile is a property of the client's font, and the swap
-     is one constant, `BAR_GLYPH` in `broker/usage/card.ts`, with `─` (U+2500) as the named
+     is one constant, `BAR_GLYPH` in `broker/discord/render.ts`, with `─` (U+2500) as the named
      alternative. The card's new shape (bold labels, bars, whole-dollar spends) is
      [`archive/plans/channels_fleet-card-layout_spec_v1.md`](archive/plans/channels_fleet-card-layout_spec_v1.md).
   3. Compare the fleet card's numbers against a console `cswap status` within one refresh. This

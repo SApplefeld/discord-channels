@@ -414,3 +414,39 @@ Next: 5. Documentation. Runs inline in the main thread: subagents are blocked fr
 with the card switched off, and that the card draws the last path segment of each configured root, so
 a root at or one level under a home directory puts the OS username in the channel.
 Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-16
+Completed: 5. Documentation
+Implemented By: inline (the docs write guard blocks implementer subagents under `docs/`)
+Metrics: 0 review rounds at section level (the changeset goes to the finishing pass); NEEDS_CONTEXT 0;
+escalations 0; consults 0
+Decisions / Surprises: The section's own instruction carried a false anchor: it said to add the knobs
+to `install.md` "where `CHANNEL_USAGE_CARD` appears", and that knob appears nowhere in that document.
+The usage card's knobs live only in the `operations.md` tunables table; `install.md` documents the
+installer's mechanics rather than individual settings. Rather than inventing a knob table there, the
+board card went into the paragraph `install.md` does own, the standing warning about what leaves the
+machine, since the card puts plan titles, progress, next steps, and a project name into the channel
+and that is a disclosure a new operator should meet at install time rather than discover.
+Shipping a third card also falsified counts written when there were two. Corrected: the component
+list's enumeration of the surfaces the broker owns, the pin paragraph's "keeps the fleet usage card
+pinned", and the shared render vocabulary's "Both cards draw their bodies". The two stale `BAR_GLYPH`
+location references left by Chapter 3's move (`operations.md` and `backlog.md`, both still naming
+`broker/usage/card.ts`) were corrected in the same pass.
+Written: a "The fleet board card" architecture section stating the two feeds, the deterministic
+zero-token render path, why the frozen plan-doc contract's sharp edges are reproduced rather than
+corrected, the configured-roots rule and why no field of either file becomes a path, the bounded tick
+cost including the negative hold, and the blocked marker's clear rules. An operations section covering
+the knobs, the strictness that makes a bad board value a start failure even with the card off, what a
+row carries, and the held and blocked markers. Four knobs in the tunables table. A `security-model.md`
+paragraph in the control-inventory register naming the two files opened, the string-only root matching
+through one shared normalizer, that no field of either file becomes a path, and that the event
+stream's `project` is matched and dropped rather than carried, with the project-label residual stated
+plainly as the operator's choice of root rather than a property the card can fix. A `docs/README.md`
+opening clause for the standing cards.
+Gate: `tsc --noEmit` clean; 1327/1326/0 fail/1 skipped on two full runs, unchanged from Section 4's
+four-run result. Documentation-only changes, but this repo carries mechanical pins over doc content,
+so the suite was re-run rather than assumed.
+Stamps: adjudicated 0, stamped 0
+Next: the whole-effort finishing pass (QA verification, finishing reviews, docs curation), then the
+plan flips to Complete and archives.
+Commit Model: Commit-and-Push

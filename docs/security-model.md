@@ -443,6 +443,27 @@ and `lastError`'s content is deliberately left unread, because an authentication
 where a token or a token-bearing URL would appear. What it takes from that field is that one
 exists.
 
+**The board card reads two foreign files and sends none of their paths.** It opens plan documents
+under the operator's configured project roots and the kit's goal event stream, both written by other
+programs, and renders their content into the channel where approvals are answered. Three properties
+bound what that content can do. No field of either file is ever used as a path: the configured roots
+are the only path input, and the single join is a root with a directory entry's own name, which
+cannot contain a separator, so nothing a plan document or an event says can steer a read outside the
+directory being swept. Roots are matched as strings, case-insensitively and separator-normalized,
+never by asking the filesystem whether two paths name the same place, and both readers fold through
+one shared normalizer so they cannot disagree about which root an event belongs to. And the event
+stream's `project` field, an absolute path that ordinarily embeds the operator's own account name, is
+matched and then dropped rather than carried: what the card holds is the configured root it matched,
+so that field reaches neither the log nor Discord. The refusal of a project root that is not a fixed
+directory names the entry's position and never its text, for the same reason.
+
+What does cross is the project label, which is the last segment of a configured root. A root placed
+at or one level under a home directory therefore draws the account name into the channel, and that is
+the operator's choice of root rather than a property the card can fix. The label is also the one
+field on this card outside a fence, so it takes the full markdown neutralization rather than the
+lighter fenced-field escape, and the card's routes suppress mentions, which together mean a crafted
+filename can draw no mention pill, no heading, and no fence delimiter.
+
 **A channel event reaches the model at the keyboard's standing.** The relay's instructions describe
 the sender gate rather than commanding trust: a message is delivered only after the broker has
 checked its author's Discord account against the allowlist, and a broker connected to Discord

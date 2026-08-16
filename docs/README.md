@@ -6,7 +6,10 @@ thread's first message is a status card showing what that session is doing, the 
 is mirrored into the thread turn by turn, and a message typed in the thread reaches the running
 session. Tool permission prompts are answered from the same thread with a one-line reply, a session
 parked on a question alerts the thread and is answered from it, and a background task's wake-up
-arrives as one line rather than its whole report. All of it is built and installable.
+arrives as one line rather than its whole report. Beside the session threads, two optional standing
+cards the broker keeps updated answer what a per-session thread cannot: how much headroom the
+accounts have left, and which plans are open across the host's projects and how far each has got.
+All of it is built and installable.
 
 ## Reference
 
