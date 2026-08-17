@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  GLYPHS,
   MAX_BLOCK_WIDTH,
   MAX_CARD_LENGTH,
   MAX_MESSAGE_LENGTH,
@@ -192,8 +193,8 @@ test("the downgrade marker stands on every render, not only the one the change l
 
 test("a thread name puts the glyph first and the state last", () => {
   assert.equal(threadName(view(), "working"), "⚙ neo-intake · working");
-  assert.equal(threadName(view(), "needs you"), "⏸ neo-intake · needs you");
-  assert.equal(threadName(view(), "idle"), "✅ neo-intake · idle");
+  assert.equal(threadName(view(), "needs you"), "⏹ neo-intake · needs you");
+  assert.equal(threadName(view(), "idle"), "⏸ neo-intake · idle");
   assert.equal(threadName(view(), "exited"), "⚠ neo-intake · exited");
 });
 
@@ -201,12 +202,12 @@ test("an over-long name is truncated without eating the glyph or the state", () 
   const name = threadName(view({ name: "x".repeat(400) }), "needs you");
 
   assert.ok(name.length <= MAX_THREAD_NAME_LENGTH, `${name.length} characters`);
-  assert.ok(name.startsWith("⏸ "), name);
+  assert.ok(name.startsWith(`${GLYPHS["needs you"]} `), name);
   assert.ok(name.endsWith(" · needs you"), name);
 });
 
 test("a session with no name is still distinguishable in the list", () => {
-  assert.equal(threadName(view({ name: null }), "idle"), "✅ session 0f3c9d21 · idle");
+  assert.equal(threadName(view({ name: null }), "idle"), `${GLYPHS.idle} session 0f3c9d21 · idle`);
 });
 
 test("a name of invisible characters falls back rather than rendering an empty title", () => {
@@ -214,7 +215,7 @@ test("a name of invisible characters falls back rather than rendering an empty t
   // all, and Discord refuses an empty thread name.
   assert.equal(
     threadName(view({ name: "\u200b\u202e\u0000" }), "idle"),
-    "✅ session 0f3c9d21 · idle",
+    `${GLYPHS.idle} session 0f3c9d21 · idle`,
   );
 });
 
@@ -229,7 +230,7 @@ test("the session ID fallback is neutralized before it is cut", () => {
   // text can end in the middle of a bidi override.
   const name = threadName(view({ name: null, sessionId: "\u202e0f3c9d21-1111" }), "idle");
 
-  assert.equal(name, "✅ session 0f3c9d21 · idle");
+  assert.equal(name, `${GLYPHS.idle} session 0f3c9d21 · idle`);
 });
 
 test("untrusted text in the card is inert", () => {
@@ -2397,9 +2398,9 @@ test("a session waiting on nothing carries no roster line and no count", () => {
   assert.ok(!card.includes("Waiting"), card);
   assert.equal(value(card, "State"), "working");
   assert.ok(!/tasks?/.test(card), card);
-  assert.equal(threadName(view(), "working"), "⚙ neo-intake · working");
-  // An idle or exited session is drawn exactly as it always was, roster or not.
-  assert.equal(threadName(view(), "idle"), "✅ neo-intake · idle");
+  assert.equal(threadName(view(), "working"), `${GLYPHS.working} neo-intake · working`);
+  // An idle or exited session's title carries no roster count, only the state.
+  assert.equal(threadName(view(), "idle"), `${GLYPHS.idle} neo-intake · idle`);
 });
 
 test("an exited session's card carries no roster line", () => {

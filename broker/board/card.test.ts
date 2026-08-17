@@ -352,6 +352,24 @@ test("a root holding only a failure or only a truncation note draws after every 
   assert.deepEqual(projects(body), ["sapplefeld-channels", "sapplefeld-ai-os", "sapplefeld-ai-os-2"]);
 });
 
+test("a plan carrying no usable modification time draws undated rather than an age of NaN", () => {
+  const body = card({
+    roots: [AI_OS, CHANNELS],
+    plans: [
+      plan({ root: CHANNELS, stem: "dated_spec_v1" }),
+      plan({ root: AI_OS, stem: "undated_spec_v1", mtimeMs: Number.NaN }),
+    ],
+  });
+
+  // `renderBoardCard` is exported and takes its plans as handed over, so the guard the ordering
+  // reads has to cover the age clause too: subtracting a value that is not a number yields one, and
+  // an age reading `NaNd` on the card is a field the operator cannot act on.
+  assert.doesNotMatch(body, /NaN/);
+  assert.match(body, /undated/);
+  // Undated sorts last, the same rule the project order applies to a root it cannot date.
+  assert.deepEqual(projects(body), ["sapplefeld-channels", "sapplefeld-ai-os"]);
+});
+
 test("a plan declaring no sections draws no count, since a fraction of nothing measures nothing", () => {
   const body = card({ plans: [plan({ sections: 0, completed: 0, next: null })] });
 

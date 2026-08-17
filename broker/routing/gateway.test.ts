@@ -208,6 +208,15 @@ function refusedForGood(error: string): CallOutcome<null> {
   return { status: "failed", error, rate: NO_RATE_INFO, permanent: true };
 }
 
+/**
+ * The message this call named is gone. Permanent about that identifier and about no other, which is
+ * why it carries both flags: the transport cannot resolve the call again, and the cleaner must not
+ * read it as Discord refusing the capability.
+ */
+function alreadyGone(): CallOutcome<null> {
+  return { status: "failed", error: "HTTP 404", rate: NO_RATE_INFO, permanent: true, missing: true };
+}
+
 function cleanerWith(
   outcomes: () => Promise<CallOutcome<null>>,
   clock: { at: number },
@@ -307,6 +316,24 @@ test("a permanent refusal latches its kind off and leaves the other attempting",
     `each kind names its own latch once: ${JSON.stringify(lines)}`,
   );
   assert.match(latched[0], /deleting a pin notice was refused: HTTP 403\. No pin notice is cleaned/);
+});
+
+test("a notice that is already gone latches nothing, so every other thread is still cleaned", async () => {
+  const clock = { at: 1_000_000 };
+  const { deleted, lines, clean } = cleanerWith(async () => alreadyGone(), clock);
+
+  await clean({ kind: "rename", messageId: "notice-1", channelId: "thread-1" });
+  await clean({ kind: "rename", messageId: "notice-2", channelId: "thread-2" });
+
+  // A 404 is permanent about the identifier it named and about nothing else. The operator deleting
+  // one notice by hand, or a thread going away mid-pass, must not stand the rename cleaner down for
+  // every other session thread, which is what reading `permanent` alone would do.
+  assert.deepEqual(
+    deleted.map((call) => call.messageId),
+    ["notice-1", "notice-2"],
+  );
+  assert.equal(lines.length, 1, `one line per window, not one per notice: ${JSON.stringify(lines)}`);
+  assert.doesNotMatch(lines[0], /rest of this run/);
 });
 
 test("a refusal of the moment latches nothing, so the next notice is still attempted", async () => {

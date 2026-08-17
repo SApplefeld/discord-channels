@@ -74,17 +74,23 @@ has to survive truncation.
 ```
 ⚙ neo-intake      working · 14m
 ⚙ neo-migrate     working · 2m
-✅ scott-kit       idle · 1h
+⏸ scott-kit       idle · 1h
+⏹ neo-deploy      needs you · 4m
 ⚠ asr-docs        exited · 3h
 ```
 
 `working` and `idle` are derived from how recently hook traffic arrived. `exited` means the session
-ended, or that it went silent past the presumed-dead horizon. `needs you`, the ⏸ glyph, means that
-session has a permission prompt open and is parked until you answer it. It is recomputed on every
-refresh from the set of prompts still waiting, so it clears on its own when you answer, and it is
-urgent enough to spend a rename immediately rather than waiting out the dwell window. A pending
+ended, or that it went silent past the presumed-dead horizon. `needs you`, the ⏹ glyph, means that
+session has a permission prompt open and is parked until you answer it. That state is recomputed on
+every refresh from the set of prompts still waiting, so it clears on its own when you answer, and it
+is urgent enough to spend a rename immediately rather than waiting out the dwell window. A pending
 prompt therefore reaches you twice: as a message that pings, and as the thread's own name in the
 list.
+
+The vocabulary is graded by how much the state wants from you, so the glyph alone still says that
+much when the list truncates everything behind it: the gear is running, the pause is doing nothing,
+the stop-square is halted on you, and the warning triangle is over. Only the stop-square is one you
+can clear.
 
 Renames are the scarcest resource here. Discord documents no limit on channel or thread modification
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
@@ -325,14 +331,32 @@ with the card switched off, which is the same strictness the other typed knobs h
 board value is a start failure rather than a silently missing card. Two spellings of one directory
 collapse to one root.
 
-Each project is a heading over a list, and the heading is the last segment of the root, so choose
-roots whose final segment is the project name. A plan is one bullet carrying its filename stem, with
-an indented sub-bullet beneath it carrying the sections-complete count, the time since the document
-last moved, and the status, and a second sub-bullet for the latest Chapter's `Next:` when there is
-one. The body is live markdown rather than a fenced block, so a long name or a sentence-length
-status wraps at a word boundary with a hanging indent instead of ending in an ellipsis at a fixed
-column. The `Next:` line is the one field the card still cuts, at **120** characters against the
-**400** the sweep takes in, and a cut one carries the mark that says so.
+Each project is a label over a list, and the label is the last segment of the root, so choose roots
+whose final segment is the project name. The label is drawn as a one-line fenced block, which
+Discord paints as a full-width shaded box, and that box is what makes one project's list stop and
+the next start at a glance on a phone. A name too long for the reader's window wraps inside the box
+rather than scrolling out of it, and a name past **60** characters is cut with the mark that says
+so. A plan is one bullet carrying its filename stem, with an indented sub-bullet beneath it carrying
+the sections-complete count, the time since the document last moved, and the status, and a second
+sub-bullet for the latest Chapter's `Next:` when there is one. The body is live markdown rather than
+a fenced block, so a long name or a sentence-length status wraps at a word boundary with a hanging
+indent instead of ending in an ellipsis at a fixed column. Within a plan's bullet the `Next:` line
+is the one field cut, at **120** characters against the **400** the sweep takes in, and a cut one
+carries the mark that says so.
+
+The card is ordered by what moved last, so the top of it is what you are working on. Within a
+project, plans are ordered by their document's modification time, newest first, with the filename
+stem settling two that moved at the same instant. The per-root cap of **64** runs ahead of that, on
+the sweep's name-ordered listing, so a project holding more open plans than the cap orders whichever
+64 came first by name. That bound is far above any real project and is worth knowing only if you
+ever hit it. Projects are ordered the same way, by the newest
+plan under each. A project the card cannot date at all, because everything under it is a parse
+failure or a truncation note, sinks below every project it can, which is worth knowing when a
+project you are working in drops to the bottom: the plan stopped parsing. `CHANNEL_BOARD_PROJECTS`
+settles only what the times leave tied, and it does so for configured and unconfigured roots alike,
+since the modification time is the first key for every root that has one. The consequence worth
+expecting is that a project's box moves down the card when you touch a plan somewhere else, since
+nothing is pinned to a fixed position.
 
 Two things are drawn by their absence, so they are worth knowing. A plan whose document declares no
 sections draws no count, since a fraction of nothing measures nothing. And a plan whose status is
@@ -394,7 +418,17 @@ where a phone's truncation eats everything else, and the tasks themselves with t
 card. At any fan-out you are likely to see, every task is named. A card omits one only when the
 message ceiling forces it, which is the bound that decides in practice, since each entry takes two
 rows: the card starts from at most twenty-four entries and drops them one at a time until the whole
-message fits. What it keeps is the oldest, counting the rest as `+N more`, for two
+message fits. An entry reads as one thing rather than two: the first row carries the age and the
+agent's type behind a separator dot, and the second row carries the description with no separator of
+its own, indented two columns past where the type starts so it reads as the entry continuing.
+
+```
+Tasks
+14m · claude-kit:implementer-opus
+        Section 1 of the board card
+```
+
+What the card keeps when it has to drop is the oldest, counting the rest as `+N more`, for two
 reasons: the longest-running task is the one most likely to be stuck and so the most worth reading,
 and keeping the oldest holds each entry in the same position as a fan-out grows, where keeping the
 newest would reshuffle the list under you. Long-running background commands ride the same line,

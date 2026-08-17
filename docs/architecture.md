@@ -374,6 +374,18 @@ moving. The blocked marker is set by a `goal-blocked` event and cleared by a new
 time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
 timestamp would pin the marker permanently.
 
+Order is decided at the card and nowhere else. The sweep lists a root's plans by name, and that
+listing is what the per-root cap is defined against, so it stays name-ordered and the renderer sorts
+what it is handed: plans by modification time newest first with the filename stem breaking a tie,
+projects by the newest plan under each. A root the card can date outranks one it cannot, so a
+project holding only a parse failure or a truncation note sinks beneath every project holding a plan
+that parsed. The configured list is a tie-break and only that, consulted for two roots the times
+leave equal and for two the card cannot date at all, which means the time is the first key for a
+root nothing configured exactly as it is for a configured one. Both comparisons compare the instants
+rather than subtracting them, because a plan carrying no usable time sorts at negative infinity and
+two of those subtract to `NaN`, which is a comparator returning an arbitrary order rather than a
+stable one.
+
 Membership is decided in two places, one rule each. The sweep's is that a `README.md` under a swept
 `docs/plans` is a directory index rather than a piece of open work, so it is absent: no bullet, no
 parse-failure line, and no count against the per-root cap, which it is excluded ahead of. The

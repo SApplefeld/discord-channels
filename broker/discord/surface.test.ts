@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createSurface } from "./surface.ts";
 import type { SurfaceOptions } from "./surface.ts";
+import { GLYPHS } from "./render.ts";
 import type { SessionView } from "./state.ts";
 import type { CallOutcome, DiscordTransport, RateLimitObservation } from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
@@ -217,7 +218,11 @@ test("a rename the budget refuses is dropped, and the next state still renders",
   time.advance(DWELL_MS);
   calls.nextRename = refused(30_000);
   await surface.tick([view()]);
-  assert.deepEqual(names(calls), ["✅ neo-intake · idle"], "the refused attempt was made once");
+  assert.deepEqual(
+    names(calls),
+    [`${GLYPHS.idle} neo-intake · idle`],
+    "the refused attempt was made once",
+  );
 
   // Still inside the reported wait: nothing is retried and nothing is held.
   time.advance(10_000);
@@ -231,7 +236,7 @@ test("a rename the budget refuses is dropped, and the next state still renders",
 
   assert.deepEqual(
     names(calls),
-    ["✅ neo-intake · idle", "⚠ neo-intake · exited"],
+    [`${GLYPHS.idle} neo-intake · idle`, `${GLYPHS.exited} neo-intake · exited`],
     "the dropped idle rename never lands after the state moved on",
   );
 });
@@ -262,7 +267,7 @@ test("flapping between working and idle inside the dwell window spends at most o
   // This time idle holds past the dwell window, which is what earns the one rename.
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: resumed })]);
-  assert.deepEqual(names(calls), ["✅ neo-intake · idle"]);
+  assert.deepEqual(names(calls), [`${GLYPHS.idle} neo-intake · idle`]);
 
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: resumed })]);
@@ -348,7 +353,7 @@ test("one thread's exhausted rename budget does not hold up another thread", asy
 
   assert.deepEqual(calls.renames[1], {
     threadId: "thread-2",
-    name: "⏸ neo-migrate · needs you",
+    name: `${GLYPHS["needs you"]} neo-migrate · needs you`,
   });
 });
 
@@ -373,7 +378,7 @@ test("a session waiting on a person is renamed without waiting out the dwell win
   time.advance(1_000);
   await surface.tick([view({ needsAttention: true })]);
 
-  assert.deepEqual(names(calls), ["⏸ neo-intake · needs you"]);
+  assert.deepEqual(names(calls), [`${GLYPHS["needs you"]} neo-intake · needs you`]);
 });
 
 test("a startup pass archives a restored thread whose session already exited, exactly once", async () => {

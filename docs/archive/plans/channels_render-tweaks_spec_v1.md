@@ -1,6 +1,6 @@
 # Channels: five render tweaks
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Created: 2026-08-16
 
@@ -39,7 +39,7 @@ The fleet reads better from the phone, in five specific ways.
    call.
 3. **Session thread, no rename notices.** Every time the broker renames a session's thread (a state
    flip, an age tick past the dwell window), Discord writes a system message into the thread
-   reading `ClaudeRelay changed the channel name: ✅ ASR: KB Updates · idle`. The broker deletes
+   reading `ClaudeRelay changed the channel name: ⏸ ASR: KB Updates · idle`. The broker deletes
    each one it caused as it arrives, exactly as it already deletes the pin notices its own pins
    write in the parent channel: same cleaner, same narrow triple gate, same non-retry policy.
    Deleting a message the bot itself authored needs no permission beyond what the bot has, so the
@@ -51,8 +51,9 @@ The fleet reads better from the phone, in five specific ways.
 5. **State glyphs.** `idle` draws `⏸` instead of `✅`, and `needs you` draws `⏹` instead of `⏸`.
    The green check is the most attention-grabbing glyph on the thread list and it marks the least
    actionable state; the pause reads as "not doing anything" and the stop-square as "halted on
-   you". One table, `GLYPHS` in `broker/discord/render.ts`, feeds the thread name, the session
-   card title, and the fleet card rows, so the change is one edit plus its pins.
+   you". One table, `GLYPHS` in `broker/discord/render.ts`, feeds both surfaces that draw a state
+   glyph, the thread name and the session card title, so the change is one edit plus its pins. The
+   fleet usage card's session rows draw the state as a bare word with no glyph and are not involved.
 
 ## Approach
 
@@ -215,8 +216,9 @@ separator and indented by it, room reduced to match. Tests: the second row start
 exceeds `MAX_BLOCK_WIDTH` for a description at the cap.
 References: `rosterEntry` at `broker/discord/render.ts:1724`.
 
-### 5. Glyphs and docs
+### 5. Glyphs and docs (Complete)
 Model: haiku
+Locus: inline for the `docs/` half
 `broker/discord/render.ts` (`GLYPHS`), every test pinning the old literals
 (`render.test.ts`, `surface.test.ts`, `index.test.ts`, `question-message.test.ts` and
 `security/permission.test.ts` where they pin a state glyph rather than the verdict check),
@@ -389,4 +391,80 @@ longer distinguishes a "root that reported a failure sinks forever" implementati
 cannot have because it is pure per render. Two projects and one configured order cannot buy both.
 Stamps: `memq unstamped` reported zero on both tiers; nothing recalled this section went unapplied.
 Next: 5. Glyphs and docs
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-16
+Completed: 5. Glyphs and docs. This closes the plan.
+Implemented By: implementer-sonnet for the glyph table and its pins; the `docs/` half inline, since
+the docs-write guard denies a subagent any write under `docs/`.
+Metrics: 1 review round; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The glyph table is the single claim and one test pins its literals; every
+other assertion that composes a thread title now reads its glyph from `GLYPHS` rather than repeating
+one. The blind reviewer argued the opposite, that keeping literals in the end-to-end surface tests
+buys a second independent pin against exactly the swap this change made. The controller ruled for
+single-sourcing: a literal in a composition test re-asserts the vocabulary as a side effect and gets
+updated mechanically when the vocabulary moves, which is churn rather than a check. The hazard the
+reviewer named is real and is answered instead by the one vocabulary test pinning both moved entries
+and being proven red against a reverted table. The docs half also carries sections 1 to 4, which had
+shipped their code with no operator-facing description: the board card's fenced label and its
+newest-touch-first ordering, and the tasks block's indented continuation row.
+Review Findings: Criticals: none. Majors addressed: the tasks-block example in `docs/operations.md`
+printed a description the renderer cannot emit (52 columns against a 38-code-point cap, uncut), found
+by a reviewer rendering a real card rather than reading the arithmetic; the `GLYPHS` export comment
+justified the export by a fleet-card consumer that does not exist and whose own file says the
+opposite, a claim that was already false before this section and that this section owns under the
+falsified-claim sweep; `broker/discord/state.test.ts:65` called the idle glyph "the success glyph";
+both new ordering paragraphs omitted the rule that a project the card cannot date sinks below every
+one it can, and the operations paragraph stated the configured list as a general placement rule where
+Chapter 4 had ruled it a tie-break only; `docs/README.md` said the rename delete is bound to the
+thread instead of the channel, where the gate is this host's channel reached through the thread's
+parent and only the delete route moves to the thread. Minors addressed: the `Next:` line was called
+the one field the card cuts, which the 60-character project label falsified; an inserted sentence
+broke the antecedent of the one after it; four paragraphs left unreflowed; two glyph pins left as
+literals after the conversion.
+Declined, recorded so it is not re-litigated: the pause and the stop-square are adjacent code points
+that render as similar small outline squares, and a reviewer argued that undercuts the stated reason
+the glyph leads the thread name (it has to survive the mobile list's truncation). The vocabulary is
+the operator's own explicit choice in this plan's Goal, so it is not the controller's to overrule,
+and Operator Verification step 4 is the check that settles whether the two read apart on a real
+phone.
+Named, no code change: existing threads carry the old glyph in their persisted title until a rename
+lands, and an idle session's rename is gated by the dwell window and the per-thread rename budget, so
+a thread can sit a while after restart showing a glyph no longer in the table. It is self-healing and
+bounded, an expected post-deploy transient rather than a defect.
+Backlog: two items retired with receipts to `docs/archive/backlog-2026-Q3.md`. "Draw the board card's
+project headings stronger" named the deleted `PROJECT_HEADING` constant and is overtaken by the fence.
+"Order the plans within a project" is delivered by section 2, including the design point it left open
+(the sort runs behind the per-root cap of 64, at the card rather than the sweep).
+Finishing Pass: QA verification PASS. Every code-verifiable acceptance criterion across all five
+sections holds with named evidence, and the verifier independently re-proved the two ordering tests
+the Standing Brief Amendments block singles out as historically fragile by disabling the comparator
+and watching them go red. The four Operator Verification items are correctly operator-only, and the
+one unconfirmed premise stands as Chapter 2 recorded it: whether Discord ever answers a rename-notice
+delete with a permanent 4xx is not settled against the live API.
+Security review: CONCERNS, no exploitable defect and no architecture-invariant break. The escape
+choice, the budget accounting, and the three-way delete gate all verified, including that `visible()`
+strips every newline class before a label reaches its fence, that the only path joins are over
+`readdirSync` entries which cannot carry a separator, and that the indented description row feeds
+`fenced()` directly so it can never reach column zero where a real roster entry sits. Four findings
+taken, two with a regression test proven red first:
+- The cleaner read `permanent` alone, and a 404 sets it. So a single notice already gone, or one
+  thread the operator deleted, latched rename cleanup off for the whole run and every other session
+  thread with it. The transport already carried a distinct `missing` flag that nothing read. The
+  latch is now `permanent && !missing`.
+- The card ordered through the non-finite guard but drew the age straight off `mtimeMs`, so the same
+  value the guard exists to bound rendered as `NaNd NaNh`. The age clause now reads `undated` through
+  the same guard.
+- `docs/security-model.md` documented no message-delete capability at all, while this effort widened
+  one from the parent channel to every session thread. It now carries a section naming the three
+  binding conditions, the non-retry policy, and why a 404 does not latch.
+- `docs/operations.md` described the plan ordering without the per-root cap of 64 that runs ahead of
+  it on the name-ordered listing, which `docs/architecture.md` had right.
+Declined: snowflake validation on the interpolated channel id, held from Chapter 2 on the same
+reasoning (the only value reaching it is discord.js's own on a path already gated by
+`parentId === channelId`). Noted, no change: a rate-limited refusal never latches, which is bounded
+in practice because `rejectOnRateLimit` makes discord.js throw before sending on a bucket it knows is
+empty, so most such refusals cost no HTTP request at all.
+Stamps: `memq unstamped` reported zero on both tiers.
+Next: none. Every section is Complete.
 Commit Model: Commit-and-Push

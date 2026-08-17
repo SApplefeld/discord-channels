@@ -344,6 +344,35 @@ the model at the keyboard's standing, so that account's own password, second fac
 its notifications reach are part of this trust boundary. The gate says nothing about who is at the
 other end of it.
 
+## The broker deletes messages, under three conditions that all bind
+
+The broker holds one irreversible capability against the operator's own channel: it deletes the
+system notices its own writes cause. Discord writes a notice into the channel whenever the broker
+pins a message, and one into a session's thread whenever the broker renames it, neither of which can
+be suppressed at the source. Left alone they bury the thread list, and a rename notice arrives on
+every state flip and every age tick past the dwell window of every session thread.
+
+A delete cannot be undone, so the gate is as narrow as the notice allows and all three conditions
+bind together: **this host's channel** (the message's own channel for a pin notice, the thread's
+parent for a rename notice), **Discord's type for that notice**, and **this bot as the author**. A
+notice behind a pin or a rename the operator made by hand carries their user id and is left where it
+is. A second broker sharing the guild deletes nothing here, because the channel condition is its own
+configured channel. No message's content is read to make the decision, and nothing that is not a
+system message this bot itself caused is ever a candidate. The decision is one pure function
+(`classifyMessage`), and a rename notice that is not this bot's is dropped rather than delivered, so
+Discord-composed text never enters the inbound route.
+
+Nothing is retried. A refused delete costs a notice that stays where it landed, which is the surface
+a broker without this feature has, and the request budget a retry would spend is shared with the
+writes that reach a phone. A refusal Discord marks permanent latches that one kind off for the rest
+of the run, because the same call would be refused the same way on every later pass and Discord's
+invalid-request budget is enforced with an hour-long IP ban that would take the permission prompts
+down with it. A 404 does not latch: it is permanent about the identifier it named and about nothing
+else, so one notice already gone must not stand the cleaner down for every other thread.
+
+Deleting a message the bot itself authored needs no permission beyond what the bot already holds, so
+this capability adds nothing to the install's permission list.
+
 ## Tool approval over the channel
 
 **A permission prompt sends the tool's actual input off this machine.** `input_preview` is the shell

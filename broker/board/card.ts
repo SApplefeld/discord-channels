@@ -425,7 +425,10 @@ function factsLine(plan: BoardPlan, blocked: number | null, now: number): string
   if (blocked !== null) parts.push(`blocked ${span(Math.max(now - blocked, 0))}`);
   if (plan.heldSince !== null) parts.push(`held ${span(Math.max(now - plan.heldSince, 0))}`);
   if (drawnCount(plan.reading.sections) > 0) parts.push(sectionCount(plan.reading));
-  parts.push(span(Math.max(now - plan.reading.mtimeMs, 0)));
+  // Through the same guard the ordering reads, so a plan carrying no usable time draws a dash here
+  // rather than an age composed of `NaN`, and sorts last rather than anywhere.
+  const touched = touchedAt(plan.reading.mtimeMs);
+  parts.push(touched === Number.NEGATIVE_INFINITY ? "undated" : span(Math.max(now - touched, 0)));
   const status = statusClause(plan.reading);
   if (status !== "") parts.push(status);
   return `${SUB_BULLET} ${parts.join(` ${SEPARATOR} `)}`;

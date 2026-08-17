@@ -170,7 +170,11 @@ export function createSystemNoticeCleaner(
       if (outcome.status === "rate-limited") refusal = "the bucket is empty";
       if (outcome.status === "failed") {
         refusal = outcome.error;
-        permanent = outcome.permanent === true;
+        // A 404 carries `permanent` too, because the identifier this call named will never resolve.
+        // It says nothing about the next notice, though: one notice already gone, or one thread the
+        // operator deleted, is not a standing refusal, and latching on it would take the cleaner
+        // down for every other thread on the strength of a single vanished message.
+        permanent = outcome.permanent === true && outcome.missing !== true;
       }
     } catch (error) {
       refusal = describe(error);

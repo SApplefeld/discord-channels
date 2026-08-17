@@ -95,22 +95,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   Raising the render cap to 400 is a one-constant change (`MAX_NEXT_LENGTH` in `broker/board/card.ts`)
   and costs card budget that overflowing boards spend on plans; leaving it costs the tail of a long
   next-step phrase.
-- Draw the board card's project headings stronger (parked 2026-08-16). Wanted on the first live
-  read: the project is the boundary the card is scrolled by, and `###` is the smallest heading
-  Discord draws. `##` is the straightforward step up and leaves a clean three-level hierarchy, since
-  the card's own title is already `#`; it costs vertical margin, which binds only on a board long
-  enough to overflow. One constant, `PROJECT_HEADING` in `broker/board/card.ts`. This supersedes the
-  round's own open question, which asked whether a bold line read better and pointed the other way.
-- Order the plans within a project (parked 2026-08-16). Sweep order today, which is the directory's
-  and means nothing. The board card's spec named this a one-knob follow-up and left it out
-  deliberately. Recommended key: most recently moved first. The card already reads and draws that
-  age, so it costs no new field, no new intake and no new cap, and it is the one fact on the card
-  that says what is happening now. Status loses as a key because a status is free-form text the card
-  deliberately does not rank, so sorting on it invents a taxonomy over strings nobody controls and
-  misfiles the first plan that writes `Paused` for `Parked`. Title loses because alphabetical order
-  is stable and says nothing about the fleet. The design point to settle when building it is whether
-  the sort runs ahead of the per-root cap of 64, which changes which plans reach the card, or behind
-  it, which only reorders whichever 64 the listing returned.
 - **Deploy the two delivered rounds and walk them, in this order.** Everything below needs a real
   host, a real Discord client, or a phone, and none of it can be closed from code. The delivered
   plans are

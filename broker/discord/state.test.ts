@@ -62,7 +62,7 @@ test("an ended session renders exited whatever else is true of it", () => {
 
 test("a session silent past the backstop is presumed dead", () => {
   // Until the relay exists nothing but a /clear ever marks a record ended, and a hard kill fires
-  // no hook, so without this a killed session shows the success glyph forever.
+  // no hook, so without this a killed session reads idle forever.
   const silent = view({ lifecycle: "stale", lastHookAt: NOW - EXITED_AFTER_MS });
 
   assert.equal(deriveSurfaceState(silent, NOW, WINDOWS), "exited");

@@ -14,14 +14,19 @@ import type { SessionView, SurfaceState } from "./state.ts";
  * Glyph first, because the channel's thread list truncates hard on mobile and the actionable bit
  * has to survive truncation.
  *
- * Exported because the fleet card's session rows draw the same state vocabulary as the thread
- * titles: one table, so a state cannot carry one glyph in the channel list and another on the card
- * a reader is comparing it against.
+ * Exported so the vocabulary is claimed in one place: the thread title and the session card title
+ * are the two surfaces that draw it, both from here, and every test asserting a title composition
+ * reads its glyph from this table rather than repeating a literal. One test pins the literals, and
+ * it is the only thing that has to change when a state's glyph does.
+ *
+ * The vocabulary is graded by how much the state wants from the operator, so the glyph alone
+ * carries that much when truncation eats the rest: a gear is running, a pause is doing nothing, a
+ * stop-square is halted on you, and a warning triangle is over.
  */
 export const GLYPHS: Record<SurfaceState, string> = {
   working: "⚙",
-  "needs you": "⏸",
-  idle: "✅",
+  "needs you": "⏹",
+  idle: "⏸",
   exited: "⚠",
 };
 

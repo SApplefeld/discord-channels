@@ -80,3 +80,19 @@ the live backlog carries active items only.
   note said "last entry"; the kit's shipped rule is largest, and matching the shipped rule won.)
   Two regression tests pin the largest-iteration read and the malformed-array refusal, both watched
   red before the fix.
+
+- **Draw the board card's project headings stronger.** Retired 2026-08-16 by
+  [`plans/channels_render-tweaks_spec_v1.md`](plans/channels_render-tweaks_spec_v1.md) section 1,
+  which went further than the item asked: the project label is no longer a heading at all but a
+  one-line fenced block, which Discord paints as a full-width shaded box. `PROJECT_HEADING`, the
+  constant the item named, no longer exists. The item's own reasoning is why the stronger answer
+  won: the project is the boundary the card is scrolled by, and a shaded box separates two lists
+  more sharply than any heading level does.
+
+- **Order the plans within a project.** Retired 2026-08-16 by the same plan's section 2, built on
+  the item's recommended key and settling the design point it left open. Plans order by modification
+  time newest first, with the filename stem breaking a tie; projects order the same way by the
+  newest plan under each, with `CHANNEL_BOARD_PROJECTS` as the tie-break and a project the card
+  cannot date sinking below every one it can. The sort runs behind the per-root cap of 64, at the
+  card rather than at the sweep, so it reorders whichever plans the name-ordered listing returned
+  and leaves the cap defined against that listing exactly as before.
