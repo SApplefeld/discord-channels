@@ -585,9 +585,17 @@ test("the board card's wiring reads this broker's configured projects and bindin
 
   const body = posts[0] ?? "";
   assert.equal(posts.length, 1);
-  assert.match(body, /\*\*project\*\*/, "the project is labelled by its own root");
-  assert.match(body, /wired_spec_v1/, "and the plan doc under it is what the card draws");
-  assert.match(body, /1\/2/, "with the section count the plan's own Chapter registers");
+  // The body is live markdown: a heading per project, a bullet per plan carrying the filename stem
+  // with every underscore escaped, and the plan's facts on a sub-bullet under it. The doc above
+  // registers one of its two sections and is in progress, which is the status that draws no clause.
+  assert.match(body, /^### project$/m, "the project is headed by its own root's last segment");
+  assert.match(
+    body,
+    /^- \*\*wired\\_spec\\_v1\*\*$/m,
+    "and the plan doc under it is what the card draws",
+  );
+  assert.match(body, /^ {2}- 1\/2 · /m, "with the section count the plan's own Chapter registers");
+  assert.match(body, /^ {2}- next: the second section$/m, "and the Chapter's own next phrase");
   assert.deepEqual(
     loadBoardBinding(path.join(dir, "board-card.json")),
     { messageId: "111111111111111111", threadId: "222222222222222222" },

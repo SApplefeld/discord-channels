@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -663,6 +663,71 @@ test("a file with no Status header is a failure, not a plan with an empty status
     assert.deepEqual(swept.failures, [
       { root: held.root, path: file, stem: "torn_spec_v1", reason: "malformed", stat: statOf(file) },
     ]);
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("a README beside real plans is read as neither a plan nor a failure, whole stem only", () => {
+  // A directory entry's name is set at create and never at a later write, so writing "ReadMe.MD"
+  // into a directory that already holds "README.md" renames nothing: it overwrites the one entry
+  // already there, under the name it was created with. Each case variant this test cares about
+  // therefore needs its own directory, or the second write silently collapses into the first and
+  // the case-fold arm of the exclusion goes untested while the assertions still read green.
+  const upper = scratch();
+  const mixed = scratch();
+  try {
+    upper.write("README.md", plan());
+    upper.write("alpha_spec_v1.md", plan());
+    upper.write("readme-rework_spec_v1.md", plan());
+    mixed.write("ReadMe.MD", plan());
+    mixed.write("beta_spec_v1.md", plan());
+
+    // Guard against the collapse this test exists to catch: confirm each fixture directory really
+    // holds the differently-cased name it was meant to write, before trusting anything the sweep
+    // says about it.
+    const upperNames = readdirSync(path.join(upper.root, "docs", "plans"));
+    const mixedNames = readdirSync(path.join(mixed.root, "docs", "plans"));
+    assert.ok(upperNames.includes("README.md"), `upper fixture holds README.md, has ${upperNames.join(", ")}`);
+    assert.ok(mixedNames.includes("ReadMe.MD"), `mixed fixture holds ReadMe.MD, has ${mixedNames.join(", ")}`);
+
+    const swept = sweepPlans([upper.root, mixed.root]);
+    assert.deepEqual(
+      swept.readings.map((reading) => reading.stem).sort(),
+      ["alpha_spec_v1", "beta_spec_v1", "readme-rework_spec_v1"],
+      "both READMEs are absent from the readings, and a plan merely named after the rule still sweeps",
+    );
+    assert.deepEqual(swept.failures, [], "an excluded README is absent, not a failure");
+  } finally {
+    upper.cleanup();
+    mixed.cleanup();
+  }
+});
+
+test("a README does not consume a slot of MAX_PLANS_PER_ROOT or count against the cap", () => {
+  const held = scratch();
+  try {
+    held.write("README.md", plan());
+    for (let i = 0; i < MAX_PLANS_PER_ROOT; i += 1) {
+      held.write(`plan-${String(i).padStart(3, "0")}_spec_v1.md`, plan());
+    }
+
+    const swept = sweepPlans([held.root]);
+    const stems = swept.readings.map((reading) => reading.stem);
+    assert.equal(stems.length, MAX_PLANS_PER_ROOT, "the root's real plans still fill the whole cap");
+    assert.ok(
+      stems.includes(`plan-${String(MAX_PLANS_PER_ROOT - 1).padStart(3, "0")}_spec_v1`),
+      "the last real plan is present, so the cap was not spent on the README ahead of it",
+    );
+    assert.ok(
+      !stems.some((stem) => stem.toLowerCase() === "readme"),
+      "no reading is the README: the count alone would stay MAX_PLANS_PER_ROOT even if the README took a slot from the last real plan",
+    );
+    assert.deepEqual(
+      swept.truncated,
+      [],
+      "the README dropped out before the bound was applied, so nothing was left out to count",
+    );
   } finally {
     held.cleanup();
   }

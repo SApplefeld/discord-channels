@@ -6,43 +6,38 @@
 // lives in is edited only when its text changes, and a clock read inside the renderer would be a
 // difference on every refresh.
 //
-// Membership is every non-terminal plan, with a status other than the ordinary in-progress one
-// drawn as its own text where the bar would be. Only `Status: Complete` is hidden. So a Draft is
-// visible, and a status spelled some other way surfaces as that spelling rather than vanishing into
-// a filter it did not match.
+// Membership is every non-terminal plan. Only `Status: Complete` is hidden, so a Draft is visible,
+// and a status spelled some other way surfaces as that spelling rather than vanishing into a filter
+// it did not match. The one status drawn as no clause at all is the ordinary in-progress one, which
+// is what most of a fleet carries: a word spent on every plan tells two of them apart from nothing.
+//
+// The body is a markdown list rather than a table: a heading per project, a bullet per plan, and
+// the plan's facts on sub-bullets under it. Discord wraps a list item at its own word boundaries and
+// indents the wrap under the bullet, so a sentence-length status or a whole `Next:` phrase costs a
+// wrapped line here. A column of fixed width could only cut one, and it would cut it exactly where
+// the information is. So no field on this card is held to a display width, and there is no grid for
+// a field of emoji or of wide CJK to break.
 //
 // Every string it draws is untrusted. A plan's filename, its `Status:` value and its `Next:` prose
 // are model-written text out of another program's files, and an event's fields are that program's
-// own. All of them go through `../discord/render.ts`'s escaping, and which escape depends on where
-// the field lands: a project label sits in the bold line above its fence, which is live markdown, so
-// it takes `inertField`, and everything inside a fence takes `inertBlockField`, the escape that
-// reaches the one character a fence still gives meaning to. Every fenced line is held inside
-// `MAX_BLOCK_WIDTH` code points, which is a bound on the line's length rather than on its width: a
-// field of emoji draws wider than the code points it is measured in, and the cost of that is a
-// wrapped row rather than a line a reader has to drag sideways to finish.
+// own. All of them land on live markdown, so all of them take `../discord/render.ts`'s `inertField`,
+// the full escape, which reaches every metacharacter including the angle brackets Discord's chip
+// syntax lives inside: this is the neutralization the question messages and the permission prompt
+// already render untrusted text under. An `@everyone` surviving as text pings nobody, because the
+// transport names an empty `allowed_mentions` parse list, and that is the half of the job this
+// renderer does not do.
 //
 // The work one render costs is bounded by the plans it is handed and not by the bytes any one of
 // them carries: one pass to index the events, one pass to group the plans, and one map lookup per
 // plan. Every untrusted field is bounded before it arrives, each by whichever reader took it in:
 // the two free-form plan values by `./plans.ts`'s intake caps, an event's fields by `./events.ts`'s,
-// and a filename by the name limit the filesystem itself enforces. So the escaping and padding here
-// walk a bounded string per field, and nothing walks a product of two quantities that both come from
+// and a filename by the name limit the filesystem itself enforces. So the escaping here walks a
+// bounded string per field, and nothing walks a product of two quantities that both come from
 // another program's files.
-import {
-  BAR_GLYPH,
-  FENCE_COST,
-  MAX_BLOCK_WIDTH,
-  MAX_CARD_LENGTH,
-  fenced,
-  fit,
-  heartbeat,
-  inertBlockField,
-  inertField,
-  span,
-  wrapped,
-} from "../discord/render.ts";
+import { MAX_CARD_LENGTH, fit, heartbeat, inertField, span } from "../discord/render.ts";
 import { eventKey } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
+import { MAX_INTAKE_STATUS_LENGTH } from "./plans.ts";
 import type { PlanFailure, PlanFailureReason, PlanReading, PlanTruncation } from "./plans.ts";
 
 /**
@@ -51,7 +46,7 @@ import type { PlanFailure, PlanFailureReason, PlanReading, PlanTruncation } from
  * `heldSince` is null for a plan read this tick. A number is the instant the parse was last known
  * good, which the card draws as a marker whose age climbs: a plan doc mid-write by a live session is
  * unparseable for a tick, the caller redraws the last parse it held, and the marker is what keeps a
- * redrawn row from reading as a freshly read one.
+ * redrawn plan from reading as a freshly read one.
  */
 export type BoardPlan = {
   reading: PlanReading;
@@ -59,49 +54,63 @@ export type BoardPlan = {
 };
 
 /**
- * How many cells a plan's section bar is drawn in, and the knob this card's geometry is tuned by:
- * every other column on the row is derived from it and from `MAX_BLOCK_WIDTH`.
- *
- * Nine because a status is drawn in these same columns whenever a plan is not in progress, and nine
- * is what `Abandoned` takes. Every column this region grows by is one the filename stem loses, and
- * the stem is the handle the operator mentions in the channel, so it is the field with the stronger
- * claim on the row. A status wider than this is cut with the mark `fit` leaves.
- */
-export const BAR_CELLS = 9;
-
-/** The columns the bar or the status text is drawn in, which are the same columns. */
-const MEASURE_WIDTH = BAR_CELLS;
-
-/**
  * The largest section count the card draws. The counts come out of a plan doc's own headings, so a
- * file full of them is bounded here rather than allowed to render a figure that takes the row.
+ * file full of them is bounded here rather than allowed to render a figure that takes the line.
  */
 export const MAX_DRAWN_SECTIONS = 999;
-
-/** The widest a `completed/sections` count can be, which is what the column can never exceed. */
-const MAX_COUNT_WIDTH = `${MAX_DRAWN_SECTIONS}/${MAX_DRAWN_SECTIONS}`.length;
-
-/** What holds the count off the bar before it. Two columns, as the usage card's clauses take. */
-const COUNT_GAP = "  ";
-
-/** What a plan's second line is indented by, so a row reads as one plan rather than as two. */
-const ROW_INDENT = "  ";
 
 const SEPARATOR = "·";
 
 /**
- * Room for the untrusted fields, cut before the body is assembled the way every card field is.
+ * The list this card's body is: a heading per project, a bullet per plan, and the plan's facts on
+ * sub-bullets indented under it.
+ *
+ * `###` is the smallest heading Discord draws, and a heading rather than a bold line because a
+ * project is the one boundary a reader scrolls the card by. Two spaces is what Discord reads as one
+ * level of nesting, so the facts hang under their plan's bullet rather than beside it.
+ */
+const PROJECT_HEADING = "###";
+const BULLET = "-";
+const SUB_BULLET = "  -";
+
+/**
+ * What sits between one project's list and the next project's heading, and between the last list and
+ * the footer.
+ *
+ * A blank line ends a markdown list, which is exactly what is wanted between two projects and
+ * exactly what must never appear inside one: a blank line between two plans would restart the list
+ * and draw the rest of the project as a second one.
+ */
+const PROJECT_GAP = "";
+
+/**
+ * Room for the two fields this card caps itself.
  *
  * The `Next:` value is free-form prose a Chapter carries, and it is the one field with no natural
  * length: this is what a phrase naming the next section runs to, and past it the line says it was
- * cut.
+ * cut. A project label is the last segment of a configured root, which is a directory name and not
+ * a field this card has a reason to draw a paragraph of.
+ *
+ * Each binds in code points and in UTF-16 units alike, whichever runs out first, since that is what
+ * `fit` holds a string to. So prose written in astral characters is cut at half this many of them,
+ * and the mark `fit` leaves says so.
  */
 export const MAX_NEXT_LENGTH = 120;
 export const MAX_PROJECT_LABEL_LENGTH = 60;
 
 /**
- * The status value that draws a bar instead of its own text, compared case-insensitively on the
- * trimmed value. Every other non-terminal status is drawn as written.
+ * The bound a filename stem is escaped under, in code points.
+ *
+ * Above the longest name component any filesystem this runs on accepts, so it never shortens a stem
+ * a sweep really found. That is the point of it: the stem is the handle the operator mentions in the
+ * channel and feeds to `/kit-goal`, and a shortened one addresses a different plan. It is here so
+ * that the one drawn field no cap of this broker's covers still has a bound.
+ */
+const MAX_STEM_LENGTH = 255;
+
+/**
+ * The status value that draws no clause of its own, compared case-insensitively on the trimmed
+ * value. Every other non-terminal status is drawn as written.
  */
 const IN_PROGRESS = "in progress";
 
@@ -119,8 +128,8 @@ const TITLE = "# 📋 Fleet: Board";
  * fleet with no open work look identical to a reader, and only one of them is good news. */
 const NOTHING_OPEN = "No open plans in the configured projects.";
 
-/** What a plan the card has no parse for says instead of a row, one static phrase per reason. The
- * reasons are this reader's own words, never anything read out of the file.
+/** What a plan the card has no parse for says instead of its facts, one static phrase per reason.
+ * The reasons are this reader's own words, never anything read out of the file.
  *
  * A map rather than an object literal because the lookup key is data: a map's keys are its own and
  * nothing else's, where a literal answers `constructor` and `toString` with members no one here
@@ -133,6 +142,10 @@ const NO_PARSE = new Map<PlanFailureReason, string>([
 
 /** What a plan whose failure names a reason this card has no phrase for says. */
 const NO_PARSE_FALLBACK = "cannot be drawn";
+
+/** What a plan is called when its filename stem neutralizes to nothing, which a file named `.md` is
+ * swept under. A bullet with no name on it says less than one saying the name is unusable. */
+const UNNAMED_PLAN = "(unnamed plan)";
 
 /** What a project is called when the last segment of its configured root neutralizes to nothing. */
 function unnamedProject(index: number): string {
@@ -157,7 +170,7 @@ function lastSegment(value: string): string {
  *
  * The suffix is not touched here, because the reader already took one `.md` off the filename. A
  * second cut would fold the file `foo.md.md`, swept as the stem `foo.md`, onto the different file
- * `foo.md` standing beside it in the same directory: the two rows would answer to one name, so an
+ * `foo.md` standing beside it in the same directory: the two plans would answer to one name, so an
  * event for either would mark both.
  *
  * Case is folded whatever the platform, matching the plan reader's own case-insensitive reading of
@@ -240,7 +253,7 @@ function blockedAt(
   return plan.reading.mtimeMs > at ? null : at;
 }
 
-/** A count as the card draws it: whole, and inside a range a row can carry. */
+/** A count as the card draws it: whole, and inside a range a line can carry. */
 function drawnCount(value: number): number {
   return Math.min(Math.max(Math.trunc(value), 0), MAX_DRAWN_SECTIONS);
 }
@@ -249,35 +262,6 @@ function drawnCount(value: number): number {
 function sectionCount(reading: PlanReading): string {
   const sections = drawnCount(reading.sections);
   return `${Math.min(drawnCount(reading.completed), sections)}/${sections}`;
-}
-
-/**
- * The bar for a plan's progress: filled left to right, one cell per section's share of the width,
- * rounded to nearest, and blank-padded to the full width so the count after it never moves.
- *
- * Any progress at all draws a cell, so a plan one section into twelve is told apart from one that
- * has not started. A plan whose doc declares no sections has nothing to measure and draws no bar,
- * which is the blank the count `0/0` beside it explains.
- */
-function bar(reading: PlanReading): string {
-  const sections = drawnCount(reading.sections);
-  const completed = Math.min(drawnCount(reading.completed), sections);
-  const scaled = sections === 0 ? 0 : Math.round((completed * BAR_CELLS) / sections);
-  const cells = completed === 0 ? 0 : Math.min(Math.max(scaled, 1), BAR_CELLS);
-  return `${BAR_GLYPH.repeat(cells)}${" ".repeat(BAR_CELLS - cells)}`;
-}
-
-/**
- * Text padded to a width in code points, which is the measure every fenced line is held in.
- *
- * Code points are not display columns: a field of emoji or of wide CJK draws wider than the count
- * this pads to, so the grid a padded column composes is a grid for text of one column per code
- * point and is locally broken by text that is not. A fenced block on this surface wraps to the
- * reader's window and never scrolls sideways, so what that costs is a wrapped row rather than a
- * line a reader cannot reach the end of.
- */
-function padded(value: string, width: number): string {
-  return `${value}${" ".repeat(Math.max(width - [...value].length, 0))}`;
 }
 
 /**
@@ -293,93 +277,131 @@ function padded(value: string, width: number): string {
 export const fieldUnitsNeutralized = { count: 0 };
 
 /**
- * One untrusted field, block-inert and bounded, measured for what neutralizing it costs.
+ * How much longer than its input the live-markdown escape can make a field, as a multiple of the
+ * input's length in code points. The bound holds in both measures `fit` binds a string in, code
+ * points and UTF-16 units, because the two cases cannot land on one character.
+ *
+ * Every character the escape touches is ASCII, so an escaped code point leaves as two code points
+ * and two units. An astral code point is one the escape never touches, so it leaves as the one code
+ * point and the two units it arrived as. Either way a code point yields at most two of each, and
+ * the invisible-stripping and whitespace collapse that run first only ever remove characters.
+ *
+ * This is what makes the limit each field is escaped under a guard rather than a second cut: a field
+ * already held to N code points renders whole under N times this, whatever characters it carries.
+ * Escaping under the cap itself would cut a status of underscores in half, because the cap counts
+ * what was written and the limit counts what the escape wrote. A limit is still passed, so a field
+ * that somehow arrives under no cap at all is shortened rather than able to take the whole card,
+ * and the tighter this multiple is the less of the card such a field can take.
+ */
+const MAX_ESCAPE_EXPANSION = 2;
+
+/**
+ * One untrusted field the card draws whole: escaped for live markdown, guarded, and measured for
+ * what neutralizing it costs.
+ *
+ * `cap` is the bound the value already carries from the reader that took it in, so the guard above
+ * it can never fire on a field that reader bounded.
  *
  * The measure is the string's own length rather than a count taken over it, so counting a field
  * costs nothing that scales with the field.
  */
-function blockField(value: string, limit: number): string {
+function field(value: string, cap: number): string {
   fieldUnitsNeutralized.count += value.length;
-  return inertBlockField(value, limit);
+  return inertField(value, cap * MAX_ESCAPE_EXPANSION);
 }
 
 /**
- * What the bar's own glyph becomes in a status drawn where the bar goes.
+ * One untrusted field this card holds to a cap of its own: measured, cut, then escaped.
  *
- * A status takes exactly the columns the bar takes, and nothing in the escape a fenced field gets
- * touches a drawing glyph, so a `Status:` value made of bar cells would compose a row identical to
- * a finished plan's and be told from one only by the count beside it, which is the part a glance
- * skips. The tilde is ASCII, so it draws in every font a fence is set in, and nothing about it reads
- * as a bar cell.
+ * The measure is taken on the value as it arrived, before the cut, because the cut is itself a walk
+ * over the whole value: `fit` spreads what it is given to count code points. A measure read off the
+ * cut string would report the cap while the render had just walked whatever the field carried, which
+ * is exactly the cost `fieldUnitsNeutralized` exists to make visible.
+ *
+ * Cutting before escaping is the same rule the other way round: the escape runs on the shortened
+ * value, so nothing here walks the field twice as text it is about to throw away. The cut leaves
+ * `fit`'s mark, so a shortened field never reads as a whole one.
  */
-const STATUS_BAR_SUBSTITUTE = "~";
+function cutField(value: string, cap: number): string {
+  fieldUnitsNeutralized.count += value.length;
+  return inertField(fit(value, cap), cap * MAX_ESCAPE_EXPANSION);
+}
 
-/**
- * What is drawn where the bar goes: the bar for a plan in progress, and the status as its own text
- * for every other non-terminal value.
- *
- * The status is bounded before it is padded, so a crafted one takes its columns and no others, and
- * the substitution is made on the bounded text for the same reason.
- */
-function measure(reading: PlanReading): string {
-  if (reading.status.trim().toLowerCase() === IN_PROGRESS) return bar(reading);
-  const status = blockField(reading.status, MEASURE_WIDTH).replaceAll(
-    BAR_GLYPH,
-    STATUS_BAR_SUBSTITUTE,
-  );
-  return padded(status, MEASURE_WIDTH);
+/** A plan's filename stem as the card draws it, escaped whole and never shortened. */
+function planStem(stem: string): string {
+  const named = field(stem, MAX_STEM_LENGTH);
+  return named === "" ? UNNAMED_PLAN : named;
 }
 
 /**
- * A plan's first line: the filename stem, then the bar or the status, then the count.
+ * A plan's status as its own clause, or nothing at all for the ordinary in-progress value.
  *
- * The stem leads because it is the handle, the string the operator mentions in the channel and feeds
- * to `/kit-goal`. It takes the room the fixed columns to its right leave, so every bar on the card
- * stands in one column, and a stem past that room is cut with the mark `fit` leaves rather than
- * quietly shortened into a name that addresses a different plan.
+ * That value is what most of a fleet carries, and with nothing else occupying the spot its absence
+ * is unambiguous. Every other non-terminal status is drawn as it was written, whole to the cap the
+ * plan reader took it in under: the status is where a plan says what it is waiting on, and a value
+ * near the ordinary one (`In Progress (auto)`) differs from it in exactly the words a shortened one
+ * would lose.
  */
-function planLine(reading: PlanReading, countWidth: number): string {
-  const room = Math.max(MAX_BLOCK_WIDTH - 1 - MEASURE_WIDTH - COUNT_GAP.length - countWidth, 0);
-  const stem = padded(blockField(reading.stem, room), room);
-  const count = sectionCount(reading).padStart(countWidth);
-  return `${stem} ${measure(reading)}${COUNT_GAP}${count}`;
+function statusClause(reading: PlanReading): string {
+  if (reading.status.trim().toLowerCase() === IN_PROGRESS) return "";
+  return field(reading.status, MAX_INTAKE_STATUS_LENGTH);
 }
 
 /**
- * A plan's second line: the markers that change what the row means, how long since the doc last
- * moved, and what the latest Chapter says comes next.
+ * A plan's facts, on one sub-bullet under its name: the markers that change what the plan means, how
+ * far through its sections it is, how long since the doc last moved, and its status.
  *
- * The markers lead, because a row whose state is held or whose run is blocked says something
- * different from the same row without them. They are ASCII rather than glyphs, and each therefore
- * costs exactly the columns it occupies, where an emoji is wider than the one character a monospace
- * grid counts it as. They are worded rather than legended, since a legend for two self-describing
- * markers spends a line of the card saying what the markers say.
+ * The markers lead, because a plan whose parse is held or whose run is blocked says something
+ * different from the same plan without them. They are worded rather than legended, since a legend
+ * for two self-describing markers spends a line of the card saying what the markers say.
  *
- * The prose is bounded to its own field cap first and then held to whatever the line has left, and
- * each cut that shortens it leaves `fit`'s mark, so a shortened `Next:` never reads as a whole one.
+ * A plan whose doc declares no sections draws no count: `0/0` is what a doc with no `## Sections of
+ * Work` block yields, and a fraction of nothing measures nothing. The age is the one clause always
+ * drawn, so this line is never empty whatever the plan carries.
  */
-function detailLine(plan: BoardPlan, blocked: number | null, now: number): string {
+function factsLine(plan: BoardPlan, blocked: number | null, now: number): string {
   const parts: string[] = [];
-  if (blocked !== null) parts.push(`(blocked ${span(Math.max(now - blocked, 0))})`);
-  if (plan.heldSince !== null) {
-    parts.push(`(held ${span(Math.max(now - plan.heldSince, 0))})`);
-  }
+  if (blocked !== null) parts.push(`blocked ${span(Math.max(now - blocked, 0))}`);
+  if (plan.heldSince !== null) parts.push(`held ${span(Math.max(now - plan.heldSince, 0))}`);
+  if (drawnCount(plan.reading.sections) > 0) parts.push(sectionCount(plan.reading));
   parts.push(span(Math.max(now - plan.reading.mtimeMs, 0)));
-  const head = `${ROW_INDENT}${parts.join(` ${SEPARATOR} `)}`;
-  const next = plan.reading.next === null ? "" : blockField(plan.reading.next, MAX_NEXT_LENGTH);
-  if (next === "") return fit(head, MAX_BLOCK_WIDTH);
-  return fit(`${head} ${SEPARATOR} next: ${next}`, MAX_BLOCK_WIDTH);
-}
-
-/** The one line a plan the card holds no parse for draws: its name, and why there is no row. */
-function failureLine(failure: PlanFailure): string {
-  const said = ` (${NO_PARSE.get(failure.reason) ?? NO_PARSE_FALLBACK})`;
-  const stem = blockField(failure.stem, Math.max(MAX_BLOCK_WIDTH - said.length, 0));
-  return fit(`${stem}${said}`, MAX_BLOCK_WIDTH);
+  const status = statusClause(plan.reading);
+  if (status !== "") parts.push(status);
+  return `${SUB_BULLET} ${parts.join(` ${SEPARATOR} `)}`;
 }
 
 /**
- * The one line a root whose listing was cut draws.
+ * One plan's lines: its filename stem in bold on a bullet of its own, its facts under that, and what
+ * the latest Chapter says comes next under those.
+ *
+ * The stem is the whole of the bullet because it is the handle, the string the operator mentions in
+ * the channel, and a line carrying nothing else is the line a reader scans the list by. Bold rather
+ * than a heading of its own rank: Discord puts a margin around every heading, and at one per plan
+ * that margin is most of what a card read on a phone would be.
+ *
+ * `Next:` takes a sub-bullet rather than a clause beside the facts, because it is a sentence and
+ * they are figures: on one line the figures would be what wraps away. It is the one plan field this
+ * card caps itself, so it goes through the cutting neutralizer rather than the whole-field one.
+ */
+function planLines(plan: BoardPlan, blocked: number | null, now: number): string[] {
+  const lines = [
+    `${BULLET} **${planStem(plan.reading.stem)}**`,
+    factsLine(plan, blocked, now),
+  ];
+  const next =
+    plan.reading.next === null ? "" : cutField(plan.reading.next, MAX_NEXT_LENGTH);
+  if (next !== "") lines.push(`${SUB_BULLET} next: ${next}`);
+  return lines;
+}
+
+/** The one bullet a plan the card holds no parse for draws: its name, and why there are no facts
+ * under it. Unemphasized, which is what tells it apart at a glance from the plans that parsed. */
+function failureLine(failure: PlanFailure): string {
+  return `${BULLET} ${planStem(failure.stem)} (${NO_PARSE.get(failure.reason) ?? NO_PARSE_FALLBACK})`;
+}
+
+/**
+ * The one bullet a root whose listing was cut draws.
  *
  * A root that dropped plans past the reader's per-root cap must not read as a root that has only the
  * plans it drew: the files past the cap are never opened, so there is no name to give for any of
@@ -387,7 +409,7 @@ function failureLine(failure: PlanFailure): string {
  */
 function truncationLine(dropped: number): string {
   const plural = dropped === 1 ? "" : "s";
-  return fit(`+${dropped} more plan${plural} in this project not shown`, MAX_BLOCK_WIDTH);
+  return `${BULLET} +${dropped} more plan${plural} in this project not shown`;
 }
 
 /** What a card that ran out of room ends with, naming what it left out rather than cutting silently. */
@@ -398,24 +420,28 @@ function overflowTail(plans: number, projects: number): string {
   return `(${parts.join(", ")} not shown)`;
 }
 
+/** What a run of lines costs the card: each line's own text and the newline that joins it on. */
+function spent(lines: readonly string[]): number {
+  return lines.reduce((sum, line) => sum + 1 + line.length, 0);
+}
+
 /**
- * One thing a project's block draws: the lines it takes, and how many plans drawing it accounts
- * for.
+ * One thing a project's list draws: the lines it takes, and how many plans drawing it accounts for.
  *
- * A row and a no-parse line each account for the one plan they name; a truncation note accounts for
- * every plan the cap dropped, because the note is the only place those plans are represented at all.
- * That count is what the overflow tail spends, so a card that ran out of room before an item reports
- * exactly the plans it left unmentioned.
+ * A plan's bullets and a no-parse line each account for the one plan they name; a truncation note
+ * accounts for every plan the cap dropped, because the note is the only place those plans are
+ * represented at all. That count is what the overflow tail spends, so a card that ran out of room
+ * before an item reports exactly the plans it left unmentioned.
  */
 type BlockItem = { lines: string[]; plans: number };
 
-/** One project's section: the bold line naming it, and the items its fenced block draws. */
+/** One project's section: the heading naming it, and the items its list draws. */
 type ProjectSection = { label: string; items: BlockItem[]; plans: number };
 
 /**
  * The card's projects in the order they were configured, each carrying only what it has to draw.
  *
- * A project holds that place whatever kind of entry it has in it, rows or a plan that would not
+ * A project holds that place whatever kind of entry it has in it, plans or a plan that would not
  * parse or a note that its listing was cut. Ordering by what the sweep managed to parse would sink a
  * project whose one plan has never parsed below every project with a readable plan, and lift it back
  * up the tick that plan first parses.
@@ -424,7 +450,7 @@ type ProjectSection = { label: string; items: BlockItem[]; plans: number };
  * on every input here came from the one configured list the sweep and the event reader were both
  * handed. A root on those inputs the configured list does not name is drawn after the ones it does
  * rather than dropped. A project with nothing to draw gets no entry at all, which is what leaves a
- * configured root with no open plans drawing nothing rather than an empty block.
+ * configured root with no open plans drawing nothing rather than an empty heading.
  *
  * A project is labelled by the last segment of its configured root, so a root configured at or one
  * level under a home directory draws the operator's OS username into a channel.
@@ -438,13 +464,6 @@ function sections(
   now: number,
 ): ProjectSection[] {
   const open = plans.filter((plan) => !plan.reading.terminal);
-  // The column is measured across every project's plans in one pass, so a count on one project
-  // stands in the same column as a count on the next and the bars above them line up down the whole
-  // card, which is what lets two projects be read at one glance.
-  const countWidth = open.reduce(
-    (width, plan) => Math.min(Math.max(width, sectionCount(plan.reading).length), MAX_COUNT_WIDTH),
-    0,
-  );
 
   const order: string[] = [...new Set(roots)];
   const configured = new Set(order);
@@ -462,10 +481,7 @@ function sections(
   for (const plan of open) {
     drawn.add(eventKey(plan.reading.root, planName(plan.reading.stem)));
     place(plan.reading.root).push({
-      lines: [
-        planLine(plan.reading, countWidth),
-        detailLine(plan, blockedAt(plan, events, now), now),
-      ],
+      lines: planLines(plan, blockedAt(plan, events, now), now),
       plans: 1,
     });
   }
@@ -483,10 +499,12 @@ function sections(
   return order
     .filter((root) => (byRoot.get(root)?.length ?? 0) > 0)
     .map((root, index) => {
-      const named = inertField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
+      // A directory name is held to this card's own cap, which is a cut rather than a guard, so it
+      // is marked where it shortens one.
+      const named = cutField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
       const items = byRoot.get(root) ?? [];
       return {
-        label: `**${named === "" ? unnamedProject(index) : named}**`,
+        label: `${PROJECT_HEADING} ${named === "" ? unnamedProject(index) : named}`,
         items,
         plans: items.reduce((sum, item) => sum + item.plans, 0),
       };
@@ -496,16 +514,16 @@ function sections(
 /**
  * The card's closing line: how old the information on it is.
  *
- * Anchored to the oldest parse behind the card's rows rather than to the current time, which is the
+ * Anchored to the oldest parse behind the card's plans rather than to the current time, which is the
  * sibling card's discipline and load-bearing for the same reason: this card is edited only when its
  * text changes, and a footer carrying a clock would rewrite the message on every refresh. A card
  * whose plans were all read this tick is as of just now, and one redrawing a held parse says how old
- * that parse is, which is the whole of what a reader cannot see from the rows.
+ * that parse is, which is the whole of what a reader cannot see from the list.
  *
- * The plans counted are the non-terminal ones, which is the set the rows are composed from. A
+ * The plans counted are the non-terminal ones, which is the set the list is composed from. A
  * terminal plan draws nothing, so a held parse of one is information no reader is looking at, and
- * letting it age the footer would put an hours-old stamp under a card every visible row of which was
- * read this tick.
+ * letting it age the footer would put an hours-old stamp under a card every visible line of which
+ * was read this tick.
  */
 function footerLine(plans: readonly BoardPlan[], now: number): string {
   const oldest = plans.reduce(
@@ -517,16 +535,17 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
 }
 
 /**
- * The whole card, bounded to one message: a title heading, then a bold project label and a fenced
- * block per project, then the footer.
+ * The whole card, bounded to one message: a title heading, then a heading and a list of plans per
+ * project, then the footer.
  *
  * Composed project by project against a running budget rather than assembled whole and cut, because
  * a card truncated at the end would drop the last projects silently and read as a fleet with fewer
- * of them. The title and the footer are taken out of the budget before the first block is measured,
+ * of them. The title and the footer are taken out of the budget before the first list is measured,
  * so both survive a card that ran out of room, and every stop draws the tail naming how many plans
- * and how many whole projects are missing. A project's label and the two delimiter lines of its
- * fence are spent together with its first item: a label over an empty block, or a fence with nothing
- * between its delimiters, is what a budget spent line by line would leave behind.
+ * and how many whole projects are missing. A project's heading, and the blank line that closes the
+ * list above it, are spent together with its first item: a heading over an empty list is what a
+ * budget spent line by line would leave behind. Every blank line the shape requires is charged the
+ * same way, because a line the card emits costs its newline whether or not it carries text.
  *
  * `events` is read for its `latest` map alone; the offset and the malformed tally are the reader's
  * own bookkeeping and nothing on the card is drawn from them.
@@ -535,28 +554,23 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
  * inputs compose the same bytes.
  */
 export function renderBoardCard(input: {
-  /** The configured project roots, in the order the card draws their blocks. A root with nothing to
-   * draw takes no block, and a root on any other input here that this list does not name is drawn
+  /** The configured project roots, in the order the card draws their lists. A root with nothing to
+   * draw takes no heading, and a root on any other input here that this list does not name is drawn
    * after the ones it does. */
   roots: readonly string[];
   plans: readonly BoardPlan[];
   /** The plans this tick could not read and the caller holds no parse for. One the caller does hold
-   * a parse for belongs in `plans` marked held, where it draws its last good row. */
+   * a parse for belongs in `plans` marked held, where it draws its last good bullets. */
   failures: readonly PlanFailure[];
   truncated: readonly PlanTruncation[];
   events: EventReaderState;
   now: number;
 }): string {
-  const footerLines = wrapped(footerLine(input.plans, input.now));
+  const footer = footerLine(input.plans, input.now);
   const lines: string[] = [PREVIEW, TITLE];
-  let used =
-    PREVIEW.length +
-    1 +
-    TITLE.length +
-    1 +
-    footerLines.reduce((sum, line) => sum + 1 + line.length, 0);
+  let used = spent([PREVIEW, TITLE, PROJECT_GAP, footer]);
   const finish = (): string => {
-    lines.push(...footerLines);
+    lines.push(PROJECT_GAP, footer);
     return lines.join("\n");
   };
 
@@ -578,24 +592,25 @@ export function renderBoardCard(input: {
     const shown: string[] = [];
     let stopped = false;
     for (const item of project.items) {
-      const cost =
-        (shown.length === 0 ? 1 + project.label.length + FENCE_COST : 0) +
-        item.lines.reduce((sum, line) => sum + 1 + line.length, 0);
+      const opening = shown.length === 0 ? [PROJECT_GAP, project.label] : [];
+      const cost = spent([...opening, ...item.lines]);
       // The tail's room is reserved against every item, the last included: one rule with no branch
-      // to get wrong, at the price of at most one tail's width of unused room on a full card.
+      // to get wrong, at the price of at most one tail's width of unused room on a full card. Its
+      // own blank line is reserved with it, because the tail closes the list above it the way the
+      // footer and every heading do.
       const tail = overflowTail(plansLeft, projects.length - index - (shown.length === 0 ? 0 : 1));
-      if (used + cost + 1 + tail.length > MAX_CARD_LENGTH) {
+      if (used + cost + spent([PROJECT_GAP, tail]) > MAX_CARD_LENGTH) {
         stopped = true;
         break;
       }
-      shown.push(...item.lines);
+      shown.push(...opening, ...item.lines);
       used += cost;
       plansLeft -= item.plans;
     }
-    if (shown.length > 0) lines.push(project.label, fenced(shown));
+    if (shown.length > 0) lines.push(...shown);
     if (stopped) {
       const missing = projects.length - index - (shown.length === 0 ? 0 : 1);
-      lines.push(...wrapped(overflowTail(plansLeft, missing)));
+      lines.push(PROJECT_GAP, overflowTail(plansLeft, missing));
       return finish();
     }
   }

@@ -54,11 +54,15 @@ export const MAX_PLANS_PER_ROOT = 64;
  * What the two free-form values a plan doc carries are held to before they leave a parse.
  *
  * Both are single lines of a file this module reads whole, so either can arrive as the whole of what
- * the read cap allows. These caps sit generously above anything a renderer draws (the board card
- * cuts a status to nine columns and a `Next:` to a hundred and twenty), so presentation stays the
- * renderer's, and far below what a caller could afford to hold: a held parse is kept in memory across
- * ticks and folded back into every sweep, so a cap-sized value reaching it is re-walked by every
- * consumer on every tick.
+ * the read cap allows. They sit far below what a caller could afford to hold: a held parse is kept
+ * in memory across ticks and folded back into every sweep, so a cap-sized value reaching it is
+ * re-walked by every consumer on every tick.
+ *
+ * The status cap is a display bound as well as an intake one, and the only one that value has. The
+ * board card draws a status whole at whatever this says, on a surface that wraps rather than cuts,
+ * so a wider cap is a wider status on that card and a share of the one message the card is composed
+ * into: raise it and the card's overflow tail starts dropping plans to pay for it. The `Next:` cap
+ * is intake alone, since that card holds a `Next:` to a hundred and twenty of its own.
  */
 export const MAX_INTAKE_STATUS_LENGTH = 120;
 export const MAX_INTAKE_NEXT_LENGTH = 400;
@@ -450,6 +454,26 @@ function readPlanFile(file: string): PlanRead {
 // distinguish `spec_v1.md` from `SPEC_V1.MD` and neither does the operator naming a plan.
 const MARKDOWN_SUFFIX = /\.md$/i;
 
+// A file whose whole stem case-folds to this is a directory index, not a plan: `README.md` under
+// `docs/plans` describes the folder, it is not itself a piece of open work. Matched on the whole
+// stem rather than a prefix, so `readme-rework_spec_v1.md`, a plan legitimately named for a rework
+// of this very rule, still sweeps normally.
+const EXCLUDED_README_STEM = "readme";
+
+/**
+ * The stem of a plan file's name: everything before the `.md` suffix, case preserved as written on
+ * disk. Both the exclusion rule and the stem a reading carries are drawn from this one function, so
+ * what counts as the suffix can never diverge between the two.
+ */
+function planStem(name: string): string {
+  return name.replace(MARKDOWN_SUFFIX, "");
+}
+
+/** Whether a plan file's name is a directory index rather than a plan, whatever its case. */
+function isReadmeStem(name: string): boolean {
+  return planStem(name).toLowerCase() === EXCLUDED_README_STEM;
+}
+
 /**
  * How still a plans directory has to have been before its listing is held for a later tick.
  *
@@ -479,7 +503,9 @@ function statPlansDirectory(dir: string): number | null {
 
 /**
  * The plan files directly under one root's `docs/plans`, by name, in a stable order and bounded by
- * `MAX_PLANS_PER_ROOT`, alongside how many names the bound left out.
+ * `MAX_PLANS_PER_ROOT`, alongside how many names the bound left out. A `README.md` (any case) is
+ * excluded before the bound is applied, so it costs nothing against `MAX_PLANS_PER_ROOT` and never
+ * shows up as a name left out.
  *
  * A directory the caller holds a listing for at exactly this modification time yields that listing
  * again, so an unchanged fleet costs one stat of the directory rather than a pass over every entry
@@ -499,15 +525,21 @@ function planFiles(
   const movedAt = statPlansDirectory(dir);
   const holding = movedAt === null ? undefined : held?.(dir, movedAt);
   if (movedAt !== null && holding !== undefined) {
-    listed.push({ dir, mtimeMs: movedAt, ...holding });
-    return holding;
+    // A held listing came from a caller, not from this filter, so the exclusion is re-applied here
+    // rather than trusted: `heldListing` is a public option and nothing stops a caller from handing
+    // back a name this module would never have listed itself. The cost is a string test over at most
+    // `MAX_PLANS_PER_ROOT` names, negligible beside the stat this branch already saved.
+    const names = holding.names.filter((name) => !isReadmeStem(name));
+    const filtered = { names, dropped: holding.dropped };
+    listed.push({ dir, mtimeMs: movedAt, ...filtered });
+    return filtered;
   }
 
   const listedAt = Date.now();
   let named: string[];
   try {
     named = readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && MARKDOWN_SUFFIX.test(entry.name))
+      .filter((entry) => entry.isFile() && MARKDOWN_SUFFIX.test(entry.name) && !isReadmeStem(entry.name))
       .map((entry) => entry.name)
       .sort();
   } catch {
@@ -523,7 +555,10 @@ function planFiles(
 
 /**
  * The current reading of every plan doc under the configured roots, terminal plans included: the
- * membership rule is the renderer's, which draws every non-terminal plan with its status as text.
+ * membership rule beyond that is the renderer's, which draws every non-terminal plan with its status
+ * as text. The sweep applies exactly one exclusion of its own, ahead of the renderer: a file whose
+ * stem is `README` under any case is not a plan and never reaches a reading, a failure, or the
+ * per-root cap.
  *
  * Every hold is the caller's, handed in and handed back: a plans directory the caller holds a
  * listing for at that exact modification time is not read, a file the caller already holds a parse
@@ -552,7 +587,7 @@ export function sweepPlans(roots: readonly string[], options: SweepPlansOptions 
     if (listing.dropped > 0) truncated.push({ root, dropped: listing.dropped });
     for (const name of listing.names) {
       const file = path.join(dir, name);
-      const stem = name.replace(MARKDOWN_SUFFIX, "");
+      const stem = planStem(name);
       const moved = statPlanFile(file);
       if (moved === null) {
         failures.push({ root, path: file, stem, reason: "unreadable" });

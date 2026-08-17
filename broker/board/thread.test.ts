@@ -105,6 +105,17 @@ function planFile(stem: string): string {
   return path.join(ROOT, "docs", "plans", `${stem}.md`);
 }
 
+/**
+ * A filename stem as the card draws it.
+ *
+ * The card's body is live markdown, so every underscore in a plan's name carries the escape that
+ * keeps the name from composing emphasis around the text beside it. Discord draws the character
+ * rather than the backslash, so the operator reads the name as it was written.
+ */
+function drawn(stem: string): string {
+  return stem.replaceAll("_", "\\_");
+}
+
 /** One plan as the sweep hands it over: in progress, one of three sections done. */
 function reading(overrides: Partial<PlanReading> = {}): PlanReading {
   const stem = overrides.stem ?? "alpha_spec_v1";
@@ -161,7 +172,7 @@ test("the first tick posts the card and opens its thread on it, under a fixed na
 
   assert.equal(calls.posts.length, 1);
   assert.match(calls.posts[0] ?? "", /Fleet: Board/);
-  assert.match(calls.posts[0] ?? "", /alpha_spec_v1/);
+  assert.ok((calls.posts[0] ?? "").includes(drawn("alpha_spec_v1")));
   assert.deepEqual(calls.opens, [{ messageId: MESSAGE_ID, name: BOARD_THREAD_NAME }]);
   assert.equal(calls.edits.length, 0, "the card it just posted needs no edit");
   // The message first, then the thread on it: a crash between the two must not lose the card.
@@ -237,24 +248,24 @@ test("a plan that could not be read redraws its last parse under a climbing mark
   });
 
   await card.tick();
-  assert.match(calls.edits[0]?.card ?? "", /alpha_spec_v1/);
+  assert.ok((calls.edits[0]?.card ?? "").includes(drawn("alpha_spec_v1")));
 
   failing = true;
   time.advance(60_000);
   await card.tick();
   const held = calls.edits[1]?.card ?? "";
-  assert.match(held, /alpha_spec_v1/, "the last parse that could be taken is still on the card");
-  assert.match(held, /\(held 1m\)/, "marked as held rather than as a freshly read row");
+  assert.ok(held.includes(drawn("alpha_spec_v1")), "the last parse taken is still on the card");
+  assert.match(held, /^ {2}- held 1m · /m, "marked as held rather than as a freshly read plan");
   assert.doesNotMatch(held, /does not parse/, "and not drawn as a plan the card has nothing for");
 
   time.advance(60_000);
   await card.tick();
-  assert.match(calls.edits[2]?.card ?? "", /\(held 2m\)/, "the marker's age climbs on every pass");
+  assert.match(calls.edits[2]?.card ?? "", /^ {2}- held 2m · /m, "the marker's age climbs each pass");
 
   failing = false;
   time.advance(60_000);
   await card.tick();
-  assert.doesNotMatch(calls.edits[3]?.card ?? "", /\(held /, "and it goes with the failure");
+  assert.doesNotMatch(calls.edits[3]?.card ?? "", /held \d/, "and it goes with the failure");
 });
 
 test("a plan this broker has never parsed draws as unread rather than as a held row", async () => {
@@ -268,7 +279,7 @@ test("a plan this broker has never parsed draws as unread rather than as a held 
 
   await card.tick();
 
-  assert.match(calls.posts[0] ?? "", /beta_spec_v1 \(cannot be read\)/);
+  assert.ok((calls.posts[0] ?? "").includes(`- ${drawn("beta_spec_v1")} (cannot be read)`));
 });
 
 test("a project holds its configured place with no parsed plan in it at all", async () => {
@@ -290,7 +301,10 @@ test("a project holds its configured place with no parsed plan in it at all", as
   });
 
   const projects = (body: string): string[] =>
-    body.split("\n").filter((line) => /^\*\*/.test(line)).map((line) => line.replaceAll("*", ""));
+    body
+      .split("\n")
+      .filter((line) => line.startsWith("### "))
+      .map((line) => line.slice(4).replaceAll("\\", ""));
 
   await card.tick();
   assert.deepEqual(projects(calls.edits[0]?.card ?? ""), [
@@ -382,10 +396,10 @@ test("a plan that failed is not opened again until it moves, whatever it failed 
     files.map((stem) => `${stem}.md`).sort(),
     "the first tick has nothing held and opens every file once",
   );
-  const drawn = calls.edits[0]?.card ?? "";
-  assert.match(drawn, /torn_spec_v1 \(does not parse\)/);
-  assert.match(drawn, /huge_spec_v1 \(too large to read\)/);
-  assert.match(drawn, /shut_spec_v1 \(cannot be read\)/);
+  const body = calls.edits[0]?.card ?? "";
+  assert.ok(body.includes(`- ${drawn("torn_spec_v1")} (does not parse)`), body);
+  assert.ok(body.includes(`- ${drawn("huge_spec_v1")} (too large to read)`), body);
+  assert.ok(body.includes(`- ${drawn("shut_spec_v1")} (cannot be read)`), body);
 
   reads.length = 0;
   await card.tick();
@@ -407,7 +421,10 @@ test("a plan that failed is not opened again until it moves, whatever it failed 
   utimesSync(path.join(plans, "good_spec_v1.md"), later, later);
   await card.tick();
   assert.deepEqual(reads, ["good_spec_v1.md"]);
-  assert.match(calls.edits[calls.edits.length - 1]?.card ?? "", /good_spec_v1/);
+  assert.ok(
+    (calls.edits[calls.edits.length - 1]?.card ?? "").includes(drawn("good_spec_v1")),
+    "the last good parse is drawn while the file that went bad is held shut",
+  );
 
   reads.length = 0;
   await card.tick();
@@ -461,11 +478,10 @@ test("one card's held listing is its own, and a second card does not take it awa
   settled(roots[0] ?? "");
   await cards[0]?.card.tick();
 
-  const drawn = cards[0]?.calls.edits[(cards[0]?.calls.edits.length ?? 1) - 1]?.card ?? "";
-  assert.match(drawn, /alpha_spec_v1/);
-  assert.doesNotMatch(
-    drawn,
-    /beta_spec_v1/,
+  const body = cards[0]?.calls.edits[(cards[0]?.calls.edits.length ?? 1) - 1]?.card ?? "";
+  assert.ok(body.includes(drawn("alpha_spec_v1")), body);
+  assert.ok(
+    !body.includes(drawn("beta_spec_v1")),
     "the first card still holds its own listing, so it did not list the directory again",
   );
 });
@@ -482,7 +498,10 @@ test("a plan that is gone from the disk is gone from the held parses too", async
   await card.tick();
   present = false;
   await card.tick();
-  assert.doesNotMatch(calls.edits[1]?.card ?? "", /alpha_spec_v1/, "the row goes with the file");
+  assert.ok(
+    !(calls.edits[1]?.card ?? "").includes(drawn("alpha_spec_v1")),
+    "the plan's bullets go with the file",
+  );
 
   // A broker that never parsed the plan has no hold behind it, so the same failure draws as a plan
   // the card has nothing for.
@@ -495,12 +514,12 @@ test("a plan that is gone from the disk is gone from the held parses too", async
       ),
   });
   await rebuilt.tick();
-  assert.match(after.edits[0]?.card ?? "", /alpha_spec_v1 \(does not parse\)/);
+  assert.ok((after.edits[0]?.card ?? "").includes(`- ${drawn("alpha_spec_v1")} (does not parse)`));
 });
 
-test("rows keep their place when a plan flips between read and held", async () => {
+test("plans keep their place when one flips between read and held", async () => {
   // Two lists come back from one sweep, and a plan moving from one to the other must not move on the
-  // card: a row that jumps to the bottom of its project for the tick it could not be read is a card
+  // card: a plan that jumps to the bottom of its project for the tick it could not be read is a card
   // the operator cannot read at a glance.
   let failing = false;
   const { calls, card } = board({
@@ -522,10 +541,16 @@ test("rows keep their place when a plan flips between read and held", async () =
   failing = true;
   await card.tick();
 
-  const rows = (body: string): string[] =>
-    body.split("\n").filter((line) => /_spec_v1/.test(line)).map((line) => line.trim().split(" ")[0] ?? "");
-  assert.deepEqual(rows(calls.edits[0]?.card ?? ""), ["a_spec_v1", "b_spec_v1", "c_spec_v1"]);
-  assert.deepEqual(rows(calls.edits[1]?.card ?? ""), ["a_spec_v1", "b_spec_v1", "c_spec_v1"]);
+  // Every plan the card names, read back off its bullet in the order the card draws them. A plan the
+  // sweep could not read this tick is drawn from its held parse and keeps its bullet, so the names
+  // and their order are what this compares.
+  const named = (body: string): string[] =>
+    body.split("\n").flatMap((line) => {
+      const bullet = /^- \*\*(.+)\*\*$/.exec(line);
+      return bullet === null ? [] : [(bullet[1] ?? "").replaceAll("\\", "")];
+    });
+  assert.deepEqual(named(calls.edits[0]?.card ?? ""), ["a_spec_v1", "b_spec_v1", "c_spec_v1"]);
+  assert.deepEqual(named(calls.edits[1]?.card ?? ""), ["a_spec_v1", "b_spec_v1", "c_spec_v1"]);
 });
 
 test("an event stream that cannot be read is drawn around and logged once per window", async () => {

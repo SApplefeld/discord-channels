@@ -1,11 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BAR_GLYPH, MAX_BLOCK_WIDTH, MAX_CARD_LENGTH } from "../discord/render.ts";
+import { MAX_CARD_LENGTH } from "../discord/render.ts";
 import { eventKey, initialEventState } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
 import type { PlanFailure, PlanParse, PlanReading, PlanTruncation } from "./plans.ts";
-import { MAX_INTAKE_NEXT_LENGTH, MAX_PLAN_FILE_BYTES, parsePlan } from "./plans.ts";
-import { BAR_CELLS, MAX_DRAWN_SECTIONS, fieldUnitsNeutralized, renderBoardCard } from "./card.ts";
+import {
+  MAX_INTAKE_NEXT_LENGTH,
+  MAX_INTAKE_STATUS_LENGTH,
+  MAX_PLAN_FILE_BYTES,
+  parsePlan,
+} from "./plans.ts";
+import {
+  MAX_DRAWN_SECTIONS,
+  MAX_NEXT_LENGTH,
+  fieldUnitsNeutralized,
+  renderBoardCard,
+} from "./card.ts";
 import type { BoardPlan } from "./card.ts";
 
 const NOW = 1_786_300_000_000;
@@ -75,45 +85,63 @@ function card(input: {
   });
 }
 
-/** Every line inside a fence, whichever block it came from, split by position rather than by text. */
-function fencedLines(rendered: string): string[] {
-  const inside: string[] = [];
-  let open = false;
-  for (const line of rendered.split("\n")) {
-    if (line === "```") open = !open;
-    else if (open) inside.push(line);
-  }
-  return inside;
+/**
+ * A filename stem as the card draws it.
+ *
+ * The body is live markdown, so every underscore in a plan's name carries the escape that keeps the
+ * name from composing emphasis around the text beside it. Discord draws the character rather than
+ * the backslash, so what the operator reads is the name as it was written.
+ */
+function drawn(stem: string): string {
+  return stem.replaceAll("_", "\\_");
 }
 
-/** Every line outside every fence: the preview, the title, the project labels, and the footer. */
-function plainLines(rendered: string): string[] {
-  const outside: string[] = [];
-  let open = false;
-  for (const line of rendered.split("\n")) {
-    if (line === "```") open = !open;
-    else if (!open) outside.push(line);
-  }
-  return outside;
+/** The lines one plan draws: its own bullet, and the sub-bullets indented under it. */
+function item(rendered: string, stem: string): string[] {
+  const all = rendered.split("\n");
+  const at = all.indexOf(`- **${drawn(stem)}**`);
+  assert.notEqual(at, -1, `no bullet names ${stem}: ${rendered}`);
+  let end = at + 1;
+  while ((all[end] ?? "").startsWith("  - ")) end += 1;
+  return all.slice(at, end);
 }
 
-/** The two lines a plan draws, found by the stem that leads the first of them. */
-function row(rendered: string, stem: string): string[] {
-  const lines = fencedLines(rendered);
-  const at = lines.findIndex((line) => line.startsWith(stem));
-  assert.notEqual(at, -1, `no row leads with ${stem}: ${rendered}`);
-  return lines.slice(at, at + 2);
+/** The facts sub-bullet of every plan on the card, in the order the card draws them. */
+function facts(rendered: string): string[] {
+  const all = rendered.split("\n");
+  return all.flatMap((line, at) => (line.startsWith("- **") ? [all[at + 1] ?? ""] : []));
 }
 
-test("a project draws a bold label outside its fence and two lines per open plan", () => {
+/** Every project heading on the card, in the order the card draws them. */
+function projects(rendered: string): string[] {
+  return rendered
+    .split("\n")
+    .filter((line) => line.startsWith("### "))
+    .map((line) => line.slice(4));
+}
+
+/** Every bullet the card draws, plans, no-parse lines and truncation notes alike. */
+function bullets(rendered: string): string[] {
+  return rendered.split("\n").filter((line) => line.startsWith("- "));
+}
+
+test("a project draws a heading, a bullet per open plan, and that plan's facts under it", () => {
   const body = card({ plans: [plan()] });
 
-  assert.match(body, /^\*\*sapplefeld-channels\*\*$/m);
-  assert.deepEqual(row(body, "channels_board-card_spec_v1"), [
-    `channels_board-card_spec_v1     ${BAR_GLYPH.repeat(5)}      3/5`,
-    "  2h 0m · next: the renderer and its tests",
-  ]);
-  assert.match(body, /^card as of just now$/m);
+  assert.equal(
+    body,
+    [
+      "📋 **Fleet: Board**",
+      "# 📋 Fleet: Board",
+      "",
+      "### sapplefeld-channels",
+      "- **channels\\_board-card\\_spec\\_v1**",
+      "  - 3/5 · 2h 0m",
+      "  - next: the renderer and its tests",
+      "",
+      "card as of just now",
+    ].join("\n"),
+  );
 });
 
 test("the same inputs compose the same bytes, so an unchanged fleet spends no edit", () => {
@@ -121,54 +149,73 @@ test("the same inputs compose the same bytes, so an unchanged fleet spends no ed
   assert.equal(card(input), card(input));
 });
 
-test("a Complete plan is hidden and every other status is drawn as its own text", () => {
+test("a name full of underscores is drawn as the name that was written", () => {
+  const body = card({ plans: [plan({ stem: "_".repeat(30) })] });
+
+  assert.ok(
+    body.includes(`- **${"\\_".repeat(30)}**`),
+    `every underscore is escaped and none is emphasis: ${body}`,
+  );
+});
+
+test("a stem is drawn whole, since it is the handle the operator mentions in the channel", () => {
+  const stem = "channels_a-very-long-plan-name-that-no-column-would-have-held_spec_v1";
+  const body = card({ plans: [plan({ stem })] });
+
+  assert.ok(body.includes(`- **${drawn(stem)}**`), body);
+  assert.doesNotMatch(body, /…/, "nothing on the card is cut to a display width");
+});
+
+test("a Complete plan is hidden and every other status is drawn as its own clause", () => {
   const body = card({
     plans: [
       plan({ stem: "open_spec_v1" }),
       plan({ stem: "draft_spec_v1", status: "Draft", completed: 0 }),
-      plan({ stem: "odd_spec_v1", status: "Paused", completed: 1 }),
-      plan({ stem: "wordy_spec_v1", status: "Waiting on the operator", completed: 1 }),
+      plan({ stem: "wordy_spec_v1", status: "Parked (until pilot data lands)", completed: 1 }),
       plan({ stem: "done_spec_v1", status: "Complete", terminal: true, completed: 5 }),
     ],
   });
 
-  assert.match(row(body, "draft_spec_v1")[0] ?? "", /Draft\s+0\/5$/);
-  assert.match(
-    row(body, "odd_spec_v1")[0] ?? "",
-    /Paused\s+1\/5$/,
-    "a status outside the contract's vocabulary surfaces rather than vanishing into a filter",
+  assert.equal(item(body, "draft_spec_v1")[1], "  - 0/5 · 2h 0m · Draft");
+  assert.equal(
+    item(body, "wordy_spec_v1")[1],
+    "  - 1/5 · 2h 0m · Parked \\(until pilot data lands\\)",
+    "a sentence-length status is drawn whole rather than cut where the information is",
   );
-  assert.match(
-    row(body, "wordy_spec_v1")[0] ?? "",
-    /Waiting …\s+1\/5$/,
-    "a status wider than its columns is cut with a mark rather than dropped",
+  assert.equal(
+    item(body, "open_spec_v1")[1],
+    "  - 3/5 · 2h 0m",
+    "the ordinary in-progress status draws no clause at all",
   );
-  assert.match(row(body, "open_spec_v1")[0] ?? "", new RegExp(`${BAR_GLYPH}+\\s+3/5$`));
   assert.doesNotMatch(body, /done_spec_v1/);
 });
 
-test("a status made of the bar's own glyph is not drawn as a bar", () => {
-  const forged = card({ plans: [plan({ status: BAR_GLYPH.repeat(BAR_CELLS), completed: 0 })] });
-  const finished = card({ plans: [plan({ sections: 5, completed: 5 })] });
+test("a status one word from the ordinary one is drawn, since that word is the difference", () => {
+  const body = card({ plans: [plan({ status: "In Progress (auto)" })] });
 
-  const line = row(forged, "channels_board-card_spec_v1")[0] ?? "";
-  assert.doesNotMatch(
-    line,
-    new RegExp(BAR_GLYPH),
-    `a status is drawn in the bar's own columns, so it may carry no bar cell: ${line}`,
+  assert.equal(item(body, "channels_board-card_spec_v1")[1], "  - 3/5 · 2h 0m · In Progress \\(auto\\)");
+});
+
+test("a status at the intake cap is drawn whole however far the escape expands it", () => {
+  // The escape writes a backslash in front of every character it touches, so a status of the
+  // most-expanding character it knows doubles in length. A render limit set at the cap the plan
+  // reader bounded the value by would cut that status in half while reporting nothing.
+  const status = "_".repeat(MAX_INTAKE_STATUS_LENGTH);
+  const body = card({ plans: [plan({ status })] });
+
+  assert.equal(
+    item(body, "channels_board-card_spec_v1")[1],
+    `  - 3/5 · 2h 0m · ${"\\_".repeat(MAX_INTAKE_STATUS_LENGTH)}`,
   );
-  assert.match(
-    row(finished, "channels_board-card_spec_v1")[0] ?? "",
-    new RegExp(`${BAR_GLYPH}{${BAR_CELLS}}`),
-    "a plan that really is finished still draws the full bar",
-  );
+  assert.doesNotMatch(body, /…/, "a field the reader already bounded is never cut again here");
 });
 
 test("a card with nothing at all to draw says so in one line", () => {
   const body = card({ plans: [plan({ status: "Complete", terminal: true })] });
 
   assert.match(body, /^No open plans in the configured projects\.$/m);
-  assert.equal(fencedLines(body).length, 0, `no block is drawn: ${body}`);
+  assert.deepEqual(projects(body), []);
+  assert.deepEqual(bullets(body), []);
 });
 
 test("a configured root whose plans are all terminal draws nothing at all", () => {
@@ -179,58 +226,40 @@ test("a configured root whose plans are all terminal draws nothing at all", () =
     ],
   });
 
-  assert.match(body, /^\*\*sapplefeld-channels\*\*$/m);
-  assert.doesNotMatch(body, /sapplefeld-ai-os/);
-  assert.equal(plainLines(body).filter((line) => line.startsWith("**")).length, 1);
+  assert.deepEqual(projects(body), ["sapplefeld-channels"]);
 });
 
 test("a project whose configured root has no last segment is named by its position", () => {
   const body = card({ plans: [plan({ root: "\\\\" })] });
 
-  assert.match(body, /^\*\*project 1\*\*$/m);
+  assert.deepEqual(projects(body), ["project 1"]);
 });
 
-test("the section bar fills with progress and never reads as empty above zero", () => {
-  const cases: [number, number, number][] = [
-    [0, 5, 0],
-    [1, 12, 1],
-    [1, 2, 5],
-    [3, 5, 5],
-    [5, 5, 9],
-    [9, 5, 9],
-    [-2, 5, 0],
-  ];
+test("a plan declaring no sections draws no count, since a fraction of nothing measures nothing", () => {
+  const body = card({ plans: [plan({ sections: 0, completed: 0, next: null })] });
 
-  for (const [completed, sections, cells] of cases) {
-    const body = card({ plans: [plan({ completed, sections })] });
-    const line = row(body, "channels_board-card_spec_v1")[0] ?? "";
-    const drawn = [...line].filter((character) => character === BAR_GLYPH).length;
-    assert.equal(drawn, cells, `${completed}/${sections} draws ${cells} cells: ${line}`);
-  }
+  assert.deepEqual(item(body, "channels_board-card_spec_v1"), [
+    "- **channels\\_board-card\\_spec\\_v1**",
+    "  - 2h 0m",
+  ]);
 });
 
-test("a plan declaring no sections draws no bar and the count that explains it", () => {
-  const body = card({ plans: [plan({ sections: 0, completed: 0 })] });
-
-  assert.match(row(body, "channels_board-card_spec_v1")[0] ?? "", /^\S+\s+0\/0$/);
-});
-
-test("counts out of a plan doc's own headings are bounded before they take the row", () => {
+test("counts out of a plan doc's own headings are bounded before they take the line", () => {
   const body = card({ plans: [plan({ sections: 1e9, completed: 1e9 })] });
 
-  assert.match(
-    row(body, "channels_board-card_spec_v1")[0] ?? "",
-    new RegExp(`${MAX_DRAWN_SECTIONS}/${MAX_DRAWN_SECTIONS}$`),
+  assert.equal(
+    item(body, "channels_board-card_spec_v1")[1],
+    `  - ${MAX_DRAWN_SECTIONS}/${MAX_DRAWN_SECTIONS} · 2h 0m`,
   );
 });
 
-test("the blocked marker is drawn while the latest event for the pair is goal-blocked", () => {
+test("the blocked marker leads the facts while the latest event for the pair is goal-blocked", () => {
   const body = card({
     plans: [plan({ mtimeMs: NOW - 5 * HOUR })],
     events: events(event({ ts: new Date(NOW - 3 * HOUR).toISOString() })),
   });
 
-  assert.match(row(body, "channels_board-card_spec_v1")[1] ?? "", /^ {2}\(blocked 3h 0m\) · 5h 0m/);
+  assert.equal(item(body, "channels_board-card_spec_v1")[1], "  - blocked 3h 0m · 3/5 · 5h 0m");
 });
 
 test("the blocked marker clears when the plan doc's mtime moves past the event", () => {
@@ -239,9 +268,9 @@ test("the blocked marker clears when the plan doc's mtime moves past the event",
   const standing = card({ plans: [plan({ mtimeMs: NOW - 5 * HOUR })], events: events(blocked) });
   const resumed = card({ plans: [plan({ mtimeMs: NOW - 1 * HOUR })], events: events(blocked) });
 
-  assert.match(standing, /\(blocked /);
-  assert.doesNotMatch(resumed, /\(blocked /, `a Chapter landing after the block means it resumed`);
-  assert.match(row(resumed, "channels_board-card_spec_v1")[1] ?? "", /^ {2}1h 0m ·/);
+  assert.match(standing, /blocked 3h 0m/);
+  assert.doesNotMatch(resumed, /blocked /, `a Chapter landing after the block means it resumed`);
+  assert.equal(item(resumed, "channels_board-card_spec_v1")[1], "  - 3/5 · 1h 0m");
 });
 
 test("the blocked marker clears on a goal-complete for the pair", () => {
@@ -250,7 +279,7 @@ test("the blocked marker clears on a goal-complete for the pair", () => {
     events: events(event({ event: "goal-complete" })),
   });
 
-  assert.doesNotMatch(body, /\(blocked /);
+  assert.doesNotMatch(body, /blocked /);
 });
 
 test("a block stamped ahead of the clock is taken as now, so a moved doc still clears it", () => {
@@ -259,14 +288,14 @@ test("a block stamped ahead of the clock is taken as now, so a moved doc still c
   const standing = card({ plans: [plan({ mtimeMs: NOW - 5 * HOUR })], events: events(ahead) });
   const moved = card({ plans: [plan({ mtimeMs: NOW + 1 * HOUR })], events: events(ahead) });
 
-  assert.match(
-    row(standing, "channels_board-card_spec_v1")[1] ?? "",
-    /^ {2}\(blocked 0m\) · 5h 0m/,
+  assert.equal(
+    item(standing, "channels_board-card_spec_v1")[1],
+    "  - blocked 0m · 3/5 · 5h 0m",
     "a block cannot have started later than the card is drawn",
   );
   assert.doesNotMatch(
     moved,
-    /\(blocked /,
+    /blocked /,
     "a doc that moved after the card's own clock is movement the clear rule reads",
   );
 });
@@ -277,8 +306,8 @@ test("an event naming a plan the sweep does not have draws no marker anywhere", 
     events: events(event({ plan: "docs/plans/channels_gone_spec_v1.md" })),
   });
 
-  assert.doesNotMatch(body, /\(blocked /);
-  assert.doesNotMatch(body, /channels_gone_spec_v1/);
+  assert.doesNotMatch(body, /blocked /);
+  assert.doesNotMatch(body, /channels_gone/);
 });
 
 test("two roots holding a plan of the same name are never given each other's marker", () => {
@@ -290,11 +319,9 @@ test("two roots holding a plan of the same name are never given each other's mar
     events: events(event({ root: AI_OS, plan: "docs/plans/shared_spec_v1.md" })),
   });
 
-  const [first, second] = fencedLines(body);
-  assert.match(body, /\(blocked /);
-  assert.doesNotMatch(second ?? "", /\(blocked /, `the channels row is unmarked: ${body}`);
-  assert.match(first ?? "", /^shared_spec_v1/);
-  assert.match(fencedLines(body)[3] ?? "", /\(blocked /, `the ai-os row carries it: ${body}`);
+  const [channels, aiOs] = facts(body);
+  assert.equal(channels, "  - 3/5 · 5h 0m", `the channels plan is unmarked: ${body}`);
+  assert.equal(aiOs, "  - blocked 3h 0m · 3/5 · 5h 0m", `the ai-os plan carries it: ${body}`);
 });
 
 test("an event names its plan by a path and a reading by a stem, joined as one name", () => {
@@ -310,7 +337,7 @@ test("an event names its plan by a path and a reading by a stem, joined as one n
       plans: [plan({ mtimeMs: NOW - 5 * HOUR })],
       events: events(event({ plan: named })),
     });
-    assert.match(body, /\(blocked /, `${named} names the swept plan`);
+    assert.match(body, /blocked 3h 0m/, `${named} names the swept plan`);
   }
 });
 
@@ -329,10 +356,10 @@ test("a plan whose filename carries the suffix twice is joined to its own event 
   });
   const single = card({ plans: both, events: events(event({ plan: "docs/plans/twice_spec_v1.md" })) });
 
-  assert.match(fencedLines(doubled)[1] ?? "", /\(blocked /, `the doubled name carries it: ${doubled}`);
-  assert.doesNotMatch(fencedLines(doubled)[3] ?? "", /\(blocked /, `the sibling does not: ${doubled}`);
-  assert.doesNotMatch(fencedLines(single)[1] ?? "", /\(blocked /, `the doubled name does not: ${single}`);
-  assert.match(fencedLines(single)[3] ?? "", /\(blocked /, `the sibling carries it: ${single}`);
+  assert.match(facts(doubled)[0] ?? "", /^ {2}- blocked /, `the doubled name carries it: ${doubled}`);
+  assert.doesNotMatch(facts(doubled)[1] ?? "", /blocked /, `the sibling does not: ${doubled}`);
+  assert.doesNotMatch(facts(single)[0] ?? "", /blocked /, `the doubled name does not: ${single}`);
+  assert.match(facts(single)[1] ?? "", /^ {2}- blocked /, `the sibling carries it: ${single}`);
 });
 
 test("an event whose timestamp names no instant draws no marker that could never clear", () => {
@@ -341,17 +368,17 @@ test("an event whose timestamp names no instant draws no marker that could never
     events: events(event({ ts: "whenever" })),
   });
 
-  assert.doesNotMatch(body, /\(blocked /);
+  assert.doesNotMatch(body, /blocked /);
 });
 
-test("a held parse redraws its last good row under a marker whose age climbs", () => {
+test("a held parse redraws its last good facts under a marker whose age climbs", () => {
   const fresh = card({ plans: [plan({}, null)] });
   const recent = card({ plans: [plan({}, NOW - 4 * MINUTE)] });
   const stale = card({ plans: [plan({}, NOW - 70 * MINUTE)] });
 
-  assert.doesNotMatch(fresh, /\(held /);
-  assert.match(row(recent, "channels_board-card_spec_v1")[1] ?? "", /^ {2}\(held 4m\) · 2h 0m/);
-  assert.match(row(stale, "channels_board-card_spec_v1")[1] ?? "", /^ {2}\(held 1h 10m\) · 2h 0m/);
+  assert.doesNotMatch(fresh, /held /);
+  assert.equal(item(recent, "channels_board-card_spec_v1")[1], "  - held 4m · 3/5 · 2h 0m");
+  assert.equal(item(stale, "channels_board-card_spec_v1")[1], "  - held 1h 10m · 3/5 · 2h 0m");
   assert.match(fresh, /^card as of just now$/m);
   assert.match(stale, /^card as of 1h ago$/m, "the footer is as old as the oldest thing drawn");
 });
@@ -369,7 +396,7 @@ test("the footer is anchored to the plans the card draws and to nothing it hides
   assert.match(held, /^card as of 3h ago$/m, "a drawn plan's held parse is what the footer reports");
 });
 
-test("a plan the card holds no parse for draws one line saying why", () => {
+test("a plan the card holds no parse for draws one bullet saying why", () => {
   const body = card({
     failures: [
       { root: CHANNELS, path: `${CHANNELS}\\docs\\plans\\torn.md`, stem: "torn", reason: "malformed" },
@@ -378,14 +405,14 @@ test("a plan the card holds no parse for draws one line saying why", () => {
     ],
   });
 
-  assert.deepEqual(fencedLines(body), [
-    "torn (does not parse)",
-    "huge (too large to read)",
-    "gone (cannot be read)",
+  assert.deepEqual(bullets(body), [
+    "- torn (does not parse)",
+    "- huge (too large to read)",
+    "- gone (cannot be read)",
   ]);
 });
 
-test("a failure for a plan already redrawn from a held parse draws no second line", () => {
+test("a failure for a plan already redrawn from a held parse draws no second bullet", () => {
   const body = card({
     plans: [plan({ stem: "torn_spec_v1" }, NOW - 4 * MINUTE)],
     failures: [
@@ -393,21 +420,21 @@ test("a failure for a plan already redrawn from a held parse draws no second lin
     ],
   });
 
-  assert.equal(fencedLines(body).length, 2, `the held row and nothing else: ${body}`);
+  assert.deepEqual(bullets(body), ["- **torn\\_spec\\_v1**"], `the held plan and nothing else: ${body}`);
   assert.doesNotMatch(body, /does not parse/);
 });
 
 test("a root whose listing was cut says so, so it never reads as a root with only its drawn plans", () => {
   const body = card({ plans: [plan()], truncated: [{ root: CHANNELS, dropped: 12 }] });
 
-  assert.match(body, /^\+12 more plans in this project not shown$/m);
+  assert.match(body, /^- \+12 more plans in this project not shown$/m);
   assert.doesNotMatch(
     card({ plans: [plan()], truncated: [{ root: CHANNELS, dropped: 0 }] }),
     /not shown/,
   );
   assert.match(
     card({ plans: [plan()], truncated: [{ root: CHANNELS, dropped: 1 }] }),
-    /^\+1 more plan in this project not shown$/m,
+    /^- \+1 more plan in this project not shown$/m,
   );
 });
 
@@ -416,17 +443,17 @@ test("a card that runs out of room names what it left out rather than ending mid
     plan({
       root: index < 30 ? CHANNELS : AI_OS,
       stem: `plan_${String(index).padStart(3, "0")}_spec_v1`,
-      next: "a next value long enough to fill the second line of every row it is drawn on",
+      next: "a next value long enough to fill a sub-bullet of every plan it is drawn on",
     }),
   );
   const body = card({ plans });
 
   assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
-  const tail = plainLines(body).find((line) => line.includes("not shown")) ?? "";
+  const tail = body.split("\n").find((line) => line.includes("not shown")) ?? "";
   assert.match(tail, /^\(\+\d+ plans(, \+\d+ projects?)? not shown\)$/, body);
   const left = Number(/\+(\d+) plans/.exec(tail)?.[1]);
-  const drawn = fencedLines(body).filter((line) => line.startsWith("plan_")).length;
-  assert.equal(drawn + left, 60, `every plan is either drawn or counted in the tail: ${body}`);
+  const shown = bullets(body).filter((line) => line.startsWith("- **plan")).length;
+  assert.equal(shown + left, 60, `every plan is either drawn or counted in the tail: ${body}`);
   assert.match(body, /^card as of just now$/m, "the footer survives a card that ran out of room");
 });
 
@@ -435,14 +462,14 @@ test("a card that runs out of room before a project counts that whole project as
     plan({
       root: index < 59 ? CHANNELS : AI_OS,
       stem: `plan_${String(index).padStart(3, "0")}_spec_v1`,
-      next: "a next value long enough to fill the second line of every row it is drawn on",
+      next: "a next value long enough to fill a sub-bullet of every plan it is drawn on",
     }),
   );
   const body = card({ plans });
 
   assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
   assert.match(
-    plainLines(body).find((line) => line.includes("not shown")) ?? "",
+    body.split("\n").find((line) => line.includes("not shown")) ?? "",
     /, \+1 project not shown\)$/,
   );
   assert.doesNotMatch(body, /sapplefeld-ai-os/);
@@ -452,16 +479,80 @@ test("a truncation note lost to the overflow is counted in the tail rather than 
   const plans = Array.from({ length: 60 }, (_, index) =>
     plan({
       stem: `plan_${String(index).padStart(3, "0")}_spec_v1`,
-      next: "a next value long enough to fill the second line of every row it is drawn on",
+      next: "a next value long enough to fill a sub-bullet of every plan it is drawn on",
     }),
   );
   const body = card({ plans, truncated: [{ root: CHANNELS, dropped: 7 }] });
 
-  const tail = plainLines(body).find((line) => line.includes("not shown)")) ?? "";
+  const tail = body.split("\n").find((line) => line.includes("not shown)")) ?? "";
   const left = Number(/\+(\d+) plans/.exec(tail)?.[1]);
-  const drawn = fencedLines(body).filter((line) => line.startsWith("plan_")).length;
+  const shown = bullets(body).filter((line) => line.startsWith("- **plan")).length;
   assert.doesNotMatch(body, /more plans in this project/);
-  assert.equal(drawn + left, 67, `the 7 dropped by the cap are still counted: ${body}`);
+  assert.equal(shown + left, 67, `the 7 dropped by the cap are still counted: ${body}`);
+});
+
+test("the blank lines the list shape needs are charged against the budget like any other line", () => {
+  // A project costs a blank line and a heading before its first plan, and the card closes on a blank
+  // line before its footer. Budget arithmetic that measured only the lines carrying text would run
+  // the card past the message ceiling at exactly the fill where it matters, so every count of
+  // projects up to a card that overflows is walked here rather than one chosen fill.
+  // Every project the card draws is a heading over at least one bullet; no blank line falls inside a
+  // project's list, where it would end the list and restart it; and every line that follows a list,
+  // the overflow tail included, is held off it by a blank line of its own. Answers whether this card
+  // is one that ran out of room, so the walk can be held to covering that shape too.
+  const walk = (body: string, what: string): boolean => {
+    assert.ok(body.length <= MAX_CARD_LENGTH, `${what} composes ${body.length} units`);
+    const lines = body.split("\n");
+    for (const [at, line] of lines.entries()) {
+      if (line.startsWith("### ")) {
+        assert.equal(lines[at - 1], "", `a heading closes the list above it: ${body}`);
+        assert.match(lines[at + 1] ?? "", /^- /, `no heading stands over an empty list: ${body}`);
+      }
+      if (line === "") {
+        assert.match(
+          lines[at + 1] ?? "",
+          /^(### |card as of |\(\+)/,
+          `a blank line only ever closes a list, never falls inside one: ${body}`,
+        );
+      }
+      if (line.startsWith("(+")) {
+        assert.equal(
+          lines[at - 1],
+          "",
+          `the tail closes the list above it rather than reading as one plan's own: ${body}`,
+        );
+      }
+    }
+    return lines.some((line) => line.startsWith("(+"));
+  };
+
+  let overflowed = false;
+  for (let count = 1; count <= 40; count += 1) {
+    const plans = Array.from({ length: count }, (_, index) =>
+      plan({
+        root: `D:\\project_${String(index).padStart(2, "0")}`,
+        stem: `plan_${String(index).padStart(2, "0")}_spec_v1`,
+        status: "Parked (until the pilot data lands)",
+        next: "a next value long enough to fill a sub-bullet of every plan it is drawn on",
+      }),
+    );
+    // The second fill is the cheapest project a card can carry, which is where an uncharged blank
+    // line adds up fastest: one line per project against a budget spent per item.
+    const thin = card({
+      failures: Array.from({ length: count * 8 }, (_, index) => ({
+        root: `D:\\project_${String(index).padStart(3, "0")}`,
+        path: `D:\\project\\docs\\plans\\plan_${String(index)}.md`,
+        stem: `plan_${String(index)}`,
+        reason: "malformed" as const,
+      })),
+    });
+    overflowed = walk(card({ plans }), `${count} projects`) || overflowed;
+    overflowed = walk(thin, `${count * 8} one-bullet projects`) || overflowed;
+  }
+  assert.ok(
+    overflowed,
+    "a card that ran out of room has to be among them, or the tail's own blank line is unpinned",
+  );
 });
 
 // Filenames, statuses and `Next:` prose are model-written text out of another program's files, and
@@ -545,51 +636,35 @@ function syntaxOf(line: string): string {
   return line.replace(/\\[\s\S]/g, "");
 }
 
-test("no backtick reaches a fenced body, whatever a plan doc or an event carries", () => {
+test("no untrusted field draws syntax of its own on the card's live markdown", () => {
   for (const body of adversarialCards()) {
-    for (const line of fencedLines(body)) {
-      assert.doesNotMatch(line, /`/, `a fenced line carries no backtick: ${JSON.stringify(line)}`);
-    }
-    // Every fence delimiter on the card is one this renderer wrote, so they come in pairs.
-    const delimiters = body.split("\n").filter((line) => line === "```").length;
-    assert.equal(delimiters % 2, 0, `every block closes: ${body}`);
-    for (const line of plainLines(body)) {
+    const lines = body.split("\n");
+    assert.equal(lines[0], "📋 **Fleet: Board**");
+    assert.equal(lines[1], "# 📋 Fleet: Board");
+    // The two lines above are this renderer's own. Every other line is composed around untrusted
+    // fields, and none of them may carry a backtick that could open a fence, a bracket Discord
+    // resolves a chip inside, a quote bar, or a heading this renderer did not write.
+    for (const line of lines.slice(2)) {
+      const syntax = syntaxOf(line);
+      assert.doesNotMatch(syntax, /[`<>]/, `no live fence or chip syntax: ${JSON.stringify(line)}`);
       assert.doesNotMatch(
-        syntaxOf(line),
-        /`/,
-        `no live backtick outside a fence, so no field can open one: ${JSON.stringify(line)}`,
+        syntax.replace(/^### /, ""),
+        /^[>#]/,
+        `no line of untrusted text opens a quote or a heading: ${JSON.stringify(line)}`,
       );
     }
-  }
-});
-
-test("no fenced line exceeds the block's width bound, whatever a plan doc or an event carries", () => {
-  for (const body of adversarialCards()) {
-    for (const line of fencedLines(body)) {
-      assert.ok(
-        [...line].length <= MAX_BLOCK_WIDTH,
-        `${[...line].length} code points: ${JSON.stringify(line)}`,
-      );
+    // A stem sits inside the emphasis this renderer composes around it, so it may carry no mark that
+    // could close that emphasis early and nothing that reads as syntax at all.
+    for (const bullet of lines.filter((line) => line.startsWith("- **"))) {
+      const named = syntaxOf(bullet);
+      assert.ok(named.startsWith("- **") && named.endsWith("**"), JSON.stringify(bullet));
+      const stem = named.slice(4, -2);
+      if (stem === "(unnamed plan)") continue;
+      assert.doesNotMatch(stem, /[*_~|<>#[\]()`\\]/, JSON.stringify(bullet));
     }
-  }
-});
-
-test("no untrusted text composes a line of its own, inside a fence or outside one", () => {
-  for (const body of adversarialCards()) {
-    const opening = body.split("\n");
-    assert.equal(opening[0], "📋 **Fleet: Board**");
-    assert.equal(opening[1], "# 📋 Fleet: Board");
-    // The two lines above are this renderer's own; every other plain line is composed around
-    // untrusted fields and may open neither a quote bar nor a heading.
-    for (const line of plainLines(body).slice(2)) {
-      assert.doesNotMatch(syntaxOf(line), /^[>#]/, JSON.stringify(line));
-    }
-    // A label sits inside the emphasis this renderer composes, so it may carry no mark that could
-    // close that emphasis early, and no chip syntax at all.
-    for (const label of plainLines(body).filter((line) => line.startsWith("**"))) {
-      const named = syntaxOf(label);
-      assert.ok(named.startsWith("**") && named.endsWith("**"), JSON.stringify(label));
-      assert.doesNotMatch(named.slice(2, -2), /[*_~|<>#[\]()`\\]/, JSON.stringify(label));
+    // A project label sits inside a heading this renderer composes, and carries no syntax either.
+    for (const heading of projects(body)) {
+      assert.doesNotMatch(syntaxOf(heading), /[*_~|<>#[\]()`\\]/, JSON.stringify(heading));
     }
   }
 });
@@ -602,13 +677,14 @@ test("a card stays inside one message however hostile its fields are", () => {
 
 test("what one render neutralizes is bounded by the intake caps, not by a plan file's size", () => {
   // The card runs on a refresh timer on the broker's one event loop, and a plan doc's `Status:` and
-  // `Next:` are single lines that can each carry the whole megabyte the reader's cap allows. A
+  // `Next:` are single lines that can each carry the whole 256 KiB the reader's read cap allows. A
   // render whose cost followed those bytes would stall hook intake, heartbeats and the permission
   // prompts behind them on every tick, since a held parse folds the same value back in unchanged.
   // The gate is a unit count rather than the clock, on the same reasoning as the table transform's
   // counters in ../discord/render.ts: a loaded machine moves wall time by an order of magnitude and
-  // would make this flaky, where the count is the same number everywhere. Sixteen times the file
-  // bytes is a wide enough margin that a cost following them could not read as equal.
+  // would make this flaky, where the count is the same number everywhere. The two fixtures are 64
+  // KiB and the read cap itself, four times as large, which is a wide enough spread that a cost
+  // following the file's bytes could not read as equal.
   const units = (size: number): number => {
     const parsed = wideParse(size);
     fieldUnitsNeutralized.count = 0;
@@ -620,19 +696,37 @@ test("what one render neutralizes is bounded by the intake caps, not by a plan f
   const large = units(MAX_PLAN_FILE_BYTES);
 
   assert.ok(small > 0, "the counter has to be reached at all, or this passes on nothing");
-  assert.equal(large, small, `${small} units at 64 KiB, ${large} at a megabyte`);
+  assert.equal(large, small, `${small} units at 64 KiB, ${large} at the read cap`);
+
+  // The count has to be what the render walks, and on the `Next:` path that is the value as it
+  // arrived: this card cuts that field itself, and the cut spreads the whole of it before the escape
+  // sees any of it. Measured after the cut, the counter would report the cap back on any input at
+  // all, and the equality above would stay green through an intake bound that had eroded to nothing.
+  // A `Next:` past the reader's own cap is what that erosion looks like, and the count follows it
+  // exactly.
+  const uncut = (size: number): number => {
+    fieldUnitsNeutralized.count = 0;
+    card({ plans: [plan({ next: "n".repeat(size) })] });
+    return fieldUnitsNeutralized.count;
+  };
+
+  assert.equal(
+    uncut(64 * 1024) - uncut(1_024),
+    63 * 1_024,
+    "what the cut walks is measured before the cut, so the gate above can see it",
+  );
 });
 
-test("a stem too long for its column is cut with a mark rather than silently shortened", () => {
-  const body = card({ plans: [plan({ stem: "channels_a-very-long-plan-name_spec_v1" })] });
+test("a Next: value past the card's own cap is cut with a mark rather than silently shortened", () => {
+  const body = card({ plans: [plan({ next: "z".repeat(MAX_INTAKE_NEXT_LENGTH) })] });
+  const next = item(body, "channels_board-card_spec_v1")[2] ?? "";
 
-  assert.match(fencedLines(body)[0] ?? "", /^channels_a-very-long-plan-name… /);
+  assert.equal(next, `  - next: ${"z".repeat(MAX_NEXT_LENGTH - 1)}…`);
 });
 
-test("a Next: value too long for its line is cut with a mark rather than silently shortened", () => {
-  const body = card({
-    plans: [plan({ next: "rewire the attention loop and then everything downstream of it" })],
-  });
+test("a Next: value inside that cap is drawn whole, wrapped by the reader rather than cut", () => {
+  const prose = "push the branch, open the PR against develop, and hand the review to the operator";
+  const body = card({ plans: [plan({ next: prose })] });
 
-  assert.match(fencedLines(body)[1] ?? "", /…$/);
+  assert.equal(item(body, "channels_board-card_spec_v1")[2], `  - next: ${prose}`);
 });
