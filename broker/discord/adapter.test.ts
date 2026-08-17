@@ -210,6 +210,29 @@ test("deleting a message is the message route, not the pin route, and carries no
   assert.equal(calls[0].body, undefined);
 });
 
+test("deleting a message in a thread is routed to the thread, not to the channel", async () => {
+  // A message posted in a thread lives under the thread's own id, so a delete aimed at the parent
+  // channel answers `Unknown Message` and the notice stays where it is. The channel is the default
+  // because that is where the pin notices land; a rename notice names its thread.
+  const calls: { route: string; method: string }[] = [];
+  const request: RawRequest = async (input) => {
+    calls.push({ route: input.route, method: input.method });
+    return respond(null);
+  };
+  const transport = createDiscordTransport({ channelId: CHANNEL, request });
+
+  await transport.deleteMessage({ messageId: "message-42", channelId: "thread-3" });
+  await transport.deleteMessage({ messageId: "message-7" });
+
+  assert.deepEqual(
+    calls.map((call) => `${call.method} ${call.route}`),
+    [
+      "DELETE /channels/thread-3/messages/message-42",
+      `DELETE /channels/${CHANNEL}/messages/message-7`,
+    ],
+  );
+});
+
 test("the pin list reads the page's message ids, and an unreadable page is a refusal", async () => {
   // The route answers `{ items, has_more }`, each item carrying the pinned message. An item with no
   // readable message id is dropped rather than guessed at, and a body that is not a page at all is

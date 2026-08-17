@@ -1268,8 +1268,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         return inbound.deliver(message);
       },
       onInteraction: (interaction) => interactions.deliver(interaction),
-      // The other half of the pin list: the keeper reconciles which cards are pinned, and this
-      // removes the system message each pin writes into the channel behind it.
+      // The other half of the writes that announce themselves: the keeper reconciles which cards
+      // are pinned and the surfaces rename threads, and this removes the system message Discord
+      // writes into the channel behind each pin and into a thread behind each rename.
       deleteMessage: transport.deleteMessage,
       log: note,
     });

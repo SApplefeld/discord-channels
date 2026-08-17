@@ -1,13 +1,14 @@
 // The inbound half of the Discord connection: a gateway client that reports messages posted in the
-// threads this broker owns, and clears the pin notices its own pins write into the channel.
+// threads this broker owns, and clears the system notices its own writes cause, the pin notices in
+// the channel and the rename notices in the threads.
 //
 // This is the only file in the routing layer that imports discord.js, mirroring broker/discord/
 // rest.ts. Everything above it works against `onMessage` and `deleteMessage`, so the routing and
 // its refusals are testable without a library, a token, or a network. What it classifies it
 // forwards, and every decision about a message bound for a session lives in one place
 // (inbound.ts). The one decision made here is the delete, because it belongs to a message that
-// reaches no session at all: it is a system message in the parent channel, and the facts it turns
-// on are the library's own.
+// reaches no session at all: it is a system message this bot wrote, and the facts it turns on are
+// the library's own.
 import { Client, Events, GatewayIntentBits, MessageType } from "discord.js";
 import { describe } from "../discord/rest.ts";
 import type { CallOutcome } from "../discord/transport.ts";
@@ -23,7 +24,7 @@ export type MessageSource = {
  * How long a refused delete waits before the same line may be written again.
  *
  * Wide, because the refusal it reports is a standing one: a host whose bot may not delete takes it
- * on every notice its own pins write, and the line says the same thing each time.
+ * on every notice its own writes cause, and the line says the same thing each time.
  */
 const REFUSAL_WINDOW_MS = 5 * 60 * 1000;
 
@@ -37,7 +38,10 @@ export type MessageFacts = {
   /** The thread's parent channel, and null for a message that is in no thread. */
   parentId: string | null;
   inThread: boolean;
-  /** Discord's message type. `ChannelPinnedMessage` is the notice a pin writes. */
+  /**
+   * Discord's message type. `ChannelPinnedMessage` is the notice a pin writes, and
+   * `ChannelNameChange` the one a rename writes.
+   */
   type: MessageType;
   authorId: string;
   /** This bot's own user, and null while the connection has not identified yet. */
@@ -46,7 +50,7 @@ export type MessageFacts = {
 
 /**
  * What happens to one message: it is delivered to the session whose thread it landed in, deleted as
- * a pin notice this bot's own pin wrote, or dropped.
+ * a system notice this bot's own write caused, or dropped.
  */
 export type MessageDecision = "deliver" | "delete" | "drop" | "report";
 
@@ -58,10 +62,12 @@ export type MessageDecision = "deliver" | "delete" | "drop" | "report";
  * verdict reader exactly as unreachable from the parent channel as they are for a broker that
  * deletes nothing: the channel's one path ends at the delete.
  *
- * The delete is as narrow as the notices allow, because it is irreversible and the channel is the
- * operator's own: this host's configured channel, Discord's pin-notice type, and this bot as the
- * author, all three. A notice behind a pin the operator made by hand carries their user id and is
- * left where it is, a broker sharing the guild deletes nothing here, and no message's content is
+ * Two notices are deleted, the one a pin writes into the channel and the one a rename writes into a
+ * thread. Each is as narrow as the notice allows, because the delete is irreversible and the
+ * channel is the operator's own: this host's channel (as the message's own for a pin notice, as the
+ * thread's parent for a rename notice), Discord's type for that notice, and this bot as the author,
+ * all three. A notice behind a pin or a rename the operator made by hand carries their user id and
+ * is left where it is, a broker sharing the guild deletes nothing here, and no message's content is
  * read at all.
  */
 export function classifyMessage(facts: MessageFacts, channelId: string): MessageDecision {
@@ -79,7 +85,17 @@ export function classifyMessage(facts: MessageFacts, channelId: string): Message
   }
   // Threads only, and only threads opened in this host's channel. Two brokers can share a guild,
   // and a message in one host's channel must not be offered to another host's sessions.
-  return facts.parentId === channelId ? "deliver" : "drop";
+  if (facts.parentId !== channelId) return "drop";
+  // The notice Discord writes into a thread each time its name changes, which for a session thread
+  // is every state flip and every age tick past the dwell window. This bot's own rename is the only
+  // one removed: a thread the operator renamed by hand keeps its notice.
+  if (facts.type === MessageType.ChannelNameChange) {
+    // Dropped rather than delivered when it is not this bot's, because a system message carries no
+    // text a session could act on: what it says is drawn by Discord from the name, not written by
+    // the operator.
+    return facts.selfId !== null && facts.authorId === facts.selfId ? "delete" : "drop";
+  }
+  return "deliver";
 }
 
 /** Distinct unexpected system message types one connection names before it goes quiet. */
@@ -104,44 +120,72 @@ export function createUnexpectedSystemReport(log: (message: string) => void): (t
   };
 }
 
-export type PinNoticeCleanerOptions = {
-  deleteMessage: (input: { messageId: string }) => Promise<CallOutcome<null>>;
+/**
+ * Which notice a delete is for: the one a pin writes into the channel, and the one a rename writes
+ * into a thread. A union rather than a string, because the kind picks the line an operator reads and
+ * the latch below is held per kind, so a spelling this broker does not write is a type error here
+ * rather than a nonsense line in the log.
+ */
+export type SystemNoticeKind = "pin" | "rename";
+
+export type SystemNoticeCleanerOptions = {
+  deleteMessage: (input: { messageId: string; channelId?: string }) => Promise<CallOutcome<null>>;
   log: (message: string) => void;
   now: () => number;
 };
 
 /**
- * Deletes one pin notice, once.
+ * Deletes one system notice, once.
  *
- * A refusal costs a notice that stays in the channel, which is the channel a broker without this
+ * A refusal costs a notice that stays where it landed, which is the surface a broker without this
  * has, so nothing is ever retried: the notice is cosmetic and the budget a retry would spend is
  * shared with the writes that reach a phone. The line reporting it is held to one per window, with
- * what it swallowed counted into the next one that gets through.
+ * what it swallowed counted into the next one that gets through, and it names the kind because the
+ * two notices sit behind different permissions and different routes.
+ *
+ * A refusal Discord marks permanent latches that kind off for the rest of the run, and only that
+ * kind: the same call is refused the same way on every later pass, and a rename notice arrives on
+ * every state flip and every age tick of every session thread, so an unlatched kind would spend one
+ * refused request per notice forever against the invalid-request budget whose overrun is an
+ * hour-long ban on this host's whole connection. That latch takes a line of its own, once for the
+ * kind and past the window, because a kind that is no longer cleaned is a standing change in what
+ * the channel shows and the run may write nothing else about it.
+ *
+ * `channelId` is where the notice lives, left out for one in the host's configured channel.
  */
-export function createPinNoticeCleaner(
-  options: PinNoticeCleanerOptions,
-): (messageId: string) => Promise<void> {
+export function createSystemNoticeCleaner(
+  options: SystemNoticeCleanerOptions,
+): (notice: { kind: SystemNoticeKind; messageId: string; channelId?: string }) => Promise<void> {
   let loggedAt: number | null = null;
   let suppressed = 0;
+  const latched = new Set<SystemNoticeKind>();
 
-  return async (messageId) => {
+  return async ({ kind, messageId, channelId }) => {
+    if (latched.has(kind)) return;
+
     let refusal: string | null = null;
+    let permanent = false;
     try {
-      const outcome = await options.deleteMessage({ messageId });
+      const outcome = await options.deleteMessage({ messageId, channelId });
       if (outcome.status === "rate-limited") refusal = "the bucket is empty";
-      if (outcome.status === "failed") refusal = outcome.error;
+      if (outcome.status === "failed") {
+        refusal = outcome.error;
+        permanent = outcome.permanent === true;
+      }
     } catch (error) {
       refusal = describe(error);
     }
     if (refusal === null) return;
 
     const at = options.now();
-    if (loggedAt !== null && at - loggedAt < REFUSAL_WINDOW_MS) {
+    if (!permanent && loggedAt !== null && at - loggedAt < REFUSAL_WINDOW_MS) {
       suppressed += 1;
       return;
     }
     const more = suppressed === 0 ? "" : ` (and ${String(suppressed)} more since the last line)`;
-    options.log(`gateway: deleting a pin notice was refused: ${refusal}${more}`);
+    const latch = permanent ? `. No ${kind} notice is cleaned for the rest of this run` : "";
+    if (permanent) latched.add(kind);
+    options.log(`gateway: deleting a ${kind} notice was refused: ${refusal}${more}${latch}`);
     loggedAt = at;
     suppressed = 0;
   };
@@ -163,11 +207,13 @@ export type GatewayOptions = {
    */
   onInteraction?: (interaction: InboundInteraction) => Promise<void>;
   /**
-   * Deletes a message in the host's channel. Spent on one thing: the system message Discord writes
-   * whenever this bot pins, which is append-only where the pin list it describes is reconciled, so
-   * the channel fills with notices about pins that are no longer held.
+   * Deletes a message in the host's channel, or in one of its threads when given that thread's id.
+   * Spent on two things, both append-only where what they describe is reconciled: the system
+   * message Discord writes whenever this bot pins, so the channel fills with notices about pins
+   * that are no longer held, and the one it writes whenever this bot renames a thread, so the
+   * thread fills with notices about names it no longer has.
    */
-  deleteMessage: (input: { messageId: string }) => Promise<CallOutcome<null>>;
+  deleteMessage: (input: { messageId: string; channelId?: string }) => Promise<CallOutcome<null>>;
   log?: (message: string) => void;
 };
 
@@ -184,7 +230,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
     ],
   });
 
-  const cleanPinNotice = createPinNoticeCleaner({
+  const cleanNotice = createSystemNoticeCleaner({
     deleteMessage: options.deleteMessage,
     log,
     now: Date.now,
@@ -213,7 +259,13 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
       return;
     }
     if (decision === "delete") {
-      void cleanPinNotice(message.id);
+      // A rename notice lives in the thread whose name it reports, so the delete is scoped to that
+      // thread; a pin notice lives in the channel the route already defaults to.
+      void cleanNotice(
+        inThread
+          ? { kind: "rename", messageId: message.id, channelId: message.channelId }
+          : { kind: "pin", messageId: message.id },
+      );
       return;
     }
 

@@ -461,16 +461,23 @@ What does cross is the project label, which is the last segment of a configured 
 at or one level under a home directory therefore draws the account name into the channel, and that is
 the operator's choice of root rather than a property the card can fix.
 
-This card draws no fence, so position neutralizes nothing on it and every untrusted field takes the
-full markdown escape, the same control the question messages and the downgrade notices render their
-text through. That escape covers every metacharacter including the angle brackets Discord's mention
-and timestamp syntax lives inside, and the card's routes send an empty `allowed_mentions` parse
-list, which is what keeps an `@everyone` in a plan's status as text that pings nobody. Together
-they mean neither a crafted directory name, a crafted filename, nor a crafted status or `Next:`
-value can draw a mention pill, a timestamp chip, a heading, a quote bar, or a fence delimiter. Two
-further properties carry it: the invisible class is stripped and whitespace runs collapse, so no
-field can compose a body line of its own, and no field is ever the first character of a line, since
-every line this card emits opens with a literal prefix of the card's own.
+The card's body is live markdown apart from the one-line fence naming each project, so a field takes
+whichever of the two escapes matches where it lands. Every field on a body line, which is every
+filename, status and `Next:` value, takes the full markdown escape, the same control the question
+messages and the downgrade notices render their text through. That escape covers every
+metacharacter including the angle brackets Discord's mention and timestamp syntax lives inside, and
+the card's routes send an empty `allowed_mentions` parse list, which is what keeps an `@everyone` in
+a plan's status as text that pings nobody. Together they mean neither a crafted filename nor a
+crafted status or `Next:` value can draw a mention pill, a timestamp chip, a heading, a quote bar,
+or a fence delimiter, and none of them is ever the first character of a line, since every body line
+this card emits opens with a literal prefix of the card's own.
+
+The project label is the one field drawn inside a fence, and a fence honors no backslash escape, so
+it takes the block escape instead: every backtick is substituted rather than escaped, which is what
+holds the fence closed. A crafted directory name therefore cannot close its own block and reach the
+markdown outside it, and it cannot open a second one. The property both escapes share is the one
+that keeps a field to the line it was given: the invisible class is stripped and whitespace runs
+collapse, so no field of either kind can carry a newline and compose a body line of its own.
 
 What the escape does not reach is vocabulary. A status is drawn whole and can therefore spell the
 words the card's own `blocked` and `held` markers use, which the markers are told from only by

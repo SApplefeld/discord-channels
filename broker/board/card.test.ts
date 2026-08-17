@@ -112,12 +112,15 @@ function facts(rendered: string): string[] {
   return all.flatMap((line, at) => (line.startsWith("- **") ? [all[at + 1] ?? ""] : []));
 }
 
-/** Every project heading on the card, in the order the card draws them. */
+/** Every project's fenced label on the card, its one content line, in the order the card draws
+ * them. A label is a fence exactly three lines wide, so its content sits between two delimiters. */
 function projects(rendered: string): string[] {
-  return rendered
-    .split("\n")
-    .filter((line) => line.startsWith("### "))
-    .map((line) => line.slice(4));
+  const lines = rendered.split("\n");
+  const names: string[] = [];
+  for (const [at, line] of lines.entries()) {
+    if (line === "```" && lines[at + 2] === "```") names.push(lines[at + 1] ?? "");
+  }
+  return names;
 }
 
 /** Every bullet the card draws, plans, no-parse lines and truncation notes alike. */
@@ -125,7 +128,7 @@ function bullets(rendered: string): string[] {
   return rendered.split("\n").filter((line) => line.startsWith("- "));
 }
 
-test("a project draws a heading, a bullet per open plan, and that plan's facts under it", () => {
+test("a project draws a fenced label, a bullet per open plan, and that plan's facts under it", () => {
   const body = card({ plans: [plan()] });
 
   assert.equal(
@@ -134,7 +137,9 @@ test("a project draws a heading, a bullet per open plan, and that plan's facts u
       "📋 **Fleet: Board**",
       "# 📋 Fleet: Board",
       "",
-      "### sapplefeld-channels",
+      "```",
+      "sapplefeld-channels",
+      "```",
       "- **channels\\_board-card\\_spec\\_v1**",
       "  - 3/5 · 2h 0m",
       "  - next: the renderer and its tests",
@@ -248,6 +253,24 @@ test("a project whose configured root has no last segment is named by its positi
   const body = card({ plans: [plan({ root: "\\\\" })] });
 
   assert.deepEqual(projects(body), ["project 1"]);
+});
+
+test("a directory name carrying invisible characters neutralizes to nothing and is named by its position", () => {
+  const body = card({ plans: [plan({ root: "C:\\repos\\\u200b\u200b" })] });
+
+  assert.deepEqual(projects(body), ["project 1"]);
+});
+
+test("a directory name carrying a backtick run reaches the fence with no backtick in it", () => {
+  const body = card({ plans: [plan({ root: "C:\\repos\\weird````name" })] });
+
+  const [label] = projects(body);
+  assert.equal(label, "weird''''name", `every backtick is substituted: ${JSON.stringify(body)}`);
+  assert.equal(
+    body.split("```").length,
+    3,
+    `exactly one fence opens and one closes, so the backtick run never opened a second: ${JSON.stringify(body)}`,
+  );
 });
 
 test("a plan declaring no sections draws no count, since a fraction of nothing measures nothing", () => {
@@ -490,6 +513,73 @@ test("a card that runs out of room before a project counts that whole project as
   assert.doesNotMatch(body, /sapplefeld-ai-os/);
 });
 
+test("a card that stops between a project's fence and its first item spends them together", () => {
+  // A project's opening is its fence, three lines of it, and the blank line that closes the list
+  // above it; a budget that charged the label as one line would afford an opening it cannot draw and
+  // leave a project label standing over nothing. The fill below spends the budget one character at a
+  // time, so the boundary it finds is the exact fill at which the second project's opening and its
+  // first item stop being affordable together, and that fill is what the charge is pinned to: a
+  // budget charging fewer lines for the fence crosses the boundary at a different one.
+  const PROJECT_ONE_PLANS = 14;
+  const BOUNDARY_PAD = 32;
+  const NEXT = "a next value long enough to fill a sub-bullet of every plan it is drawn on";
+  const filled = (pad: number): string =>
+    card({
+      plans: [
+        ...Array.from({ length: PROJECT_ONE_PLANS }, (_, index) =>
+          plan({
+            stem: `plan${String(index).padStart(3, "0")}${index === 0 ? "z".repeat(pad) : ""}`,
+            next: NEXT,
+          }),
+        ),
+        plan({ root: AI_OS, stem: "lone", next: NEXT }),
+      ],
+    });
+
+  const pad = Array.from({ length: 80 }, (_, at) => at).find((at) =>
+    filled(at).includes("not shown"),
+  );
+  assert.equal(
+    pad,
+    BOUNDARY_PAD,
+    "the fence's three lines and the blank line above them are charged with the first item",
+  );
+
+  const body = filled(BOUNDARY_PAD);
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  assert.equal(
+    body.split("\n").find((line) => line.includes("not shown")),
+    "(+1 plan, +1 project not shown)",
+    `the plan the card stopped before and the project it belongs to are both counted: ${body}`,
+  );
+  assert.equal(
+    bullets(body).filter((line) => line.startsWith("- **plan")).length,
+    PROJECT_ONE_PLANS,
+    `everything above the stop is drawn: ${body}`,
+  );
+  assert.doesNotMatch(body, /```\nsapplefeld-ai-os\n```/, `no fence for a project dropped whole: ${body}`);
+  const lines = body.split("\n");
+  for (const [at, line] of lines.entries()) {
+    if (line === "```" && lines[at - 1] === "") {
+      assert.equal(lines[at + 2], "```", `every drawn fence is whole: ${body}`);
+      assert.match(lines[at + 3] ?? "", /^- /, `every drawn fence has its first item: ${body}`);
+    }
+  }
+
+  // One character less of fill, and the same opening is affordable whole: the fence, the blank line
+  // that closes the list above it, and the bullet under it all land together, and the card draws
+  // every plan it was handed.
+  const under = filled(BOUNDARY_PAD - 1).split("\n");
+  const fence = under.indexOf("sapplefeld-ai-os");
+  assert.equal(under[fence - 1], "```", `the second project's fence opens: ${under.join("\n")}`);
+  assert.equal(under[fence + 1], "```", `and closes: ${under.join("\n")}`);
+  assert.match(under[fence + 2] ?? "", /^- /, `over its first item: ${under.join("\n")}`);
+  assert.ok(
+    !under.some((line) => line.includes("not shown")),
+    `a fill one character under the boundary leaves nothing out: ${under.join("\n")}`,
+  );
+});
+
 test("a truncation note lost to the overflow is counted in the tail rather than dropped", () => {
   const plans = Array.from({ length: 60 }, (_, index) =>
     plan({
@@ -507,11 +597,11 @@ test("a truncation note lost to the overflow is counted in the tail rather than 
 });
 
 test("the blank lines the list shape needs are charged against the budget like any other line", () => {
-  // A project costs a blank line and a heading before its first plan, and the card closes on a blank
-  // line before its footer. Budget arithmetic that measured only the lines carrying text would run
-  // the card past the message ceiling at exactly the fill where it matters, so every count of
-  // projects up to a card that overflows is walked here rather than one chosen fill.
-  // Every project the card draws is a heading over at least one bullet; no blank line falls inside a
+  // A project costs a blank line and a fenced label before its first plan, and the card closes on a
+  // blank line before its footer. Budget arithmetic that measured only the lines carrying text
+  // would run the card past the message ceiling at exactly the fill where it matters, so every
+  // count of projects up to a card that overflows is walked here rather than one chosen fill.
+  // Every project the card draws is a label over at least one bullet; no blank line falls inside a
   // project's list, where it would end the list and restart it; and every line that follows a list,
   // the overflow tail included, is held off it by a blank line of its own. Answers whether this card
   // is one that ran out of room, so the walk can be held to covering that shape too.
@@ -519,14 +609,20 @@ test("the blank lines the list shape needs are charged against the budget like a
     assert.ok(body.length <= MAX_CARD_LENGTH, `${what} composes ${body.length} units`);
     const lines = body.split("\n");
     for (const [at, line] of lines.entries()) {
-      if (line.startsWith("### ")) {
-        assert.equal(lines[at - 1], "", `a heading closes the list above it: ${body}`);
-        assert.match(lines[at + 1] ?? "", /^- /, `no heading stands over an empty list: ${body}`);
+      // A project's label is a fence: its opening delimiter sits right after the blank line that
+      // closes the project above it, and its closing delimiter is followed by the first bullet.
+      if (line === "```" && lines[at - 1] === "") {
+        assert.equal(lines[at + 2], "```", `a project's fence is exactly three lines: ${body}`);
+        assert.match(
+          lines[at + 3] ?? "",
+          /^- /,
+          `no fence stands over an empty list: ${body}`,
+        );
       }
       if (line === "") {
         assert.match(
           lines[at + 1] ?? "",
-          /^(### |card as of |\(\+)/,
+          /^(```|card as of |\(\+)/,
           `a blank line only ever closes a list, never falls inside one: ${body}`,
         );
       }
@@ -656,14 +752,25 @@ test("no untrusted field draws syntax of its own on the card's live markdown", (
     const lines = body.split("\n");
     assert.equal(lines[0], "📋 **Fleet: Board**");
     assert.equal(lines[1], "# 📋 Fleet: Board");
-    // The two lines above are this renderer's own. Every other line is composed around untrusted
-    // fields, and none of them may carry a backtick that could open a fence, a bracket Discord
-    // resolves a chip inside, a quote bar, or a heading this renderer did not write.
-    for (const line of lines.slice(2)) {
+    // The two lines above are this renderer's own. Every other line outside a project's fence is
+    // composed around untrusted fields on live markdown, and none of them may carry a backtick that
+    // could open a fence, a bracket Discord resolves a chip inside, a quote bar, or a heading this
+    // renderer did not write.
+    for (let at = 2; at < lines.length; at += 1) {
+      const line = lines[at] ?? "";
+      if (line === "```" && lines[at - 1] === "") {
+        // A project's own fence. Discord draws no markdown inside one, so its content line earns the
+        // one check that matters here: no backtick survives to close the block early.
+        const content = lines[at + 1] ?? "";
+        assert.doesNotMatch(content, /`/, `no backtick inside a project's fence: ${JSON.stringify(content)}`);
+        assert.equal(lines[at + 2], "```", `the fence closes: ${JSON.stringify(body)}`);
+        at += 2;
+        continue;
+      }
       const syntax = syntaxOf(line);
       assert.doesNotMatch(syntax, /[`<>]/, `no live fence or chip syntax: ${JSON.stringify(line)}`);
       assert.doesNotMatch(
-        syntax.replace(/^### /, ""),
+        syntax,
         /^[>#]/,
         `no line of untrusted text opens a quote or a heading: ${JSON.stringify(line)}`,
       );
@@ -676,10 +783,6 @@ test("no untrusted field draws syntax of its own on the card's live markdown", (
       const stem = named.slice(4, -2);
       if (stem === "(unnamed plan)") continue;
       assert.doesNotMatch(stem, /[*_~|<>#[\]()`\\]/, JSON.stringify(bullet));
-    }
-    // A project label sits inside a heading this renderer composes, and carries no syntax either.
-    for (const heading of projects(body)) {
-      assert.doesNotMatch(syntaxOf(heading), /[*_~|<>#[\]()`\\]/, JSON.stringify(heading));
     }
   }
 });

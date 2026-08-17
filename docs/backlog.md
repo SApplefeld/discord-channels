@@ -138,8 +138,11 @@ and none carries a date of its own. An item added from here on carries `(parked 
   8. On a host with zero sessions and no claude-swap, confirm the static body means a deleted card
      goes undetected until restart.
   9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`) and read it on a
-     phone in the same pass as check 2, folded and unfolded. The card draws no fence and no bar, so
-     what is being read is whether the nested bullets render with a hanging indent, whether any name
+     phone in the same pass as check 2, folded and unfolded. The card draws no bar, and its one
+     fence is the box naming each project, so what is being read is whether that box reads as the
+     boundary between one project's list and the next, whether a long project name wraps inside the
+     box rather than being cut, whether the nested bullets render with a hanging indent, whether any
+     name
      or status still ends in an ellipsis at its full length, and whether a long fact wraps rather
      than cuts. On a board large enough to overflow, confirm it ends in the tail naming what it left
      out rather than dropping a project silently, and that the tail stands on its own line rather

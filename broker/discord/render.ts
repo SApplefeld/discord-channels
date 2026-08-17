@@ -1705,12 +1705,20 @@ const MAX_ROSTER_ENTRIES = 24;
 /** The most of a task's own prose the card carries, on `MAX_TOOL_INPUT_PREVIEW`'s reasoning. */
 const MAX_TASK_DESCRIPTION_LENGTH = 60;
 
+/**
+ * The columns a task's description row sits right of where the agent type starts on the row above
+ * it. This is what makes the description read as the entry's continuation rather than as an entry
+ * of its own; "more" or "less" indent is this one number.
+ */
+const ROSTER_DESCRIPTION_INDENT = 2;
+
 /** The most of an agent type the card carries. A real one is a short id, as a model name is. */
 const MAX_AGENT_TYPE_LENGTH = 32;
 
 /**
  * One roster entry, as the two rows it takes: how long the task has been outstanding beside what is
- * running it, and the task's own description under that, indented to start where the type does.
+ * running it, and the task's own description under that, indented `ROSTER_DESCRIPTION_INDENT`
+ * columns past where the type starts.
  *
  * Two rows rather than one because at this width one row makes the age, the type and the
  * description compete for it, and a cut reaches the description first, which is the only field that
@@ -1731,11 +1739,15 @@ function rosterEntry(task: BackgroundTask, now: number): string[] {
   const described =
     task.description === null
       ? ""
-      : inertBlockField(task.description, Math.min(MAX_TASK_DESCRIPTION_LENGTH, room));
+      : inertBlockField(
+          task.description,
+          Math.min(MAX_TASK_DESCRIPTION_LENGTH, Math.max(room - ROSTER_DESCRIPTION_INDENT, 0)),
+        );
   if (described === "") return rows;
-  // The same width the type is drawn at, so the description reads as the entry's second line rather
-  // than as an entry of its own.
-  rows.push(`${" ".repeat([...age].length)} ${SEPARATOR} ${described}`);
+  // Indented past the lead rather than sharing its column, so the row reads as the entry's
+  // continuation rather than as an entry of its own; no separator, since it names nothing of its
+  // own to separate.
+  rows.push(`${" ".repeat([...lead].length + ROSTER_DESCRIPTION_INDENT)}${described}`);
   return rows;
 }
 

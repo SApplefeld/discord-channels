@@ -100,11 +100,15 @@ export type ChannelPins = {
   pin: (input: { messageId: string }) => Promise<CallOutcome<null>>;
   unpin: (input: { messageId: string }) => Promise<CallOutcome<null>>;
   /**
-   * Deletes a message in the channel outright. Its caller is the gateway, which spends it on the
-   * system messages Discord writes when this bot pins: deleting one's own message needs no Manage
-   * Messages grant, so it works on the same permissions the pins do.
+   * Deletes a message outright. Its caller is the gateway, which spends it on the system messages
+   * Discord writes when this bot pins and when it renames a thread: deleting one's own message
+   * needs no Manage Messages grant, so it works on the same permissions the pins do.
+   *
+   * `channelId` is where the message lives, which for one posted in a thread is that thread's own
+   * id rather than its parent's. It defaults to the host's configured channel, where the pin
+   * notices land.
    */
-  deleteMessage: (input: { messageId: string }) => Promise<CallOutcome<null>>;
+  deleteMessage: (input: { messageId: string; channelId?: string }) => Promise<CallOutcome<null>>;
 };
 
 /**

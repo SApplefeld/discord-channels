@@ -11,12 +11,12 @@
 // it did not match. The one status drawn as no clause at all is the ordinary in-progress one, which
 // is what most of a fleet carries: a word spent on every plan tells two of them apart from nothing.
 //
-// The body is a markdown list rather than a table: a heading per project, a bullet per plan, and
-// the plan's facts on sub-bullets under it. Discord wraps a list item at its own word boundaries and
-// indents the wrap under the bullet, so a sentence-length status or a whole `Next:` phrase costs a
-// wrapped line here. A column of fixed width could only cut one, and it would cut it exactly where
-// the information is. So no field on this card is held to a display width, and there is no grid for
-// a field of emoji or of wide CJK to break.
+// The body is a markdown list rather than a table: a fenced label per project, a bullet per plan,
+// and the plan's facts on sub-bullets under it. Discord wraps a list item at its own word
+// boundaries and indents the wrap under the bullet, so a sentence-length status or a whole `Next:`
+// phrase costs a wrapped line here. A column of fixed width could only cut one, and it would cut it
+// exactly where the information is. So no field on this card is held to a display width, and there
+// is no grid for a field of emoji or of wide CJK to break.
 //
 // Every string it draws is untrusted. A plan's filename, its `Status:` value and its `Next:` prose
 // are model-written text out of another program's files, and an event's fields are that program's
@@ -34,7 +34,15 @@
 // and a filename by the name limit the filesystem itself enforces. So the escaping here walks a
 // bounded string per field, and nothing walks a product of two quantities that both come from
 // another program's files.
-import { MAX_CARD_LENGTH, fit, heartbeat, inertField, span } from "../discord/render.ts";
+import {
+  MAX_CARD_LENGTH,
+  fenced,
+  fit,
+  heartbeat,
+  inertBlockField,
+  inertField,
+  span,
+} from "../discord/render.ts";
 import { eventKey } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
 import { MAX_INTAKE_STATUS_LENGTH } from "./plans.ts";
@@ -62,19 +70,19 @@ export const MAX_DRAWN_SECTIONS = 999;
 const SEPARATOR = "·";
 
 /**
- * The list this card's body is: a heading per project, a bullet per plan, and the plan's facts on
- * sub-bullets indented under it.
+ * The list this card's body is: a one-line fence naming each project, a bullet per plan, and the
+ * plan's facts on sub-bullets indented under it.
  *
- * `###` is the smallest heading Discord draws, and a heading rather than a bold line because a
- * project is the one boundary a reader scrolls the card by. Two spaces is what Discord reads as one
- * level of nesting, so the facts hang under their plan's bullet rather than beside it.
+ * A fence draws as a full-width shaded box in every Discord client, which is what makes one
+ * project's list stop and the next start at a glance: a reader scrolls the card by that boundary.
+ * Two spaces is what Discord reads as one level of nesting, so the facts hang under their plan's
+ * bullet rather than beside it.
  */
-const PROJECT_HEADING = "###";
 const BULLET = "-";
 const SUB_BULLET = "  -";
 
 /**
- * What sits between one project's list and the next project's heading, and between the last list and
+ * What sits between one project's list and the next project's label, and between the last list and
  * the footer.
  *
  * A blank line ends a markdown list, which is exactly what is wanted between two projects and
@@ -90,6 +98,13 @@ const PROJECT_GAP = "";
  * length: this is what a phrase naming the next section runs to, and past it the line says it was
  * cut. A project label is the last segment of a configured root, which is a directory name and not
  * a field this card has a reason to draw a paragraph of.
+ *
+ * The label sits above `../discord/render.ts`'s `MAX_BLOCK_WIDTH`, which is the width the grid cards
+ * hold their columns to. That width exists to keep a grid's columns aligned, and this label is free
+ * text in a fenced box with no grid to break: a fenced block wraps to the reader's own window width
+ * and never scrolls sideways, so a long label costs a wrapped line inside the shaded box. A cut
+ * directory name is the worse failure, because that name is what the operator recognizes the project
+ * by.
  *
  * Each binds in code points and in UTF-16 units alike, whichever runs out first, since that is what
  * `fit` holds a string to. So prose written in astral characters is cut at half this many of them,
@@ -333,6 +348,20 @@ function cutField(value: string, cap: number): string {
   return inertField(fit(value, cap), cap * MAX_ESCAPE_EXPANSION);
 }
 
+/**
+ * The `cutField` pairing for a field bound for a fenced line: measured, cut, then block-inert.
+ *
+ * The order mirrors `cutField` exactly, for the same reason: the cut is a walk over the value that
+ * would otherwise run twice were the neutralizer applied first. The guard `inertBlockField` takes is
+ * `cap` itself rather than `cap * MAX_ESCAPE_EXPANSION`, because block-inert substitutes one
+ * character for one and strips the rest, so it never grows a value already held to `cap`; that
+ * multiple exists for the markdown escape's expansion alone.
+ */
+function cutBlockField(value: string, cap: number): string {
+  fieldUnitsNeutralized.count += value.length;
+  return inertBlockField(fit(value, cap), cap);
+}
+
 /** A plan's filename stem as the card draws it, escaped whole and never shortened. */
 function planStem(stem: string): string {
   const named = field(stem, MAX_STEM_LENGTH);
@@ -447,7 +476,7 @@ function spent(lines: readonly string[]): number {
  */
 type BlockItem = { lines: string[]; plans: number };
 
-/** One project's section: the heading naming it, and the items its list draws. */
+/** One project's section: the fenced label naming it, and the items its list draws. */
 type ProjectSection = { label: string; items: BlockItem[]; plans: number };
 
 /**
@@ -462,7 +491,7 @@ type ProjectSection = { label: string; items: BlockItem[]; plans: number };
  * on every input here came from the one configured list the sweep and the event reader were both
  * handed. A root on those inputs the configured list does not name is drawn after the ones it does
  * rather than dropped. A project with nothing to draw gets no entry at all, which is what leaves a
- * configured root with no open plans drawing nothing rather than an empty heading.
+ * configured root with no open plans drawing nothing rather than a label over an empty list.
  *
  * A project is labelled by the last segment of its configured root, so a root configured at or one
  * level under a home directory draws the operator's OS username into a channel.
@@ -513,10 +542,14 @@ function sections(
     .map((root, index) => {
       // A directory name is held to this card's own cap, which is a cut rather than a guard, so it
       // is marked where it shortens one.
-      const named = cutField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
+      const named = cutBlockField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
       const items = byRoot.get(root) ?? [];
+      // `fenced` joins its lines and the two delimiters into one string carrying two internal
+      // newlines, so this label is one element wherever it is pushed onto a run of lines. `spent()`
+      // charges each element its own length plus one newline, so pushing this single element already
+      // charges exactly the fence's three lines: no separate arithmetic accounts for the fence.
       return {
-        label: `${PROJECT_HEADING} ${named === "" ? unnamedProject(index) : named}`,
+        label: fenced([named === "" ? unnamedProject(index) : named]),
         items,
         plans: items.reduce((sum, item) => sum + item.plans, 0),
       };
@@ -547,16 +580,16 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
 }
 
 /**
- * The whole card, bounded to one message: a title heading, then a heading and a list of plans per
- * project, then the footer.
+ * The whole card, bounded to one message: a title heading, then a fenced label and a list of plans
+ * per project, then the footer.
  *
  * Composed project by project against a running budget rather than assembled whole and cut, because
  * a card truncated at the end would drop the last projects silently and read as a fleet with fewer
  * of them. The title and the footer are taken out of the budget before the first list is measured,
  * so both survive a card that ran out of room, and every stop draws the tail naming how many plans
- * and how many whole projects are missing. A project's heading, and the blank line that closes the
- * list above it, are spent together with its first item: a heading over an empty list is what a
- * budget spent line by line would leave behind. Every blank line the shape requires is charged the
+ * and how many whole projects are missing. A project's label, and the blank line that closes the
+ * list above it, are spent together with its first item: a label standing over an empty list is what
+ * a budget spent line by line would leave behind. Every blank line the shape requires is charged the
  * same way, because a line the card emits costs its newline whether or not it carries text.
  *
  * `events` is read for its `latest` map alone; the offset and the malformed tally are the reader's
@@ -567,7 +600,7 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
  */
 export function renderBoardCard(input: {
   /** The configured project roots, in the order the card draws their lists. A root with nothing to
-   * draw takes no heading, and a root on any other input here that this list does not name is drawn
+   * draw takes no label, and a root on any other input here that this list does not name is drawn
    * after the ones it does. */
   roots: readonly string[];
   plans: readonly BoardPlan[];
@@ -609,7 +642,7 @@ export function renderBoardCard(input: {
       // The tail's room is reserved against every item, the last included: one rule with no branch
       // to get wrong, at the price of at most one tail's width of unused room on a full card. Its
       // own blank line is reserved with it, because the tail closes the list above it the way the
-      // footer and every heading do.
+      // footer and every project label do.
       const tail = overflowTail(plansLeft, projects.length - index - (shown.length === 0 ? 0 : 1));
       if (used + cost + spent([PROJECT_GAP, tail]) > MAX_CARD_LENGTH) {
         stopped = true;

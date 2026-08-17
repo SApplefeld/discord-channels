@@ -300,11 +300,15 @@ test("a project holds its configured place with no parsed plan in it at all", as
           ),
   });
 
-  const projects = (body: string): string[] =>
-    body
-      .split("\n")
-      .filter((line) => line.startsWith("### "))
-      .map((line) => line.slice(4).replaceAll("\\", ""));
+  // A project's label is a one-line fence: its content sits between two "```" delimiters.
+  const projects = (body: string): string[] => {
+    const lines = body.split("\n");
+    const names: string[] = [];
+    for (const [at, line] of lines.entries()) {
+      if (line === "```" && lines[at + 2] === "```") names.push((lines[at + 1] ?? "").replaceAll("\\", ""));
+    }
+    return names;
+  };
 
   await card.tick();
   assert.deepEqual(projects(calls.edits[0]?.card ?? ""), [

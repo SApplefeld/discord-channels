@@ -2313,9 +2313,13 @@ test("every task a session is waiting on is named, two rows to an entry", () => 
   // Oldest first, which is the order they were dispatched in, so an entry keeps its place as the
   // fan-out grows around it.
   assert.equal(tasks[0], "12m · implementer-opus");
-  assert.equal(tasks[1], "    · Section 11 of the ladder", "the description aligns under the type");
+  assert.equal(
+    tasks[1],
+    "        Section 11 of the ladder",
+    "the description sits right of where the type starts",
+  );
   assert.equal(tasks[22], "1m · implementer-opus");
-  assert.equal(tasks[23], "   · Section 0 of the ladder");
+  assert.equal(tasks[23], "       Section 0 of the ladder");
   assert.equal(value(card, "State"), "working · 12 tasks", "the size of the fan-out is on the state");
   assert.ok(card.length <= MAX_CARD_LENGTH, card);
 });
@@ -2349,9 +2353,9 @@ test("a session waiting on agents says so on the card and in the title", () => {
   // long it has been out lead the entry, and its description has a row to itself under them.
   assert.deepEqual(tasksOf(card), [
     "1h 2m · implementer-opus",
-    "      · PR ladder fix round three",
+    "          PR ladder fix round three",
     "35m · implementer-fable",
-    "    · Grooming S6 implementation",
+    "        Grooming S6 implementation",
   ]);
   // The count rides the state on both surfaces, since the four states cannot say waiting on agents
   // and the title is what survives the thread list's truncation on a phone. The word is "tasks"
@@ -2380,7 +2384,7 @@ test("a shell task renders beside a subagent, since both are invisible work", ()
   const card = renderCard(waiting, "working", NOW);
   assert.deepEqual(
     tasksOf(card),
-    ["4m · shell", "   · npm test on the integration suite"],
+    ["4m · shell", "       npm test on the integration suite"],
     "the kind is what tells a shell task from a subagent",
   );
   assert.equal(value(card, "State"), "working · 1 task");
@@ -2552,6 +2556,37 @@ test("an entry's age and type are drawn whole, whatever the type is called", () 
 
   const tasks = tasksOf(card);
   assert.equal(tasks[0], `1m · ${"a".repeat(32)}`);
-  assert.ok(tasks[1].startsWith("   · a description long enough"), tasks[1]);
+  assert.ok(tasks[1].startsWith("       a description long enough"), tasks[1]);
+  for (const line of tasks) assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+});
+
+test("the description row starts exactly two columns past the age row's own lead, with no separator", () => {
+  const card = renderCard(
+    view({
+      backgroundTasks: [
+        agent("indent", { description: "one task's own prose", since: NOW - 35 * 60_000 }),
+      ],
+    }),
+    "working",
+    NOW,
+  );
+
+  const tasks = tasksOf(card);
+  // "35m · " is six code points; the description sits two past that, and carries no leading "·",
+  // so the row reads as the entry above it continuing rather than as an entry of its own.
+  assert.equal(tasks[1], "        one task's own prose");
+  assert.ok(!tasks[1].includes("·"), tasks[1]);
+});
+
+test("a description at the cap keeps every roster row inside the block width", () => {
+  const card = renderCard(
+    view({
+      backgroundTasks: [agent("capped", { description: "x".repeat(200), since: NOW - 60_000 })],
+    }),
+    "working",
+    NOW,
+  );
+
+  const tasks = tasksOf(card);
   for (const line of tasks) assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
 });

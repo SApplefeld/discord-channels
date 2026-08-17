@@ -585,10 +585,10 @@ test("the board card's wiring reads this broker's configured projects and bindin
 
   const body = posts[0] ?? "";
   assert.equal(posts.length, 1);
-  // The body is live markdown: a heading per project, a bullet per plan carrying the filename stem
-  // with every underscore escaped, and the plan's facts on a sub-bullet under it. The doc above
+  // The body is live markdown: a fenced label per project, a bullet per plan carrying the filename
+  // stem with every underscore escaped, and the plan's facts on a sub-bullet under it. The doc above
   // registers one of its two sections and is in progress, which is the status that draws no clause.
-  assert.match(body, /^### project$/m, "the project is headed by its own root's last segment");
+  assert.match(body, /^```\nproject\n```$/m, "the project is labelled by its own root's last segment");
   assert.match(
     body,
     /^- \*\*wired\\_spec\\_v1\*\*$/m,

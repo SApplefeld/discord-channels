@@ -386,22 +386,32 @@ which draws `(unreadable status)`: it cannot be dropped, because dropping it wou
 absence the card gives a meaning to. A `Status:` header that was blank to begin with draws nothing,
 since there is no text there to report unusable.
 
-The body is live markdown rather than a fence, which is what lets those statuses draw whole. A
-`###` heading per project, a bold-stem bullet per plan, and an indented sub-bullet carrying the
-sections count, the age and the status, with a second sub-bullet for the latest Chapter's `Next:`
-when there is one. A fence would bound every column at the measured phone wrap, which is narrower
-than a real plan name or a sentence-length status, so it cuts a line exactly where the information
-is. Markdown wraps at word boundaries with a hanging indent instead, so a long fact costs wrapped
-lines rather than an ellipsis, and the sections count carries progress on its own, where a bar
-renders as blank space at zero and tiles by font.
+The plans are drawn in live markdown, which is what lets those statuses draw whole: a bold-stem
+bullet per plan, and an indented sub-bullet carrying the sections count, the age and the status,
+with a second sub-bullet for the latest Chapter's `Next:` when there is one. Drawing those inside a
+fence would bound every column at the narrowest window they are read in, which is narrower than a
+real plan name or a sentence-length status, so it cuts a line exactly where the information is.
+Markdown wraps at word boundaries with a hanging indent instead, so a long fact costs wrapped lines
+rather than an ellipsis, and the sections count carries progress on its own, where a bar renders as
+blank space at zero and tiles by font.
 
-Every field on this card therefore lands outside a fence, and every one takes the full markdown
-neutralization rather than the lighter escape a fenced field needs. The bound handed to that escape
-is each field's own cap times two rather than the cap itself: a field is bounded on raw code points
-where it enters and on escaped text where it is drawn, and the escape can grow a string, so passing
-the cap would silently cut a field the intake had already bounded. Two is a ceiling rather than a
-margin, since every character the escape touches is ASCII and leaves as two code points and two
-UTF-16 units, while an astral code point is never escaped.
+Each project is named by a one-line fence rather than a heading, which is the one fenced thing on
+the card. A fence draws as a full-width shaded box, and that box is what makes one project's list
+stop and the next start at a glance, which is the boundary a reader scrolls the card by. Nothing is
+aligned inside it, so the width bound the tabular cards pad to does not apply: the label is free
+text in a box with no grid to break, and a name past the reader's window wraps inside the box rather
+than being cut. That is why `MAX_PROJECT_LABEL_LENGTH` (60) is the card's own cap and not
+`MAX_BLOCK_WIDTH`, since a truncated directory name is a project the operator cannot recognize.
+
+The two positions take two different escapes. Every field on a body line takes the full markdown
+neutralization, and the bound handed to that escape is each field's own cap times two rather than
+the cap itself: a field is bounded on raw code points where it enters and on escaped text where it
+is drawn, and the escape can grow a string, so passing the cap would silently cut a field the intake
+had already bounded. Two is a ceiling rather than a margin, since every character the escape touches
+is ASCII and leaves as two code points and two UTF-16 units, while an astral code point is never
+escaped. The project label takes the block escape instead, because a fence honors no backslash
+escape: a backtick is substituted rather than escaped, and the bound handed to it is the cap itself,
+since substituting one character for one and stripping the rest can never grow a value.
 
 ## What the cards are made of
 
@@ -411,17 +421,19 @@ label a section differently. The session card uses a `###` heading; the fleet ca
 paragraph line, because Discord puts a margin above a heading and a card carrying one section per
 account pays that margin three or four times, which is air spent instead of numbers. The width they
 pad to is one shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46
-columns, and it is a phone's constraint rather than a taste: a code block scrolls sideways on a
-phone rather than wrapping, so a card wider than its bound costs a drag to read, which is worse than
-the ragged lines the fence replaced.
+columns, and it is a phone's constraint rather than a taste. A code block wraps to the width of the
+window it is read in rather than scrolling sideways, measured at roughly 51 columns on a folded
+phone and 62 unfolded, and a wrapped line under a padded column reads as a value in that column. So
+a grid's width bound belongs below the narrowest window it is read in, which is what keeps the
+columns a grid exists for from scrambling.
 
-The board card is the exception, and the reason is what its content is. A fence pays for aligned
-columns with a hard width, which is the right trade for numbers and the wrong one for prose: that
-card's fields are a plan's name and a sentence about its state, neither of which fits a phone's
-column bound, so a fence cuts them where a list wraps them. It draws in live markdown with a `###`
-heading per project and pays the heading margin, because the alternative is an ellipsis in the
-middle of every fact worth reading. `MAX_BLOCK_WIDTH` is what the genuinely tabular cards pad to
-and it bounds nothing on the board.
+The board card's plan list is the exception, and the reason is what its content is. A fence pays for
+aligned columns with a hard width, which is the right trade for numbers and the wrong one for prose:
+that card's fields are a plan's name and a sentence about its state, neither of which fits a phone's
+column bound, so a fence cuts them where a list wraps them. Those draw in live markdown, because the
+alternative is an ellipsis in the middle of every fact worth reading. The card's one fence is the
+project label, which aligns with nothing, so `MAX_BLOCK_WIDTH` is what the genuinely tabular cards
+pad to and it bounds nothing on the board.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it

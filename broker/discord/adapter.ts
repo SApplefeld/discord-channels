@@ -411,9 +411,11 @@ export function createDiscordTransport(
     },
 
     // The message route rather than the pin one: this removes the message itself, and the only
-    // messages it is pointed at are the pin notices this bot's own pins write.
-    deleteMessage: async ({ messageId }): Promise<CallOutcome<null>> => {
-      const deleted = await write(`/channels/${channelId}/messages/${messageId}`, "DELETE");
+    // messages it is pointed at are the system notices this bot's own writes cause. The route is
+    // scoped to where the message lives, which is the configured channel for a pin notice and the
+    // thread's own id for a notice inside a thread.
+    deleteMessage: async ({ messageId, channelId: from = channelId }): Promise<CallOutcome<null>> => {
+      const deleted = await write(`/channels/${from}/messages/${messageId}`, "DELETE");
       return deleted.status === "ok" ? { status: "ok", value: null, rate: deleted.rate } : deleted;
     },
   };
