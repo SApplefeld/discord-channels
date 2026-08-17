@@ -81,6 +81,23 @@ and none carries a date of its own. An item added from here on carries `(parked 
   deliberately at the time, on the same per-surface-duplication precedent, with a fourth card named
   as the point to extract. If one ever lands, the shape to build is a single card-binding module
   taking a label.
+- Decide whether a plan's status should be allowed to spell the board card's own marker vocabulary
+  (parked 2026-08-16). A status is drawn whole, so `Status: held 9h 10m · blocked 2d 1h` renders as
+  clauses a reader tells from the broker's own markers only by position: the markers lead the facts
+  line and a status ends it. Nothing is authorized off that card, so the cost is a misread rather
+  than an action, and `docs/security-model.md` states the limit rather than promising past it. Every
+  fix changes the body shape settled on 2026-08-16 (a prefix on the status clause, a marker glyph, a
+  separator only the broker draws), so this is a preference and risk-appetite call rather than a
+  defect to route.
+- Decide whether the board card's `Next:` line should stay cut at 120 characters when the sweep
+  takes the value in at 400 (parked 2026-08-16). It is the one field on the card that can still end
+  in an ellipsis, and the round that removed every other cut left this one where the spec put it.
+  Raising the render cap to 400 is a one-constant change (`MAX_NEXT_LENGTH` in `broker/board/card.ts`)
+  and costs card budget that overflowing boards spend on plans; leaving it costs the tail of a long
+  next-step phrase.
+- Decide whether `###` project headings read better than a bold line on the phone (parked
+  2026-08-16). The board card's open craft question, answerable only from a real render at the
+  operator's own viewport, and a one-axis swap either way.
 - **Deploy the two delivered rounds and walk them, in this order.** Everything below needs a real
   host, a real Discord client, or a phone, and none of it can be closed from code. The delivered
   plans are
@@ -115,7 +132,9 @@ and none carries a date of its own. An item added from here on carries `(parked 
      out rather than dropping a project silently, and that the tail stands on its own line rather
      than reading as part of the last plan's entry. The delivered plans are
      [`archive/plans/channels_board-card_spec_v1.md`](archive/plans/channels_board-card_spec_v1.md)
-     and its successor, which moved the body from a fence to live markdown.
+     and
+     [`archive/plans/channels_board-markdown_spec_v1.md`](archive/plans/channels_board-markdown_spec_v1.md),
+     which moved the body from a fence to live markdown.
   10. Drive a real `/kit-goal` run to a blocked stop and confirm the board card draws the blocked
      marker, then resume it and confirm the marker clears. The clear rules were exercised only
      against synthetic events, in both directions, and the live event stream is the one thing a test

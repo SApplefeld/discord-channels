@@ -210,6 +210,21 @@ test("a status at the intake cap is drawn whole however far the escape expands i
   assert.doesNotMatch(body, /…/, "a field the reader already bounded is never cut again here");
 });
 
+test("a status that neutralizes to nothing is named rather than passing for the ordinary one", () => {
+  // A zero-width space is not whitespace to `trim`, so a status made of them is not the ordinary
+  // value and reaches the escape, which strips it to nothing. Drawn as an absence it would be
+  // indistinguishable from the in-progress state, which is the one absence this card gives meaning.
+  const body = card({ plans: [plan({ status: "​​" })] });
+
+  assert.equal(item(body, "channels_board-card_spec_v1")[1], "  - 3/5 · 2h 0m · (unreadable status)");
+});
+
+test("a status that was blank to begin with draws nothing, since there is no text to report", () => {
+  const body = card({ plans: [plan({ status: "   " })] });
+
+  assert.equal(item(body, "channels_board-card_spec_v1")[1], "  - 3/5 · 2h 0m");
+});
+
 test("a card with nothing at all to draw says so in one line", () => {
   const body = card({ plans: [plan({ status: "Complete", terminal: true })] });
 

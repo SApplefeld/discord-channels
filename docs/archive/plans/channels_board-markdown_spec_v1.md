@@ -1,6 +1,6 @@
 # Channels: the board card in live markdown
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 
 The successor to `docs/archive/plans/channels_board-card_spec_v1.md`: same feeds, same thread,
@@ -261,4 +261,52 @@ board module clean: `card.ts`'s header was rewritten by section 2 and asserts th
 carries a board-card geometry claim.
 Stamps: adjudicated 5, stamped 5 at the section 1 and 2 boundary; none newly surfaced here.
 Next: finishing-work
+Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-16
+Completed: The finishing pass. Plan closed.
+Implemented By: main session, with the qa-verifier, security-reviewer, adversarial-reviewer and
+docs-curator agents
+Metrics: 1 QA round, 1 security round, 1 adversarial round, 1 curation round; escalations 0;
+consults 0. The security and adversarial rounds ran in parallel under one tree-state bracket, which
+came back byte-identical at `4c89e61`, so no agent wrote to the tree.
+Gates: `tsc --noEmit` exit 0. Full suite exit 0 at 1339 tests, 1338 pass, 0 fail, 1 skipped, against
+this effort's own pre-work baseline of 1334 / 1333 / 0 / 1 at `d5cf8ae`. The delta is exactly the
+tests this effort added. The four Stop-mirror claim tests in `broker/tail.test.ts` remain the known
+flake, judged by identity rather than by isolation: one of them failed on a second QA run and passed
+on every other, which is the behavior the memory naming them describes.
+Review Findings: QA passed all seven acceptance criteria with evidence, each driven against the real
+renderer rather than read off a test name. The security round returned no Critical and no Major, and
+independently confirmed the four claims the round rests on: every untrusted field routes through
+`inertField`, the invisible-class strip plus the literal line prefix together keep a field from
+composing a line, `allowed_mentions` is an empty parse list on the real send path (`adapter.ts`, not
+just in the doc), and the escape-expansion ceiling of 2 could not be falsified against the actual
+escape class. The adversarial round approved with three minors. Two were stale nouns from the fenced
+shape surviving in prose the changeset never opened, both fixed. The third was a real gap: a status
+made entirely of invisible characters is not the `In Progress` value, so it reaches the escape, which
+strips it to nothing, and it then drew as the one absence this card gives a meaning to. It now draws
+`(unreadable status)`, on the same precedent as `(unnamed plan)`, while a `Status:` header that was
+blank to begin with still draws nothing, since there is no text there to call unusable. Both
+directions are pinned, and the pin was proved discriminating: removing the guard turns the new test
+red.
+Drift adjudication: six items, all Class deviation, none a mistake, so none blocked the close. Three
+were stale prose the curator fixed (`docs/README.md`'s archive entry describing a card that no longer
+exists, `docs/operations.md` calling the oversized-plan line a row, and `docs/architecture.md`
+crediting the event feed with a membership rule it does not have, a sentence this effort's own
+section 3 introduced). Two are as-built facts the docs had never stated and now do: the `Next:` cut
+at 120 against a 400 intake, and the `(unreadable status)` case. The last is the blocked and held
+markers drawing without the parentheses the spec's prose implies, settled in Chapter 2 against the
+mock rather than the prose, and falsifying no document.
+Handoff, operator-only: backlog item 9 under the deployment walk is the phone read this plan's
+Operator Verification asks for, and it now names this plan as the successor round. A name or status
+still ending in an ellipsis at its full length, a nested bullet without a hanging indent, or an
+overflow tail reading as part of the last plan's entry reopens this work as a new round.
+Handoff, decisions: three calls are parked in `docs/backlog.md` rather than made here, because each
+turns on preference rather than on a fact about the system. Whether a status should be allowed to
+spell the card's own marker vocabulary; whether the `Next:` render cap should rise from 120 to the
+400 the sweep takes in; and whether `###` project headings read better than a bold line on the phone,
+which is this plan's own open question and answerable only from a real render.
+Stamps: `memq unstamped` over the session span returned zero in both tiers, the sections having
+adjudicated theirs at their own boundaries. The decay stamp is 9 days old, so no pass was due.
+Next: none. The plan is Complete and archived.
 Commit Model: Commit-and-Push

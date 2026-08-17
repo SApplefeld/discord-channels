@@ -369,28 +369,31 @@ dropped, and each untrusted field is cut to length as it enters rather than afte
 for escaping.
 
 A torn read is drawn rather than hidden. A plan caught mid-write redraws its last good parse under a
-held marker whose age climbs, so the operator sees staleness instead of a row that silently stopped
+held marker whose age climbs, so the operator sees staleness instead of a plan that silently stopped
 moving. The blocked marker is set by a `goal-blocked` event and cleared by a newer plan modification
 time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
 timestamp would pin the marker permanently.
 
-Membership is stated twice over, once per feed. A `README.md` under a swept `docs/plans` is a
-directory index rather than a piece of open work, so it is absent from the sweep: no bullet, no
-parse-failure line, and no count against the per-root cap, which it is excluded ahead of. Among the
-plans that do surface, every non-terminal status is drawn as written except the exact value
+Membership is decided in two places, one rule each. The sweep's is that a `README.md` under a swept
+`docs/plans` is a directory index rather than a piece of open work, so it is absent: no bullet, no
+parse-failure line, and no count against the per-root cap, which it is excluded ahead of. The
+renderer's is that every non-terminal status is drawn as written except the exact value
 `In Progress`, compared case-insensitively on the trimmed text, which draws no status clause at
 all. That is the ordinary state and nothing else occupies the spot, so its absence is unambiguous
-and every near miss, `In Progress (auto)` among them, draws whole rather than cut to a width.
+and every near miss, `In Progress (auto)` among them, draws whole rather than cut to a width. The
+one status that is named rather than drawn is a value carrying text that neutralizes to nothing,
+which draws `(unreadable status)`: it cannot be dropped, because dropping it would spend the one
+absence the card gives a meaning to. A `Status:` header that was blank to begin with draws nothing,
+since there is no text there to report unusable.
 
 The body is live markdown rather than a fence, which is what lets those statuses draw whole. A
 `###` heading per project, a bold-stem bullet per plan, and an indented sub-bullet carrying the
 sections count, the age and the status, with a second sub-bullet for the latest Chapter's `Next:`
-when there is one. The fence was the constraint that made the card lie: its columns were bounded at
-the measured phone wrap, which is narrower than a real plan name or a sentence-length status, so
-most lines ended in an ellipsis exactly where the information was. Markdown wraps at word
-boundaries with a hanging indent instead, so a long fact costs wrapped lines rather than an
-ellipsis, and the sections count carries progress on its own, where a bar rendered as blank space
-at zero and tiled by font.
+when there is one. A fence would bound every column at the measured phone wrap, which is narrower
+than a real plan name or a sentence-length status, so it cuts a line exactly where the information
+is. Markdown wraps at word boundaries with a hanging indent instead, so a long fact costs wrapped
+lines rather than an ellipsis, and the sections count carries progress on its own, where a bar
+renders as blank space at zero and tiles by font.
 
 Every field on this card therefore lands outside a fence, and every one takes the full markdown
 neutralization rather than the lighter escape a fenced field needs. The bound handed to that escape
@@ -415,10 +418,10 @@ the ragged lines the fence replaced.
 The board card is the exception, and the reason is what its content is. A fence pays for aligned
 columns with a hard width, which is the right trade for numbers and the wrong one for prose: that
 card's fields are a plan's name and a sentence about its state, neither of which fits a phone's
-column bound, so the fence cut them where a list wraps them. It draws in live markdown with a `###`
-heading per project and pays the heading margin, because the alternative was an ellipsis in the
-middle of every fact worth reading. `MAX_BLOCK_WIDTH` remains what the genuinely tabular cards pad
-to and no longer bounds anything on the board.
+column bound, so a fence cuts them where a list wraps them. It draws in live markdown with a `###`
+heading per project and pays the heading margin, because the alternative is an ellipsis in the
+middle of every fact worth reading. `MAX_BLOCK_WIDTH` is what the genuinely tabular cards pad to
+and it bounds nothing on the board.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it

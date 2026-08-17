@@ -330,14 +330,17 @@ roots whose final segment is the project name. A plan is one bullet carrying its
 an indented sub-bullet beneath it carrying the sections-complete count, the time since the document
 last moved, and the status, and a second sub-bullet for the latest Chapter's `Next:` when there is
 one. The body is live markdown rather than a fenced block, so a long name or a sentence-length
-status wraps at a word boundary with a hanging indent instead of ending in an ellipsis, which is
-what a fixed-width fence did to most of them.
+status wraps at a word boundary with a hanging indent instead of ending in an ellipsis at a fixed
+column. The `Next:` line is the one field the card still cuts, at **120** characters against the
+**400** the sweep takes in, and a cut one carries the mark that says so.
 
 Two things are drawn by their absence, so they are worth knowing. A plan whose document declares no
 sections draws no count, since a fraction of nothing measures nothing. And a plan whose status is
 exactly `In Progress` draws no status at all: that is the ordinary state, nothing else occupies the
 spot, so an entry with no status clause is a plan simply running. Any other spelling draws as
-written, `In Progress (auto)` included, and draws whole.
+written, `In Progress (auto)` included, and draws whole. The exception is a status whose text is
+all invisible characters, which draws `(unreadable status)` rather than nothing, so a document with
+an unusable value there is never mistaken for one simply running.
 
 A plan the broker cannot parse right now redraws its last good reading under a held marker whose age
 climbs, rather than dropping off the card. A plan whose goal is blocked carries the age of the block,
@@ -351,7 +354,7 @@ fix is in the document rather than here.
 
 Cost per refresh is small and bounded. A file is opened only when its modification time or size has
 moved, and a file that fails to parse is held shut on the same terms rather than being re-read every
-tick. A plan above 256 KB is refused whole rather than parsed as a prefix, and draws a row saying so,
+tick. A plan above 256 KB is refused whole rather than parsed as a prefix, and draws a bullet saying so,
 so a truncated document never reaches the card as if it were complete; a real plan runs tens of KB.
 Each root contributes at most 64 plan files.
 

@@ -147,6 +147,12 @@ const NO_PARSE_FALLBACK = "cannot be drawn";
  * swept under. A bullet with no name on it says less than one saying the name is unusable. */
 const UNNAMED_PLAN = "(unnamed plan)";
 
+/** What a plan's status is called when it carries text that neutralizes to nothing, which a status
+ * written entirely in invisible characters is drawn under. The ordinary in-progress value is the one
+ * status this card draws as an absence, so a second value drawing as one would make that absence
+ * ambiguous: this says the status is there and unusable rather than letting it pass for ordinary. */
+const UNREADABLE_STATUS = "(unreadable status)";
+
 /** What a project is called when the last segment of its configured root neutralizes to nothing. */
 function unnamedProject(index: number): string {
   return `project ${index + 1}`;
@@ -341,10 +347,16 @@ function planStem(stem: string): string {
  * plan reader took it in under: the status is where a plan says what it is waiting on, and a value
  * near the ordinary one (`In Progress (auto)`) differs from it in exactly the words a shortened one
  * would lose.
+ *
+ * A status carrying text that neutralizes to nothing is named rather than dropped, since dropping it
+ * would draw it as the one absence this card gives a meaning to. A status that was already blank is
+ * a different case and draws nothing: there is no text there to report unusable.
  */
 function statusClause(reading: PlanReading): string {
   if (reading.status.trim().toLowerCase() === IN_PROGRESS) return "";
-  return field(reading.status, MAX_INTAKE_STATUS_LENGTH);
+  const drawn = field(reading.status, MAX_INTAKE_STATUS_LENGTH);
+  if (drawn !== "") return drawn;
+  return reading.status.trim() === "" ? "" : UNREADABLE_STATUS;
 }
 
 /**
