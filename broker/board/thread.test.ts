@@ -282,20 +282,26 @@ test("a plan this broker has never parsed draws as unread rather than as a held 
   assert.ok((calls.posts[0] ?? "").includes(`- ${drawn("beta_spec_v1")} (cannot be read)`));
 });
 
-test("a project holds its configured place with no parsed plan in it at all", async () => {
-  // A project whose one plan has never parsed has nothing but a failure line to draw, and a card that
-  // ordered its blocks by whatever it managed to parse would sink that project below every other one
-  // and then jump it back up the tick its plan first parses.
+test("a project with no parsed plan in it draws last, and takes its place the tick one parses", async () => {
+  // A project whose one plan has never parsed has nothing but a failure line to draw, so it carries
+  // no modification time for the card to order it by and it sits after every project that does. The
+  // tick its plan first parses it takes the place that plan's own age earns it. Only a plan that has
+  // never parsed is here: one the caller holds a parse for is redrawn from that parse, which carries
+  // its mtime, so a doc caught mid-write does not move its project at all.
+  //
+  // This project is configured first and its plan is the older of the two, so neither order the card
+  // draws here is the configured one: the second pass reads the age rather than the list.
   const OTHER = path.join(os.tmpdir(), "channels-board-second-project");
+  const other = reading({ stem: "beta_spec_v1", root: OTHER });
   let parses = false;
   const { calls, card } = board({
     roots: [ROOT, OTHER],
     binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
     sweep: () =>
       parses
-        ? swept([reading({ stem: "alpha_spec_v1" }), reading({ stem: "beta_spec_v1", root: OTHER })])
+        ? swept([reading({ stem: "alpha_spec_v1", mtimeMs: START - 60 * 60_000 }), other])
         : swept(
-            [reading({ stem: "beta_spec_v1", root: OTHER })],
+            [other],
             [{ root: ROOT, path: planFile("alpha_spec_v1"), stem: "alpha_spec_v1", reason: "malformed" }],
           ),
   });
@@ -312,16 +318,16 @@ test("a project holds its configured place with no parsed plan in it at all", as
 
   await card.tick();
   assert.deepEqual(projects(calls.edits[0]?.card ?? ""), [
-    path.basename(ROOT),
     path.basename(OTHER),
-  ], "the project with only a failure to draw is still the first one configured");
+    path.basename(ROOT),
+  ], "the project with only a failure to draw has no mtime, so it draws after the one that has");
 
   parses = true;
   await card.tick();
   assert.deepEqual(projects(calls.edits[1]?.card ?? ""), [
-    path.basename(ROOT),
     path.basename(OTHER),
-  ], "and it does not move the tick its plan starts parsing");
+    path.basename(ROOT),
+  ], "the tick its plan parses, that plan's own age places it, and this one is the older of the two");
 });
 
 test("a held parse is handed back only while the file has not moved", async (t) => {

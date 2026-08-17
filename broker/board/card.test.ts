@@ -74,8 +74,10 @@ function card(input: {
   now?: number;
 }): string {
   return renderBoardCard({
-    // Empty unless a test names the configured list, which leaves every root on the inputs drawn in
-    // the order it first appears.
+    // Empty unless a test names the configured list, which leaves the projects ordered entirely by
+    // their newest plan's mtime, and a tie between two of them broken by the order the card first
+    // places their roots in: the plans first, newest mtime then stem, then the failures, then the
+    // truncation notes.
     roots: input.roots ?? [],
     plans: input.plans ?? [],
     failures: input.failures ?? [],
@@ -273,6 +275,83 @@ test("a directory name carrying a backtick run reaches the fence with no backtic
   );
 });
 
+test("plans within a project draw newest mtime first, whatever order they arrived in", () => {
+  const body = card({
+    plans: [
+      plan({ stem: "a_spec_v1", mtimeMs: NOW - 5 * HOUR }),
+      plan({ stem: "b_spec_v1", mtimeMs: NOW - 1 * HOUR }),
+    ],
+  });
+
+  assert.deepEqual(bullets(body), ["- **b\\_spec\\_v1**", "- **a\\_spec\\_v1**"]);
+});
+
+test("two plans sharing an mtime draw stem-ordered ascending", () => {
+  const body = card({
+    plans: [
+      plan({ stem: "zeta_spec_v1" }),
+      plan({ stem: "alpha_spec_v1" }),
+    ],
+  });
+
+  assert.deepEqual(bullets(body), ["- **alpha\\_spec\\_v1**", "- **zeta\\_spec\\_v1**"]);
+});
+
+test("a held plan orders by its held parse's mtime, like any other plan", () => {
+  // The held plan arrives first, carries the most recent hold, and sorts first by stem, so arrival,
+  // hold age and the tie-break all put it on top. Only its parse's mtime, the oldest here, puts it
+  // second.
+  const body = card({
+    plans: [
+      plan({ stem: "held_spec_v1", mtimeMs: NOW - 5 * HOUR }, NOW - 10 * MINUTE),
+      plan({ stem: "unheld_spec_v1", mtimeMs: NOW - 1 * HOUR }),
+    ],
+  });
+
+  assert.deepEqual(bullets(body), ["- **unheld\\_spec\\_v1**", "- **held\\_spec\\_v1**"]);
+});
+
+test("a project draws by its newest plan's mtime, ahead of a project configured before it", () => {
+  const body = card({
+    roots: [CHANNELS, AI_OS],
+    plans: [
+      plan({ root: CHANNELS, mtimeMs: NOW - 5 * HOUR }),
+      plan({ root: AI_OS, stem: "newer_spec_v1", mtimeMs: NOW - 1 * HOUR }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["sapplefeld-ai-os", "sapplefeld-channels"]);
+});
+
+test("two projects whose newest plan shares an mtime draw in configured order", () => {
+  // The stems run the other way from the configured list, so the tied plans place AI_OS's project
+  // first: this rules out a tie broken by the order the projects were placed in, which the plan sort
+  // decides, rather than by the configured list.
+  const body = card({
+    roots: [CHANNELS, AI_OS],
+    plans: [
+      plan({ root: CHANNELS, stem: "channels_spec_v1" }),
+      plan({ root: AI_OS, stem: "ai_os_spec_v1" }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["sapplefeld-channels", "sapplefeld-ai-os"]);
+});
+
+test("a root holding only a failure or only a truncation note draws after every root with a parsed plan", () => {
+  const AI_OS_2 = "D:\\sapplefeld-ai-os-2";
+  const body = card({
+    roots: [AI_OS, AI_OS_2, CHANNELS],
+    plans: [plan({ root: CHANNELS })],
+    failures: [
+      { root: AI_OS, path: `${AI_OS}\\docs\\plans\\gone.md`, stem: "gone", reason: "unreadable" },
+    ],
+    truncated: [{ root: AI_OS_2, dropped: 4 }],
+  });
+
+  assert.deepEqual(projects(body), ["sapplefeld-channels", "sapplefeld-ai-os", "sapplefeld-ai-os-2"]);
+});
+
 test("a plan declaring no sections draws no count, since a fraction of nothing measures nothing", () => {
   const body = card({ plans: [plan({ sections: 0, completed: 0, next: null })] });
 
@@ -394,10 +473,26 @@ test("a plan whose filename carries the suffix twice is joined to its own event 
   });
   const single = card({ plans: both, events: events(event({ plan: "docs/plans/twice_spec_v1.md" })) });
 
-  assert.match(facts(doubled)[0] ?? "", /^ {2}- blocked /, `the doubled name carries it: ${doubled}`);
-  assert.doesNotMatch(facts(doubled)[1] ?? "", /blocked /, `the sibling does not: ${doubled}`);
-  assert.doesNotMatch(facts(single)[0] ?? "", /blocked /, `the doubled name does not: ${single}`);
-  assert.match(facts(single)[1] ?? "", /^ {2}- blocked /, `the sibling carries it: ${single}`);
+  assert.match(
+    item(doubled, "twice_spec_v1.md")[1] ?? "",
+    /^ {2}- blocked /,
+    `the doubled name carries it: ${doubled}`,
+  );
+  assert.doesNotMatch(
+    item(doubled, "twice_spec_v1")[1] ?? "",
+    /blocked /,
+    `the sibling does not: ${doubled}`,
+  );
+  assert.doesNotMatch(
+    item(single, "twice_spec_v1.md")[1] ?? "",
+    /blocked /,
+    `the doubled name does not: ${single}`,
+  );
+  assert.match(
+    item(single, "twice_spec_v1")[1] ?? "",
+    /^ {2}- blocked /,
+    `the sibling carries it: ${single}`,
+  );
 });
 
 test("an event whose timestamp names no instant draws no marker that could never clear", () => {
@@ -525,6 +620,11 @@ test("a card that stops between a project's fence and its first item spends them
   const NEXT = "a next value long enough to fill a sub-bullet of every plan it is drawn on";
   const filled = (pad: number): string =>
     card({
+      // Configured explicitly so the two projects draw in this order regardless of the stem each
+      // carries: every plan below shares one mtime, and an unconfigured root's tie-break would
+      // otherwise fall to the order the globally mtime-and-stem-sorted plans place it in, which
+      // "lone" (alphabetically ahead of every "plan0NN" stem) would win.
+      roots: [CHANNELS, AI_OS],
       plans: [
         ...Array.from({ length: PROJECT_ONE_PLANS }, (_, index) =>
           plan({

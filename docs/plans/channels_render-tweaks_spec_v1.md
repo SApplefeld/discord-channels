@@ -153,6 +153,25 @@ thread name, a card title, or a fleet row through the literal glyph is updated t
 claim) pins the new one. `docs/operations.md`'s thread-list example and its `needs you` sentence
 change with it.
 
+## Standing Brief Amendments
+
+Folded into every dispatch brief from here on. Each is a finding class two separate review rounds
+in this effort produced, which means the briefs were generating it rather than the implementers.
+
+- **Sweep the falsified claim, not the changed line.** A comment in this codebase asserts a system
+  property, so a change that makes one false has to find every one it made false, in the edited file
+  and outside it. Grep the tree (excluding `node_modules`) for the vocabulary the change retires,
+  including JSON `_comment` fields, test-helper doc comments, and the doc comment on any exported
+  type or option the change reaches. Two rounds here shipped a correct implementation whose file
+  still described the shape it replaced. Report anything outside the brief's file scope rather than
+  editing it.
+- **A test whose fixture cannot produce the case it names is not a test.** Before a section closes,
+  check each new test's fixture actually differs from its expected output on the axis under test, and
+  prove it by breaking the code and watching the test go red. An ordering test whose input order
+  already equals its expected order passes with the sort deleted; an overflow test whose fill
+  overflows before the boundary never reaches the boundary. Both shapes shipped here and both were
+  caught by review rather than by the suite.
+
 ## Sections of Work
 
 ### 1. Board card: fenced project title (Complete)
@@ -165,7 +184,7 @@ draws `project N` inside the fence; the overflow tail is right on a card that st
 fence and its first item (the fence and its first item are spent together, as the heading was).
 References: `fenced` and `inertBlockField` in `broker/discord/render.ts`; the "Approach" mock.
 
-### 2. Board card: newest touch first
+### 2. Board card: newest touch first (Complete)
 Model: sonnet
 `broker/board/card.ts` (+ test). Plans within a project by `mtimeMs` descending, stem ascending on
 a tie; projects by their newest plan's `mtimeMs` descending, configured order on a tie, with a root
@@ -330,4 +349,44 @@ continuation row indented past the lead with no separator is less able to masque
 entry than the separator-bearing row it replaces.
 Stamps: adjudicated with Chapter 1's sweep; none additional surfaced
 Next: 2. Board card: newest touch first
+Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-16
+Completed: 2. Board card: newest touch first
+Implemented By: implementer-sonnet, with the review-fix round taken by implementer-opus
+Metrics: 1 review round; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The spec was silent on how a root that is not on the configured list orders
+against one that is, so the controller ruled: mtime is the primary key for every root that has one,
+configured or not, and the configured-versus-not distinction survives only as the tie-break index in
+the placement order. The old property "unconfigured roots draw after configured ones" is deliberately
+retired and its comment rewritten. Both comparators compare the ordering instants rather than
+subtracting them, because a plan with no usable mtime sorts at negative infinity and two of those
+subtract to `NaN`, which is a comparator that silently returns an arbitrary order. The pre-sort the
+caller in `thread.ts` did is deleted: `renderBoardCard` is the only consumer of `fleet.plans`
+(`broker/board/thread.ts:528`) and `sections()` re-sorts every plan itself, so the caller's sort was
+dead work whose comment asserted an ordering the card no longer took from it.
+Review Findings: Criticals: none. Twelve findings adjudicated and taken (a self-contradicting doc
+block on `sections()`; the exported `roots` JSDoc naming the wrong tie-break; three falsified
+comments outside the changed lines; an unreachable `?? 0` fallback; `unnamedProject` fed the
+post-sort index so a label churned as projects moved; an incomplete cost account in the module
+header; the `NaN` comparator above; the dead pre-sort; a config paragraph left unreflowed; three
+over-long lines). Two were tests that could not fail on the case they named, which is the finding
+class the Standing Brief Amendments block now carries: the held-plan test's input order already
+equalled its expected order, and so did the project-order test's. Both were rebuilt and proven red
+with the sort disabled and with the comparator inverted, then green restored.
+Minor declined: printing a held plan's live file mtime instead of its held parse's. `PlanFailure.stat`
+does carry the live mtime and `thread.ts:508` discards it, but `reading.mtimeMs` feeds both the
+ordering and the age clause printed beside the plan, so ordering by the live value would put a number
+on the card that contradicts the text next to it. The `held Xm` marker already tells the operator the
+file has moved. Recorded so it is not re-litigated; the in-scope fix was correcting the comment that
+overclaimed "what the operator touched most recently".
+Deviation accepted: the project-order test's fixture runs opposite to the brief's construction. The
+brief said make the first-configured root's plan the newer one, which cannot discriminate, since
+newest-first and configured-order then produce the same expected array; the implementer proved that
+with a probe that left the test green. It reversed the fixture instead so the expected order differs
+from the configured list. The cost is that the test's two ticks now assert the same array, so it no
+longer distinguishes a "root that reported a failure sinks forever" implementation, which the card
+cannot have because it is pure per render. Two projects and one configured order cannot buy both.
+Stamps: `memq unstamped` reported zero on both tiers; nothing recalled this section went unapplied.
+Next: 5. Glyphs and docs
 Commit Model: Commit-and-Push

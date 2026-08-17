@@ -123,9 +123,10 @@ export type BoardCardOptions = {
   /** Null when no Discord is configured, which is one of the three ways this card is not built. */
   transport: DiscordTransport | null;
   /**
-   * The configured project roots, in the order the card draws them. Empty is the third way the card
-   * is not built: there is nothing to sweep, and a card that could only ever say so is not worth a
-   * thread in the operator's channel.
+   * The configured project roots: the order the sweep walks them in, and the card's tie-break
+   * beneath its own newest-touch-first order. Empty is the third way the card is not built: there is
+   * nothing to sweep, and a card that could only ever say so is not worth a thread in the operator's
+   * channel.
    */
   roots: readonly string[];
   /** The resolved path of the kit's goal event stream. Absent on disk is not an error. */
@@ -265,13 +266,6 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
 
   // How long a failure of one kind counts toward its ceiling, in wall time.
   const decayMs = options.refreshMs * DECAY_PASSES;
-
-  // Where each configured root sits, which is the order the plans of one sweep are handed to the
-  // renderer in. The sweep returns its readings and its failures in two lists, and a plan moving
-  // between them on a torn read would otherwise move on the card too. Which project block comes
-  // first is the renderer's own, taken from this same configured list, so a project keeps its place
-  // whatever kind of entry it has.
-  const rootOrder = new Map(roots.map((root, index): [string, number] => [root, index]));
 
   // Three routes, three budgets. A message create, a thread create, and a message edit report their
   // limits independently, so a block on one holds neither of the others back. These are the card's
@@ -514,14 +508,6 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
     }
     holds = kept;
     failedHolds = keptFailures;
-
-    // Configured root order, then path, which inside one root is the sweep's own name order.
-    const place = (plan: BoardPlan): number => rootOrder.get(plan.reading.root) ?? roots.length;
-    plans.sort((left, right) => {
-      const byRoot = place(left) - place(right);
-      if (byRoot !== 0) return byRoot;
-      return left.reading.path < right.reading.path ? -1 : left.reading.path > right.reading.path ? 1 : 0;
-    });
     return { plans, failures, sweep: swept };
   }
 

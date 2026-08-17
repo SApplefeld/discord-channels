@@ -28,12 +28,13 @@
 // renderer does not do.
 //
 // The work one render costs is bounded by the plans it is handed and not by the bytes any one of
-// them carries: one pass to index the events, one pass to group the plans, and one map lookup per
-// plan. Every untrusted field is bounded before it arrives, each by whichever reader took it in:
-// the two free-form plan values by `./plans.ts`'s intake caps, an event's fields by `./events.ts`'s,
-// and a filename by the name limit the filesystem itself enforces. So the escaping here walks a
-// bounded string per field, and nothing walks a product of two quantities that both come from
-// another program's files.
+// them carries: one pass to index the events, one pass to group the plans, one map lookup per plan,
+// and two sorts, one over the open plans and one over the projects, where a comparison is a number
+// or at most a pair of filename stems the filesystem's own name limit bounds. Every untrusted field
+// is bounded before it arrives, each by whichever reader took it in: the two free-form plan values
+// by `./plans.ts`'s intake caps, an event's fields by `./events.ts`'s, and a filename by the name
+// limit the filesystem itself enforces. So the escaping here walks a bounded string per field, and
+// nothing walks a product of two quantities that both come from another program's files.
 import {
   MAX_CARD_LENGTH,
   fenced,
@@ -168,7 +169,13 @@ const UNNAMED_PLAN = "(unnamed plan)";
  * ambiguous: this says the status is there and unusable rather than letting it pass for ordinary. */
 const UNREADABLE_STATUS = "(unreadable status)";
 
-/** What a project is called when the last segment of its configured root neutralizes to nothing. */
+/**
+ * What a project is called when the last segment of its configured root neutralizes to nothing.
+ *
+ * The number is the root's own position among the roots the card knows, not its position on the
+ * drawn card: this label is the only handle the operator has on such a root, and a number taken from
+ * the card would rename it every time a plan in an unrelated project moved the boxes around.
+ */
 function unnamedProject(index: number): string {
   return `project ${index + 1}`;
 }
@@ -272,6 +279,19 @@ function blockedAt(
   if (Number.isNaN(stamped)) return null;
   const at = Math.min(stamped, now);
   return plan.reading.mtimeMs > at ? null : at;
+}
+
+/**
+ * A modification time as the card orders by it: the value itself, or negative infinity for anything
+ * that is not a finite number.
+ *
+ * `renderBoardCard` is exported and takes its plans as they are handed over, so an mtime that names
+ * no instant is bounded here the way the section counts are. A comparator handed one would answer
+ * with something that is neither above, below nor equal, which is not an order at all, and the card
+ * would draw its projects in whatever arrangement the sort happened to leave.
+ */
+function touchedAt(value: number): number {
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
 }
 
 /** A count as the card draws it: whole, and inside a range a line can carry. */
@@ -480,18 +500,28 @@ type BlockItem = { lines: string[]; plans: number };
 type ProjectSection = { label: string; items: BlockItem[]; plans: number };
 
 /**
- * The card's projects in the order they were configured, each carrying only what it has to draw.
+ * The card's projects and their plans, ordered by what moved last, measured on the newest parse the
+ * card can draw: the top of the card is the plan the operator touched most recently among those it
+ * has content for.
  *
- * A project holds that place whatever kind of entry it has in it, plans or a plan that would not
- * parse or a note that its listing was cut. Ordering by what the sweep managed to parse would sink a
- * project whose one plan has never parsed below every project with a readable plan, and lift it back
- * up the tick that plan first parses.
+ * A plan orders by `reading.mtimeMs` descending; a tie (two files one commit wrote together share an
+ * mtime) breaks by filename stem ascending, so the order is stable across renders. A held plan
+ * carries its held parse's mtime, which is the same instant the age drawn beside it names, so a doc
+ * being rewritten right now does not climb the card ahead of the content the card actually holds. A
+ * failure or a truncation note takes its project's remaining position after every parsed plan, in
+ * the order this function reads them in: neither carries an mtime this card trusts, so mtime cannot
+ * order them.
+ *
+ * A project orders by its newest open plan's mtime descending. A root holding only a failure or a
+ * truncation note has no mtime to order by and draws after every root that has one; a tie, mtime
+ * equal or both absent, breaks by `order`'s own index, which is the configured list followed by
+ * whatever other root these inputs name, each in the position it is first placed at (plans read
+ * before failures, failures before truncations).
  *
  * Roots are grouped by their configured string rather than by a normalized form, because every root
  * on every input here came from the one configured list the sweep and the event reader were both
- * handed. A root on those inputs the configured list does not name is drawn after the ones it does
- * rather than dropped. A project with nothing to draw gets no entry at all, which is what leaves a
- * configured root with no open plans drawing nothing rather than a label over an empty list.
+ * handed. A project with nothing to draw gets no entry at all, which is what leaves a configured root
+ * with no open plans drawing nothing rather than a label over an empty list.
  *
  * A project is labelled by the last segment of its configured root, so a root configured at or one
  * level under a home directory draws the operator's OS username into a channel.
@@ -504,7 +534,23 @@ function sections(
   events: ReadonlyMap<string, BoardEvent>,
   now: number,
 ): ProjectSection[] {
-  const open = plans.filter((plan) => !plan.reading.terminal);
+  // Sorted before placement so the placement loop below needs no ordering logic of its own: a
+  // project's items land in this order because its plans are pushed in it, and a failure or a
+  // truncation note keeps the position placement already gives it, after every plan.
+  //
+  // Each plan carries the instant it is ordered by, taken once here rather than inside either
+  // comparator, so a value that names no instant costs one check per plan instead of one per
+  // comparison. The instants are compared rather than subtracted, since two absent ones are both
+  // negative infinity and their difference is not a number.
+  const open = plans
+    .filter((plan) => !plan.reading.terminal)
+    .map((plan) => ({ plan, at: touchedAt(plan.reading.mtimeMs) }))
+    .sort((left, right) => {
+      if (left.at !== right.at) return left.at < right.at ? 1 : -1;
+      const leftStem = left.plan.reading.stem;
+      const rightStem = right.plan.reading.stem;
+      return leftStem < rightStem ? -1 : leftStem > rightStem ? 1 : 0;
+    });
 
   const order: string[] = [...new Set(roots)];
   const configured = new Set(order);
@@ -519,12 +565,17 @@ function sections(
   };
 
   const drawn = new Set<string>();
-  for (const plan of open) {
+  // The newest mtime seen for each root, among its open plans only: a failure and a truncation note
+  // carry no mtime this card trusts, so neither moves a project up the card.
+  const newest = new Map<string, number>();
+  for (const { plan, at } of open) {
     drawn.add(eventKey(plan.reading.root, planName(plan.reading.stem)));
     place(plan.reading.root).push({
       lines: planLines(plan, blockedAt(plan, events, now), now),
       plans: 1,
     });
+    const held = newest.get(plan.reading.root);
+    if (held === undefined || at > held) newest.set(plan.reading.root, at);
   }
   for (const failure of failures) {
     // A plan the caller redrew from a held parse is already on the card, so its failure this tick
@@ -537,9 +588,23 @@ function sections(
     if (dropped > 0) place(cut.root).push({ lines: [truncationLine(dropped)], plans: dropped });
   }
 
+  // Each root paired with its position in `order`: the configured list first, then whichever other
+  // root an input here named, each at the index it was first placed at. The position rides with the
+  // root rather than in a lookup beside it, so the tie-break and the number an unnamed project is
+  // labelled by both read a value that is there by construction.
   return order
-    .filter((root) => (byRoot.get(root)?.length ?? 0) > 0)
-    .map((root, index) => {
+    .map((root, at) => ({ root, at }))
+    .filter((project) => (byRoot.get(project.root)?.length ?? 0) > 0)
+    .sort((left, right) => {
+      const leftAt = newest.get(left.root);
+      const rightAt = newest.get(right.root);
+      if (leftAt === undefined && rightAt === undefined) return left.at - right.at;
+      if (leftAt === undefined) return 1;
+      if (rightAt === undefined) return -1;
+      if (leftAt !== rightAt) return leftAt < rightAt ? 1 : -1;
+      return left.at - right.at;
+    })
+    .map(({ root, at }) => {
       // A directory name is held to this card's own cap, which is a cut rather than a guard, so it
       // is marked where it shortens one.
       const named = cutBlockField(lastSegment(root), MAX_PROJECT_LABEL_LENGTH);
@@ -549,7 +614,7 @@ function sections(
       // charges each element its own length plus one newline, so pushing this single element already
       // charges exactly the fence's three lines: no separate arithmetic accounts for the fence.
       return {
-        label: fenced([named === "" ? unnamedProject(index) : named]),
+        label: fenced([named === "" ? unnamedProject(at) : named]),
         items,
         plans: items.reduce((sum, item) => sum + item.plans, 0),
       };
@@ -599,9 +664,12 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
  * inputs compose the same bytes.
  */
 export function renderBoardCard(input: {
-  /** The configured project roots, in the order the card draws their lists. A root with nothing to
-   * draw takes no label, and a root on any other input here that this list does not name is drawn
-   * after the ones it does. */
+  /** The configured project roots. A root with nothing to draw takes no label. A project's own
+   * newest plan orders the card's projects; this list's order is the tie-break, for two roots whose
+   * newest plan shares an mtime or hold none, and for a root on another input here that this list
+   * does not name, which breaks ties at the position it is first placed at: the plans first, in this
+   * card's own order of mtime descending then filename stem ascending, then the failures, then the
+   * truncation notes. */
   roots: readonly string[];
   plans: readonly BoardPlan[];
   /** The plans this tick could not read and the caller holds no parse for. One the caller does hold
