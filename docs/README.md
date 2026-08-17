@@ -23,7 +23,9 @@ All of it is built and installable.
 
 ## Plans
 
-No open plans.
+| Plan | Status | What it is |
+|---|---|---|
+| [`plans/channels_render-tweaks_spec_v1.md`](plans/channels_render-tweaks_spec_v1.md) | In Progress | Five readability tweaks: the board card draws each project name in its own fenced box and orders plans newest-touch first, the broker deletes the rename notices Discord writes into a session thread (the pin-notice cleaner extended to threads), the session card indents a task's description under its agent, and `idle` draws ⏸ while `needs you` draws ⏹. |
 
 Archived plans, most recent first.
 
