@@ -108,10 +108,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   8. On a host with zero sessions and no claude-swap, confirm the static body means a deleted card
      goes undetected until restart.
   9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`) and read it on a
-     phone in the same pass as check 2, for horizontal drag and for whether its bar tiles into an
-     unbroken line. Its bar reads the same `BAR_GLYPH` constant, so one swap moves both cards. The
-     delivered plan is
-     [`archive/plans/channels_board-card_spec_v1.md`](archive/plans/channels_board-card_spec_v1.md).
+     phone in the same pass as check 2, folded and unfolded. The card draws no fence and no bar, so
+     what is being read is whether the nested bullets render with a hanging indent, whether any name
+     or status still ends in an ellipsis at its full length, and whether a long fact wraps rather
+     than cuts. On a board large enough to overflow, confirm it ends in the tail naming what it left
+     out rather than dropping a project silently, and that the tail stands on its own line rather
+     than reading as part of the last plan's entry. The delivered plans are
+     [`archive/plans/channels_board-card_spec_v1.md`](archive/plans/channels_board-card_spec_v1.md)
+     and its successor, which moved the body from a fence to live markdown.
   10. Drive a real `/kit-goal` run to a blocked stop and confirm the board card draws the blocked
      marker, then resume it and confirm the marker clears. The clear rules were exercised only
      against synthetic events, in both directions, and the live event stream is the one thing a test

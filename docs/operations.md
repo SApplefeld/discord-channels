@@ -281,8 +281,8 @@ sessions get one more label-and-block pair, omitted when nothing is running, and
 out of room names what it dropped rather than ending mid-thought.
 
 The bar's filled cells are drawn in one named constant, `BAR_GLYPH` in `broker/discord/render.ts`,
-currently `—` (U+2014). Both cards that draw a bar read that one constant, so a swap here moves them
-together. That is a typographic character rather than a box-drawing one, so whether
+currently `—` (U+2014). This is the only card that draws a bar, so that constant is the whole of
+where a swap has to land. That is a typographic character rather than a box-drawing one, so whether
 consecutive cells tile into an unbroken line or leave hairline gaps between them is a property of
 the font the reading client draws with. `─` (U+2500) is the swap on a client that leaves gaps.
 
@@ -315,7 +315,9 @@ and how far has it got" without opening a plan document. It is off unless the ho
 timer, and no file opened.
 
 `CHANNEL_BOARD_PROJECTS` is a semicolon-separated list of absolute project roots. Each is swept for
-`docs/plans/*.md`, and every plan not marked Complete gets a row. A root that is not a fixed
+`docs/plans/*.md`, and every plan not marked Complete gets an entry. A `README.md` there is taken as
+a directory index rather than a plan and is simply absent: it draws nothing, not even a line saying
+it would not parse, and it does not count against the per-root plan cap. A root that is not a fixed
 directory, meaning anything relative or drive-relative that would resolve against whichever drive the
 broker happened to start on, refuses at load: the message names the entry's position rather than its
 text, since a root usually carries your own account name. That refusal stops the broker starting even
@@ -323,13 +325,24 @@ with the card switched off, which is the same strictness the other typed knobs h
 board value is a start failure rather than a silently missing card. Two spellings of one directory
 collapse to one root.
 
-Each project is a bold label over a fenced block, and the label is the last segment of the root, so
-choose roots whose final segment is the project name. A row carries the plan's filename stem, a
-progress bar and a sections-complete count, and beneath it the time since the document last moved and
-the latest Chapter's `Next:`. A plan the broker cannot parse right now redraws its last good reading
-under a held marker whose age climbs, rather than dropping off the card. A plan whose goal is blocked
-carries the age of the block, cleared when the document moves again or when the goal completes. A
-card that runs out of room names how many plans and projects it dropped.
+Each project is a heading over a list, and the heading is the last segment of the root, so choose
+roots whose final segment is the project name. A plan is one bullet carrying its filename stem, with
+an indented sub-bullet beneath it carrying the sections-complete count, the time since the document
+last moved, and the status, and a second sub-bullet for the latest Chapter's `Next:` when there is
+one. The body is live markdown rather than a fenced block, so a long name or a sentence-length
+status wraps at a word boundary with a hanging indent instead of ending in an ellipsis, which is
+what a fixed-width fence did to most of them.
+
+Two things are drawn by their absence, so they are worth knowing. A plan whose document declares no
+sections draws no count, since a fraction of nothing measures nothing. And a plan whose status is
+exactly `In Progress` draws no status at all: that is the ordinary state, nothing else occupies the
+spot, so an entry with no status clause is a plan simply running. Any other spelling draws as
+written, `In Progress (auto)` included, and draws whole.
+
+A plan the broker cannot parse right now redraws its last good reading under a held marker whose age
+climbs, rather than dropping off the card. A plan whose goal is blocked carries the age of the block,
+cleared when the document moves again or when the goal completes. A card that runs out of room names
+how many plans and projects it dropped.
 
 The card is deterministic and spends no tokens: nothing between a plan file and the card involves a
 model. It also reads the plan-doc contract exactly as the external engine does, sharp edges included,

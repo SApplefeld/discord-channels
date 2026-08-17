@@ -229,3 +229,36 @@ is what scoped three files and never asked for a tree-wide sweep of card-body pi
 Stamps: adjudicated 5, stamped 5.
 Next: 3. Documentation
 Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-16
+Completed: 3. Documentation
+Implemented By: main session (Locus: inline, since the docs-write guard blocks a subagent under
+`docs/`)
+Metrics: 0 review rounds at the section level, the finishing pass covering it; NEEDS_CONTEXT 0;
+escalations 0; consults 0
+Decisions / Surprises: The section named two documents; the sweep found four. `docs/operations.md`
+described the card to the operator as a bold label over a fenced block carrying a progress bar, and
+separately claimed `BAR_GLYPH` was read by "both cards that draw a bar", which is now one card.
+`docs/backlog.md`'s operator check number 9 told the operator to read the card on a phone looking
+for horizontal drag and for whether its bar tiles into an unbroken line, both of which this effort
+deleted; it now names what there actually is to look at, including the overflow tail standing on
+its own line, which is the one shape a reviewer suspected the client might attach to the last plan.
+The architecture doc's "What the cards are made of" section needed the board card carved out as a
+stated exception rather than a silent one, since its opening claim that every card draws inside a
+fence was the general rule this effort broke.
+The security model's board-card block was rewritten past what the section asked for. The section
+called for stating the full `inertField` neutralization and naming `allowed_mentions`; the block
+also asserted the project label was "the one field on this card outside a fence", which the
+security reviewer independently flagged as falsified. It now states the control positively (no
+fence, so position neutralizes nothing and every field takes the full escape) and adds the two
+properties that carry it: the invisible-class strip that stops a field composing a line, and the
+literal prefix on every emitted line that keeps a field out of column zero. It also states the
+limit of the control, that a status can spell the marker vocabulary, so the document does not
+promise more than the code does.
+Review Findings: none at the section level. The code-comment sweep this section owns found the
+board module clean: `card.ts`'s header was rewritten by section 2 and asserts the list shape, and
+`plans.ts`'s falsified caps comment was fixed in section 2's round. No JSON `_comment` field
+carries a board-card geometry claim.
+Stamps: adjudicated 5, stamped 5 at the section 1 and 2 boundary; none newly surfaced here.
+Next: finishing-work
+Commit Model: Commit-and-Push

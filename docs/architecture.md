@@ -374,21 +374,51 @@ moving. The blocked marker is set by a `goal-blocked` event and cleared by a new
 time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
 timestamp would pin the marker permanently.
 
-The project label is the one field that lands outside a fence, where a bold line is live markdown,
-so it takes the same full neutralization the other cards' labels take rather than the lighter escape
-a fenced field needs.
+Membership is stated twice over, once per feed. A `README.md` under a swept `docs/plans` is a
+directory index rather than a piece of open work, so it is absent from the sweep: no bullet, no
+parse-failure line, and no count against the per-root cap, which it is excluded ahead of. Among the
+plans that do surface, every non-terminal status is drawn as written except the exact value
+`In Progress`, compared case-insensitively on the trimmed text, which draws no status clause at
+all. That is the ordinary state and nothing else occupies the spot, so its absence is unambiguous
+and every near miss, `In Progress (auto)` among them, draws whole rather than cut to a width.
+
+The body is live markdown rather than a fence, which is what lets those statuses draw whole. A
+`###` heading per project, a bold-stem bullet per plan, and an indented sub-bullet carrying the
+sections count, the age and the status, with a second sub-bullet for the latest Chapter's `Next:`
+when there is one. The fence was the constraint that made the card lie: its columns were bounded at
+the measured phone wrap, which is narrower than a real plan name or a sentence-length status, so
+most lines ended in an ellipsis exactly where the information was. Markdown wraps at word
+boundaries with a hanging indent instead, so a long fact costs wrapped lines rather than an
+ellipsis, and the sections count carries progress on its own, where a bar rendered as blank space
+at zero and tiled by font.
+
+Every field on this card therefore lands outside a fence, and every one takes the full markdown
+neutralization rather than the lighter escape a fenced field needs. The bound handed to that escape
+is each field's own cap times two rather than the cap itself: a field is bounded on raw code points
+where it enters and on escaped text where it is drawn, and the escape can grow a string, so passing
+the cap would silently cut a field the intake had already bounded. Two is a ceiling rather than a
+margin, since every character the escape touches is ASCII and leaves as two code points and two
+UTF-16 units, while an astral code point is never escaped.
 
 ## What the cards are made of
 
-Every card draws its body inside fenced monospace blocks so the columns line up at a glance, with
-each block's own label outside the fence where Discord still renders it. They label a section
-differently. The session card uses a `###` heading; the fleet and board cards use a bold paragraph
-line, because Discord puts a margin above a heading and a card carrying one section per account or
-per project pays that margin three or four times, which is air spent instead of numbers. The width they pad to
-is one shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46 columns, and it is a
-phone's constraint rather than a taste: a code block scrolls sideways on a phone rather than
-wrapping, so a card wider than its bound costs a drag to read, which is worse than the ragged lines
-the fence replaced.
+The session and fleet cards draw their bodies inside fenced monospace blocks so the columns line up
+at a glance, with each block's own label outside the fence where Discord still renders it. They
+label a section differently. The session card uses a `###` heading; the fleet card uses a bold
+paragraph line, because Discord puts a margin above a heading and a card carrying one section per
+account pays that margin three or four times, which is air spent instead of numbers. The width they
+pad to is one shared constant, `MAX_BLOCK_WIDTH` in `broker/discord/render.ts`, currently 46
+columns, and it is a phone's constraint rather than a taste: a code block scrolls sideways on a
+phone rather than wrapping, so a card wider than its bound costs a drag to read, which is worse than
+the ragged lines the fence replaced.
+
+The board card is the exception, and the reason is what its content is. A fence pays for aligned
+columns with a hard width, which is the right trade for numbers and the wrong one for prose: that
+card's fields are a plan's name and a sentence about its state, neither of which fits a phone's
+column bound, so the fence cut them where a list wraps them. It draws in live markdown with a `###`
+heading per project and pays the heading margin, because the alternative was an ellipsis in the
+middle of every fact worth reading. `MAX_BLOCK_WIDTH` remains what the genuinely tabular cards pad
+to and no longer bounds anything on the board.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it

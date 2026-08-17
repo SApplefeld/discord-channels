@@ -459,11 +459,24 @@ directory names the entry's position and never its text, for the same reason.
 
 What does cross is the project label, which is the last segment of a configured root. A root placed
 at or one level under a home directory therefore draws the account name into the channel, and that is
-the operator's choice of root rather than a property the card can fix. The label is also the one
-field on this card outside a fence, so it takes the full markdown neutralization rather than the
-lighter fenced-field escape, and the card's routes suppress mentions, which together mean neither a
-crafted directory name there nor a crafted filename in a fenced row can draw a mention pill, a
-heading, or a fence delimiter.
+the operator's choice of root rather than a property the card can fix.
+
+This card draws no fence, so position neutralizes nothing on it and every untrusted field takes the
+full markdown escape, the same control the question messages and the downgrade notices render their
+text through. That escape covers every metacharacter including the angle brackets Discord's mention
+and timestamp syntax lives inside, and the card's routes send an empty `allowed_mentions` parse
+list, which is what keeps an `@everyone` in a plan's status as text that pings nobody. Together
+they mean neither a crafted directory name, a crafted filename, nor a crafted status or `Next:`
+value can draw a mention pill, a timestamp chip, a heading, a quote bar, or a fence delimiter. Two
+further properties carry it: the invisible class is stripped and whitespace runs collapse, so no
+field can compose a body line of its own, and no field is ever the first character of a line, since
+every line this card emits opens with a literal prefix of the card's own.
+
+What the escape does not reach is vocabulary. A status is drawn whole and can therefore spell the
+words the card's own `blocked` and `held` markers use, which the markers are told from only by
+their lead position on the line. The consequence is a plan that reads as blocked when it is not, on
+a surface that reports state rather than authorizing anything; it draws no live pill, chip, or
+prompt, and the neutralization above is what holds that line.
 
 What the operator's own configuration can still reach is worth stating, because these knobs sit in
 the access-controlled `broker.env` rather than in anything an attacker supplies. A project root may
