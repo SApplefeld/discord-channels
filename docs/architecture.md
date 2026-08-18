@@ -326,10 +326,12 @@ session blocked on dispatched subagents fires no hooks at all, so hook-driven li
 idle at the moment it was most heavily worked. The harness reports its own table of in-flight
 subagents and background commands on every `Stop` payload, which the broker already receives, so
 the roster is read rather than reconstructed: a reconstruction from dispatch events cannot tell a
-finished agent from a stranded one, and accumulates ghosts across restarts. The count reaches the
-thread title, where a phone's truncation eats everything else, and the rename damper keys on the
-composed title rather than on the state, so a fan-out draining coalesces instead of spending the
-budget a parked session's own title needs.
+finished agent from a stranded one, and accumulates ghosts across restarts. The count rides the state
+on the card and stops there. The thread title distinguishes three states, `active`, `needs you`, and
+`exited`, so working, idle, and a draining fan-out are one title and cost no renames at all: every
+rename writes a system notice into the thread that an app cannot delete, and a title spent on a
+moving number would run a column of them down the thread. The rename damper keys on the composed
+title rather than on the state, which is what holds a session renaming itself to one rename.
 
 ## The fleet board card
 

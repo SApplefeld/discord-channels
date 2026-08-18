@@ -210,29 +210,6 @@ test("deleting a message is the message route, not the pin route, and carries no
   assert.equal(calls[0].body, undefined);
 });
 
-test("deleting a message in a thread is routed to the thread, not to the channel", async () => {
-  // A message posted in a thread lives under the thread's own id, so a delete aimed at the parent
-  // channel answers `Unknown Message` and the notice stays where it is. The channel is the default
-  // because that is where the pin notices land; a rename notice names its thread.
-  const calls: { route: string; method: string }[] = [];
-  const request: RawRequest = async (input) => {
-    calls.push({ route: input.route, method: input.method });
-    return respond(null);
-  };
-  const transport = createDiscordTransport({ channelId: CHANNEL, request });
-
-  await transport.deleteMessage({ messageId: "message-42", channelId: "thread-3" });
-  await transport.deleteMessage({ messageId: "message-7" });
-
-  assert.deepEqual(
-    calls.map((call) => `${call.method} ${call.route}`),
-    [
-      "DELETE /channels/thread-3/messages/message-42",
-      `DELETE /channels/${CHANNEL}/messages/message-7`,
-    ],
-  );
-});
-
 test("the pin list reads the page's message ids, and an unreadable page is a refusal", async () => {
   // The route answers `{ items, has_more }`, each item carrying the pinned message. An item with no
   // readable message id is dropped rather than guessed at, and a body that is not a page at all is
@@ -413,6 +390,57 @@ test("a refusal Discord will repeat is marked as one, and a 404 names a dead obj
   const broken = await outcomeFor(502);
   assert.notEqual(broken?.permanent, true, "a server error is worth trying again");
   assert.notEqual(broken?.missing, true);
+});
+
+test("a refusal carries Discord's own code and message when the body has them", async () => {
+  // The code is what a reader looks up and the message is what makes the line readable without
+  // doing so, which is the difference between a refusal diagnosable from the log and one that
+  // takes a live probe against Discord to explain.
+  const { transport } = transportWith(() => ({
+    kind: "response",
+    status: 403,
+    header: headers({}),
+    body: { message: "Cannot execute action on a system message", code: 50021 },
+  }));
+
+  const outcome = await transport.deleteMessage({ messageId: "message-42" });
+
+  assert.equal(outcome.status, "failed");
+  assert.equal(
+    outcome.status === "failed" ? outcome.error : null,
+    "HTTP 403 (50021: Cannot execute action on a system message)",
+  );
+  assert.equal(outcome.status === "failed" ? outcome.permanent : null, true);
+});
+
+test("a refusal without a code is the bare status, and Discord's text is stripped and bounded", async () => {
+  // The message is network-supplied text bound for a log file, so what rides in the error is
+  // printable and finite whatever arrives.
+  async function errorFor(body: unknown) {
+    const { transport } = transportWith(() => ({
+      kind: "response",
+      status: 403,
+      header: headers({}),
+      body,
+    }));
+    const outcome = await transport.deleteMessage({ messageId: "message-42" });
+    assert.equal(outcome.status, "failed");
+    assert.equal(outcome.status === "failed" ? outcome.permanent : null, true);
+    return outcome.status === "failed" ? outcome.error : null;
+  }
+
+  assert.equal(await errorFor(null), "HTTP 403");
+  assert.equal(await errorFor(""), "HTTP 403");
+  assert.equal(await errorFor("Forbidden"), "HTTP 403");
+  assert.equal(await errorFor({ message: "no code here" }), "HTTP 403");
+  assert.equal(await errorFor({ code: 50021 }), "HTTP 403");
+  assert.equal(await errorFor({ code: 50021, message: "\u{1F600}" }), "HTTP 403");
+
+  const long = await errorFor({ code: 1, message: `ab${"x".repeat(400)}` });
+  assert.equal(long, `HTTP 403 (1: ab${"x".repeat(118)})`);
+
+  const stripped = await errorFor({ code: 10008, message: "Unknown\nMessage \u{1F600}" });
+  assert.equal(stripped, "HTTP 403 (10008: UnknownMessage )");
 });
 
 test("a rejected token is a fatal failure, not one to retry", async () => {

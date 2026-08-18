@@ -72,32 +72,39 @@ Thread names are glyph-first because the mobile thread list truncates hard and t
 has to survive truncation.
 
 ```
-⚙ neo-intake      working · 14m
-⚙ neo-migrate     working · 2m
-⏸ scott-kit       idle · 1h
-⏹ neo-deploy      needs you · 4m
-⚠ asr-docs        exited · 3h
+⚙ neo-intake · active
+⚙ neo-migrate · active
+⚙ scott-kit · active
+⏹ neo-deploy · needs you
+⚠ asr-docs · exited
 ```
 
-`working` and `idle` are derived from how recently hook traffic arrived. `exited` means the session
-ended, or that it went silent past the presumed-dead horizon. `needs you`, the ⏹ glyph, means that
-session has a permission prompt open and is parked until you answer it. That state is recomputed on
-every refresh from the set of prompts still waiting, so it clears on its own when you answer, and it
-is urgent enough to spend a rename immediately rather than waiting out the dwell window. A pending
-prompt therefore reaches you twice: as a message that pings, and as the thread's own name in the
-list.
+A title carries three states. `active` means the session is up, whether it is mid-turn or sitting
+quiet. `exited` means the session ended, or that it went silent past the presumed-dead horizon.
+`needs you`, the ⏹ glyph, means that session has a permission prompt open and is parked until you
+answer it; it is recomputed on every refresh from the set of prompts still waiting, so it clears on
+its own when you answer, and it is urgent enough to spend a rename immediately rather than waiting
+out the dwell window. A pending prompt therefore reaches you twice: as a message that pings, and as
+the thread's own name in the list.
 
-The vocabulary is graded by how much the state wants from you, so the glyph alone still says that
-much when the list truncates everything behind it: the gear is running, the pause is doing nothing,
-the stop-square is halted on you, and the warning triangle is over. Only the stop-square is one you
-can clear.
+The title is coarser than the state the broker tracks because every rename writes a notice into the
+thread that nothing can remove: an app cannot delete a thread-rename notice (Discord error 50021),
+where a human account with Manage Messages can, so a title following every change would run a column
+of notices down a thread you read for its content.
+`working` versus `idle`, and how many tasks a session is waiting on, are on the card underneath,
+which is edited in place and writes nothing into the thread.
+
+The glyph alone says how much the state wants from you when the list truncates everything behind it:
+the gear is running, the stop-square is halted on you, and the warning triangle is over. Only the
+stop-square is one you can clear.
 
 Renames are the scarcest resource here. Discord documents no limit on channel or thread modification
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
 adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
 because a rename landing ten minutes late paints a state that stopped being true. The card underneath
 is edited in a far looser bucket and carries the detail. The card opens with a heading naming the
-session and its state, then a fenced block of fields (host, session, state, model, context size, a
+session and its state, in a four-state vocabulary that splits the title's `active` into `⚙ working`
+and `⏸ idle`, then a fenced block of fields (host, session, state, model, context size, a
 `From` row while the session is running below the model it opened with, and heartbeat), then one
 fenced block per thing the session has to say about itself: the goal it is working toward, the tool
 it last ran and what that tool was called with, and the subagents and background commands it is
@@ -411,16 +418,18 @@ tailer is the only reader and it never opens a suppressed session's transcript.
 
 ## What a session is waiting on
 
-A session whose main thread is blocked on dispatched subagents fires no hooks at all, so before
-this the card called it idle at the moment it was working hardest. The harness reports its own
-table of in-flight work at every turn end, and the card carries it: the count in the thread title,
-where a phone's truncation eats everything else, and the tasks themselves with their ages on the
-card. At any fan-out you are likely to see, every task is named. A card omits one only when the
-message ceiling forces it, which is the bound that decides in practice, since each entry takes two
-rows: the card starts from at most twenty-four entries and drops them one at a time until the whole
-message fits. An entry reads as one thing rather than two: the first row carries the age and the
-agent's type behind a separator dot, and the second row carries the description with no separator of
-its own, indented two columns past where the type starts so it reads as the entry continuing.
+A session whose main thread is blocked on dispatched subagents fires no hooks at all, so liveness
+alone would read it as idle at the moment it is working hardest. The harness reports its own table
+of in-flight work at every turn end, and the card carries it in two places: the count beside the
+state on the card's own state row, and the tasks themselves with their ages in a block below. The
+thread title says only `active`, since a count that moved with the fan-out would spend a rename, and
+a permanent notice in the thread, on every step of a drain. At any fan-out you are likely to see,
+every task is named. A card omits one only when the message ceiling forces it, which is the bound
+that decides in practice, since each entry takes two rows: the card starts from at most twenty-four
+entries and drops them one at a time until the whole message fits. An entry reads as one thing
+rather than two: the first row carries the age and the agent's type behind a separator dot, and the
+second row carries the description with no separator of its own, indented two columns past where the
+type starts so it reads as the entry continuing.
 
 ```
 Tasks

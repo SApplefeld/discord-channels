@@ -13,7 +13,7 @@
 import { createBudget } from "./budget.ts";
 import type { Budget } from "./budget.ts";
 import type { ThreadBinding } from "./bindings.ts";
-import { inertName, renderCard, threadName } from "./render.ts";
+import { inertName, renderCard, threadName, titleState } from "./render.ts";
 import { deriveSurfaceState } from "./state.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 import type { CallOutcome, DiscordTransport } from "./transport.ts";
@@ -96,12 +96,11 @@ type ThreadState = {
   /** The state most recently derived, for the paths that reason about it rather than the title. */
   desired: SurfaceState;
   /**
-   * The title most recently composed, and when it last changed. Together they are the dwell, and
-   * it keys on the whole composed name rather than on the state because the agent count rides the
-   * title: a fan-out draining a step per turn holds the state at working while changing the name
-   * every step, and a dwell that only saw the state would spend a rename per step out of the same
-   * budget an urgent needs-you rename has to come out of. Re-stamping on any name change makes a
-   * drain coalesce into the renames that settle; the card still carries every count as it moves.
+   * The title most recently composed, and when it last changed. Together they are the dwell, and it
+   * keys on the whole composed name rather than on the state because the two move independently: a
+   * session renaming itself changes the name without changing the state, and a title-state
+   * transition changes both. Either one restarts the dwell, so the settled check always measures how
+   * long the name about to be painted has held.
    */
   desiredName: string | null;
   desiredSince: number;
@@ -374,7 +373,7 @@ export function createSurface(options: SurfaceOptions): Surface {
 
     const budget = renameBudget(entry.threadId);
     if (!budget.affordable(options.now())) {
-      log(`discord: rename of ${label(view)} to ${state} dropped, no budget`);
+      log(`discord: rename of ${label(view)} to ${titleState(state)} dropped, no budget`);
       return false;
     }
     if (!spend()) return false;
@@ -436,9 +435,9 @@ export function createSurface(options: SurfaceOptions): Surface {
     }
     entry.lastView = view;
     entry.desired = state;
-    // The dwell stamp: any change to the composed title restarts it, a state transition and a
-    // count change alike, so refreshName's settled check below always measures how long the name
-    // it is about to paint has held.
+    // The dwell stamp: any change to the composed title restarts it, a title-state transition and
+    // a session renaming itself alike, so refreshName's settled check below always measures how
+    // long the name it is about to paint has held.
     if (name !== entry.desiredName) {
       entry.desiredName = name;
       entry.desiredSince = now;
@@ -480,7 +479,7 @@ export function createSurface(options: SurfaceOptions): Surface {
   /**
    * A session the registry has pruned or evicted stops arriving in the view set. Its thread is
    * still on Discord, so both surfaces are driven to the final state before the entry is
-   * forgotten: dropping it here would leave a thread titled working forever, or a title that says
+   * forgotten: dropping it here would leave a thread titled active forever, or a title that says
    * exited over a card that still says working.
    *
    * Returns true when the entry can be let go, which is when both surfaces are painted, or when

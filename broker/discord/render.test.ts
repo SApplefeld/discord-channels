@@ -8,6 +8,7 @@ import {
   MAX_MIRRORED_PROMPT_LENGTH,
   MAX_THREAD_NAME_LENGTH,
   MAX_TOOL_INPUT_PREVIEW,
+  TITLE_GLYPHS,
   appendNarration,
   heartbeat,
   inertField,
@@ -191,23 +192,45 @@ test("the downgrade marker stands on every render, not only the one the change l
   assert.ok(!restored.includes("Down from"), restored);
 });
 
-test("a thread name puts the glyph first and the state last", () => {
-  assert.equal(threadName(view(), "working"), "⚙ neo-intake · working");
+test("a thread name puts the glyph first and the title state last", () => {
+  assert.equal(threadName(view(), "working"), "⚙ neo-intake · active");
+  assert.equal(threadName(view(), "idle"), "⚙ neo-intake · active");
   assert.equal(threadName(view(), "needs you"), "⏹ neo-intake · needs you");
-  assert.equal(threadName(view(), "idle"), "⏸ neo-intake · idle");
   assert.equal(threadName(view(), "exited"), "⚠ neo-intake · exited");
+});
+
+test("the card draws one glyph per state, and the four are pinned here", () => {
+  // The card is the surface carrying the whole state, so it is the one with four glyphs. They are
+  // written out as literals here so a change to one is a change to this test.
+  assert.deepEqual(GLYPHS, { working: "⚙", "needs you": "⏹", idle: "⏸", exited: "⚠" });
+
+  for (const state of ["working", "needs you", "idle", "exited"] as const) {
+    assert.ok(renderCard(view(), state, NOW).startsWith(`${GLYPHS[state]} `), state);
+  }
+});
+
+test("a session going quiet does not change its thread name", () => {
+  // Every rename writes a notice into the thread that nothing can remove, so working and idle are
+  // one title state and the difference between them is read off the card.
+  const quiet = view();
+
+  assert.equal(threadName(quiet, "working"), threadName(quiet, "idle"));
+  assert.equal(threadName(quiet, "idle"), `${TITLE_GLYPHS.active} neo-intake · active`);
 });
 
 test("an over-long name is truncated without eating the glyph or the state", () => {
   const name = threadName(view({ name: "x".repeat(400) }), "needs you");
 
   assert.ok(name.length <= MAX_THREAD_NAME_LENGTH, `${name.length} characters`);
-  assert.ok(name.startsWith(`${GLYPHS["needs you"]} `), name);
+  assert.ok(name.startsWith(`${TITLE_GLYPHS["needs you"]} `), name);
   assert.ok(name.endsWith(" · needs you"), name);
 });
 
 test("a session with no name is still distinguishable in the list", () => {
-  assert.equal(threadName(view({ name: null }), "idle"), `${GLYPHS.idle} session 0f3c9d21 · idle`);
+  assert.equal(
+    threadName(view({ name: null }), "idle"),
+    `${TITLE_GLYPHS.active} session 0f3c9d21 · active`,
+  );
 });
 
 test("a name of invisible characters falls back rather than rendering an empty title", () => {
@@ -215,14 +238,14 @@ test("a name of invisible characters falls back rather than rendering an empty t
   // all, and Discord refuses an empty thread name.
   assert.equal(
     threadName(view({ name: "\u200b\u202e\u0000" }), "idle"),
-    `${GLYPHS.idle} session 0f3c9d21 · idle`,
+    `${TITLE_GLYPHS.active} session 0f3c9d21 · active`,
   );
 });
 
 test("a thread name carries no bidi override or zero-width character", () => {
   const name = threadName(view({ name: "neo\u202eelbisrever\u200b" }), "working");
 
-  assert.equal(name, "⚙ neoelbisrever · working");
+  assert.equal(name, "⚙ neoelbisrever · active");
 });
 
 test("the session ID fallback is neutralized before it is cut", () => {
@@ -230,7 +253,7 @@ test("the session ID fallback is neutralized before it is cut", () => {
   // text can end in the middle of a bidi override.
   const name = threadName(view({ name: null, sessionId: "\u202e0f3c9d21-1111" }), "idle");
 
-  assert.equal(name, `${GLYPHS.idle} session 0f3c9d21 · idle`);
+  assert.equal(name, `${TITLE_GLYPHS.active} session 0f3c9d21 · active`);
 });
 
 test("untrusted text in the card is inert", () => {
@@ -307,7 +330,7 @@ test("a name is cut on code points, never mid-character", () => {
   // A lone surrogate does not survive a UTF-8 round trip: it comes back as a replacement character.
   assert.equal(Buffer.from(name, "utf8").toString("utf8"), name);
   assert.ok(name.length <= MAX_THREAD_NAME_LENGTH, `${name.length} units`);
-  assert.ok(name.endsWith(" · working"));
+  assert.ok(name.endsWith(" · active"));
 });
 
 test("the card carries the named fields, the state, and its tool block", () => {
@@ -2337,7 +2360,7 @@ test("an idle card draws its fields alone, with neither optional block standing 
   assert.equal(blocks.tool, null);
 });
 
-test("a session waiting on agents says so on the card and in the title", () => {
+test("a session waiting on agents says so on the card", () => {
   const waiting = view({
     backgroundTasks: [
       agent("S6"),
@@ -2358,11 +2381,9 @@ test("a session waiting on agents says so on the card and in the title", () => {
     "35m · implementer-fable",
     "        Grooming S6 implementation",
   ]);
-  // The count rides the state on both surfaces, since the four states cannot say waiting on agents
-  // and the title is what survives the thread list's truncation on a phone. The word is "tasks"
-  // because the count covers shell tasks too.
+  // The count rides the state, since the four states cannot say waiting on agents. The word is
+  // "tasks" because the count covers shell tasks too.
   assert.equal(value(card, "State"), "working · 2 tasks");
-  assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 2 tasks");
   // The tasks sit below the fields the card always carries, because the roster is the one part
   // sized by another program's fan-out, and below the tool, which nearly every session has where
   // few have tasks.
@@ -2389,7 +2410,17 @@ test("a shell task renders beside a subagent, since both are invisible work", ()
     "the kind is what tells a shell task from a subagent",
   );
   assert.equal(value(card, "State"), "working · 1 task");
-  assert.equal(threadName(waiting, "working"), "⚙ neo-intake · working · 1 task");
+});
+
+test("a fan-out is counted on the card and left out of the title", () => {
+  // A count in the title would spend a rename, and a permanent notice in the thread, on every step
+  // of a drain. The card is edited in place, so it is where a moving number belongs.
+  const waiting = view({
+    backgroundTasks: [agent("S6"), agent("ladder"), agent("groom")],
+  });
+
+  assert.equal(value(renderCard(waiting, "working", NOW), "State"), "working · 3 tasks");
+  assert.equal(threadName(waiting, "working"), `${TITLE_GLYPHS.active} neo-intake · active`);
 });
 
 test("a session waiting on nothing carries no roster line and no count", () => {
@@ -2398,9 +2429,7 @@ test("a session waiting on nothing carries no roster line and no count", () => {
   assert.ok(!card.includes("Waiting"), card);
   assert.equal(value(card, "State"), "working");
   assert.ok(!/tasks?/.test(card), card);
-  assert.equal(threadName(view(), "working"), `${GLYPHS.working} neo-intake · working`);
-  // An idle or exited session's title carries no roster count, only the state.
-  assert.equal(threadName(view(), "idle"), `${GLYPHS.idle} neo-intake · idle`);
+  assert.equal(threadName(view(), "working"), `${TITLE_GLYPHS.active} neo-intake · active`);
 });
 
 test("an exited session's card carries no roster line", () => {

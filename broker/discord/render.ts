@@ -11,13 +11,12 @@ import type { BackgroundTask, ModelFallback } from "../registry.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 
 /**
- * Glyph first, because the channel's thread list truncates hard on mobile and the actionable bit
- * has to survive truncation.
+ * The four-state vocabulary of the session card, which is the surface carrying the full state.
  *
- * Exported so the vocabulary is claimed in one place: the thread title and the session card title
- * are the two surfaces that draw it, both from here, and every test asserting a title composition
- * reads its glyph from this table rather than repeating a literal. One test pins the literals, and
- * it is the only thing that has to change when a state's glyph does.
+ * Glyph first on the card's heading, so a channel scrolled at speed reads as a column of states.
+ * Exported so it is claimed in one place, and every test asserting a card title reads its glyph
+ * from this table rather than repeating a literal. One test pins the literals, and it is the only
+ * thing that has to change when a state's glyph does.
  *
  * The vocabulary is graded by how much the state wants from the operator, so the glyph alone
  * carries that much when truncation eats the rest: a gear is running, a pause is doing nothing, a
@@ -29,6 +28,33 @@ export const GLYPHS: Record<SurfaceState, string> = {
   idle: "⏸",
   exited: "⚠",
 };
+
+/**
+ * What a thread title distinguishes, which is coarser than what the card says.
+ *
+ * Every rename writes a notice into the thread that nothing can remove, so the title is spent only
+ * on a change worth a line of the transcript: whether a session is running, halted on the operator,
+ * or over. Working versus idle, and the count of tasks a session is waiting on, are card facts.
+ */
+export type TitleState = "active" | "needs you" | "exited";
+
+/**
+ * The title's glyphs, a subset of the card's: active is the gear a working card draws, and the
+ * other two are the card's own.
+ *
+ * Glyph first in a title, because the channel's thread list truncates hard on mobile and the
+ * actionable bit has to survive truncation.
+ */
+export const TITLE_GLYPHS: Record<TitleState, string> = {
+  active: "⚙",
+  "needs you": "⏹",
+  exited: "⚠",
+};
+
+/** The card's state as the thread list sees it: a session that is up at all reads as active. */
+export function titleState(state: SurfaceState): TitleState {
+  return state === "working" || state === "idle" ? "active" : state;
+}
 
 /** Separates the name from the state in a thread title. */
 const SEPARATOR = "·";
@@ -678,10 +704,12 @@ export function displayName(view: SessionView): string {
  * The count rides the state rather than sitting elsewhere on the card because the four states
  * cannot express waiting on agents at all: without it a session blocked on a fan-out reads as
  * ordinary work, and the operator has no way to tell a turn that is thinking from one that is
- * waiting on eleven agents. It is counted rather than listed here so the thread title, which mobile
- * truncates hard, carries the fact in the few characters that survive. The word is "tasks" rather
- * than "agents" because the count covers both kinds the table reports, and a session waiting on
- * two backgrounded shells is not waiting on two agents.
+ * waiting on eleven agents. It is counted rather than listed here because the roster below it is
+ * where the entries are, and the state line is read at a glance. The word is "tasks" rather than
+ * "agents" because the count covers both kinds the table reports, and a session waiting on two
+ * backgrounded shells is not waiting on two agents.
+ *
+ * The card is the only surface this reaches: the thread title carries the coarser title state.
  */
 function stateLabel(view: SessionView, state: SurfaceState): string {
   const waiting = view.backgroundTasks.length;
@@ -690,14 +718,15 @@ function stateLabel(view: SessionView, state: SurfaceState): string {
 }
 
 /**
- * `<glyph> <session-name> <separator> <state>`.
+ * `<glyph> <session-name> <separator> <title state>`.
  *
- * The name is what gets shortened when the whole thing is too long: the glyph and the state are
- * the parts a truncating list view must not eat.
+ * The name is what gets shortened when the whole thing is too long: the glyph and the title state
+ * are the parts a truncating list view must not eat.
  */
 export function threadName(view: SessionView, state: SurfaceState): string {
-  const prefix = `${GLYPHS[state]} `;
-  const suffix = ` ${SEPARATOR} ${stateLabel(view, state)}`;
+  const title = titleState(state);
+  const prefix = `${TITLE_GLYPHS[title]} `;
+  const suffix = ` ${SEPARATOR} ${title}`;
   const room = MAX_THREAD_NAME_LENGTH - prefix.length - suffix.length;
   return `${prefix}${fit(displayName(view), room)}${suffix}`;
 }

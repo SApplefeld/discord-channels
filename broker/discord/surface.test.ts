@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createSurface } from "./surface.ts";
 import type { SurfaceOptions } from "./surface.ts";
-import { GLYPHS } from "./render.ts";
+import { TITLE_GLYPHS } from "./render.ts";
 import type { SessionView } from "./state.ts";
 import type { CallOutcome, DiscordTransport, RateLimitObservation } from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
@@ -145,7 +145,7 @@ test("a new session gets one thread, opened on the broker's own starter message"
 
   assert.equal(calls.posts.length, 1, "the starter message is posted once");
   assert.match(calls.posts[0], /^State {5}working$/m);
-  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "⚙ neo-intake · working" }]);
+  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "⚙ neo-intake · active" }]);
   assert.equal(surface.threadFor("session-a"), "thread-1");
   assert.equal(surface.threadFor("session-b"), null);
 });
@@ -163,7 +163,7 @@ test("a thread that could not be opened is retried on the message already posted
 
   assert.equal(calls.posts.length, 1, "the card is never posted twice");
   assert.equal(calls.opens.length, 2, "the thread is re-opened on the message that exists");
-  assert.deepEqual(calls.opens[1], { messageId: "message-1", name: "⚙ neo-intake · working" });
+  assert.deepEqual(calls.opens[1], { messageId: "message-1", name: "⚙ neo-intake · active" });
   assert.equal(surface.threadFor("session-a"), "thread-1");
 });
 
@@ -211,37 +211,37 @@ test("a rename the budget refuses is dropped, and the next state still renders",
   await surface.tick([view()]);
   assert.deepEqual(names(calls), []);
 
-  // The session falls quiet and reads as idle, then idle holds past the dwell window and earns a
-  // rename, which the budget refuses.
-  time.advance(IDLE_AFTER_MS + 1);
-  await surface.tick([view()]);
+  // The session renames itself, which is a title change the dwell damps, and the rename it earns
+  // once the new name has held is the one the budget refuses.
+  const renamed = view({ name: "neo-migrate" });
+  await surface.tick([renamed]);
+  assert.deepEqual(names(calls), [], "a name that just changed has not settled");
+
   time.advance(DWELL_MS);
   calls.nextRename = refused(30_000);
-  await surface.tick([view()]);
-  assert.deepEqual(
-    names(calls),
-    [`${GLYPHS.idle} neo-intake · idle`],
-    "the refused attempt was made once",
-  );
+  await surface.tick([renamed]);
+  assert.deepEqual(names(calls), ["⚙ neo-migrate · active"], "the refused attempt was made once");
 
   // Still inside the reported wait: nothing is retried and nothing is held.
   time.advance(10_000);
-  await surface.tick([view()]);
+  await surface.tick([renamed]);
   assert.equal(calls.renames.length, 1, "a refused rename is not retried inside the wait");
 
   // The session ends while the budget is still blocked, then the wait expires.
   time.advance(25_000);
-  const ended = view({ lifecycle: "ended", endedAt: time.now() });
+  const ended = view({ name: "neo-migrate", lifecycle: "ended", endedAt: time.now() });
   await surface.tick([ended]);
 
   assert.deepEqual(
     names(calls),
-    [`${GLYPHS.idle} neo-intake · idle`, `${GLYPHS.exited} neo-intake · exited`],
-    "the dropped idle rename never lands after the state moved on",
+    ["⚙ neo-migrate · active", "⚠ neo-migrate · exited"],
+    "the dropped rename never lands after the state moved on",
   );
 });
 
-test("flapping between working and idle inside the dwell window spends at most one rename", async () => {
+test("a session falling quiet and picking up again costs no rename at all", async () => {
+  // Every rename writes a notice into the thread that nothing can remove, so working and idle are
+  // one title state: a session going quiet moves its card and leaves the thread list alone.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -249,35 +249,29 @@ test("flapping between working and idle inside the dwell window spends at most o
   const started = time.now();
   await surface.tick([view({ lastHookAt: started })]);
 
-  // Quiet long enough to read as idle, but not long enough for idle to settle.
+  // Quiet long enough to read as idle, and held there well past the window that would settle it.
   time.advance(IDLE_AFTER_MS + 1);
   await surface.tick([view({ lastHookAt: started })]);
-  assert.deepEqual(names(calls), [], "an unsettled state is not worth a rename");
+  time.advance(DWELL_MS);
+  await surface.tick([view({ lastHookAt: started })]);
+  assert.deepEqual(names(calls), [], "the title says active either way");
+  assert.ok(
+    calls.cards.some((card) => /^State {5}idle$/m.test(card)),
+    "and the card is where going quiet shows",
+  );
 
-  // A hook arrives and it is working again, still inside the dwell window.
+  // A hook arrives and it is working again, and that costs nothing either.
   time.advance(1_000);
   const resumed = time.now();
   await surface.tick([view({ lastHookAt: resumed })]);
-
-  // And quiet again.
-  time.advance(IDLE_AFTER_MS + 1);
-  await surface.tick([view({ lastHookAt: resumed })]);
-  assert.deepEqual(names(calls), [], "the flap cost nothing");
-
-  // This time idle holds past the dwell window, which is what earns the one rename.
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: resumed })]);
-  assert.deepEqual(names(calls), [`${GLYPHS.idle} neo-intake · idle`]);
-
-  time.advance(DWELL_MS);
-  await surface.tick([view({ lastHookAt: resumed })]);
-  assert.equal(calls.renames.length, 1, "a state already painted is not repainted");
+  assert.deepEqual(names(calls), [], "and neither does picking back up");
 });
 
-test("an agent count change is damped like any other rename, so a drain coalesces", async () => {
-  // The dwell keys on the composed title, not on the derived state: the agent count rides the
-  // title, so a fan-out draining a step per Stop would otherwise spend a rename per step out of
-  // the same budget an urgent needs-you rename has to come out of.
+test("a fan-out draining costs no rename, since the count is a card fact", async () => {
+  // A count in the title would spend a rename, and a permanent notice in the thread, on every step
+  // a fan-out drains, out of the same budget an urgent needs-you rename comes from.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -296,23 +290,20 @@ test("an agent count change is damped like any other rename, so a drain coalesce
   time.advance(DWELL_MS + 1_000);
   let seen = time.now();
   await surface.tick([view({ lastHookAt: seen })]);
-  assert.deepEqual(names(calls), [], "the opened title already says working");
+  assert.deepEqual(names(calls), [], "the opened title already says active");
 
-  // A fan-out lands: the derived state is unchanged, the composed title is not.
-  await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(3) })]);
-  assert.equal(calls.renames.length, 0, "a count that just appeared has not settled");
+  // A fan-out lands and then drains a step at a time, each step held past the dwell window.
+  for (const count of [3, 2, 1, 0]) {
+    time.advance(DWELL_MS);
+    seen = time.now();
+    await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(count) })]);
+  }
 
-  // The fan-out drains a step inside the dwell window.
-  time.advance(DWELL_MS / 2);
-  seen = time.now();
-  await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(2) })]);
-  assert.equal(calls.renames.length, 0, "each step re-stamps the dwell rather than renaming");
-
-  // The remaining pair holds past the dwell window, which is what earns the one rename.
-  time.advance(DWELL_MS);
-  seen = time.now();
-  await surface.tick([view({ lastHookAt: seen, backgroundTasks: agents(2) })]);
-  assert.deepEqual(names(calls), ["⚙ neo-intake · working · 2 tasks"]);
+  assert.deepEqual(names(calls), [], "the whole drain is drawn on the card alone");
+  assert.ok(
+    calls.cards.some((card) => /^State {5}working · 3 tasks$/m.test(card)),
+    "and the count that reaches the operator is on it",
+  );
 });
 
 test("one thread's exhausted rename budget does not hold up another thread", async () => {
@@ -353,7 +344,7 @@ test("one thread's exhausted rename budget does not hold up another thread", asy
 
   assert.deepEqual(calls.renames[1], {
     threadId: "thread-2",
-    name: `${GLYPHS["needs you"]} neo-migrate · needs you`,
+    name: `${TITLE_GLYPHS["needs you"]} neo-migrate · needs you`,
   });
 });
 
@@ -378,7 +369,7 @@ test("a session waiting on a person is renamed without waiting out the dwell win
   time.advance(1_000);
   await surface.tick([view({ needsAttention: true })]);
 
-  assert.deepEqual(names(calls), [`${GLYPHS["needs you"]} neo-intake · needs you`]);
+  assert.deepEqual(names(calls), [`${TITLE_GLYPHS["needs you"]} neo-intake · needs you`]);
 });
 
 test("a startup pass archives a restored thread whose session already exited, exactly once", async () => {
@@ -481,7 +472,7 @@ test("a thread revived by a post is not archived again until its session exits a
 
   assert.deepEqual(calls.archived, ["thread-1"], "the revived thread is left where the operator put it");
   assert.ok(calls.cards.length > painted, "and its card is maintained again rather than left frozen");
-  assert.equal(names(calls).at(-1), "⚙ neo-intake · working", "and its title follows it back");
+  assert.equal(names(calls).at(-1), "⚙ neo-intake · active", "and its title follows it back");
 
   // The real exit, which is what the archive is for: it closes again rather than staying open
   // because an earlier presumption already spent the one archive the thread was ever going to get.
@@ -665,7 +656,7 @@ test("a binding is reported for persistence as it is created and dropped", async
         threadId: "thread-1",
         archived: false,
         name: "neo-intake",
-        title: "⚙ neo-intake · working",
+        title: "⚙ neo-intake · active",
       },
     ]),
     "and the title it carries is recorded with it",
@@ -1031,6 +1022,42 @@ test("a restored binding whose session is gone is titled with the name, not the 
   await surface.tick([]);
 
   assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
+});
+
+test("a thread carrying the previous title format is renamed once and then left alone", async () => {
+  // Threads restored from a run that titled them working or idle carry a name no state composes
+  // any more, so each is worth exactly one rename to the title it renders under now. After that the
+  // title holds across working and idle alike, which is the whole point of the coarser vocabulary.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, {
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+  });
+
+  await surface.tick([view({ lastHookAt: time.now() })]);
+  assert.deepEqual(names(calls), [], "the dwell has to pass before any rename");
+
+  time.advance(DWELL_MS);
+  await surface.tick([view({ lastHookAt: time.now() })]);
+  assert.deepEqual(names(calls), ["⚙ neo-intake · active"]);
+
+  // Still working, then quiet long enough to render idle: neither composes a different title.
+  time.advance(1_000);
+  await surface.tick([view({ lastHookAt: time.now() })]);
+  time.advance(IDLE_AFTER_MS + 1_000);
+  await surface.tick([view({ lastHookAt: time.now() - IDLE_AFTER_MS - 1_000 })]);
+
+  assert.match(calls.cards.at(-1) ?? "", /^State {5}idle$/m, "the card is the surface that flips");
+  assert.deepEqual(names(calls), ["⚙ neo-intake · active"], "one rename, and no more");
 });
 
 test("the pin list reads the cards of the sessions that are running, and only after a pass", async () => {

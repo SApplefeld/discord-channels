@@ -1,5 +1,5 @@
 // The two decisions the gateway makes about an arriving message: which ones reach a session, and
-// which ones are the system notices this broker's own pins and renames wrote.
+// which ones are the pin notices this broker's own pins wrote.
 //
 // The classifier is driven directly rather than through a connected client, and that is what the
 // handler is shaped for: it reduces the library's message to facts, asks once, and hands the answer
@@ -143,14 +143,13 @@ test("a message in a thread of another host's channel is still dropped", () => {
 
 test("a pin notice in a thread is delivered like any message, never deleted", () => {
   // Pins are the channel's, so a notice cannot arrive in a thread. If one did it would be routed as
-  // the message it is rather than removed, because the thread path deletes on the rename type and
-  // on nothing else.
+  // the message it is rather than removed, because the thread path deletes nothing at all.
   const inThread = pinNotice({ channelId: "thread-3", parentId: CHANNEL, inThread: true });
 
   assert.equal(classifyMessage(inThread, CHANNEL), "deliver");
 });
 
-/** The notice Discord writes into a thread when its name changes: the other of the two deleted. */
+/** The notice Discord writes into a thread when its name changes: dropped, never deleted. */
 function renameNotice(facts: Partial<MessageFacts> = {}): MessageFacts {
   return {
     channelId: "thread-3",
@@ -163,23 +162,23 @@ function renameNotice(facts: Partial<MessageFacts> = {}): MessageFacts {
   };
 }
 
-test("a rename notice this bot wrote in a thread of this host's channel is deleted", () => {
-  // Every state flip and every age tick past the dwell window renames the thread, so this is the
-  // line the thread would otherwise collect one of per rename.
-  assert.equal(classifyMessage(renameNotice(), CHANNEL), "delete");
+test("a rename notice this bot wrote in a thread of this host's channel is dropped", () => {
+  // Not deleted: an application asking to delete a system message of this kind is answered 403
+  // with error 50021, so the request would be refused on every rename this broker makes. Not
+  // reported either: it is expected behind every rename, and the report is for the unexpected.
+  assert.equal(classifyMessage(renameNotice(), CHANNEL), "drop");
 });
 
-test("a rename notice behind a rename the operator made by hand is dropped, not deleted", () => {
-  // Two claims in one, and the drop is the pinned decision. The delete is refused because the
-  // rename is not this broker's to undo the trace of, and the deliver is refused because a system
-  // message carries no text a session could act on: Discord draws its line from the new name, so
-  // delivering it would put words in the operator's mouth that they never typed.
+test("a rename notice behind a rename the operator made by hand is dropped, not delivered", () => {
+  // The deliver is what this refuses: a system message carries no text a session could act on,
+  // because Discord draws its line from the new name, so delivering it would put words in the
+  // operator's mouth that they never typed.
   assert.equal(classifyMessage(renameNotice({ authorId: OPERATOR }), CHANNEL), "drop");
 });
 
 test("a rename notice arriving before the connection knows its own user is dropped", () => {
-  // The bot's own id is what the author is compared against, so without it there is no author
-  // check to pass and the notice stays.
+  // Who wrote it does not enter this decision at all: every rename notice is dropped, whether the
+  // connection has identified itself yet or not.
   assert.equal(classifyMessage(renameNotice({ selfId: null }), CHANNEL), "drop");
 });
 
@@ -221,17 +220,15 @@ function cleanerWith(
   outcomes: () => Promise<CallOutcome<null>>,
   clock: { at: number },
 ): {
-  deleted: { messageId: string; channelId: string | undefined }[];
+  deleted: { messageId: string }[];
   lines: string[];
-  clean: (
-    notice: { kind: SystemNoticeKind; messageId: string; channelId?: string },
-  ) => Promise<void>;
+  clean: (notice: { kind: SystemNoticeKind; messageId: string }) => Promise<void>;
 } {
-  const deleted: { messageId: string; channelId: string | undefined }[] = [];
+  const deleted: { messageId: string }[] = [];
   const lines: string[] = [];
   const clean = createSystemNoticeCleaner({
-    deleteMessage: async ({ messageId, channelId }) => {
-      deleted.push({ messageId, channelId });
+    deleteMessage: async ({ messageId }) => {
+      deleted.push({ messageId });
       return outcomes();
     },
     log: (message) => lines.push(message),
@@ -281,53 +278,35 @@ test("a refusal past the window is logged again, counting what was held back", a
   assert.match(lines[1], /1 more since the last line/);
 });
 
-test("a refused delete names which notice it was, and the thread it lived in is the route's", async () => {
-  const clock = { at: 1_000_000 };
-  const { deleted, lines, clean } = cleanerWith(async () => refused("HTTP 500"), clock);
-
-  await clean({ kind: "rename", messageId: "notice-1", channelId: "thread-3" });
-
-  // The kind is in the line because the two notices sit behind different routes, so a host reading
-  // one refusal knows which of its writes is leaving a trace.
-  assert.deepEqual(deleted, [{ messageId: "notice-1", channelId: "thread-3" }]);
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /deleting a rename notice was refused: HTTP 500/);
-});
-
-test("a permanent refusal latches its kind off and leaves the other attempting", async () => {
+test("a permanent refusal latches the kind off for the run", async () => {
   const clock = { at: 1_000_000 };
   const { deleted, lines, clean } = cleanerWith(async () => refusedForGood("HTTP 403"), clock);
 
   await clean(pinAt("notice-1"));
   await clean(pinAt("notice-2"));
-  await clean({ kind: "rename", messageId: "notice-3", channelId: "thread-3" });
 
-  // One request for a kind Discord refuses outright, and the other kind unaffected: the refusal
-  // stands for every later pass, and a rename notice arrives on every state flip of every session
-  // thread, so the requests a latch saves are the whole invalid-request budget.
+  // One request for a kind Discord refuses outright: the refusal stands for every later pass, so
+  // an unlatched kind would spend one refused request per notice against the invalid-request
+  // budget whose overrun is an hour-long ban on this host's whole connection.
   assert.deepEqual(
     deleted.map((call) => call.messageId),
-    ["notice-1", "notice-3"],
+    ["notice-1"],
   );
   const latched = lines.filter((line) => line.includes("rest of this run"));
-  assert.deepEqual(
-    latched.map((line) => (line.includes("pin") ? "pin" : "rename")),
-    ["pin", "rename"],
-    `each kind names its own latch once: ${JSON.stringify(lines)}`,
-  );
+  assert.equal(latched.length, 1, `the latch is named once: ${JSON.stringify(lines)}`);
   assert.match(latched[0], /deleting a pin notice was refused: HTTP 403\. No pin notice is cleaned/);
 });
 
-test("a notice that is already gone latches nothing, so every other thread is still cleaned", async () => {
+test("a notice that is already gone latches nothing, so every later notice is still cleaned", async () => {
   const clock = { at: 1_000_000 };
   const { deleted, lines, clean } = cleanerWith(async () => alreadyGone(), clock);
 
-  await clean({ kind: "rename", messageId: "notice-1", channelId: "thread-1" });
-  await clean({ kind: "rename", messageId: "notice-2", channelId: "thread-2" });
+  await clean(pinAt("notice-1"));
+  await clean(pinAt("notice-2"));
 
-  // A 404 is permanent about the identifier it named and about nothing else. The operator deleting
-  // one notice by hand, or a thread going away mid-pass, must not stand the rename cleaner down for
-  // every other session thread, which is what reading `permanent` alone would do.
+  // A 404 is permanent about the identifier it named and about nothing else. The operator removing
+  // one notice by hand must not stand the cleaner down for every notice after it, which is what
+  // reading `permanent` alone would do.
   assert.deepEqual(
     deleted.map((call) => call.messageId),
     ["notice-1", "notice-2"],
@@ -360,9 +339,9 @@ test("a delete that lands says nothing at all", async () => {
 
   await clean(pinAt("notice-1"));
 
-  // No channel of its own: a pin notice is in the host's configured channel, which is where the
-  // delete route already points.
-  assert.deepEqual(deleted, [{ messageId: "notice-1", channelId: undefined }]);
+  // The notice names nothing but itself: a pin notice is in the host's configured channel, which
+  // is where the delete route already points.
+  assert.deepEqual(deleted, [{ messageId: "notice-1" }]);
   assert.deepEqual(lines, []);
 });
 

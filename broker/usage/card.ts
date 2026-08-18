@@ -636,9 +636,9 @@ export function renderUsageCard(input: {
     return lines.join("\n");
   };
 
-  // The state each session renders under comes from the one derivation the thread titles use, so a
-  // session cannot read as working on the card and idle in the channel list. `exited` is what an
-  // ended session derives, and those are omitted: the card is what is running now.
+  // The state each session renders under comes from the one derivation the thread titles use, which
+  // reads both working and idle as active, so the card is where the two are told apart. `exited` is
+  // what an ended session derives, and those are omitted: the card is what is running now.
   const live = input.sessions
     .map((view) => ({ view, state: deriveSurfaceState(view, input.now, input.thresholds) }))
     .filter((entry) => entry.state !== "exited");

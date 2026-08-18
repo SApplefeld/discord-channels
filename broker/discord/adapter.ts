@@ -159,6 +159,30 @@ function readPinPage(body: unknown): { messageIds: string[]; hasMore: boolean } 
   return { messageIds, hasMore: page.has_more === true };
 }
 
+/** How much of Discord's own refusal message rides in an outcome, past which a log line is noise. */
+const MAX_REASON_CHARS = 120;
+
+/**
+ * Discord's own reason for a refusal, as `(<code>: <message>)`, and null for a body that does not
+ * carry both. The code is the thing to look up and the message is what makes the line readable
+ * without one, which is the difference between a refusal diagnosable from the log and one that
+ * takes a live probe.
+ *
+ * The message is network-supplied text reaching two sinks, the broker's log and the reply result the
+ * relay hands back to the session that asked for the write. Both take it because it is Discord's own
+ * fixed error catalog, stripped to printable ASCII and bounded; nothing else about the body is read.
+ * A message with nothing printable in it leaves no reason at all, so the error stays the bare status
+ * rather than an empty parenthetical.
+ */
+function refusalReason(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const refusal = body as Record<string, unknown>;
+  if (typeof refusal.code !== "number" || typeof refusal.message !== "string") return null;
+  const message = refusal.message.replace(/[^\x20-\x7E]/gu, "").slice(0, MAX_REASON_CHARS);
+  if (message === "") return null;
+  return `(${String(refusal.code)}: ${message})`;
+}
+
 /** Folds one attempt into an outcome, leaving the caller to read the body of a successful one. */
 function classify(result: RawResult): CallOutcome<unknown> {
   if (result.kind === "failed") {
@@ -179,10 +203,12 @@ function classify(result: RawResult): CallOutcome<unknown> {
   }
   if (result.status >= 400 && result.status < 500) {
     // Discord refused the request, not the moment. Retrying it unchanged writes forever, and a
-    // 404 says the identifier the call carried no longer names anything.
+    // 404 says the identifier the call carried no longer names anything. The reason rides along
+    // when the body carries one, because a refusal of the request is one a reader has to fix.
+    const reason = refusalReason(result.body);
     return {
       status: "failed",
-      error: `HTTP ${result.status}`,
+      error: reason === null ? `HTTP ${result.status}` : `HTTP ${result.status} ${reason}`,
       rate,
       permanent: true,
       missing: result.status === 404,
@@ -411,11 +437,10 @@ export function createDiscordTransport(
     },
 
     // The message route rather than the pin one: this removes the message itself, and the only
-    // messages it is pointed at are the system notices this bot's own writes cause. The route is
-    // scoped to where the message lives, which is the configured channel for a pin notice and the
-    // thread's own id for a notice inside a thread.
-    deleteMessage: async ({ messageId, channelId: from = channelId }): Promise<CallOutcome<null>> => {
-      const deleted = await write(`/channels/${from}/messages/${messageId}`, "DELETE");
+    // messages it is pointed at are the pin notices this bot's own pins cause, which live in the
+    // configured channel.
+    deleteMessage: async ({ messageId }): Promise<CallOutcome<null>> => {
+      const deleted = await write(`/channels/${channelId}/messages/${messageId}`, "DELETE");
       return deleted.status === "ok" ? { status: "ok", value: null, rate: deleted.rate } : deleted;
     },
   };
