@@ -317,9 +317,12 @@ ceiling it lands quietly, and past the post ceiling it is dropped with a log lin
 is retried on the next pass for as long as the block stays fresh, and a session whose thread is not
 open yet simply waits for it.
 
-Three limits are worth knowing before you read the absence of a `⛔` as good news. A session that goes
-silent past `CHANNEL_DISCORD_EXITED_AFTER_MS` (4 hours) renders exited whatever it last said, so a
-hook-only session blocked overnight ends up archived rather than blocked. The event stream is a
+Three limits are worth knowing before you read the absence of a `⛔` as good news. A standing block
+is exempt from the silence backstop: a session blocked overnight keeps its `⛔` however long it
+sits, where any other session silent past `CHANNEL_DISCORD_EXITED_AFTER_MS` (4 hours) renders
+exited. The price of the exemption is the inverse misread: a session killed while blocked keeps
+its `⛔` until the broker lets the record go, rather than flipping to exited at the backstop. The
+event stream is a
 plain file in your home directory that any process running as you can append to, so a crafted
 `goal-complete` clears a real block and a flood of junk session ids can push a real one out of the
 reader's 200-session map. And a block landing while the broker is down past the freshness bound

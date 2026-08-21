@@ -146,7 +146,7 @@ test("a blocked run outranks the roster and both live states", () => {
   );
 });
 
-test("a block does not outrank a person or a death", () => {
+test("a block does not outrank a person or a real end, and is exempt from the backstop", () => {
   const halted = view({ blocked: true });
 
   assert.equal(
@@ -157,6 +157,7 @@ test("a block does not outrank a person or a death", () => {
   assert.equal(
     deriveSurfaceState({ ...halted, lifecycle: "ended", endedAt: NOW }, NOW, WINDOWS),
     "exited",
+    "a real end is a real end whatever the run last said",
   );
   assert.equal(
     deriveSurfaceState(
@@ -164,8 +165,9 @@ test("a block does not outrank a person or a death", () => {
       NOW,
       WINDOWS,
     ),
-    "exited",
-    "and the silence backstop reaches it too: a session that stopped answering stopped waiting",
+    "blocked",
+    "the silence backstop does not reach it: silence is what blocked looks like, and a run " +
+      "blocked overnight must not read as exited (the operator's call, 2026-08-21)",
   );
 });
 

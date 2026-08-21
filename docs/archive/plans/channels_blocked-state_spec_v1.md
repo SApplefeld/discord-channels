@@ -298,3 +298,14 @@ Review Findings: finishing security CONCERNS (four Minors, all fixed or already-
 Stamps: none surfaced (memq unstamped --since 6h returned zero on both tiers)
 Next: none; the plan is Complete and archived in this changeset
 Commit Model: Commit-and-Push
+
+### Chapter 6 - 2026-08-21
+Completed: operator round: the backstop exemption
+Implemented By: main session
+Metrics: review rounds 0 (a one-condition change with the existing pins flipped); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: two operator calls answered from the close-out, via the relay, 2026-08-21. The glyph stays ⛔ despite the collision with the permission message's denied marker: one icon meaning "stopped, needs my help" is what the operator wants to watch for. And blocked is now exempt from the silence backstop: the operator sleeps longer than the four-hour window, and a run blocked overnight reading as exited is exactly the misread the state exists to prevent. The exemption is one condition in deriveSurfaceState (a stale, silent, blocked session renders blocked rather than exited; a really ended record still exits, and retirement still drives exited when the registry lets a record go). The accepted inverse: a session killed while blocked keeps its ⛔ until the record is let go, which the operator prefers. The residuals paragraph above and Chapter 3's recorded keep-the-backstop decision are superseded on this one point by this round; operations.md's limits paragraph states the new truth, and the state derivation's doc comment carries the reasoning with the decision date.
+Assumptions: none
+Review Findings: none; the flipped pin ("a block does not outrank a person or a real end, and is exempt from the backstop") is the durable cover, and the whole suite is green (1416/1417 pass, 0 fail, 1 platform skip)
+Stamps: none surfaced
+Next: none; delivered in this changeset
+Commit Model: Commit-and-Push

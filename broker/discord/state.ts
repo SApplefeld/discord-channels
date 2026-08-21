@@ -98,7 +98,12 @@ export type StateThresholds = {
  *   heartbeat backstop, and without it a hard-killed session is indistinguishable from a quiet
  *   one forever: a kill fires no hook, and until the relay exists nothing but a `/clear` ever
  *   marks a record ended. It outranks attention because a session that stopped answering has
- *   stopped waiting for one.
+ *   stopped waiting for one. It does not outrank `blocked`, the one state whose whole meaning is
+ *   that the run deliberately stopped to wait: the operator sleeps longer than the backstop's
+ *   window, and a run blocked overnight read as exited is exactly the misread the state exists to
+ *   prevent (the operator chose this exemption 2026-08-21). The cost is that a session killed
+ *   while blocked keeps its `⛔` until the registry lets the record go, which the operator prefers
+ *   over the inverse.
  * - Attention wins over the two live states, and over `blocked`. Both are waiting on a person, and
  *   the ordering between them is nominal: a run that has stopped on the operator is not holding a
  *   permission prompt open, so the two do not stand at once in practice. Waiting on a person is
@@ -106,7 +111,9 @@ export type StateThresholds = {
  * - `blocked` outranks the roster and both live states, because it too waits on a person: the run
  *   has deliberately stopped and nothing moves until the operator answers. Hook recency measures
  *   nothing about a session in that condition, which is exactly why it cannot be left to the
- *   branches below, and it sits under the two exited branches for the same reason attention does.
+ *   branches below. It sits under `ended`, a real end being a real end whatever the run last said,
+ *   and above the silence backstop, whose presumption of death is the misread a blocked run
+ *   invites: silence is what blocked looks like.
  * - An outstanding roster is `working`, whatever the hook clock says and whether the record is live
  *   or stale. A session whose main thread is blocked on dispatched agents fires no hooks at all
  *   while it waits, so hook recency measures the wait rather than the work, and both branches below
@@ -132,7 +139,10 @@ export function deriveSurfaceState(
   thresholds: StateThresholds,
 ): SurfaceState {
   if (view.lifecycle === "ended") return "exited";
-  if (view.lifecycle === "stale" && now - view.lastHookAt >= thresholds.exitedAfterMs) {
+  // The backstop's one exemption: silence is what blocked looks like, so the presumption of death
+  // is the misread this state exists to prevent. A record the registry really ends, or finally
+  // lets go of, still exits above and in retirement.
+  if (view.lifecycle === "stale" && !view.blocked && now - view.lastHookAt >= thresholds.exitedAfterMs) {
     return "exited";
   }
   if (view.needsAttention) return "needs you";
