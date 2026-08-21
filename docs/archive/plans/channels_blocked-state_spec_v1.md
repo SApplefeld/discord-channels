@@ -1,6 +1,6 @@
 # Channels: the blocked state, and the ping that announces it
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Created: 2026-08-21
 
@@ -120,8 +120,9 @@ Acceptance: registry tests pin that `Stop` moves `lastHookAt` but not `lastEngag
 `AskUserQuestion` `PreToolUse` (the only shape the installed fragment emits) moves liveness but
 not engagement, that `SessionStart` and `PostToolUse` move both, that `engage()` stamps an unended
 session and refuses an ended one, that a recognized wake prompt on either prompt path stamps
-nothing, and that persistence round-trips the field with the legacy default and rejects a null or
-non-finite value the way it rejects one on `lastHookAt`.
+nothing, and that persistence round-trips the field with the legacy default, rejects a non-finite
+value the way it rejects one on `lastHookAt`, and coerces an explicit null to the legacy default
+exactly as it treats the field's absence.
 
 ### 2. The session fold of the event stream (events reader)
 
@@ -142,7 +143,7 @@ directory, unfiltered by project root), which the comments state plainly rather 
 boundary as the board fold". `tsMs` is `Date.parse` of the already-validated stamp, computed once
 at intake, and a line whose instant is strictly later than the read's own clock (`now` injectable)
 is dropped whole: on one machine's clock an honest line is always written before it is read, so a
-future stamp is either crafted or unreasonable, and both alternatives fail worse — kept unclamped
+future stamp is either crafted or unreasonable, and both alternatives fail worse: kept unclamped
 it outranks every future engagement and pins the blocked state forever, and clamped to the clock
 it reads forever-fresh and re-pings on every broker restart, since the fold re-reads the file from
 the top. The map is
@@ -201,14 +202,14 @@ operator who redirects `CHANNEL_BOARD_EVENTS_PATH` redirects one stream, not hal
 knob's doc comment in `config.ts` widens from naming the card alone.
 
 The ping: a new `renderBlockedAlert({ operatorId, plan })` in `broker/discord/render.ts`, composed
-like the permission prompt (the mention from the operator's own id, the plan path through
-`inertField` with a bound), reading `<@id> ⛔ **Blocked** · <plan> - the run is stopped on you; the
+like the permission prompt (the mention from the operator's own id, the plan path neutralized,
+bounded on its pre-escape characters at the reader's own cap, then fully escaped), reading `<@id> ⛔ **Blocked** · <plan> - the run is stopped on you; the
 reason is in this thread`. Posted through `steeringWriter.alert` (the phone-reaching tier, which
 also ends the thread's narration block), damped by its own `createAlertVolume` instance with the
 question alert's ceilings, and deduped by an in-process posted-key set on `(sessionId, tsMs)`
 bounded like the narration maps: the millisecond instant, never the raw stamp string, because
 `Date.parse` accepts unlimited spellings of one instant and the raw string would hand the dedupe
-key to whatever writes the file. A ping fires only for an event whose clamped `tsMs` is within the
+key to whatever writes the file. A ping fires only for an event whose admitted `tsMs` is within the
 freshness bound of the observing tick (`BLOCKED_PING_FRESH_MS`, 10 minutes): episode identity is
 the event, not the rendered state, so a mid-queue block (which never renders `⛔`) still pings
 once, which is wanted, while a backlog replayed after a restart pings only for a block recent
@@ -285,4 +286,15 @@ Assumptions: a failed or volume-dropped post records nothing and retries on the 
 Review Findings: security Major fixed in-commit (the security model's mention-write enumeration and trigger credentials); minors fixed (volume refund, log coalescing per episode key, pre-escape bound, shutdown drain, parameter shadow, future-stamp drop in the events reader as a fold) or recorded (the eviction/in-flight interleave triple-post boundary note stays the documented eviction trade; suppression residuals added to the spec and the security model)
 Stamps: none surfaced
 Next: 5. Finishing
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-21
+Completed: 5. Finishing
+Implemented By: main session (qa-verifier, security-reviewer and adversarial-reviewer at fable/high, docs-curator dispatched)
+Metrics: review rounds 1 finishing pair plus QA; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: QA passed every acceptance criterion in sections 1-4 with named test evidence, discriminating the documented tail.test.ts flake family correctly (one red, green in isolation and on full re-run). The finishing security review found nothing above Minor and verified the whole home-append-to-ping attack path plus every claim in the security model's new blocked paragraph; its precision fixes landed (the question and model-change alerts' credential qualified to token-to-arm-then-transcript-line, the rename budget named as feed-spendable, lastEngagementAt added to the GET /sessions enumeration). The final adversarial review confirmed the four-file clearing mechanism coheres (units, strictness, clock ownership) and its findings landed: stale "clamped" comments reworded, the renderBlockedAlert comment now names its real composition, the events reader's over-bound drop is measured before cleaning (both finishing reviewers converged on it independently), the spec's null-rejection sentence corrected to coercion, and one em dash removed. The docs-curator updated architecture.md, operations.md, backlog live-walk item 10, and README, and returned four deviations and no mistake; the one pre-existing stale count it left as found (the "two messages" sentence at the permission-prompt paragraph) was fixed in this pass since a falsified enumeration is in scope wherever it lives. Kit memory gained the PreToolUse-is-AskUserQuestion-only record, and the missing project MEMORY.md index was created, repairing a prior session's unindexed record.
+Assumptions: none new this section; the effort's execution-time assumptions are the entries on Chapters 1 through 4, carried verbatim into the close-out status
+Review Findings: finishing security CONCERNS (four Minors, all fixed or already-scheduled docs); final adversarial APPROVED_WITH_CONCERNS (one Major, the then-outstanding section 5 docs, delivered by the curator in this same pass; five Minors, all fixed); QA PASS
+Stamps: none surfaced (memq unstamped --since 6h returned zero on both tiers)
+Next: none; the plan is Complete and archived in this changeset
 Commit Model: Commit-and-Push

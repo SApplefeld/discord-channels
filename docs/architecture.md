@@ -98,7 +98,9 @@ listener.
    or `Stop` payload with the event name, the process token, and the session name in headers. The
    registry turns those into a session record: session ID, name, host, source, last tool, a bounded
    preview of that tool's input (the card's Tool block), tool count, turn count, last-seen
-   timestamp, the model and context figures the tailer reads off the transcript, the completion goal
+   timestamp, the timestamp of the last engagement (the narrower stamp the blocked desk below reads,
+   moved by a `SessionStart`, a completed tool call, or an operator prompt, and by nothing else),
+   the model and context figures the tailer reads off the transcript, the completion goal
    it reads the same way, and the roster of in-flight subagents and background commands a `Stop`
    payload carries. Every credited post also teaches the transcript tailer where that session's
    transcript file lives, without adding the path to the record itself. A `SessionStart` with
@@ -327,11 +329,16 @@ idle at the moment it was most heavily worked. The harness reports its own table
 subagents and background commands on every `Stop` payload, which the broker already receives, so
 the roster is read rather than reconstructed: a reconstruction from dispatch events cannot tell a
 finished agent from a stranded one, and accumulates ghosts across restarts. The count rides the state
-on the card and stops there. The thread title distinguishes three states, `active`, `needs you`, and
-`exited`, so working, idle, and a draining fan-out are one title and cost no renames at all: every
-rename writes a system notice into the thread that an app cannot delete, and a title spent on a
-moving number would run a column of them down the thread. The rename damper keys on the composed
-title rather than on the state, which is what holds a session renaming itself to one rename.
+on the card, for `blocked` as much as for `working`, and stops there.
+
+The card's own vocabulary is five states, `working`, `needs you`, `blocked`, `idle` and `exited`,
+drawn glyph-first as ⚙, ⏹, ⛔, ⏸ and ⚠, and graded by how much each wants from the operator. The
+thread title distinguishes four of them, `active`, `needs you`, `blocked` and `exited`, so working,
+idle, and a draining fan-out are one title and cost no renames at all: every rename writes a system
+notice into the thread that an app cannot delete, and a title spent on a moving number would run a
+column of them down the thread. Blocked earns a title because it is the halted-on-the-operator class
+the title exists for. The rename damper keys on the composed title rather than on the state, which is
+what holds a session renaming itself to one rename.
 
 ## The fleet board card
 
@@ -352,7 +359,8 @@ heading inside the sections block ends it early and drops what follows, and a `C
 registers a section only under three exact forms. An external engine reads the same files the same
 way, so a card that quietly disagreed with it about what is done would be the dishonest one. The
 second is the kit's goal event stream, one JSON object per line, tailed by byte offset and keyed by
-project and plan, which is where the blocked marker comes from.
+project and plan, which is where the blocked marker comes from. That file has a second reader with
+its own offset, the blocked desk below, and the two folds live side by side in `broker/board/events.ts`.
 
 Paths are never derived from what either file says. The configured roots are the only path input;
 the one join is a root with a directory entry's own name, which cannot contain a separator, so no
@@ -426,6 +434,61 @@ is ASCII and leaves as two code points and two UTF-16 units, while an astral cod
 escaped. The project label takes the block escape instead, because a fence honors no backslash
 escape: a backtick is substituted rather than escaped, and the bound handed to it is the cap itself,
 since substituting one character for one and stripping the rest can never grow a value.
+
+## The blocked desk
+
+A `/kit-goal` run that has stopped on the operator says so on the thread that session already owns.
+The kit's own Stop hook appends a `goal-blocked` line to its goal event stream naming the project,
+the plan, and the session id, and `broker/discord/blocked.ts` is the session surface's reader of
+that line: a second fold over the file the board card reads, keyed by session id rather than by
+(root, plan) and holding its own byte offset, so neither fold consumes bytes the other never saw.
+The desk is built whenever Discord is, independent of `CHANNEL_BOARD_CARD`, and both folds resolve
+the same `CHANNEL_BOARD_EVENTS_PATH`, so an operator who redirects the stream redirects all of it
+rather than half. Without Discord the desk is never built and no session stands blocked, because no
+surface exists to draw one.
+
+A session **stands blocked** while its latest kept goal event is a `goal-blocked` whose instant is
+newer than the session's engagement stamp. Engagement is the registry's record that a person or live
+work drove the session, moved on an explicit allowlist rather than on everything but a denied few: a
+`SessionStart`, a `PostToolUse`, and an operator prompt on either prompt path (the hook-carried
+mirror and the tailer's queued-prompt yield), minus the harness's own background-task wake injection,
+which is machine-generated and must not clear a gate that waits on a person. Two credited events
+carry liveness and deliberately do not stamp. `Stop` is the blocked stop itself, whose own hook
+traffic would otherwise clear the marker it raises. `PreToolUse` fires only for `AskUserQuestion`
+here, so it marks the instant a session parks on a person, and stamping it would clear a standing
+block for the whole life of an open question. A `goal-complete` newer than the block replaces it in
+the fold, so a run that finished can never stand blocked whatever the engagement clock says. The
+standing computation is one function, read at both `toView` call sites, which is what keeps the
+fleet card and the session's own thread from disagreeing about who is blocked.
+
+The ping keys on the event rather than on the drawn state, and the two answer different questions. A
+block that clears within the same model turn (the queue moved on, the next completed tool call
+stamped engagement) never renders `⛔` and still pings, because the run did stop on the operator.
+One alert is posted per episode, an episode being the pair of a session id and the event's admitted
+millisecond instant, and only while that instant is within 10 minutes of the observing tick: a
+broker restart re-reads the stream from the top, so the bound is what keeps a replayed backlog from
+ringing a phone about a block that is no longer news. The alert rides the steering writer's alert
+tier under a volume window of its own, sized like the question alert's at 1 mention and 4 posts per
+thread per minute, and a slot is refunded when the post did not land, so an outage cannot make the
+real ping arrive quiet. The episode key is recorded as the post goes on the wire and released again
+when the post fails, which is what lets the next tick retry while the block stays fresh without
+double-posting an episode whose write spanned a tick boundary. A session whose thread is not open
+yet records nothing and simply goes again next pass.
+
+The title is the slow channel and the alert is the fast one. `blocked` is deliberately not one of
+the states worth an immediate rename, because the mid-turn transient above can appear and clear
+inside a refresh tick, and an undamped rename there would write Discord's irremovable notice twice
+and empty a per-thread bucket that holds about two renames in ten minutes, the same bucket the final
+exited rename and the archive need. A real block lasts minutes to hours, so it settles well inside
+the ordinary dwell window.
+
+What the desk reads is lower-privilege than every token-gated surface here: appending to the stream
+needs write access to the operator's home directory and no process token at all. So a line whose
+instant is later than the read's own clock is dropped whole rather than clamped, session ids are
+normalized through the same sanitizer the registry stores ids through and dropped rather than
+truncated at the field bound, the kept map is capped at 200 sessions, and every log line the desk
+writes carries a cause and a session id and never the plan text. [`security-model.md`](security-model.md)
+carries what that credential admits and what the surface is therefore worth as evidence.
 
 ## What the cards are made of
 
@@ -516,9 +579,9 @@ green when it matched no test files).
 A host running this has a Discord channel whose thread list is a live dashboard of every session on
 that machine, a card in each thread carrying what that session is doing right now, the conversation
 itself mirrored into the thread turn by turn, mid-turn narration on a long turn, an alert when a
-session parks itself on a question and a way to answer it from the thread, background-task wake-ups
-compressed to one line, and a path for sending it a message or approving its tool calls from a
-phone. The status path, the message path, and the mirror fail independently, which is what makes a
+session parks itself on a question and a way to answer it from the thread, a ⛔ title and one ping
+when a goal run stops on the operator, background-task wake-ups compressed to one line, and a path
+for sending it a message or approving its tool calls from a phone. The status path, the message path, and the mirror fail independently, which is what makes a
 dead message path visible instead of silent.
 
 Installing a host is [`install.md`](install.md). Running one is [`operations.md`](operations.md).

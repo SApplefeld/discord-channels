@@ -50,7 +50,15 @@ width leaves. The asymmetry runs in that direction on every field, so a card is 
 disclosure.
 Those are model ids, a token
 count, and upstream's own refusal category and consent answer, the same class as the tool-input
-preview this route already carries and holding no conversation text.
+preview this route already carries and holding no conversation text. The route also publishes
+`lastEngagementAt`, the timestamp of the last signal that a person or live work drove the session,
+beside the `lastHookAt` it has always published. It is a bare millisecond timestamp with no
+content, and what it adds over its neighbor is an operator-presence signal: engagement newer than
+the hook stamp means a person typed at that moment. For a process running as the operator that is
+free anyway, since the transcript carries the prompts themselves; for a second authenticated
+account on the host, the class this model calls latent, it is new information, accepted because
+the blocked-state derivation needs the field and the route's discipline is served by naming it
+here.
 
 ## The process token authenticates reports, never instructions
 
@@ -398,8 +406,9 @@ a phone. **The sender gate governs who can write, not who can read**, so every m
 sees every prompt. The channel must be private to the operator, and `install.md` says so.
 
 The description and the input preview are written by a tool call, which anything the session has
-read can influence, and they land in one of the two messages this system deliberately pings with,
-the only one it asks the operator to answer. They are
+read can influence, and they land in the one mention-bearing message this system asks the operator
+to answer (the four writes that deliberately mention someone are enumerated below; the permission
+prompt is the only one soliciting a reply). They are
 rendered as inert text with mention and chip syntax escaped, and each is cut to its own budget so it
 cannot push the request ID and the answering instructions off the end of the message. A cut field is
 labelled as cut, because otherwise an attacker-influenced input can front-load benign content and
@@ -536,9 +545,12 @@ here the words land in a pinging message rather than a status surface: a crafted
 as prose in an alert the operator is trained to act on, which is the residual the trigger
 credential prices in. The same feed is an accepted suppression primitive in both directions: a
 crafted `goal-complete` naming a real session clears its standing block before a tick observes it,
-and a flood of junk session ids can evict a real session's kept event through the fold's bound. So
-the blocked surface is evidence when it draws and never proof when it does not, which is the same
-standing every state this broker renders from another program's file already has.
+and a flood of junk session ids can evict a real session's kept event through the fold's bound.
+The feed can also spend a thread's rename budget: alternating events held past the title's dwell
+each way drive real renames out of the same small per-thread bucket the final exited rename and
+the archive draw on. So the blocked surface is evidence when it draws and never proof when it does
+not, which is the same standing every state this broker renders from another program's file
+already has.
 
 What the operator's own configuration can still reach is worth stating, because these knobs sit in
 the access-controlled `broker.env` rather than in anything an attacker supplies. A project root may
@@ -591,9 +603,10 @@ and both apply it:
   **Four writes deliberately mention someone: the permission prompt, the open-question alert, the
   model-change alert, and the blocked-goal alert.** They differ in what must be presented to
   trigger one, which is the fact to audit: the permission prompt demands the per-attachment reply
-  key, the question alert and the model-change alert a session's own process token, and the
-  blocked-goal alert only an appended line in a file in the operator's home directory, the weakest
-  credential in the set, bounded where that write is described above. All four exist to reach a
+  key, the question alert and the model-change alert a session's own process token to arm and then
+  a line in that armed session's transcript, and the blocked-goal alert only an appended line in a
+  file at a fixed well-known path in the operator's home directory, with no arming step at all,
+  the weakest credential in the set, bounded where that write is described above. All four exist to reach a
   phone, and none is a widening: the empty `parse` list stays, and each adds
   `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated as a
   snowflake at load. The only mention syntax in any of these messages is composed by the renderer

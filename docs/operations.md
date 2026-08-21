@@ -76,16 +76,20 @@ has to survive truncation.
 ⚙ neo-migrate · active
 ⚙ scott-kit · active
 ⏹ neo-deploy · needs you
+⛔ scott-kit-goal · blocked
 ⚠ asr-docs · exited
 ```
 
-A title carries three states. `active` means the session is up, whether it is mid-turn or sitting
+A title carries four states. `active` means the session is up, whether it is mid-turn or sitting
 quiet. `exited` means the session ended, or that it went silent past the presumed-dead horizon.
 `needs you`, the ⏹ glyph, means that session has a permission prompt open and is parked until you
 answer it; it is recomputed on every refresh from the set of prompts still waiting, so it clears on
 its own when you answer, and it is urgent enough to spend a rename immediately rather than waiting
 out the dwell window. A pending prompt therefore reaches you twice: as a message that pings, and as
-the thread's own name in the list.
+the thread's own name in the list. `blocked`, the ⛔ glyph, means a `/kit-goal` run in that session
+recorded a blocked stop and nothing there moves until you engage it; it takes the ordinary dwell
+rather than an immediate rename, and the alert described under "When a run is blocked on you" is
+what reaches you quickly.
 
 The title is coarser than the state the broker tracks because every rename writes a notice into the
 thread that nothing can remove: an app cannot delete a thread-rename notice (Discord error 50021),
@@ -95,16 +99,18 @@ of notices down a thread you read for its content.
 which is edited in place and writes nothing into the thread.
 
 The glyph alone says how much the state wants from you when the list truncates everything behind it:
-the gear is running, the stop-square is halted on you, and the warning triangle is over. Only the
-stop-square is one you can clear.
+the gear is running, the stop-square is halted on you, the no-entry sign is halted with nothing left
+to try, and the warning triangle is over. The two you can clear are the stop-square, by answering the
+prompt, and the no-entry sign, by engaging the session.
 
 Renames are the scarcest resource here. Discord documents no limit on channel or thread modification
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
 adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
 because a rename landing ten minutes late paints a state that stopped being true. The card underneath
 is edited in a far looser bucket and carries the detail. The card opens with a heading naming the
-session and its state, in a four-state vocabulary that splits the title's `active` into `⚙ working`
-and `⏸ idle`, then a fenced block of fields (host, session, state, model, context size, a
+session and its state, in a five-state vocabulary that splits the title's `active` into `⚙ working`
+and `⏸ idle` and keeps `⏹ needs you`, `⛔ blocked` and `⚠ exited` as the title draws them, then a
+fenced block of fields (host, session, state, model, context size, a
 `From` row while the session is running below the model it opened with, and heartbeat), then one
 fenced block per thing the session has to say about itself: the goal it is working toward, the tool
 it last ran and what that tool was called with, and the subagents and background commands it is
@@ -274,6 +280,65 @@ its own stamps rather than the alert's. One maximal ask fits inside it; two asks
 continuations each in the same thread inside a minute do not, so the second has its remaining posts
 refused and its hold released to the console. The whole question surface therefore costs one thread
 at most 4 alert posts plus 8 continuation posts a minute.
+
+## When a run is blocked on you
+
+A `/kit-goal` run that records a `BLOCKED:` stop is halted until you deal with it, and the thread
+says so in three places. The kit's own Stop hook writes a `goal-blocked` line to its goal event
+stream, the broker reads it within a refresh, and from then on the thread title carries
+`⛔ <name> · blocked`, the card underneath draws `⛔ blocked` on its state row (with the waiting-task
+count still beside it when the session had a fan-out running), and one alert posts into the thread and
+mentions you:
+
+```
+@you ⛔ **Blocked** · docs/plans/channels_blocked-state_spec_v1.md - the run is stopped on you; the reason is in this thread
+```
+
+The alert carries the plan and nothing else. Why the run stopped is in the thread above it, in that
+turn's own final reply, which is where the `BLOCKED:` prose was mirrored.
+
+**Engaging the session is what clears it.** Typing at the console, answering from the thread, and the
+run's own next completed tool call all stamp the same engagement clock, and the state clears as soon
+as that stamp is newer than the event. The card follows on the next refresh and the title one dwell
+window later (`CHANNEL_DISCORD_DWELL_MS`, 60 seconds by default), so a `⛔` title outliving the card
+by a minute is the damper rather than a stuck state. Two things deliberately do not clear it: the
+blocked stop's own turn-end hook, which would otherwise erase the marker it just raised, and an
+`AskUserQuestion` picker opening, which is the session parking on you rather than leaving you. A
+background task finishing and waking the session does not clear it either; the woken turn's first
+tool call does, if the run genuinely resumes.
+
+**The ping fires once per block episode, and only while the block is news.** The episode is the
+event, so a run that blocks one plan and carries straight on to the next pings without the `⛔` ever
+reaching the title, which is wanted: the run did stop on you. An event older than **10 minutes** when
+the broker first observes it is not pinged at all and shows as the `⛔` title alone, which is what a
+broker restarted over a backlog does. The alert rides its own per-thread window of **1 mention and 4
+posts a minute**, separate from the permission prompt's and the question alert's; past the mention
+ceiling it lands quietly, and past the post ceiling it is dropped with a log line. A post that fails
+is retried on the next pass for as long as the block stays fresh, and a session whose thread is not
+open yet simply waits for it.
+
+Three limits are worth knowing before you read the absence of a `⛔` as good news. A session that goes
+silent past `CHANNEL_DISCORD_EXITED_AFTER_MS` (4 hours) renders exited whatever it last said, so a
+hook-only session blocked overnight ends up archived rather than blocked. The event stream is a
+plain file in your home directory that any process running as you can append to, so a crafted
+`goal-complete` clears a real block and a flood of junk session ids can push a real one out of the
+reader's 200-session map. And a block landing while the broker is down past the freshness bound
+arrives as the title without the ping. The state is evidence when it draws and never proof when it
+does not; [`security-model.md`](security-model.md) states that at the write's own paragraph.
+
+Both readers of that file, this one and the board card's per-plan marker, resolve
+`CHANNEL_BOARD_EVENTS_PATH`, so redirecting the knob moves the whole stream rather than half of it.
+If no session ever draws `⛔` and the board card draws no blocked markers either, that path is the
+thing to check.
+
+**Four `broker:` lines report this surface**, each naming a cause and a session id and never the
+plan text the events carry. `broker: the session surface could not read the goal event stream;
+blocked states and their pings lag until it reads again` is logged once per outage rather than once
+per tick. The other three belong to one episode's alert and are logged once per episode: `over its
+window; the message is dropped` is the volume ceiling, `was not written; nothing is queued, the next
+tick goes again while the block is fresh` is a refusal Discord returned, and `could not be posted;
+the error detail is withheld, it can carry content` is a throw whose detail is dropped because it can
+quote the message.
 
 ## The fleet usage card
 
@@ -672,7 +737,7 @@ refused by name rather than guessed at.
 | `CHANNEL_BOARD_CARD` | off | Whether the Fleet: Board thread and its card exist on this host |
 | `CHANNEL_BOARD_PROJECTS` | none | Semicolon-separated absolute project roots swept for `docs/plans/*.md`; the card builds nothing without at least one |
 | `CHANNEL_BOARD_CARD_REFRESH_MS` | 60 s | How often the board card is re-swept and re-rendered; bounded 5 s to 1 h |
-| `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from, which is what draws the blocked marker |
+| `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from. One stream, two readers: the board card's per-plan blocked marker and the session surface's own `⛔` state and its alert, so redirecting this moves both. Read whenever Discord is configured, board card or not |
 | `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to

@@ -159,10 +159,15 @@ and none carries a date of its own. An item added from here on carries `(parked 
      and
      [`archive/plans/channels_board-markdown_spec_v1.md`](archive/plans/channels_board-markdown_spec_v1.md),
      which moved the body from a fence to live markdown.
-  10. Drive a real `/kit-goal` run to a blocked stop and confirm the board card draws the blocked
-     marker, then resume it and confirm the marker clears. The clear rules were exercised only
-     against synthetic events, in both directions, and the live event stream is the one thing a test
-     host cannot supply.
+  10. Drive a real `/kit-goal` run to a blocked stop and confirm all four surfaces the event drives:
+     the board card's blocked marker, the session thread's `⛔ <name> · blocked` title, the `⛔` state
+     on that session's card, and the alert arriving on the phone exactly once for the episode. Then
+     resume it and confirm both clears, the board card's marker on the plan's next modification or
+     the goal completing, and the session's `⛔` on engagement (type at the console, or answer from
+     the thread, and watch the card clear on the next refresh and the title one dwell window later).
+     Every clear rule on both sides was exercised only against synthetic events, and the live event
+     stream is the one thing a test host cannot supply. The delivered plan is
+     [`archive/plans/channels_blocked-state_spec_v1.md`](archive/plans/channels_blocked-state_spec_v1.md).
   11. Confirm the board card takes and keeps a pin beside the usage card. The pin list's permanent
      slot became a list for this, and that arithmetic was verified against a test double rather than
      a live channel's pin ceiling.

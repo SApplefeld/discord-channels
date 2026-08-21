@@ -708,9 +708,13 @@ export function readSessionEvents(
     // the instant is not usable.
     const tsMs = Date.parse(parsed.ts);
     if (tsMs > readAt) continue;
+    // The over-bound drop is measured on the value as parsed, before cleaning: parseLine cuts a
+    // long id to exactly the bound, and cleaning can shrink a cut one back below it, so a
+    // post-clean measurement would keep an id indistinguishable from a truncated one.
+    if (parsed.session.length >= MAX_SESSION_CHARS) continue;
     // The key the downstream join is made on, in the registry's own form for it.
     const session = clean(parsed.session);
-    if (session === "" || session.length >= MAX_SESSION_CHARS) continue;
+    if (session === "") continue;
 
     // The copy is made on the first event actually kept, so a tick that keeps none returns the
     // previous map itself and a caller comparing by reference sees nothing moved.

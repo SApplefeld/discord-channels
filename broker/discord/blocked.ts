@@ -31,7 +31,7 @@ import type { CallOutcome } from "./transport.ts";
 
 /**
  * How recent a `goal-blocked` event has to be for its alert to be posted at all, measured from the
- * event's clamped instant to the observing tick.
+ * event's admitted instant to the observing tick.
  *
  * Episode identity is the event, not the rendered state: a mid-queue block that never renders
  * blocked (the queue moved on and the next tool call cleared the standing marker) still pings once,
@@ -55,7 +55,7 @@ export const BLOCKED_PING_FRESH_MS = 10 * 60 * 1000;
 export const MAX_POSTED_BLOCK_KEYS = 2 * MAX_TRACKED_SESSIONS;
 
 /**
- * The posted-key for one block episode: the session id and the event's clamped instant.
+ * The posted-key for one block episode: the session id and the event's admitted instant.
  *
  * The instant, never the raw `ts` string: `Date.parse` accepts unlimited spellings of one instant,
  * so a dedup keyed on the raw stamp would hand the key to whatever writes the file, and one block

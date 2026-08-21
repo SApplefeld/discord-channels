@@ -1926,9 +1926,10 @@ export function renderModelChange(input: {
  * The alert a block episode posts into its session's own thread, on the alert tier with the mention
  * that reaches a phone, and without one when the volume window has gone quiet and the caller passes
  * null. `renderQuestionNotice`'s pattern, and safe for its reason: the mention is composed here from
- * the operator's own ID, and the one untrusted field goes through `inertField`, which escapes the
- * angle brackets Discord's mention syntax lives inside, so the only mention this message can contain
- * is the one written on this line.
+ * the operator's own ID, and the one untrusted field takes the full markdown escape (`inertText`,
+ * over the pre-escape bound the next paragraph explains), which escapes the angle brackets Discord's
+ * mention syntax lives inside, so the only mention this message can contain is the one written on
+ * this line.
  *
  * `plan` arrives from the kit's event stream, which anything with append access to the operator's
  * home directory can write, so it is escaped and bounded here at the render site. The bound is the
