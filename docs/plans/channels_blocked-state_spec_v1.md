@@ -1,0 +1,245 @@
+# Channels: the blocked state, and the ping that announces it
+
+Status: In Progress
+Commit Model: Commit-and-Push
+Created: 2026-08-21
+
+A `/kit-goal` run that cannot continue records a `BLOCKED:` stop, and the kit's Stop hook emits a
+machine-readable `goal-blocked` event line to `~/.claude/kit-events.jsonl` naming the project, the
+plan, and the session. Today that event reaches only the fleet board card's per-plan marker. The
+session's own thread renders plain `idle`, which is the operator's complaint: the one state that
+means "this run is halted on you" is indistinguishable from a quiet session unless they open the
+thread and read the prose. This plan makes blocked a first-class session state: a fifth surface
+state with its own glyph (`⛔`), a fourth thread-title state, and one pinging alert into the
+session's thread per block episode.
+
+Decisions taken with the operator 2026-08-21: the glyph is `⛔`; the notification pings once per
+block episode (deduped until the session unblocks), riding the existing alert damping. Detection is
+the kit event stream, never `BLOCKED:` prose sniffed out of mirrored text: mirrored text is
+untrusted conversation content, and a pinging alert must not be drivable by anything a session
+happens to read.
+
+## Related
+
+- [`../archive/plans/channels_board-card_spec_v1.md`](../archive/plans/channels_board-card_spec_v1.md):
+  built `broker/board/events.ts`, the tailing reader this plan adds a session-keyed fold to, and the
+  board card's per-plan blocked marker, which stays exactly as it is.
+- [`../archive/plans/channels_title-states-and-rename-cleaner_spec_v1.md`](../archive/plans/channels_title-states-and-rename-cleaner_spec_v1.md):
+  set the three-title-state vocabulary this plan extends to four, and the rename-economy reasoning
+  the blocked state must respect (a rename writes an irremovable notice into the thread).
+
+## The signal, and the clearing rule
+
+`goal-blocked` is emitted by `D:\claude-kit\plugins\claude-kit\hooks\kit-goal-stop.js` on every
+blocked stop, with `{ ts, event, project, plan, session }`; the hook's own comment says dedup is
+the consumer's policy. `goal-complete` is emitted on a released completion. Both are already parsed
+by `broker/board/events.ts` under bounded, rotation-aware tailing.
+
+A session is **standing blocked** when its latest kept goal event is a `goal-blocked` whose
+timestamp is newer than the session's last *engagement*. Engagement is a registry timestamp,
+`lastEngagementAt`, stamped by an explicit allowlist: the `SessionStart` and `PostToolUse` intakes,
+and an operator prompt arriving on the mirror path (`mirror` with the prompt kind, and
+`interimPrompt`) that is not a recognized task-notification wake injection. Two events that carry
+hook liveness deliberately do not stamp. `Stop` is the blocked stop itself. `PreToolUse` fires
+only for `AskUserQuestion` in this system (the installed fragment pins the matcher), so it marks
+the instant a session parks on a person, the opposite of engagement, and stamping it would clear a
+standing block for the whole life of an open question. The wake injection is machine-generated,
+so it must not clear a gate that waits on a person; the woken turn's first tool call stamps if the
+run genuinely resumes. The ordering argument, which is the load-bearing design fact:
+
+- The blocked stop's own hook traffic must not clear the marker. `Stop` does not stamp, and every
+  stamping event of that turn (its last tool call) precedes the emit, so the marker stands.
+- A queue advance (`advanceAndHold`: plans remain, the leash moves on, the session keeps working)
+  clears at the continuing turn's first completed tool call: the next `PostToolUse` is newer than
+  the emit. Between the emit and that call the session can derive `blocked` for part of a model
+  turn; the title's dwell is what keeps that transient off the thread name (section 3). The
+  episode ping still fires, because the ping keys on the event, not on the rendered state
+  (section 4).
+- A released block (last plan) leaves the session silent: nothing stamps until the operator engages
+  it, so `⛔` persists on the title until they do. Typing at the console stamps via the prompt
+  mirror; answering from the thread stamps via the injected turn's first tool call.
+- Clock basis: the event `ts` is the kit's wall clock and `lastEngagementAt` the broker's, on the
+  same machine; the signals they order are separated by turns, not milliseconds, so skew is not a
+  factor. No epsilon comparisons anywhere.
+- A `goal-complete` newer than the block replaces it in the per-session fold, so a completed run
+  can never stand blocked whatever the engagement clock says.
+
+Declared residuals, accepted: on a host running without the mirror hooks, a pure-text answering
+turn (zero tool calls) does not stamp, and the marker clears at the session's next tool call
+instead. A broker restarted while a session stands blocked re-pings that session once only when
+the block is younger than the ping freshness bound; a block older than that shows the `⛔` title
+without a ping, and so does a block that landed while the broker was down past the bound. The
+session map's eviction bound can clear a standing `⛔` on a host tracking more distinct session
+ids than the cap holds. The engagement stamp is taken at the hook post's arrival on the broker,
+not at the event's own instant, so a `PostToolUse` post delayed past the kit's emit stamps newer
+than the block and suppresses that episode's `⛔`; the posts ride a loopback socket and the emit
+follows the turn's last tool by a whole model close, so the window is theoretical. The ordering
+argument also assumes the kit emits `goal-blocked` from its Stop hook, which is what it does
+today; that is an external program's contract, and a kit revision emitting mid-turn would narrow
+the marker to sessions with no trailing tool call. A blocked session left silent past the
+`exitedAfterMs` backstop (4 hours by default) with neither hook nor relay liveness renders exited
+and its thread archives; a wrapper-attached session never reaches that branch, because relay
+heartbeats hold it live, so the reachable case is a hook-only session, where four silent hours
+genuinely cannot be told from a killed console. And `lastEngagementAt` is published on the
+loopback `GET /sessions` route beside `lastHookAt`, a bare timestamp that adds an operator-presence
+signal against a second local account; section 5 records it in the security model's route
+enumeration. A registry snapshot written by a pre-upgrade broker
+carries no `lastEngagementAt`; the loader takes `lastHookAt` for it, which across that one restart
+may clear a standing block early (the blocked stop stamped `lastHookAt`), a one-time upgrade
+sliver. A wake injection (a background task finishing) that drives a turn which re-blocks is a new
+episode and pings again; the damping window bounds storms.
+
+## Sections of work
+
+### 1. The engagement stamp (registry)
+
+Model: opus
+
+`SessionRecord` gains `lastEngagementAt: number`, stamped alongside `lastHookAt` in `apply()` on
+an explicit allowlist, `SessionStart` and `PostToolUse`, and left untouched by `Stop` and by
+`PreToolUse`, which in this system is the AskUserQuestion picker opening (the clearing-rule
+section carries both arguments; the allowlist rather than a `!== "Stop"` denylist is the module's
+own refuse-rather-than-guess discipline, so a future credited event cannot start stamping
+silently). A new registry method `engage(sessionId)` stamps it directly, for the two
+outbound-router call sites: `mirror` with the prompt kind (after the straggler gate passes, before
+delivery), and `interimPrompt` (after thread resolution), both skipping a prompt the
+task-notification recognizer matches whatever the notification setting says. Both stamp whether
+or not the post lands: the operator typed, which is the fact being recorded. The channel-envelope
+echo drop still stamps too, and that is correct: an injected channel message means the operator
+answered. `engage` stamps engagement alone, deliberately not liveness: `lastHookAt` and the stale
+state have their own writers, and every turn still closes with a credited `Stop`.
+
+Persistence: the snapshot round-trips the field; a snapshot without it loads as `lastHookAt`.
+`start()` initializes it to now.
+
+Acceptance: registry tests pin that `Stop` moves `lastHookAt` but not `lastEngagementAt`, that an
+`AskUserQuestion` `PreToolUse` (the only shape the installed fragment emits) moves liveness but
+not engagement, that `SessionStart` and `PostToolUse` move both, that `engage()` stamps an unended
+session and refuses an ended one, that a recognized wake prompt on either prompt path stamps
+nothing, and that persistence round-trips the field with the legacy default and rejects a null or
+non-finite value the way it rejects one on `lastHookAt`.
+
+### 2. The session fold of the event stream (events reader)
+
+Model: opus
+
+`broker/board/events.ts` gains a session-keyed fold beside the (root, plan) one: an exported
+`readSessionEvents(previous, options)` with its own state type, its own offset and identity, and a
+`latest: Map<sessionId, { event, ts, tsMs, plan }>` keeping only the newest `goal-blocked` or
+`goal-complete` per session id. It reuses the module's capped positional read, rotation handling,
+mid-line discipline, and `parseLine` untouched. The session key is normalized through the same
+sanitizer the registry stores ids through (`clean` in `broker/sanitize.ts`), so the join the
+consumer makes cannot miss on whitespace or control characters the two sides treat differently; a
+value that is blank after cleaning, or over the field bound, is dropped rather than truncated,
+because a truncated id matches nothing and a collision would attribute one session's block to
+another. No root filtering: matching is by session id against the registry downstream, and the
+feed is lower-privilege than the token-gated surfaces (append access to the operator's home
+directory, unfiltered by project root), which the comments state plainly rather than as "the same
+boundary as the board fold". `tsMs` is `Date.parse` of the already-validated stamp, computed once
+at intake and clamped to the reader's own clock (`Math.min(parsed, now())`, `now` injectable), the
+same defense the board fold's consumer carries at its render site: an unclamped far-future stamp
+would otherwise outrank every future engagement and pin the blocked state forever. The map is
+bounded by the existing `MAX_TRACKED_PLANS`-style eviction (oldest-kept first), with its own
+constant.
+
+The module header widens from "the board card's event reader" to the event reader both surfaces
+share. The two folds hold independent offsets, because the board fold runs only when the board card
+is configured and the session fold runs whenever Discord does; neither may starve the other.
+
+Acceptance: tests drive the new fold through the existing injected-read seam: latest-per-session
+wins, complete-over-blocked replacement, null-session lines dropped, rotation restart, bounded map
+eviction, and the board fold's behavior unchanged (its existing tests stay green untouched).
+
+### 3. The vocabulary (state and render)
+
+Model: opus
+
+`SurfaceState` gains `"blocked"`. `SessionView` gains `blocked: boolean`, threaded through
+`toView` exactly as `needsAttention` is. `deriveSurfaceState` returns `"blocked"` after the two
+exited branches and after `needsAttention`, before the roster and recency branches: a dead session
+is exited whatever it last said, a permission prompt is not reachable by a stopped session so the
+ordering there is nominal, and blocked outranks working/idle because it waits on a person.
+
+`GLYPHS` gains `blocked: "⛔"`. `TitleState` gains `"blocked"` with `TITLE_GLYPHS.blocked = "⛔"`;
+`titleState()` maps the surface state through unchanged. `URGENT` in `broker/discord/surface.ts`
+does **not** gain `"blocked"`: a mid-queue block can derive `blocked` for part of a model turn
+(the window between the emit and the continuing turn's first completed tool call), the refresh
+tick runs every few seconds, and an undamped rename there would write Discord's irremovable
+rename notice twice per transient and spend a per-thread bucket small enough that two renames in
+ten minutes empty it, which is also the bucket the final exited rename and the archive gate on. A
+real block lasts minutes to hours, so one dwell window of title lag costs nothing, and the ping
+is the fast channel. `stateLabel` lets the waiting-task count ride the state line for `blocked`
+exactly as for `working` (a roster the record still holds is still true, and the card draws its
+Tasks block), so a blocked card cannot show a roster its state line denies.
+
+Acceptance: the glyph-literal pin test gains the fifth literal; state-derivation tests pin the
+ordering (ended beats blocked, backstop beats blocked, needs-you beats blocked, blocked beats
+working and idle); title tests pin `⛔ <name> · blocked`; surface tests pin both sides of the
+dwell (a blocked state that holds past the dwell renames, one that clears within it never
+renames) and the clear-side rename back to active.
+
+### 4. The wiring and the ping (index)
+
+Model: fable
+
+`startBroker`'s Discord branch holds the session fold's state, ticked once per refresh pass before
+the views are built. Standing blocked per session: latest event is `goal-blocked` and
+`event.tsMs > record.lastEngagementAt`. The set feeds `toView` at both call sites (the surface tick
+and the usage card's `sessions` closure) through a shared helper, so the fleet card and the thread
+cannot disagree.
+
+The session fold reads the same configured path the board fold reads: `config.boardEventsPath` is
+resolved unconditionally in `broker/config.ts` and is handed to `readSessionEvents`, so an
+operator who redirects `CHANNEL_BOARD_EVENTS_PATH` redirects one stream, not half of it; the
+knob's doc comment in `config.ts` widens from naming the card alone.
+
+The ping: a new `renderBlockedAlert({ operatorId, plan })` in `broker/discord/render.ts`, composed
+like the permission prompt (the mention from the operator's own id, the plan path through
+`inertField` with a bound), reading `<@id> ⛔ **Blocked** · <plan> - the run is stopped on you; the
+reason is in this thread`. Posted through `steeringWriter.alert` (the phone-reaching tier, which
+also ends the thread's narration block), damped by its own `createAlertVolume` instance with the
+question alert's ceilings, and deduped by an in-process posted-key set on `(sessionId, tsMs)`
+bounded like the narration maps: the millisecond instant, never the raw stamp string, because
+`Date.parse` accepts unlimited spellings of one instant and the raw string would hand the dedupe
+key to whatever writes the file. A ping fires only for an event whose clamped `tsMs` is within the
+freshness bound of the observing tick (`BLOCKED_PING_FRESH_MS`, 10 minutes): episode identity is
+the event, not the rendered state, so a mid-queue block (which never renders `⛔`) still pings
+once, which is wanted, while a backlog replayed after a restart pings only for a block recent
+enough to still be news, and a stale one is the `⛔` title alone. A session whose thread is not
+open yet is retried next tick: the key is recorded only after a post lands. Log lines follow house
+discipline: cause and session, never conversation text.
+
+Acceptance: component-level tests pin the standing computation (blocked event older than
+engagement does not stand; newer does; complete clears), the once-per-episode dedup on the
+instant, the freshness bound in both directions (a fresh event pings, a stale one does not and is
+not recorded as posted), the no-thread-yet retry, the alert damping fallback to a mentionless post
+past the ping ceiling, and a crafted plan value (markdown, mention syntax, an embedded newline)
+rendering inert in the alert.
+
+### 5. Finishing
+
+Model: fable
+
+QA verification against this spec, the adversarial and blind reviewer pair over the whole
+changeset, and docs: `docs/architecture.md` and `docs/operations.md` gain the blocked state where
+they enumerate surface states and alerts; `docs/security-model.md` gains a line on the event
+stream feeding a pinging surface, stated at the strength it holds: a lower-privilege feed than the
+token-gated surfaces (append access to the operator's home directory, no process token), read by
+the session fold unfiltered by project root, joined to sessions by sanitizer-normalized id, with
+the plan field neutralized at the render site; the existing paragraph saying the feed crosses only
+a project label is widened to name the plan path the alert now carries. The backlog's live-walk item 10 (drive a
+real `/kit-goal` run to a blocked stop) widens to also confirm the `⛔` title, the ping, and the
+clear-on-engagement, since the live event stream is the one thing a test host cannot supply.
+
+## Chapters
+
+### Chapter 1 - 2026-08-21
+Completed: 2. The session fold of the event stream (events reader)
+Implemented By: implementer-opus (one fix round via resume, same agent)
+Metrics: review rounds 1 (adversarial, blind, security at opus/max via the Workflow route); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: the security round found a real Major the spec missed, an unclamped far-future timestamp pinning the blocked state forever; fixed by clamping tsMs to an injectable clock at intake, the same defense the board fold's consumer carries at its render site. The reviewers also converged on normalizing the session key through the shared sanitize.ts clean so the join against registry ids is single-sourced, with over-bound ids dropped rather than truncated. The adversarial round's backlog-replay finding drove a spec amendment to section 4: the ping gains a freshness bound (BLOCKED_PING_FRESH_MS) and dedupes on the millisecond instant rather than the attacker-spellable raw stamp. The blind round's "no path to clear a block" Major dissolved against the engagement rule its input contract withholds. The orchestrator's suggested epoch literal for the tsMs pin was wrong; the implementer verified the real instants before pinning (1786874400000 for 2026-08-16T12:00:00.000+02:00). The unreadable branch returns the caller's own state object again, restoring the pre-refactor identity promise.
+Assumptions: new tests drive real scratch files via the path option, matching the file's actual idiom rather than the brief's description of it (2026-08-21, section 2); readSessionEvents reuses ReadEventsOptions extended with an injectable now rather than declaring a twin type (2026-08-21, section 2); a session value at exactly MAX_SESSION_CHARS is dropped because parseLine's truncation makes it indistinguishable from a cut one (2026-08-21, section 2); the board fold's tsMs stays unclamped since its clamp lives at its render site in board/card.ts (2026-08-21, section 2)
+Review Findings: 1 security Major fixed (tsMs clamp); adversarial Major re-routed as a section 4 spec amendment (freshness-bounded, instant-keyed ping); blind Major defused by the engagement rule; minors fixed (key normalization, three degenerate test assertions, trust-boundary and eviction-denominator comments, unreadable-path identity) or carried to section 4 (config path knob, crafted-plan inert-render test) and section 5 (security-model wording at the strength it holds)
+Stamps: none surfaced (memq unstamped --since 4h returned zero reads)
+Next: sections 1 and 3 fix rounds in flight; then section 4, the wiring and the ping
+Commit Model: Commit-and-Push

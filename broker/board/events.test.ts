@@ -8,13 +8,17 @@ import {
   MAX_PLAN_CHARS,
   MAX_SESSION_CHARS,
   MAX_TRACKED_PLANS,
+  MAX_TRACKED_SESSIONS,
   MAX_TS_CHARS,
   defaultEventsPath,
   eventKey,
   fileIdentity,
   initialEventState,
+  initialSessionEventState,
   readEvents,
+  readSessionEvents,
 } from "./events.ts";
+import { clean } from "../sanitize.ts";
 
 const ROOT = "D:\\sapplefeld-channels";
 const OTHER_ROOT = "D:\\sapplefeld-ai-os";
@@ -605,4 +609,242 @@ test("defaultEventsPath resolves ~/.claude/kit-events.jsonl and reads no knob of
   assert.ok(path.isAbsolute(defaultEventsPath({ USERPROFILE: "" } as NodeJS.ProcessEnv)));
 
   assert.notEqual(OTHER_ROOT, ROOT, "sanity: the two fixture roots used across this file are distinct");
+});
+
+test("the session fold keeps the latest event per session, in both directions", () => {
+  const held = scratch();
+  try {
+    writeFileSync(
+      held.file,
+      line({ session: "a", plan: "one.md", event: "goal-blocked" }) +
+        line({ session: "b", plan: "two.md", event: "goal-blocked" }),
+      "utf8",
+    );
+    const first = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(first.unreadable, false);
+    assert.equal(first.state.latest.size, 2);
+    assert.equal(first.state.latest.get("a")?.event, "goal-blocked");
+    assert.equal(first.state.latest.get("a")?.plan, "one.md");
+
+    // A completion for the same session replaces the standing block, which is what clears a run
+    // that finished.
+    appendFileSync(held.file, line({ session: "a", plan: "one.md", event: "goal-complete" }), "utf8");
+    const second = readSessionEvents(first.state, { path: held.file });
+    assert.equal(second.state.latest.get("a")?.event, "goal-complete");
+    assert.equal(second.state.latest.get("b")?.event, "goal-blocked", "the other session is untouched");
+
+    // And a block landing after that completion stands again: the run reopened.
+    appendFileSync(held.file, line({ session: "a", plan: "three.md", event: "goal-blocked" }), "utf8");
+    const third = readSessionEvents(second.state, { path: held.file });
+    assert.equal(third.state.latest.get("a")?.event, "goal-blocked");
+    assert.equal(third.state.latest.get("a")?.plan, "three.md");
+    assert.equal(third.state.latest.size, 2);
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("the session fold drops a line that names no session while the board fold still keeps it", () => {
+  const held = scratch();
+  try {
+    writeFileSync(
+      held.file,
+      line({ plan: "nulled.md", session: null }) +
+        line({ plan: "blank.md", session: "   " }) +
+        line({ plan: "named.md", session: "a" }),
+      "utf8",
+    );
+
+    const sessions = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(sessions.state.latest.size, 1, "only the line naming a session is kept");
+    assert.equal(sessions.state.latest.get("a")?.plan, "named.md");
+    assert.equal(sessions.state.malformed, 0, "a line that names no session is dropped, not malformed");
+
+    // The two folds are independent, and the board fold keys on (root, plan): a sessionless line is
+    // an ordinary event to it.
+    const board = readEvents(initialEventState(), [ROOT], { path: held.file });
+    assert.equal(board.state.latest.size, 3);
+    assert.equal(board.state.latest.get(eventKey(ROOT, "nulled.md"))?.session, null);
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("a kept session event carries the instant its stamp names", () => {
+  const held = scratch();
+  try {
+    // The instant this stamp names, written out rather than parsed here: an assertion that parses
+    // the same string the reader parses would agree with the reader however wrong both were.
+    const ts = "2026-08-16T12:00:00.000+02:00";
+    const instant = 1_786_874_400_000;
+    writeFileSync(held.file, line({ session: "a", ts }), "utf8");
+    const result = readSessionEvents(initialSessionEventState(), {
+      path: held.file,
+      now: () => instant + 60_000,
+    });
+    const kept = result.state.latest.get("a");
+    assert.equal(kept?.ts, ts);
+    assert.equal(kept?.tsMs, instant, "the stamp's own instant, which is under the clock it is clamped to");
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("a stamp from the future is clamped to the reader's own clock", () => {
+  const held = scratch();
+  try {
+    // An unclamped far-future stamp is newer than every engagement that will ever be recorded, so
+    // the session it names would stand blocked for as long as the broker runs.
+    const now = 1_786_874_400_000;
+    writeFileSync(
+      held.file,
+      line({ session: "astral", ts: "+275760-09-13T00:00:00Z" }) +
+        line({ session: "distant", ts: "9999-12-31T23:59:59Z" }) +
+        line({ session: "honest", ts: "2026-08-16T09:00:00.000Z" }),
+      "utf8",
+    );
+
+    const result = readSessionEvents(initialSessionEventState(), { path: held.file, now: () => now });
+    assert.equal(result.state.latest.get("astral")?.tsMs, now, "the largest instant there is reads as now");
+    assert.equal(result.state.latest.get("distant")?.tsMs, now);
+    assert.equal(
+      result.state.latest.get("astral")?.ts,
+      "+275760-09-13T00:00:00Z",
+      "the stamp itself is kept as written; only the instant behind it is clamped",
+    );
+    assert.equal(result.state.latest.get("honest")?.tsMs, 1_786_870_800_000, "a stamp in the past is untouched");
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("a session key is normalized the way the registry normalizes the ids it stores", () => {
+  const held = scratch();
+  try {
+    // One literal drives both sides. The registry stores its ids through `clean`, so an id that
+    // arrives here with whitespace or a control character in it has to land on the key the registry
+    // holds, or the join the consumer makes silently finds nothing.
+    const raw = "  session\u0007-7f3a  ";
+    writeFileSync(
+      held.file,
+      line({ session: raw }) + line({ session: "x".repeat(400), plan: "over-bound.md" }),
+      "utf8",
+    );
+
+    const result = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(result.state.latest.size, 1, "the over-bound id is dropped, not truncated into a key");
+    assert.ok(result.state.latest.has(clean(raw)), "the kept key is exactly what the registry would store");
+    assert.equal(result.state.latest.has(raw), false, "and not the raw text the line carried");
+    assert.equal(result.state.malformed, 0, "neither line is malformed; both are shapes the contract allows");
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("an event kind the fold does not track is dropped without counting as malformed", () => {
+  const held = scratch();
+  try {
+    writeFileSync(
+      held.file,
+      line({ session: "a", event: "goal-started" }) + line({ session: "b", event: "goal-blocked" }),
+      "utf8",
+    );
+    const result = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(result.state.malformed, 0);
+    assert.equal(result.state.latest.size, 1);
+    assert.equal(result.state.latest.has("a"), false);
+    assert.ok(result.state.latest.has("b"));
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("the session fold restarts at the top of a rotated file, on an offset of its own", () => {
+  const held = scratch();
+  try {
+    writeFileSync(held.file, line({ session: "a", plan: "a.md" }) + line({ session: "b", plan: "b.md" }), "utf8");
+    const first = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(first.state.latest.size, 2);
+
+    // A board fold reading the same file consumes its own bytes. A line appended between the two
+    // folds' reads is one the board fold has already consumed, and the session fold still sees it:
+    // one fold's progress through the file is nothing to the other's.
+    appendFileSync(held.file, line({ session: "e", plan: "e.md" }), "utf8");
+    const board = readEvents(initialEventState(), [ROOT], { path: held.file });
+    assert.equal(board.state.latest.size, 3, "the board fold read the whole file, appended line included");
+    const appended = readSessionEvents(first.state, { path: held.file });
+    assert.ok(appended.state.latest.has("e"), "the session fold reads bytes the board fold already consumed");
+
+    // The kit's rotation renames the file aside and starts a new one at the same path. This one is
+    // a different length from the file it replaced, so an offset landing at its end is a read that
+    // started at its top rather than one that happened to sit there already.
+    renameSync(held.file, held.file + ".old");
+    writeFileSync(held.file, line({ session: "c", plan: "a-much-longer-plan-name.md" }), "utf8");
+    assert.notEqual(heldFileLength(held.file), appended.state.offset, "the replacement is not the same size");
+    const second = readSessionEvents(appended.state, { path: held.file });
+    assert.equal(second.state.offset, heldFileLength(held.file), "read from the top of the new file");
+    assert.equal(second.state.latest.size, 4, "a rotation resets the read position, not the kept state");
+    assert.ok(second.state.latest.has("c"));
+  } finally {
+    rmSync(held.file + ".old", { force: true });
+    held.cleanup();
+  }
+});
+
+test("the session map stops at MAX_TRACKED_SESSIONS, and a refreshed session survives the eviction", () => {
+  const held = scratch();
+  try {
+    let body = "";
+    for (let i = 0; i < MAX_TRACKED_SESSIONS; i += 1) body += line({ session: `session-${i}` });
+    // The session tracked longest ago is refreshed, so it stands at the young end of the map and
+    // the one behind it is what gives way to the newcomer.
+    body += line({ session: "session-0", event: "goal-complete" });
+    body += line({ session: "newcomer" });
+    writeFileSync(held.file, body, "utf8");
+
+    const result = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(result.state.latest.size, MAX_TRACKED_SESSIONS);
+    assert.equal(result.state.latest.get("session-0")?.event, "goal-complete", "the refreshed session is kept");
+    assert.equal(result.state.latest.has("session-1"), false, "the session updated longest ago gave way");
+    assert.ok(result.state.latest.has("newcomer"));
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("the session fold treats an absent file as ordinary and an unreadable one as reportable", () => {
+  const held = scratch();
+  try {
+    const absent = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(absent.unreadable, false);
+    assert.equal(absent.state.latest.size, 0);
+    assert.equal(absent.state.offset, 0);
+
+    writeFileSync(held.file, line({ session: "a" }), "utf8");
+    const read = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(read.state.latest.size, 1);
+
+    const refused = readSessionEvents(read.state, {
+      path: held.file,
+      readFile: () => ({ failed: "unreadable" }),
+    });
+    assert.equal(refused.unreadable, true);
+    assert.equal(refused.state.offset, read.state.offset, "the prior position is carried through");
+    assert.equal(refused.state, read.state, "the state is the caller's own object, so nothing appears to move");
+    assert.equal(refused.state.latest, read.state.latest, "and the kept map with it");
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("the session fold counts a malformed line rather than raising it", () => {
+  const held = scratch();
+  try {
+    writeFileSync(held.file, "not json at all\n" + line({ session: "a" }), "utf8");
+    const result = readSessionEvents(initialSessionEventState(), { path: held.file });
+    assert.equal(result.state.malformed, 1);
+    assert.equal(result.state.latest.size, 1);
+  } finally {
+    held.cleanup();
+  }
 });

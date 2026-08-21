@@ -1,5 +1,9 @@
-// The board card's event reader: what the kit's goal release stream says about blocked and
-// completed plans, tailed rather than re-read whole.
+// The event reader both surfaces share: what the kit's goal release stream says about blocked and
+// completed plans, tailed rather than re-read whole. Two folds of the same stream live here, each
+// with its own offset and its own kept state: the board card's per-plan fold, keyed by (root, plan),
+// and the session surface's per-session fold, keyed by session id. The offsets are independent
+// because the board fold runs only when the board card is configured while the session fold runs
+// whenever Discord does, and a fold that consumed the other's bytes would starve it.
 //
 // `~/.claude/kit-events.jsonl` is append-only under the kit's own contract: one JSON object per
 // line, and past 1 MB the kit rotates it to `kit-events.jsonl.old` and starts the main path over.
@@ -27,11 +31,16 @@
 // neutralizing them belongs to whatever renders them. `project` is the one field this reader is
 // strictest about: it typically embeds the operator's OS username, so it is never logged, and it is
 // matched against the configured project roots by normalized path equality alone, never opened and
-// never joined to anything. An event whose project matches no configured root is dropped before it
-// ever reaches the kept state.
+// never joined to anything. In the board fold an event whose project matches no configured root is
+// dropped before it ever reaches the kept state. The session fold does no root matching at all: its
+// events are joined by session id against the registry downstream, so it stands on a strictly
+// weaker gate than the board fold's, which holds that join plus the root match. Either way this
+// feed is lower-privilege than the broker's token-gated surfaces: writing a line takes append
+// access to a file in the operator's home directory and no process token at all.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { clean } from "../sanitize.ts";
 
 /** The two release kinds this card draws. Every other value the kit's contract allows is dropped,
  * not treated as malformed: the event stream may carry kinds this card simply does not track. */
@@ -79,6 +88,23 @@ export const MAX_EVENTS_READ_BYTES = 128 * 1024;
  * a fleet of that size would overflow one Discord message many times over.
  */
 export const MAX_TRACKED_PLANS = 200;
+
+/**
+ * The most sessions the session fold's kept state carries, the session whose latest event landed
+ * longest ago evicted to make room. The reasoning is `MAX_TRACKED_PLANS`': session ids come from
+ * another program's file and their distinct values are unbounded, so without a ceiling the map grows
+ * for as long as the broker runs and every tick's copy of it grows with it.
+ *
+ * What the ceiling counts is distinct session ids seen across the events file's whole rotation
+ * window, on every project on the host, not sessions running at once. A host that starts many short
+ * runs reaches it far sooner than its concurrency suggests.
+ *
+ * Reaching it has a visible cost: an evicted session's standing block is forgotten, so a session
+ * that was drawn blocked stops being drawn blocked while it is still waiting on a person. That is
+ * the accepted trade for a bounded map, and the bound sits far above what a host holds in one
+ * rotation window.
+ */
+export const MAX_TRACKED_SESSIONS = 200;
 
 /**
  * The reader's persisted state: the byte offset already consumed, the identity of the file that
@@ -394,6 +420,95 @@ function readAppended(file: string, from: EventReadPosition, maxBytes: number): 
 }
 
 /**
+ * Where a fold's reader stands: the bytes consumed, the file those bytes were counted in, whether
+ * the offset sits inside a stepped-over line, and the running malformed tally. It is every field of
+ * a fold's state except the kept map, which is the one thing the two folds do not share.
+ */
+type ReaderPosition = { offset: number; identity: string | null; midLine: boolean; malformed: number };
+
+/**
+ * What one tick's window yields a fold: either the complete, newline-terminated lines it holds and
+ * the position to resume from, or a halt that keeps whatever the fold already had.
+ *
+ * A halt covers every case where a tick has no complete line to fold: the file is absent, the read
+ * failed, the window held a line longer than the cap and stepped over it, or the writer's last
+ * append is still in flight. `unreadable` rides the halt because it is the caller's to report.
+ */
+type EventWindow =
+  | { lines: string; position: ReaderPosition }
+  | { halted: ReaderPosition; unreadable: boolean };
+
+/**
+ * The read-and-split half of a tick, which both folds run identically: the capped positional read,
+ * the rotation restart, the discard of a stepped-over line's tail, and the extraction of the
+ * complete lines from the window.
+ *
+ * The two folds differ only in what they do with those lines, so the machinery that decides which
+ * bytes are a record at all lives here once. A change to the mid-line discipline or the rotation
+ * rule that reached only one fold would leave the two reading the same file by different rules.
+ */
+function readWindow(
+  file: string,
+  previous: ReaderPosition,
+  maxBytes: number,
+  read: (file: string, from: EventReadPosition, maxBytes: number) => CappedRead,
+): EventWindow {
+  const result = read(file, { offset: previous.offset, identity: previous.identity }, maxBytes);
+  if ("failed" in result) {
+    if (result.failed === "absent") {
+      // Nothing has been written yet, or the kit's rotation briefly removed the path before
+      // recreating it. Either way the next successful read should start from the top of whatever
+      // file appears there.
+      return {
+        halted: { offset: 0, identity: null, midLine: false, malformed: previous.malformed },
+        unreadable: false,
+      };
+    }
+    return { halted: previous, unreadable: true };
+  }
+
+  // The flag rides the offset, so a read that restarted at the top of a rotated file drops it: those
+  // bytes are the beginning of a line, whatever the old offset stood in the middle of.
+  const midLine = previous.midLine && result.start === previous.offset;
+  const bytes = result.bytes;
+  const lastNewline = bytes.lastIndexOf(0x0a);
+  if (lastNewline === -1) {
+    if (bytes.length >= maxBytes) {
+      // A full window with no newline in it is one line longer than the cap. No later tick can
+      // complete it either, so this window is counted and stepped over; holding here would park the
+      // offset on it and freeze every event behind it for good.
+      return {
+        halted: {
+          offset: result.start + bytes.length,
+          identity: result.identity,
+          midLine: true,
+          malformed: previous.malformed + 1,
+        },
+        unreadable: false,
+      };
+    }
+    // The writer's last append is still in flight. Hold at the read's own start so the next tick
+    // re-reads these bytes rather than skipping past an unfinished line.
+    return {
+      halted: { offset: result.start, identity: result.identity, midLine, malformed: previous.malformed },
+      unreadable: false,
+    };
+  }
+
+  // What the tail of a stepped-over line ends at, and where a whole line therefore begins.
+  const from = midLine ? bytes.indexOf(0x0a) + 1 : 0;
+  return {
+    lines: bytes.subarray(from, lastNewline).toString("utf8"),
+    position: {
+      offset: result.start + lastNewline + 1,
+      identity: result.identity,
+      midLine: false,
+      malformed: previous.malformed,
+    },
+  };
+}
+
+/**
  * Advances the reader by one tick: reads whatever was appended since `previous.offset`, folds each
  * complete line into the kept state keyed by (root, plan), and returns that state. `previous` is
  * never mutated, and a tick that keeps nothing hands back its very map.
@@ -414,69 +529,19 @@ export function readEvents(
   const maxBytes = options.maxBytes ?? MAX_EVENTS_READ_BYTES;
   const read = options.readFile ?? readAppended;
 
-  const result = read(file, { offset: previous.offset, identity: previous.identity }, maxBytes);
-  if ("failed" in result) {
-    if (result.failed === "absent") {
-      // Nothing has been written yet, or the kit's rotation briefly removed the path before
-      // recreating it. Either way the next successful read should start from the top of whatever
-      // file appears there.
-      return {
-        state: {
-          offset: 0,
-          identity: null,
-          midLine: false,
-          malformed: previous.malformed,
-          latest: previous.latest,
-        },
-        unreadable: false,
-      };
-    }
-    return { state: previous, unreadable: true };
-  }
-
-  // The flag rides the offset, so a read that restarted at the top of a rotated file drops it: those
-  // bytes are the beginning of a line, whatever the old offset stood in the middle of.
-  const midLine = previous.midLine && result.start === previous.offset;
-  const bytes = result.bytes;
-  const lastNewline = bytes.lastIndexOf(0x0a);
-  if (lastNewline === -1) {
-    if (bytes.length >= maxBytes) {
-      // A full window with no newline in it is one line longer than the cap. No later tick can
-      // complete it either, so this window is counted and stepped over; holding here would park the
-      // offset on it and freeze every event behind it for good.
-      return {
-        state: {
-          offset: result.start + bytes.length,
-          identity: result.identity,
-          midLine: true,
-          malformed: previous.malformed + 1,
-          latest: previous.latest,
-        },
-        unreadable: false,
-      };
-    }
-    // The writer's last append is still in flight. Hold at the read's own start so the next tick
-    // re-reads these bytes rather than skipping past an unfinished line.
-    return {
-      state: {
-        offset: result.start,
-        identity: result.identity,
-        midLine,
-        malformed: previous.malformed,
-        latest: previous.latest,
-      },
-      unreadable: false,
-    };
+  const window = readWindow(file, previous, maxBytes, read);
+  if ("halted" in window) {
+    // A read that failed hands back the caller's own state object, not a copy of it: a caller that
+    // compares state by identity to decide whether anything moved must see nothing move.
+    if (window.unreadable) return { state: previous, unreadable: true };
+    return { state: { ...window.halted, latest: previous.latest }, unreadable: false };
   }
 
   const index = comparableRoots(roots);
-  // What the tail of a stepped-over line ends at, and where a whole line therefore begins.
-  const from = midLine ? bytes.indexOf(0x0a) + 1 : 0;
-  const complete = bytes.subarray(from, lastNewline).toString("utf8");
   let latest = previous.latest;
-  let malformed = previous.malformed;
+  let malformed = window.position.malformed;
 
-  for (const line of complete.split("\n")) {
+  for (const line of window.lines.split("\n")) {
     if (line.trim() === "") continue;
     const parsed = parseLine(line);
     if (parsed === "malformed") {
@@ -509,14 +574,157 @@ export function readEvents(
     });
   }
 
-  return {
-    state: {
-      offset: result.start + lastNewline + 1,
-      identity: result.identity,
-      midLine: false,
-      malformed,
-      latest,
-    },
-    unreadable: false,
-  };
+  return { state: { ...window.position, malformed, latest }, unreadable: false };
+}
+
+/**
+ * One goal event kept for a session, with the instant its stamp names already resolved.
+ *
+ * `tsMs` is `Date.parse` of `ts`, computed once at intake rather than at every comparison a caller
+ * makes, and clamped to the reader's own clock. It is a number by construction: `parseLine` refuses
+ * a stamp that carries no explicit UTC offset or names no instant, so the value reaching here has
+ * already parsed once.
+ *
+ * The clamp is what keeps a stamp from the far future out of the comparison the consumer makes. A
+ * session stands blocked while its blocked event is newer than the session's last engagement, so a
+ * line stamped in the year 275760 would outrank every engagement that will ever be recorded and pin
+ * the state on forever. An event cannot have been written later than the moment it is read, so the
+ * read's own clock is the ceiling. The board fold's consumer applies the same clamp at its render
+ * site, in `blockedAt` in `broker/board/card.ts`.
+ *
+ * `plan` rides along because the surface that draws a blocked session names the plan the run stopped
+ * on, and the session fold keeps no project of its own.
+ */
+export type SessionGoalEvent = {
+  event: BoardEventKind;
+  ts: string;
+  tsMs: number;
+  plan: string;
+};
+
+/**
+ * The session fold's persisted state: its own byte offset, the identity of the file that offset
+ * counts bytes of, its own mid-line flag and malformed tally, and the latest kept goal event per
+ * session id.
+ *
+ * Every field means what its `EventReaderState` counterpart means. They are held separately rather
+ * than shared because the two folds advance on different schedules, and one offset serving both
+ * would let whichever fold ticked first consume the bytes the other never saw.
+ *
+ * `latest` is never mutated in place, and a read that keeps nothing returns the previous instance
+ * rather than a copy of it, so a caller holding the previous state can compare by reference.
+ */
+export type SessionEventReaderState = {
+  offset: number;
+  identity: string | null;
+  midLine: boolean;
+  malformed: number;
+  latest: Map<string, SessionGoalEvent>;
+};
+
+/** A fresh session fold with nothing consumed yet, the correct starting point for a file never read
+ * before and equally correct for one that does not exist. */
+export function initialSessionEventState(): SessionEventReaderState {
+  return { offset: 0, identity: null, midLine: false, malformed: 0, latest: new Map() };
+}
+
+export type ReadSessionEventsOptions = ReadEventsOptions & {
+  /** The clock a kept stamp is clamped against. Injected so a test can pin the clamp without waiting
+   * on real time; the board fold takes no such knob, because its clamp lives at its render site. */
+  now?: () => number;
+};
+
+export type ReadSessionEventsResult = {
+  state: SessionEventReaderState;
+  /** True when this tick's read failed for a reason other than the file being absent. The state is
+   * carried through unchanged; the caller may draw or log the failure without treating it as a
+   * crash. */
+  unreadable: boolean;
+};
+
+/**
+ * Advances the session fold by one tick: reads whatever was appended since `previous.offset` and
+ * folds each complete line into the kept state keyed by session id. `previous` is never mutated, and
+ * a tick that keeps nothing hands back its very map.
+ *
+ * There is no root filtering here: a session is matched by session id against the registry
+ * downstream, so an event from a project this broker was never configured with reaches nothing.
+ * That makes this feed a lower-privilege one than the token-gated surfaces the broker otherwise
+ * takes input from. Anything with append access to the operator's home directory can write a line
+ * here, no process token is involved, and no project root narrows what is kept. What bounds it is
+ * the join: a line surfaces only when its session id, normalized the way the registry normalizes
+ * the ids it stores, names a session this broker is already tracking. The `plan` it carries is
+ * attacker-shaped text on that path, bounded here and neutralized where it is rendered. The kit's
+ * own writer normalizes `plan` to a repo-relative path, which is what the surfaces expect, but that
+ * is an expectation of an honest writer rather than a guarantee of this reader; the render site's
+ * escaping is what holds when it does not.
+ *
+ * The session key is normalized through `clean`, the same sanitizer every id the registry stores
+ * passes through, so the two sides of that join cannot miss over whitespace or a control character
+ * one of them strips and the other keeps. A value that is blank after cleaning names no session. A
+ * value that reaches the intake bound is dropped rather than kept, because `parseLine` truncates at
+ * that bound and a truncated id cannot be told from a whole one of exactly that length: a truncated
+ * id matches no session at best, and at worst collides with another and attributes one session's
+ * block to it. Neither drop is malformed; the kit's contract allows the line.
+ *
+ * Only the newest event per session survives, because the map assignment for a key always
+ * overwrites. A `goal-complete` landing after a `goal-blocked` is what clears a run that finished,
+ * and a `goal-blocked` landing after a `goal-complete` stands again, which is a run that reopened.
+ */
+export function readSessionEvents(
+  previous: SessionEventReaderState,
+  options: ReadSessionEventsOptions = {},
+): ReadSessionEventsResult {
+  const file = options.path ?? defaultEventsPath();
+  const maxBytes = options.maxBytes ?? MAX_EVENTS_READ_BYTES;
+  const read = options.readFile ?? readAppended;
+  const now = options.now ?? Date.now;
+
+  const window = readWindow(file, previous, maxBytes, read);
+  if ("halted" in window) {
+    // A read that failed hands back the caller's own state object, not a copy of it: a caller that
+    // compares state by identity to decide whether anything moved must see nothing move.
+    if (window.unreadable) return { state: previous, unreadable: true };
+    return { state: { ...window.halted, latest: previous.latest }, unreadable: false };
+  }
+
+  let latest = previous.latest;
+  let malformed = window.position.malformed;
+
+  for (const line of window.lines.split("\n")) {
+    if (line.trim() === "") continue;
+    const parsed = parseLine(line);
+    if (parsed === "malformed") {
+      malformed += 1;
+      continue;
+    }
+    if (parsed === null) continue;
+    if (parsed.session === null) continue;
+    // The key the downstream join is made on, in the registry's own form for it.
+    const session = clean(parsed.session);
+    if (session === "" || session.length >= MAX_SESSION_CHARS) continue;
+
+    // The copy is made on the first event actually kept, so a tick that keeps none returns the
+    // previous map itself and a caller comparing by reference sees nothing moved.
+    if (latest === previous.latest) latest = new Map(previous.latest);
+    // Deleted before it is set, because a map keeps a key in the slot it was first inserted at: a
+    // session kept fresh by a run that blocks over and over would otherwise stand at the old end of
+    // the map and give way ahead of sessions nothing has said anything about for days.
+    latest.delete(session);
+    if (latest.size >= MAX_TRACKED_SESSIONS) {
+      const oldest = latest.keys().next();
+      if (oldest.done !== true) latest.delete(oldest.value);
+    }
+    latest.set(session, {
+      event: parsed.event,
+      ts: parsed.ts,
+      // Clamped to the read's own clock: a stamp naming a moment after this read cannot describe a
+      // line already written, and taken at its word it would outrank every engagement the consumer
+      // will ever compare it against.
+      tsMs: Math.min(Date.parse(parsed.ts), now()),
+      plan: parsed.plan,
+    });
+  }
+
+  return { state: { ...window.position, malformed, latest }, unreadable: false };
 }

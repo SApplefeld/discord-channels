@@ -14,6 +14,15 @@ promote, retire, or keep call at the next close-out. Every item below this line 
 2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
+- Root-cause the intermittent timing failure in `broker/tail.test.ts:2469`, "a long reply the
+  tailer is still posting is not posted again by the Stop mirror" (parked 2026-08-21, found while
+  baselining an unrelated round). It fails with `AssertionError: the condition never held` from the
+  test's own `until` helper (tail.test.ts:2459), observed once in a full-suite run and once in three
+  isolated runs of the file, on a clean tree at 3417f79, and passes on re-run. A genuine flake by
+  the repeat test, not a regression from any open work; it needs its `until` window read against
+  what the test drives (a real timer against an injected clock is the usual shape) rather than a
+  retry wrapper.
+
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
   from the title-states security review).** `classifyMessage`'s thread branch drops
   `ChannelNameChange` and delivers everything else, so any other system message type Discord posts
