@@ -419,9 +419,10 @@ test("the usage card knob builds nothing on a broker with no discord configured"
 
 test("the usage card's wiring draws this broker's own sessions, cache, and binding file", async (t) => {
   // The seam a unit test of the card cannot reach: the closure it calls for its session lines, the
-  // permission desk's waiting set joined onto them, the cache root it reads, the footer's coupling
-  // note, and the path from a bind back to a snapshot on disk. A stub transport is what puts all of
-  // it in reach without a Discord connection.
+  // permission desk's waiting set joined onto them, the blocked desk's standing computation joined
+  // beside it, the cache root it reads, the footer's coupling note, and the path from a bind back
+  // to a snapshot on disk. A stub transport is what puts all of it in reach without a Discord
+  // connection.
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-usage-wired-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(path.join(dir, "cache"));
@@ -456,6 +457,12 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     backgroundTasks: [],
     goal: null,
   };
+  const halted: SessionRecord = {
+    ...record,
+    sessionId: "0f3c9d21-4444-4000-8000-000000000005",
+    processToken: "0f3c9d21-4444-4000-8000-00000000000c",
+    name: "halted-session",
+  };
 
   const posts: string[] = [];
   const transport: DiscordTransport = {
@@ -482,8 +489,9 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
         usageCardRefreshMs: 60_000,
       },
       channel: { transport, thresholds: { idleAfterMs: 30_000, exitedAfterMs: 4 * 60 * 60 * 1000 } },
-      registry: { list: () => [record] },
+      registry: { list: () => [record, halted] },
       waiting: () => new Set([record.sessionId]),
+      blocked: (session) => session.sessionId === halted.sessionId,
       interimMirror: false,
       log: () => {},
       onError: () => {},
@@ -496,6 +504,11 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
   assert.equal(posts.length, 1);
   assert.match(body, /^5 Hr .* 46%$/m, "the cache under the configured root is what the card reads");
   assert.match(body, /^wired-session · needs you · 0m$/m, "and the registry is what it lists");
+  assert.match(
+    body,
+    /^halted-session · blocked · 0m$/m,
+    "with the blocked helper's answer joined onto its own row",
+  );
   assert.match(body, /interim mirroring off/, "with the tailer's own state in the footer");
   assert.deepEqual(
     loadUsageBinding(path.join(dir, "usage-card.json")),

@@ -521,6 +521,24 @@ test("an alert volume window pings, then quiets, then drops, per thread, and reo
   assert.equal(volume(THREAD_A), "ping");
 });
 
+test("a refunded slot re-arms the window, and a refund with nothing spent credits nothing", () => {
+  // The window counts messages that reached the channel. A caller whose write was refused hands
+  // its slot back, so a retry through an outage still arrives at the tier the operator was owed
+  // rather than quiet, or not at all, for messages nobody ever saw.
+  const volume = createAlertVolume({ now: () => 1_000, pingCeiling: 1, postCeiling: 2, windowMs: 60_000 });
+
+  assert.equal(volume(THREAD_A), "ping");
+  volume.refund(THREAD_A);
+  assert.equal(volume(THREAD_A), "ping", "the refused write's slot is back, so the retry still pings");
+  assert.equal(volume(THREAD_A), "quiet", "and only that one slot came back");
+
+  // A refund on a thread with nothing spent is a no-op, not a credit: the window can never hold
+  // fewer stamps than the messages that landed.
+  volume.refund(THREAD_B);
+  assert.equal(volume(THREAD_B), "ping");
+  assert.equal(volume(THREAD_B), "quiet");
+});
+
 test("the question alert's own ceilings ring once a window and stop writing at four", () => {
   // The live pair index.ts wires: one ping a window, because a question is not answerable from
   // the thread and one ping a minute is a person's reading pace for a go-to-the-console notice;

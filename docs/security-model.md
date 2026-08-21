@@ -516,6 +516,30 @@ their lead position on the line. The consequence is a plan that reads as blocked
 a surface that reports state rather than authorizing anything; it draws no live pill, chip, or
 prompt, and the neutralization above is what holds that line.
 
+**The blocked-goal alert is the fourth mention-bearing write, and its trigger credential is the
+weakest in the set.** The session surface reads the same goal event stream through a second fold,
+keyed by session id rather than by project root and filtered by no root list: one appended
+`goal-blocked` line naming a session this broker tracks becomes a `⛔` state on that session's card
+and thread title and, while the event is fresh, one alert into its thread. Appending to the stream
+requires no process token and no per-session binding, only write access to the operator's own home
+directory, so any process running as the operator, an unwrapped session in any repository
+included, can raise this alert with a plan path of its choosing. The bounds are the ones the write
+rides: the session id must match a registered session through the same sanitizer the registry
+stores ids through, a line stamped later than the reader's own clock is dropped, the alert posts
+only while the event is younger than its freshness bound, one alert per episode instant is
+remembered, and the write rides a per-thread ping and post window of its own, sized like the
+question alert's, so the surface reaches a phone without becoming a ping primitive. The plan path
+it renders takes the full markdown escape and the reader's own length bound, and the route's empty
+`parse` list plus the single-user whitelist mean the only mention the message can carry is the one
+the renderer composes. What the escape does not reach is vocabulary, as with the card above, and
+here the words land in a pinging message rather than a status surface: a crafted plan path reads
+as prose in an alert the operator is trained to act on, which is the residual the trigger
+credential prices in. The same feed is an accepted suppression primitive in both directions: a
+crafted `goal-complete` naming a real session clears its standing block before a tick observes it,
+and a flood of junk session ids can evict a real session's kept event through the fold's bound. So
+the blocked surface is evidence when it draws and never proof when it does not, which is the same
+standing every state this broker renders from another program's file already has.
+
 What the operator's own configuration can still reach is worth stating, because these knobs sit in
 the access-controlled `broker.env` rather than in anything an attacker supplies. A project root may
 name a UNC share, in which case the sweep opens outbound SMB under the broker's own credentials once
@@ -564,10 +588,15 @@ and both apply it:
   name cannot render as a fake timestamp, mention, or emoji, and a card cannot spoof the heartbeat
   it exists to carry.
 
-  **Two writes deliberately mention someone: the permission prompt and the open-question alert.**
-  Both exist to reach a phone, and neither is a widening: the empty `parse` list stays, and each
-  adds `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated
-  as a snowflake at load. The only mention syntax in either message is composed by the renderer
+  **Four writes deliberately mention someone: the permission prompt, the open-question alert, the
+  model-change alert, and the blocked-goal alert.** They differ in what must be presented to
+  trigger one, which is the fact to audit: the permission prompt demands the per-attachment reply
+  key, the question alert and the model-change alert a session's own process token, and the
+  blocked-goal alert only an appended line in a file in the operator's home directory, the weakest
+  credential in the set, bounded where that write is described above. All four exist to reach a
+  phone, and none is a widening: the empty `parse` list stays, and each adds
+  `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated as a
+  snowflake at load. The only mention syntax in any of these messages is composed by the renderer
   from that ID. Content still cannot produce one. The question alert additionally carries its own
   per-thread ping/quiet/drop window, described under the transcript section below, because its
   triggers, a credited hook post and a transcript line, are mintable by a token holder rather

@@ -6,6 +6,7 @@
 // characters) and the renderer owns display safety. Suppressing pings is the transport's half of
 // the same job, via `allowed_mentions`.
 import { isInvisible, sliceCodePoints, withoutInvisible } from "../sanitize.ts";
+import { MAX_PLAN_CHARS } from "../board/events.ts";
 import { modelRank } from "../registry.ts";
 import type { BackgroundTask, ModelFallback } from "../registry.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
@@ -1919,6 +1920,33 @@ export function renderModelChange(input: {
       `${original === "" ? "it" : original}.`,
   );
   return lines.join("\n");
+}
+
+/**
+ * The alert a block episode posts into its session's own thread, on the alert tier with the mention
+ * that reaches a phone, and without one when the volume window has gone quiet and the caller passes
+ * null. `renderQuestionNotice`'s pattern, and safe for its reason: the mention is composed here from
+ * the operator's own ID, and the one untrusted field goes through `inertField`, which escapes the
+ * angle brackets Discord's mention syntax lives inside, so the only mention this message can contain
+ * is the one written on this line.
+ *
+ * `plan` arrives from the kit's event stream, which anything with append access to the operator's
+ * home directory can write, so it is escaped and bounded here at the render site. The bound is the
+ * events reader's own `MAX_PLAN_CHARS`, imported rather than mirrored so the two cannot drift, and
+ * it is measured before the escape, on the same characters the reader measured: a plan the reader
+ * kept whole is drawn whole, the escape's backslashes cost none of the plan's budget, and a cut can
+ * never land between a backslash and the character it escapes. A plan that neutralizes to nothing
+ * drops its clause rather than drawing an empty slot, and whatever the event carried, the alert
+ * composes, never a throw.
+ */
+export function renderBlockedAlert(input: { operatorId: string | null; plan: string }): string {
+  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+  // Neutralize, bound, then escape. `visible` runs again inside `inertText` and is idempotent, so
+  // the second pass changes nothing; what the order buys is the pre-escape measurement above.
+  const plan = inertText(fit(visible(input.plan), MAX_PLAN_CHARS));
+  const stopped = "the run is stopped on you; the reason is in this thread";
+  if (plan === "") return `${mention}⛔ **Blocked** ${SEPARATOR} ${stopped}`;
+  return `${mention}⛔ **Blocked** ${SEPARATOR} ${plan} - ${stopped}`;
 }
 
 /**

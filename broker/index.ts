@@ -9,7 +9,7 @@ import { createHandler } from "./intake.ts";
 import { createLogger } from "./log.ts";
 import type { Logger } from "./log.ts";
 import { createRegistry } from "./registry.ts";
-import type { ModelChange, Registry } from "./registry.ts";
+import type { ModelChange, Registry, SessionRecord } from "./registry.ts";
 import { loadSessions, saveSessions } from "./persistence.ts";
 import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
@@ -24,6 +24,8 @@ import {
 } from "./discord/question-message.ts";
 import type { ActionRow } from "./discord/question-message.ts";
 import { toView } from "./discord/state.ts";
+import { createBlockedDesk } from "./discord/blocked.ts";
+import type { BlockedDesk } from "./discord/blocked.ts";
 import { loadBindings, saveBindings } from "./discord/bindings.ts";
 import { createUsageCard } from "./usage/thread.ts";
 import type { UsageCardChannel, UsageCardOptions } from "./usage/thread.ts";
@@ -590,6 +592,11 @@ export function usageCardWiring(options: {
   registry: Pick<Registry, "list">;
   /** The sessions holding an unanswered permission prompt, read fresh on every pass. */
   waiting: () => ReadonlySet<string>;
+  /**
+   * Whether a session stands blocked on the kit's goal event stream, read fresh on every pass. The
+   * same helper the surface refresh reads, so the fleet card and the thread cannot disagree.
+   */
+  blocked: (record: Pick<SessionRecord, "sessionId" | "lastEngagementAt">) => boolean;
   /** Whether the transcript tailer is running, which is what the card's footer note reports. */
   interimMirror: boolean;
   log: (message: string) => void;
@@ -603,7 +610,12 @@ export function usageCardWiring(options: {
       const waiting = options.waiting();
       return options.registry
         .list()
-        .map((record) => toView(record, { needsAttention: waiting.has(record.sessionId) }));
+        .map((record) =>
+          toView(record, {
+            needsAttention: waiting.has(record.sessionId),
+            blocked: options.blocked(record),
+          }),
+        );
     },
     interimMirror: options.interimMirror,
     cacheRoot: options.config.usageCacheRoot,
@@ -721,6 +733,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let fleetCard: () => string | null = () => null;
   // The fleet board card's own message, on the same terms and for the same reason.
   let boardCardMessage: () => string | null = () => null;
+  // The blocked-state desk, mutable for the reason `threadFor` is: it is built inside the Discord
+  // block below, because its alerts need the sender gate's operator ID and the surface's threads,
+  // and the refresh timer that ticks it starts before that block finishes. Without Discord it is
+  // never built, and no session stands blocked anywhere, because no surface exists to render one.
+  let blockedDesk: BlockedDesk | null = null;
+  // The standing computation both `toView` call sites read, so the fleet card and the session
+  // thread cannot disagree about who is blocked. Mutable because the usage card's wiring is built
+  // after the Discord block and reads it through a closure.
+  let standingBlocked: (record: Pick<SessionRecord, "sessionId" | "lastEngagementAt">) => boolean =
+    () => false;
   // The channel's permanent pins: the broker's standing cards, in the order they take their slots,
   // and each named only while it has a message to name. A card a knob left unbuilt, and one Discord
   // has reported gone until it is rebuilt, hold no slot at all.
@@ -1086,14 +1108,25 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // with the Discord surface, and the intake is the half that has to keep running. The pass is
       // kept so that shutdown can wait for it: clearing the timer does not cancel a call already
       // on the wire, or the binding write that follows it.
+      // The session fold advances synchronously inside this call, ahead of the views built below,
+      // so what the pass renders is what this tick's events say. The promise carries only the
+      // pass's alert posts, which report their own failures and never reject; it rides `inFlight`
+      // beside the surface pass, so shutdown waits for a blocked alert still on the wire exactly
+      // as it waits for the surface's own writes.
+      const blockedPass = blockedDesk === null ? Promise.resolve() : blockedDesk.tick();
       // Recomputed each pass rather than pushed, so a prompt answered between ticks stops showing
       // as waiting without anything having to remember to clear it.
       const waiting = permissions.waiting();
-      inFlight = surface
+      const surfacePass = surface
         .tick(
           registry
             .list()
-            .map((record) => toView(record, { needsAttention: waiting.has(record.sessionId) })),
+            .map((record) =>
+              toView(record, {
+                needsAttention: waiting.has(record.sessionId),
+                blocked: standingBlocked(record),
+              }),
+            ),
         )
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
@@ -1104,14 +1137,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
             live: surface.livePins(),
             known: surface.knownPins(),
           }),
-        )
+        );
+      inFlight = Promise.all([blockedPass, surfacePass])
+        .then(() => undefined)
         .catch((error: unknown) => {
-        // describe() rather than String(error): a discord.js error can carry the request object,
-        // and the Authorization header along with it, and this string lands in the log file.
-        const message = `broker: discord refresh failed: ${describe(error)}`;
-        console.error(message);
-        logger.error(message);
-      });
+          // describe() rather than String(error): a discord.js error can carry the request object,
+          // and the Authorization header along with it, and this string lands in the log file.
+          const message = `broker: discord refresh failed: ${describe(error)}`;
+          console.error(message);
+          logger.error(message);
+        });
     }, discord.refreshIntervalMs);
     threadFor = (sessionId) => surface.threadFor(sessionId);
     cardTransport = transport;
@@ -1150,6 +1185,21 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
+    // The blocked-state desk runs whenever Discord does, independent of whether the board card is
+    // on: the session fold holds its own offset into the same configured stream, so an operator who
+    // redirects `CHANNEL_BOARD_EVENTS_PATH` redirects both folds together. Its alerts ride the
+    // steering writer's alert tier, the phone-reaching write, which already ends the thread's
+    // narration block on a successful post.
+    const desk = createBlockedDesk({
+      eventsPath: config.boardEventsPath,
+      threadFor: (sessionId) => surface.threadFor(sessionId),
+      alert: (threadId, text, mentionUserId) => steeringWriter.alert(threadId, text, mentionUserId),
+      operatorId: gate.operatorId,
+      now: Date.now,
+      log: note,
+    });
+    blockedDesk = desk;
+    standingBlocked = desk.standing;
     // The question alert posts through the steering writer's alert tier, the unfloored,
     // phone-reaching write permission prompts ride, rather than the mirror writer that paces
     // conversation volume: the notice floor could swallow a question, the mirror writer's pacing
@@ -1340,6 +1390,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       channel: usageChannel,
       registry,
       waiting: () => permissions.waiting(),
+      blocked: (record) => standingBlocked(record),
       // The tailer's own presence, which is what the card's footer note reports: with it off,
       // threads carry no narration and no question alerts, and the card cannot be read correctly
       // without saying so.

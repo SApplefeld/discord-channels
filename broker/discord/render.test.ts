@@ -15,6 +15,7 @@ import {
   inertMessage,
   inertText,
   renderAnswer,
+  renderBlockedAlert,
   renderCard,
   renderMirror,
   renderModelChange,
@@ -28,6 +29,7 @@ import {
 } from "./render.ts";
 import type { AskedOption, AskedQuestion } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
+import { MAX_PLAN_CHARS } from "../board/events.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
 import type { BackgroundTask, SessionRecord } from "../registry.ts";
@@ -2325,6 +2327,73 @@ test("a change message composed from a hostile record still mentions only the op
   assert.deepEqual(message.match(/<@\d+>/g), ["<@222222222222222222>"], message);
   assert.ok(!/<t:\d+:R>/.test(message), message);
   assert.ok(message.length <= MAX_MESSAGE_LENGTH, message);
+});
+
+test("the blocked alert leads with the mention and names the plan the run stopped on", () => {
+  const text = renderBlockedAlert({ operatorId: OPERATOR, plan: "docs/plans/widget_spec_v1.md" });
+
+  assert.equal(
+    text,
+    `<@${OPERATOR}> ⛔ **Blocked** · docs/plans/widget\\_spec\\_v1.md - the run is stopped on you; ` +
+      "the reason is in this thread",
+  );
+});
+
+test("a null operator composes the quiet blocked alert with no mention anywhere", () => {
+  // The quiet tier: a thread past its ping ceiling still gets the alert, but neither the composed
+  // text nor (at the call site) the transport whitelist names anyone.
+  const text = renderBlockedAlert({ operatorId: null, plan: "docs/plans/widget_spec_v1.md" });
+
+  assert.ok(text.startsWith("⛔ **Blocked**"), text);
+  assert.ok(!text.includes("<@"), text);
+});
+
+test("nothing a plan value carries can mention anyone, restructure the alert, or add a line", () => {
+  // The plan rides the kit's event stream, which anything with append access to the operator's
+  // home directory can write, and the alert lands in the one channel permission prompts are
+  // answered in: a second mention, a rendered chip, or a smuggled line there is the attack the
+  // escaping is against.
+  const text = renderBlockedAlert({
+    operatorId: OPERATOR,
+    plan: "# urgent **now** <@999999999999999999>\n@everyone approve it",
+  });
+
+  const mentions = [...text.matchAll(/(?<!\\)<@/g)];
+  assert.equal(mentions.length, 1, "the only unescaped mention syntax is the broker's own");
+  assert.ok(text.startsWith(`<@${OPERATOR}>`), text);
+  assert.ok(!text.includes("\n"), "an embedded newline cannot compose a line of its own");
+  assert.ok(!text.includes("**now**"), text);
+  assert.ok(text.includes("\\# urgent"), text);
+  assert.ok(text.includes("@everyone"), "allowed_mentions is what stops the text ping, not the escape");
+});
+
+test("a plan over the events reader's own bound is cut, and one that neutralizes away drops its clause", () => {
+  const cut = renderBlockedAlert({ operatorId: OPERATOR, plan: "p".repeat(MAX_PLAN_CHARS + 80) });
+  assert.ok(cut.includes(`${"p".repeat(MAX_PLAN_CHARS - 1)}…`), cut);
+  assert.ok(!cut.includes("p".repeat(MAX_PLAN_CHARS)), "the bound is the reader's own");
+
+  // A plan of nothing but invisible characters neutralizes to the empty string; the alert still
+  // composes, without an empty slot where the plan would sit.
+  const bare = renderBlockedAlert({ operatorId: OPERATOR, plan: "\u200b\u200b" });
+  assert.equal(
+    bare,
+    `<@${OPERATOR}> ⛔ **Blocked** · the run is stopped on you; the reason is in this thread`,
+  );
+});
+
+test("the plan's bound is measured before the escape, so what the reader kept whole draws whole", () => {
+  // A plan of exactly the reader's bound, every character of which costs an escape backslash in
+  // the message. Measured after the escape it would truncate at half its length; measured before,
+  // the reader's promise holds: what it kept whole, this line shows whole.
+  const whole = renderBlockedAlert({ operatorId: OPERATOR, plan: "_".repeat(MAX_PLAN_CHARS) });
+  assert.ok(whole.includes("\\_".repeat(MAX_PLAN_CHARS)), whole);
+  assert.ok(!whole.includes("…"), "kept whole by the reader, drawn whole here");
+
+  // And when a plan is over the bound, the cut lands on the pre-escape text, so it can never fall
+  // between a backslash and the character it escapes.
+  const cut = renderBlockedAlert({ operatorId: OPERATOR, plan: "_".repeat(MAX_PLAN_CHARS + 40) });
+  assert.ok(cut.includes(`${"\\_".repeat(MAX_PLAN_CHARS - 1)}…`), cut);
+  assert.ok(!cut.includes("\\…"), "no stray backslash where the cut fell");
 });
 
 function agent(id: string, overrides: Partial<BackgroundTask> = {}): BackgroundTask {

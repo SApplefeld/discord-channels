@@ -21,7 +21,12 @@ and none carries a date of its own. An item added from here on carries `(parked 
   isolated runs of the file, on a clean tree at 3417f79, and passes on re-run. A genuine flake by
   the repeat test, not a regression from any open work; it needs its `until` window read against
   what the test drives (a real timer against an injected clock is the usual shape) rather than a
-  retry wrapper.
+  retry wrapper. Also observed under suite load later the same day: its mirror-image sibling (the
+  inverse dedup direction) and "a mirror run that landed nothing after the tailer deferred still
+  gets the text posted" each failed the same way, always with the `until` helper's "the condition
+  never held", always green alone and in-file (111/111 across repeated runs) and green on full-suite
+  re-run, so the flake covers the in-flight echo-dedup group in `tail.test.ts`, not one test, and
+  the shared `until` polling window under parallel suite load is the prime suspect.
 
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
   from the title-states security review).** `classifyMessage`'s thread branch drops

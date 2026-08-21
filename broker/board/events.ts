@@ -581,16 +581,10 @@ export function readEvents(
  * One goal event kept for a session, with the instant its stamp names already resolved.
  *
  * `tsMs` is `Date.parse` of `ts`, computed once at intake rather than at every comparison a caller
- * makes, and clamped to the reader's own clock. It is a number by construction: `parseLine` refuses
- * a stamp that carries no explicit UTC offset or names no instant, so the value reaching here has
- * already parsed once.
- *
- * The clamp is what keeps a stamp from the far future out of the comparison the consumer makes. A
- * session stands blocked while its blocked event is newer than the session's last engagement, so a
- * line stamped in the year 275760 would outrank every engagement that will ever be recorded and pin
- * the state on forever. An event cannot have been written later than the moment it is read, so the
- * read's own clock is the ceiling. The board fold's consumer applies the same clamp at its render
- * site, in `blockedAt` in `broker/board/card.ts`.
+ * makes. It is a number by construction: `parseLine` refuses a stamp that carries no explicit UTC
+ * offset or names no instant, so the value reaching here has already parsed once. A line whose
+ * instant is later than the read's own clock never reaches this state at all: `readSessionEvents`
+ * drops it, so every kept instant is one that can be compared honestly against an engagement.
  *
  * `plan` rides along because the surface that draws a blocked session names the plan the run stopped
  * on, and the session fold keeps no project of its own.
@@ -629,8 +623,9 @@ export function initialSessionEventState(): SessionEventReaderState {
 }
 
 export type ReadSessionEventsOptions = ReadEventsOptions & {
-  /** The clock a kept stamp is clamped against. Injected so a test can pin the clamp without waiting
-   * on real time; the board fold takes no such knob, because its clamp lives at its render site. */
+  /** The clock a stamp is admitted against: a line naming an instant later than it is dropped.
+   * Injected so a test can pin the gate without waiting on real time; the board fold takes no such
+   * knob, because its far-future defense lives at its render site. */
   now?: () => number;
 };
 
@@ -665,7 +660,8 @@ export type ReadSessionEventsResult = {
  * value that reaches the intake bound is dropped rather than kept, because `parseLine` truncates at
  * that bound and a truncated id cannot be told from a whole one of exactly that length: a truncated
  * id matches no session at best, and at worst collides with another and attributes one session's
- * block to it. Neither drop is malformed; the kit's contract allows the line.
+ * block to it. A line whose instant is later than the read's clock is dropped too, for the reason
+ * at the gate below. None of these drops is malformed; the kit's contract allows the line.
  *
  * Only the newest event per session survives, because the map assignment for a key always
  * overwrites. A `goal-complete` landing after a `goal-blocked` is what clears a run that finished,
@@ -690,6 +686,9 @@ export function readSessionEvents(
 
   let latest = previous.latest;
   let malformed = window.position.malformed;
+  // One clock reading for the whole window: the lines below were all on disk before this read
+  // began, so a single ceiling holds for every one of them.
+  const readAt = now();
 
   for (const line of window.lines.split("\n")) {
     if (line.trim() === "") continue;
@@ -700,6 +699,15 @@ export function readSessionEvents(
     }
     if (parsed === null) continue;
     if (parsed.session === null) continue;
+    // A stamp naming a moment after this read is dropped whole. On one machine's clock an honest
+    // line is always written before it is read, so a future instant is either crafted or a clock
+    // this reader cannot reason about, and no stamp it admits should outrank engagements that have
+    // not happened yet. Dropped rather than clamped, because a clamped line read forever-fresh:
+    // the fold re-reads from byte 0 after every restart, and a far-future line clamped to each
+    // restart's own clock would ping again every time. Not malformed either; the shape is legal,
+    // the instant is not usable.
+    const tsMs = Date.parse(parsed.ts);
+    if (tsMs > readAt) continue;
     // The key the downstream join is made on, in the registry's own form for it.
     const session = clean(parsed.session);
     if (session === "" || session.length >= MAX_SESSION_CHARS) continue;
@@ -718,10 +726,7 @@ export function readSessionEvents(
     latest.set(session, {
       event: parsed.event,
       ts: parsed.ts,
-      // Clamped to the read's own clock: a stamp naming a moment after this read cannot describe a
-      // line already written, and taken at its word it would outrank every engagement the consumer
-      // will ever compare it against.
-      tsMs: Math.min(Date.parse(parsed.ts), now()),
+      tsMs,
       plan: parsed.plan,
     });
   }

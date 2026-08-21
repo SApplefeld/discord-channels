@@ -684,35 +684,44 @@ test("a kept session event carries the instant its stamp names", () => {
     });
     const kept = result.state.latest.get("a");
     assert.equal(kept?.ts, ts);
-    assert.equal(kept?.tsMs, instant, "the stamp's own instant, which is under the clock it is clamped to");
+    assert.equal(kept?.tsMs, instant, "the stamp's own instant, resolved once at intake");
   } finally {
     held.cleanup();
   }
 });
 
-test("a stamp from the future is clamped to the reader's own clock", () => {
+test("a stamp from the future is dropped, and one naming the read's own instant is kept", () => {
   const held = scratch();
   try {
-    // An unclamped far-future stamp is newer than every engagement that will ever be recorded, so
-    // the session it names would stand blocked for as long as the broker runs.
+    // On one machine's clock an honest line is always written before it is read, so a future
+    // instant is either crafted or unreasonable. Dropped rather than clamped, because a clamped
+    // line read forever-fresh: the fold re-reads from byte 0 after every restart, and a far-future
+    // line clamped to each restart's own clock would outrank every engagement and ping again every
+    // time.
     const now = 1_786_874_400_000;
     writeFileSync(
       held.file,
       line({ session: "astral", ts: "+275760-09-13T00:00:00Z" }) +
         line({ session: "distant", ts: "9999-12-31T23:59:59Z" }) +
+        line({ session: "edge", ts: "2026-08-16T10:00:00.000Z" }) +
         line({ session: "honest", ts: "2026-08-16T09:00:00.000Z" }),
       "utf8",
     );
 
     const result = readSessionEvents(initialSessionEventState(), { path: held.file, now: () => now });
-    assert.equal(result.state.latest.get("astral")?.tsMs, now, "the largest instant there is reads as now");
-    assert.equal(result.state.latest.get("distant")?.tsMs, now);
+    assert.equal(result.state.latest.has("astral"), false, "the largest instant there is never lands");
+    assert.equal(result.state.latest.has("distant"), false);
     assert.equal(
-      result.state.latest.get("astral")?.ts,
-      "+275760-09-13T00:00:00Z",
-      "the stamp itself is kept as written; only the instant behind it is clamped",
+      result.state.latest.get("edge")?.tsMs,
+      now,
+      "equal to the clock is not later than it: the boundary line is kept at its own instant",
     );
     assert.equal(result.state.latest.get("honest")?.tsMs, 1_786_870_800_000, "a stamp in the past is untouched");
+    assert.equal(
+      result.state.malformed,
+      0,
+      "a future stamp is a legal shape carrying an unusable instant, not a malformed line",
+    );
   } finally {
     held.cleanup();
   }

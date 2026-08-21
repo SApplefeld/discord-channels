@@ -118,8 +118,10 @@ export type BrokerConfig = {
   /** How often the fleet is re-swept and re-rendered. An edit is spent only when it changed. */
   boardCardRefreshMs: number;
   /** The kit's goal event stream, resolved from `CHANNEL_BOARD_EVENTS_PATH` or from the home
-   * directory, and absolute either way. Absent on disk is the ordinary case, not an error: the card
-   * then draws no blocked markers. */
+   * directory, and absolute either way. One stream, two readers: the board card's per-plan fold and
+   * the session surface's blocked fold both read this path, so redirecting the knob redirects the
+   * whole stream rather than splitting the two folds onto two files. Absent on disk is the ordinary
+   * case, not an error: the card then draws no blocked markers and no session stands blocked. */
   boardEventsPath: string;
 };
 

@@ -70,7 +70,11 @@ instead. A broker restarted while a session stands blocked re-pings that session
 the block is younger than the ping freshness bound; a block older than that shows the `⛔` title
 without a ping, and so does a block that landed while the broker was down past the bound. The
 session map's eviction bound can clear a standing `⛔` on a host tracking more distinct session
-ids than the cap holds. The engagement stamp is taken at the hook post's arrival on the broker,
+ids than the cap holds, and the feed is an accepted suppression primitive: a crafted
+`goal-complete` naming a real session clears its standing block before a tick observes it, and a
+flood of junk session ids can evict a real session's kept event, so the blocked surface is
+evidence when it draws and never proof when it does not (the security model states this at the
+write's own paragraph). The engagement stamp is taken at the hook post's arrival on the broker,
 not at the event's own instant, so a `PostToolUse` post delayed past the kit's emit stamps newer
 than the block and suppresses that episode's `⛔`; the posts ride a loopback socket and the emit
 follows the turn's last tool by a whole model close, so the window is theoretical. The ordering
@@ -136,9 +140,12 @@ another. No root filtering: matching is by session id against the registry downs
 feed is lower-privilege than the token-gated surfaces (append access to the operator's home
 directory, unfiltered by project root), which the comments state plainly rather than as "the same
 boundary as the board fold". `tsMs` is `Date.parse` of the already-validated stamp, computed once
-at intake and clamped to the reader's own clock (`Math.min(parsed, now())`, `now` injectable), the
-same defense the board fold's consumer carries at its render site: an unclamped far-future stamp
-would otherwise outrank every future engagement and pin the blocked state forever. The map is
+at intake, and a line whose instant is strictly later than the read's own clock (`now` injectable)
+is dropped whole: on one machine's clock an honest line is always written before it is read, so a
+future stamp is either crafted or unreasonable, and both alternatives fail worse — kept unclamped
+it outranks every future engagement and pins the blocked state forever, and clamped to the clock
+it reads forever-fresh and re-pings on every broker restart, since the fold re-reads the file from
+the top. The map is
 bounded by the existing `MAX_TRACKED_PLANS`-style eviction (oldest-kept first), with its own
 constant.
 
@@ -206,8 +213,11 @@ freshness bound of the observing tick (`BLOCKED_PING_FRESH_MS`, 10 minutes): epi
 the event, not the rendered state, so a mid-queue block (which never renders `⛔`) still pings
 once, which is wanted, while a backlog replayed after a restart pings only for a block recent
 enough to still be news, and a stale one is the `⛔` title alone. A session whose thread is not
-open yet is retried next tick: the key is recorded only after a post lands. Log lines follow house
-discipline: cause and session, never conversation text.
+open yet is retried next tick. The posted key is recorded as the post goes on the wire and
+released again when it does not land: recording only after landing would double-post an episode
+whose slow post spans a tick boundary, and releasing on failure is what lets the still-fresh fold
+retry it. Log lines follow house discipline: cause and session, never conversation text, and a
+line a stuck episode would otherwise repeat per tick is suppressed per episode key.
 
 Acceptance: component-level tests pin the standing computation (blocked event older than
 engagement does not stand; newer does; complete clears), the once-per-episode dedup on the
@@ -264,4 +274,15 @@ Assumptions: usage/card.ts needs no change, confirmed: it renders the state word
 Review Findings: 2 Majors fixed (URGENT removal with honest comment, clear-side dwell tests both directions); 1 Major deferred by construction (the producer is section 4); minors fixed (count rides the state line, glyph-comment precedence wording, fleet-card blocked row, goalLines pin, ViewSignals) or recorded (stale-backstop residual, glyph collision raised to operator)
 Stamps: none surfaced
 Next: 4. The wiring and the ping
+Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-21
+Completed: 4. The wiring and the ping (index)
+Implemented By: implementer-fable (one fix round via resume, same agent)
+Metrics: review rounds 1 (adversarial and blind at fable/high, security at opus/max via the Workflow route); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: the desk landed as its own module, broker/discord/blocked.ts, mirroring the permission and question desks. All three reviewers approved with concerns and no blocking finding. The security round's Major was a documentation defect: the security model still said two writes deliberately mention someone while this ships the fourth, with the weakest trigger credential in the set (home-directory append access, no process token); the model was corrected in this same commit rather than parked to section 5, since a pushed section must not outrun the audit surface. Two rounds' rulings conflicted on future-dated stamps, clamp (section 2's security reviewer) versus drop (this round's, who showed the clamp makes a planted future stamp read forever-fresh and re-ping on every restart); adjudicated to drop, since on one machine's clock an honest line is always written before it is read, and section 2's reader was amended in this round as a fold. The fix round also gave the alert volume a refund affordance (a slot is returned when the post did not land, so an outage cannot make the real ping arrive quiet and late), coalesced the per-tick drop and refusal log lines per episode key, moved the alert bound to pre-escape measurement so a plan the reader kept whole renders whole, folded the desk's promise into the shutdown-drained inFlight, and renamed a shadowed parameter. Deliberate spec-letter deviation, recorded: the posted key is recorded at wire-time and released on failure rather than recorded after landing, because a slow post spanning a tick boundary would otherwise double-post; the spec text was updated to match. The full-suite gate flagged the known tail.test.ts flake family twice; discriminated as flake both times (green isolated 4/4 and on full re-run, the family predates this plan on the clean baseline), and the backlog entry widened to the echo-dedup group with the shared until-helper signature.
+Assumptions: a failed or volume-dropped post records nothing and retries on the fold's own tick while the block stays fresh, bounded by the freshness window and the ceilings, nothing queued (2026-08-21, section 4); the posted-key cap is twice the fold's session ceiling rather than the narration maps' 64, sized so eviction only reaches long-superseded keys, the observable cost of a wrong one being a second ping, pinned (2026-08-21, section 4); without Discord the desk is never built and standing is constant false (2026-08-21, section 4); a plan neutralizing to nothing drops its clause rather than drawing an empty slot (2026-08-21, section 4); the alert-volume refund is a callable-with-method so five existing spend-only callers stay byte-identical (2026-08-21, section 4)
+Review Findings: security Major fixed in-commit (the security model's mention-write enumeration and trigger credentials); minors fixed (volume refund, log coalescing per episode key, pre-escape bound, shutdown drain, parameter shadow, future-stamp drop in the events reader as a fold) or recorded (the eviction/in-flight interleave triple-post boundary note stays the documented eviction trade; suppression residuals added to the spec and the security model)
+Stamps: none surfaced
+Next: 5. Finishing
 Commit Model: Commit-and-Push

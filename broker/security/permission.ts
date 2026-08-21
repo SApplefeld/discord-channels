@@ -168,6 +168,28 @@ export const MAX_MODEL_CHANGE_PINGS_PER_WINDOW = 1;
 export const MAX_MODEL_CHANGE_ALERTS_PER_WINDOW = 4;
 
 /**
+ * The volume window's shape: the callable spends a slot and answers the level, and `refund`
+ * returns one for a write that never landed.
+ *
+ * A callable with a method rather than a two-method object so that every caller that only spends,
+ * which is most of them, keeps taking it as the plain function it always was.
+ */
+export type AlertVolume = {
+  (threadId: string): "ping" | "quiet" | "drop";
+  /**
+   * Returns the thread's most recently spent slot, for a caller whose write did not land.
+   *
+   * The window counts messages that reached the channel, so a refusal that kept its stamp would
+   * quiet or drop the write that finally lands: a caller retrying through an outage would arrive
+   * mentionless for no message anyone ever saw. The newest stamp is the one popped, which under
+   * one caller per instance is the slot the failed write itself spent. A refund with nothing
+   * spent is a no-op rather than a credit: the window can never hold fewer stamps than the
+   * messages that landed.
+   */
+  refund: (threadId: string) => void;
+};
+
+/**
  * Per-thread volume damping for a mention-bearing write: each call spends a slot in the thread's
  * window and answers how loudly the next message may land.
  *
@@ -190,9 +212,9 @@ export function createAlertVolume(options: {
   /** Messages a thread may post at all in a window; past it a write is dropped. */
   postCeiling: number;
   windowMs: number;
-}): (threadId: string) => "ping" | "quiet" | "drop" {
+}): AlertVolume {
   const stamps = new Map<string, number[]>();
-  return (threadId) => {
+  const spend = (threadId: string): "ping" | "quiet" | "drop" => {
     const at = options.now();
     const held = (stamps.get(threadId) ?? []).filter((when) => at - when < options.windowMs);
     if (held.length >= options.postCeiling) {
@@ -204,6 +226,14 @@ export function createAlertVolume(options: {
     stamps.set(threadId, held);
     return level;
   };
+  const refund = (threadId: string): void => {
+    // Stamps are appended in call order, so the last one is the newest spend.
+    const held = stamps.get(threadId);
+    if (held === undefined || held.length === 0) return;
+    held.pop();
+    if (held.length === 0) stamps.delete(threadId);
+  };
+  return Object.assign(spend, { refund });
 }
 
 /** What the operator sees when a prompt could not be put in front of them. */
