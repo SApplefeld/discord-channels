@@ -446,6 +446,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     turnCount: 1,
     startedAt: Date.now(),
     lastHookAt: Date.now(),
+    lastEngagementAt: Date.now(),
     lastRelayAt: null,
     endedAt: null,
     openingModel: null,

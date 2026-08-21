@@ -812,6 +812,19 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       }
       if (sessionId !== located.sessionId) return { status: "no-session" };
 
+      // A person is driving this session, which is the fact the engagement stamp records, so it is
+      // stamped here rather than after delivery: whether the copy lands in the thread says nothing
+      // about whether anyone spoke. Ahead of the envelope check below for the same reason, since a
+      // message the harness injected from the channel is the operator answering from their phone,
+      // and the drop there is about not echoing their words back at them.
+      //
+      // A wake injection is the one prompt excluded: it is the harness reporting a finished
+      // background task, machine-generated, and the gate this stamp clears is one that waits on a
+      // person. Excluded whatever `taskNotifications` says, because the setting governs how the
+      // report is drawn in the thread and not whether a human wrote it; if the woken turn genuinely
+      // resumes the run, its first completed tool call stamps.
+      if (kind === "prompt" && !isTaskNotification(text)) options.registry.engage(located.sessionId);
+
       // The dedup against the transcript tailer, which reads this same text off the transcript up
       // to a poll interval from now. Matched on the normalized pre-render text, like the envelope
       // check below and for the same reason. A reply the tailer already posted as its last
@@ -1082,6 +1095,14 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         );
         return { status: "no-thread" };
       }
+
+      // The queued prompt's own engagement stamp, on the mirror path's reasoning exactly: a person
+      // is driving, and neither the envelope check below nor the delivery after it changes that,
+      // while the harness's wake injection is not a person and is excluded on both paths under
+      // every notification setting. A session whose thread is not open yet is dropped whole above
+      // and stamps nothing, which costs one prompt's worth of engagement at the start of a
+      // session's life.
+      if (!isTaskNotification(text)) options.registry.engage(sessionId);
 
       if (fromChannel(text)) {
         dropped(

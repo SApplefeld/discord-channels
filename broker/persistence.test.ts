@@ -29,6 +29,7 @@ function record(sessionId: string): SessionRecord {
     turnCount: 1,
     startedAt: 1_000,
     lastHookAt: 2_000,
+    lastEngagementAt: 2_500,
     lastRelayAt: null,
     endedAt: null,
     openingModel: null,
@@ -124,6 +125,39 @@ test("a non-finite number in a record is rejected", () => {
     const logged: string[] = [];
     assert.deepEqual(loadSessions(file, { log: (message) => logged.push(message) }), []);
     assert.equal(logged.length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("an infinite engagement stamp is rejected, and an explicit null takes the hook stamp", () => {
+  // The tolerance for this field is absence, which is what a pre-upgrade snapshot carries. A number
+  // that is not a number is corruption on the same footing as an infinite lastHookAt: it would sort
+  // newer than every goal event and hold a blocked session out of the state forever. A null is the
+  // shape the validator's numeric clause admits alongside absent, and lands on the same default, so
+  // nothing downstream ever compares a timestamp against it.
+  const { file, cleanup } = scratchFile();
+  try {
+    writeFileSync(
+      file,
+      '{"version":1,"sessions":[' +
+        JSON.stringify(record("session-a")).replace(
+          '"lastEngagementAt":2500',
+          '"lastEngagementAt":1e999',
+        ) +
+        "]}",
+      "utf8",
+    );
+    const logged: string[] = [];
+    assert.deepEqual(loadSessions(file, { log: (message) => logged.push(message) }), []);
+    assert.equal(logged.length, 1);
+
+    const nulled = { ...record("session-a"), lastEngagementAt: null };
+    writeFileSync(file, JSON.stringify({ version: 1, sessions: [nulled] }), "utf8");
+    const second: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => second.push(message) });
+    assert.deepEqual(second, [], "a null is admitted, not corruption");
+    assert.equal(loaded[0].lastEngagementAt, 2_000, "and it lands on the hook stamp");
   } finally {
     cleanup();
   }
@@ -254,6 +288,39 @@ test("a snapshot written before the model fields existed loads with them absent,
     const loaded = loadSessions(file, { log: (message) => logged.push(message) });
     assert.deepEqual(logged, []);
     assert.deepEqual(loaded, [record("session-a")], "absent lands as null, never as undefined");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a snapshot written before the engagement stamp existed loads with the hook stamp for it", () => {
+  // The blocked state is derived by comparing a goal-blocked event against this stamp, so a record
+  // restored without one needs a number rather than a null. `lastHookAt` is the closest the older
+  // file carries, and taking it errs toward clearing a standing block across the one upgrade
+  // restart rather than pinning one onto a session nobody is waiting on.
+  const { file, cleanup } = scratchFile();
+  try {
+    const older = record("session-a") as Partial<SessionRecord>;
+    delete older.lastEngagementAt;
+    writeFileSync(file, JSON.stringify({ version: 1, sessions: [older] }), "utf8");
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+    assert.deepEqual(logged, [], "an older snapshot is not corruption");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].lastEngagementAt, 2_000, "the hook stamp stands in for the absent one");
+  } finally {
+    cleanup();
+  }
+});
+
+test("the engagement stamp round-trips a save and a load", () => {
+  const { file, cleanup } = scratchFile();
+  try {
+    saveSessions(file, [{ ...record("session-a"), lastEngagementAt: 4_242 }]);
+    const onDisk = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(onDisk.sessions[0].lastEngagementAt, 4_242, "the field reaches the bytes on disk");
+    assert.equal(loadSessions(file, { log: () => {} })[0].lastEngagementAt, 4_242);
   } finally {
     cleanup();
   }

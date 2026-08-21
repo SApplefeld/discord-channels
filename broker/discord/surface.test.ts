@@ -114,6 +114,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     lastHookAt: START,
     endedAt: null,
     needsAttention: false,
+    blocked: false,
     lifecycle: "live",
     ...overrides,
   };
@@ -370,6 +371,70 @@ test("a session waiting on a person is renamed without waiting out the dwell win
   await surface.tick([view({ needsAttention: true })]);
 
   assert.deepEqual(names(calls), [`${TITLE_GLYPHS["needs you"]} neo-intake · needs you`]);
+});
+
+test("a block that holds past the dwell window is renamed, and one that clears inside it is not", async () => {
+  // A run that blocks one plan and carries on to the next reads as blocked for the part of a turn
+  // between the event and the turn's first completed tool call, which is shorter than a dwell
+  // window and far shorter than a real block. The dwell is what keeps that transient from spending
+  // the thread's rename budget, and the alert is the fast channel for the real thing.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  await surface.tick([view({ blocked: true })]);
+  assert.deepEqual(names(calls), [], "a block that just appeared has not settled");
+
+  time.advance(DWELL_MS);
+  await surface.tick([view({ blocked: true })]);
+  assert.deepEqual(names(calls), [`${TITLE_GLYPHS.blocked} neo-intake · blocked`]);
+});
+
+test("a block cleared before it settles costs no rename at all", async () => {
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  await surface.tick([view({ blocked: true })]);
+  time.advance(1_000);
+  await surface.tick([view()]);
+  time.advance(DWELL_MS);
+  await surface.tick([view()]);
+
+  assert.deepEqual(names(calls), [], "the title never left active");
+});
+
+test("a session that unblocks is renamed back to active, once that has settled too", async () => {
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  time.advance(1_000);
+  await surface.tick([view({ blocked: true })]);
+  time.advance(DWELL_MS);
+  await surface.tick([view({ blocked: true })]);
+
+  // The operator answers. The revert waits out the dwell as well: nothing about clearing a block
+  // makes the title's cost lower than setting it.
+  time.advance(1_000);
+  await surface.tick([view()]);
+  assert.deepEqual(
+    names(calls),
+    [`${TITLE_GLYPHS.blocked} neo-intake · blocked`],
+    "the way back is damped exactly as the way in was",
+  );
+
+  time.advance(DWELL_MS);
+  await surface.tick([view()]);
+  assert.deepEqual(names(calls), [
+    `${TITLE_GLYPHS.blocked} neo-intake · blocked`,
+    `${TITLE_GLYPHS.active} neo-intake · active`,
+  ]);
 });
 
 test("a startup pass archives a restored thread whose session already exited, exactly once", async () => {

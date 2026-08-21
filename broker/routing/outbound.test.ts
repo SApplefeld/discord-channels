@@ -2578,3 +2578,174 @@ test("the cap's stop reads on every posting path as the count it reached", async
     narrated.lines.join("\n"),
   );
 });
+
+/**
+ * A registry that records what the router engaged, over a real one so every other path behaves as
+ * it does in production: the stamp is a fact about a session the registry holds, and a hand-built
+ * double would answer `current` from a shape nothing else in the router agrees with.
+ */
+function engagementSpy(registry: Registry): { registry: Registry; engaged: string[] } {
+  const engaged: string[] = [];
+  return {
+    registry: {
+      ...registry,
+      engage: (sessionId: string) => {
+        engaged.push(sessionId);
+        registry.engage(sessionId);
+      },
+    },
+    engaged,
+  };
+}
+
+test("a mirrored prompt engages its session, and a reply or interim never does", async () => {
+  // Engagement is what clears a standing blocked marker, so it means a person spoke: a reply is
+  // Claude's own words and narration is the transcript being read, and either one stamping would
+  // clear the marker a blocked run just raised.
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  const { writer } = fakeWriter();
+  const router = routerFor({ registry: spy.registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  await router.mirror(TOKEN, "prompt", "run the migration", "session-a");
+  assert.deepEqual(spy.engaged, ["session-a"]);
+
+  await router.mirror(TOKEN, "reply", "the migration is done", "session-a");
+  await router.interim("session-a", "reading the schema");
+  await router.reply(TOKEN, "the migration is done");
+  assert.deepEqual(spy.engaged, ["session-a"], "only a prompt is a person speaking");
+});
+
+test("a mirrored prompt the straggler gate turns away engages nothing", async () => {
+  // The post named a conversation that ended at a /clear, so nothing about the session the token
+  // holds now can be read from it.
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  announce(spy.registry, "session-b", TOKEN, "clear");
+  const { writer } = fakeWriter();
+  const router = routerFor({ registry: spy.registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "still here", "session-a"), {
+    status: "no-session",
+  });
+  assert.deepEqual(spy.engaged, []);
+});
+
+test("a prompt dropped as the operator's own channel echo still engages the session", async () => {
+  // An injected channel message means the operator answered from their phone. The drop is about
+  // not echoing their words back into the thread they typed them in, and says nothing about
+  // whether they spoke, which is the fact the stamp records.
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({
+    registry: spy.registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    log: () => {},
+  });
+
+  const envelope = '<channel source="channel-relay" chat_id="123">the migration finished?</channel>';
+  assert.equal((await router.mirror(TOKEN, "prompt", envelope, "session-a")).status, "failed");
+  assert.deepEqual(await router.interimPrompt("session-a", envelope), {
+    status: "failed",
+    error: "the message came from the channel",
+  });
+
+  assert.deepEqual(posts, [], "the echo is still not posted back");
+  assert.deepEqual(spy.engaged, ["session-a", "session-a"], "both paths stamp the answer");
+});
+
+test("a queued prompt engages its session once its thread resolves, and not before", async () => {
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  const { writer } = fakeWriter();
+  const unbound = routerFor({
+    registry: spy.registry,
+    threadFor: () => null,
+    mirrorWriter: writer,
+    log: () => {},
+  });
+  assert.deepEqual(await unbound.interimPrompt("session-a", "check the order too"), {
+    status: "no-thread",
+  });
+  assert.deepEqual(spy.engaged, []);
+
+  const bound = routerFor({ registry: spy.registry, threadFor: () => THREAD, mirrorWriter: writer });
+  assert.deepEqual(await bound.interimPrompt("session-a", "check the order too"), {
+    status: "sent",
+  });
+  assert.deepEqual(spy.engaged, ["session-a"]);
+});
+
+test("the stamp a mirrored prompt writes lands on the record the surfaces read", async () => {
+  // The spy above proves the call; this proves the call moves the field the blocked derivation
+  // compares a goal-blocked event against.
+  let at = 1_000_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: () => at });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  at += 5_000;
+  await router.mirror(TOKEN, "prompt", "run the migration", "session-a");
+  const record = registry.list()[0];
+  assert.equal(record.lastEngagementAt, at);
+  assert.notEqual(record.lastHookAt, at, "the prompt is not hook traffic of its own");
+});
+
+test("a mirrored prompt with no thread to post to engages nothing", async () => {
+  // The stamp sits behind the straggler gate, which is behind the lookup that resolves the session
+  // and its thread. A session with no thread yet is dropped there, so the symmetry with the queued
+  // path below holds: neither path stamps for a session the router could not reach.
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  const { writer } = fakeWriter();
+  const router = routerFor({
+    registry: spy.registry,
+    threadFor: () => null,
+    mirrorWriter: writer,
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "run the migration", "session-a"), {
+    status: "no-thread",
+  });
+  assert.deepEqual(spy.engaged, []);
+});
+
+test("the harness's wake injection engages nothing, under every notification setting", async () => {
+  // A finished background task's report is machine-generated, and engagement is what clears a gate
+  // that waits on a person. The setting governs how the report is drawn in the thread, never
+  // whether a human wrote it, so `full` (which mirrors the report as an ordinary prompt) and `off`
+  // (which posts nothing at all) exclude it exactly as the default does.
+  const settings: Array<"brief" | "full" | "off"> = ["brief", "full", "off"];
+  for (const taskNotifications of settings) {
+    const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+    announce(spy.registry, "session-a");
+    const { writer } = fakeWriter();
+    const router = routerFor({
+      registry: spy.registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      taskNotifications,
+      log: () => {},
+    });
+
+    await router.mirror(TOKEN, "prompt", WAKE, "session-a");
+    await router.interimPrompt("session-a", WAKE);
+    assert.deepEqual(spy.engaged, [], `a wake prompt is not a person under ${taskNotifications}`);
+
+    // The marker is read through the invisible strip, like every other reading of it here, so a
+    // zero-width character in front of it cannot buy a stamp the plain shape does not get.
+    const veiled = String.fromCharCode(0x200b) + WAKE;
+    await router.mirror(TOKEN, "prompt", veiled, "session-a");
+    await router.interimPrompt("session-a", veiled);
+    assert.deepEqual(spy.engaged, [], `a veiled wake prompt too, under ${taskNotifications}`);
+
+    // The session is still reachable and a real prompt still stamps: the exclusion is about this
+    // one shape of text, not about a router that has stopped stamping.
+    await router.mirror(TOKEN, "prompt", "run the migration", "session-a");
+    assert.deepEqual(spy.engaged, ["session-a"], `a typed prompt still stamps under ${taskNotifications}`);
+  }
+});

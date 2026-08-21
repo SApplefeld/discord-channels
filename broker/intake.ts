@@ -596,6 +596,9 @@ export function redact(record: SessionRecord): PublicSessionRecord {
     turnCount: record.turnCount,
     startedAt: record.startedAt,
     lastHookAt: record.lastHookAt,
+    // When a person or live work last drove the session, which is session state of the same class
+    // as the hook stamp above and carries no conversation content.
+    lastEngagementAt: record.lastEngagementAt,
     lastRelayAt: record.lastRelayAt,
     endedAt: record.endedAt,
     // The model the session opened with, the one running now, the context size, and the downgrade

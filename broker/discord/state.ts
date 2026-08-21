@@ -3,7 +3,7 @@
 import type { BackgroundTask, ModelFallback, SessionRecord } from "../registry.ts";
 
 /** What a thread name and the status card say about a session. */
-export type SurfaceState = "working" | "needs you" | "idle" | "exited";
+export type SurfaceState = "working" | "needs you" | "blocked" | "idle" | "exited";
 
 /**
  * Everything the surfaces render, and nothing else.
@@ -40,11 +40,28 @@ export type SessionView = {
   goal: string | null;
   /** True while the session is blocked on a permission verdict. Fed by the permission relay. */
   needsAttention: boolean;
+  /**
+   * True while the session's latest kit goal event is a `goal-blocked` newer than its last
+   * engagement, which is a run halted on the operator. Fed by the wiring that reads the kit event
+   * stream, the way `needsAttention` is fed by the permission relay.
+   */
+  blocked: boolean;
   /** The registry's own lifecycle state, mapped to a surface state by `deriveSurfaceState`. */
   lifecycle: SessionRecord["state"];
 };
 
-export function toView(record: SessionRecord, needsAttention = false): SessionView {
+/**
+ * The signals no record carries. Both arrive from outside the registry, `needsAttention` from the
+ * permission relay and `blocked` from the kit event stream, and they are named at every call site
+ * rather than passed positionally: two adjacent booleans of the same type are transposable in
+ * silence, and each of them drives a rename.
+ */
+export type ViewSignals = {
+  needsAttention?: boolean;
+  blocked?: boolean;
+};
+
+export function toView(record: SessionRecord, signals: ViewSignals = {}): SessionView {
   return {
     sessionId: record.sessionId,
     name: record.name,
@@ -60,7 +77,8 @@ export function toView(record: SessionRecord, needsAttention = false): SessionVi
     downgrade: record.downgrade,
     backgroundTasks: record.backgroundTasks,
     goal: record.goal,
-    needsAttention,
+    needsAttention: signals.needsAttention ?? false,
+    blocked: signals.blocked ?? false,
     lifecycle: record.state,
   };
 }
@@ -73,7 +91,7 @@ export type StateThresholds = {
 };
 
 /**
- * Maps a session onto the four states the surfaces render.
+ * Maps a session onto the five states the surfaces render.
  *
  * - `ended` renders `exited`, whatever ended it.
  * - A session that has been silent past `exitedAfterMs` also renders `exited`. This is the
@@ -81,8 +99,14 @@ export type StateThresholds = {
  *   one forever: a kill fires no hook, and until the relay exists nothing but a `/clear` ever
  *   marks a record ended. It outranks attention because a session that stopped answering has
  *   stopped waiting for one.
- * - Attention wins over the two live states. It is the one state that is waiting on a person, so
- *   it is worth a rename even mid-flap.
+ * - Attention wins over the two live states, and over `blocked`. Both are waiting on a person, and
+ *   the ordering between them is nominal: a run that has stopped on the operator is not holding a
+ *   permission prompt open, so the two do not stand at once in practice. Waiting on a person is
+ *   worth a rename even mid-flap.
+ * - `blocked` outranks the roster and both live states, because it too waits on a person: the run
+ *   has deliberately stopped and nothing moves until the operator answers. Hook recency measures
+ *   nothing about a session in that condition, which is exactly why it cannot be left to the
+ *   branches below, and it sits under the two exited branches for the same reason attention does.
  * - An outstanding roster is `working`, whatever the hook clock says and whether the record is live
  *   or stale. A session whose main thread is blocked on dispatched agents fires no hooks at all
  *   while it waits, so hook recency measures the wait rather than the work, and both branches below
@@ -112,6 +136,7 @@ export function deriveSurfaceState(
     return "exited";
   }
   if (view.needsAttention) return "needs you";
+  if (view.blocked) return "blocked";
   if (view.backgroundTasks.length > 0) return "working";
   if (view.lifecycle === "stale") return "idle";
   return now - view.lastHookAt <= thresholds.idleAfterMs ? "working" : "idle";

@@ -56,6 +56,22 @@ function postToolUse(
   };
 }
 
+// The only PreToolUse shape that reaches this broker: the installed hook fragment matches the
+// event to AskUserQuestion alone, so a PreToolUse naming any other tool is a payload no host emits.
+function askUserQuestion(sessionId: string | null = null): HookIntake {
+  return {
+    event: "PreToolUse",
+    processToken: TOKEN,
+    sessionName: null,
+    sessionId,
+    source: null,
+    toolName: "AskUserQuestion",
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  };
+}
+
 function stop(processToken = TOKEN): HookIntake {
   return {
     event: "Stop",
@@ -445,6 +461,79 @@ test("a PreToolUse event is liveness alone: it stamps and revives, and moves no 
   assert.equal(record.toolCount, 1, "the emission is not a completed tool call");
   assert.equal(record.turnCount, 0, "the emission is not a turn boundary");
   assert.equal(record.lastTool, "Bash", "the card keeps describing the last completed call");
+});
+
+test("engagement is stamped by SessionStart and a completed tool call, and by nothing else", () => {
+  // The ordering the blocked state rests on. A blocked run's own Stop hook fires after the kit
+  // emits the goal-blocked event, so a Stop that stamped would clear the marker the stop itself
+  // raised. PreToolUse is matched to AskUserQuestion alone by the installed hook fragment, so it
+  // fires as a session parks on a person, and stamping it would clear a standing block for as long
+  // as a question stayed open. Both still carry hook liveness, which is a separate field.
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("session-a", "startup"));
+  const opened = time.now();
+  assert.equal(sessions.list()[0].lastEngagementAt, opened, "a new record opens engaged");
+
+  time.advance(1_000);
+  sessions.apply(postToolUse("Bash"));
+  const engaged = time.now();
+  assert.equal(sessions.list()[0].lastEngagementAt, engaged, "a completed tool call is live work");
+
+  time.advance(1_000);
+  sessions.apply(askUserQuestion());
+  const asked = sessions.list()[0];
+  assert.equal(asked.lastHookAt, time.now(), "the picker opening is proof of life");
+  assert.equal(asked.lastEngagementAt, engaged, "and it is a session parking on a person");
+
+  time.advance(1_000);
+  sessions.apply(stop());
+  const stopped = sessions.list()[0];
+  assert.equal(stopped.lastHookAt, time.now(), "so is the turn ending");
+  assert.equal(stopped.lastEngagementAt, engaged, "and it is not proof that anyone is driving");
+});
+
+test("a repeated SessionStart re-engages the session it refreshes", () => {
+  // A resume is the operator picking the session back up, which is the strongest engagement signal
+  // there is, and the refresh branch returns before the shared stamping below it.
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("session-a", "startup"));
+
+  time.advance(5_000);
+  sessions.apply(sessionStart("session-a", "resume"));
+  assert.equal(sessions.list()[0].lastEngagementAt, time.now());
+});
+
+test("engage stamps an unended session, persists it, and refuses an ended one", () => {
+  const time = clock();
+  let writes = 0;
+  const sessions = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    now: time.now,
+    onMutate: () => {
+      writes += 1;
+    },
+  });
+  sessions.apply(sessionStart("session-a", "startup"));
+  const written = writes;
+
+  time.advance(5_000);
+  sessions.engage("session-a");
+  assert.equal(sessions.list()[0].lastEngagementAt, time.now());
+  assert.equal(writes, written + 1, "the stamp reaches the snapshot");
+
+  sessions.engage("nobody");
+  assert.equal(writes, written + 1, "an unknown session writes nothing");
+
+  const engaged = time.now();
+  sessions.relayClosed(TOKEN, "session-a");
+  time.advance(5_000);
+  const afterEnd = writes;
+  sessions.engage("session-a");
+  assert.equal(sessions.list()[0].lastEngagementAt, engaged, "a tombstone cannot be re-engaged");
+  assert.equal(writes, afterEnd, "and nothing is written for it");
 });
 
 test("a silent session goes stale on the sweep with no inbound event", () => {

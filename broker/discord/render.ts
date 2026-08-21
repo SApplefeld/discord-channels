@@ -11,7 +11,7 @@ import type { BackgroundTask, ModelFallback } from "../registry.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 
 /**
- * The four-state vocabulary of the session card, which is the surface carrying the full state.
+ * The five-state vocabulary of the session card, which is the surface carrying the full state.
  *
  * Glyph first on the card's heading, so a channel scrolled at speed reads as a column of states.
  * Exported so it is claimed in one place, and every test asserting a card title reads its glyph
@@ -20,11 +20,18 @@ import type { SessionView, SurfaceState } from "./state.ts";
  *
  * The vocabulary is graded by how much the state wants from the operator, so the glyph alone
  * carries that much when truncation eats the rest: a gear is running, a pause is doing nothing, a
- * stop-square is halted on you, and a warning triangle is over.
+ * stop-square is halted on you, and a warning triangle is over. The no-entry sign is a run stopped
+ * on the operator with nothing left to try: heavier than the stop-square as a glyph, because a
+ * permission prompt is one verdict away from moving while a blocked run needs a decision made.
+ *
+ * Glyph weight is not precedence. `blocked` is ranked below `needs you` in `deriveSurfaceState`,
+ * where the two never stand at once anyway, and the key order here follows that derivation order
+ * rather than the weight of the drawing.
  */
 export const GLYPHS: Record<SurfaceState, string> = {
   working: "⚙",
   "needs you": "⏹",
+  blocked: "⛔",
   idle: "⏸",
   exited: "⚠",
 };
@@ -35,12 +42,16 @@ export const GLYPHS: Record<SurfaceState, string> = {
  * Every rename writes a notice into the thread that nothing can remove, so the title is spent only
  * on a change worth a line of the transcript: whether a session is running, halted on the operator,
  * or over. Working versus idle, and the count of tasks a session is waiting on, are card facts.
+ *
+ * Blocked earns a title state, and so earns a rename and its irremovable notice, because it is
+ * precisely the halted-on-the-operator class the title exists to surface: a run that has stopped
+ * and will not move until they answer is the one thing a thread list must be able to say.
  */
-export type TitleState = "active" | "needs you" | "exited";
+export type TitleState = "active" | "needs you" | "blocked" | "exited";
 
 /**
  * The title's glyphs, a subset of the card's: active is the gear a working card draws, and the
- * other two are the card's own.
+ * rest are the card's own.
  *
  * Glyph first in a title, because the channel's thread list truncates hard on mobile and the
  * actionable bit has to survive truncation.
@@ -48,6 +59,7 @@ export type TitleState = "active" | "needs you" | "exited";
 export const TITLE_GLYPHS: Record<TitleState, string> = {
   active: "⚙",
   "needs you": "⏹",
+  blocked: "⛔",
   exited: "⚠",
 };
 
@@ -701,7 +713,7 @@ export function displayName(view: SessionView): string {
  * The state as a reader sees it, which for a session waiting on dispatched work is the state plus
  * how many tasks it is waiting on.
  *
- * The count rides the state rather than sitting elsewhere on the card because the four states
+ * The count rides the state rather than sitting elsewhere on the card because the five states
  * cannot express waiting on agents at all: without it a session blocked on a fan-out reads as
  * ordinary work, and the operator has no way to tell a turn that is thinking from one that is
  * waiting on eleven agents. It is counted rather than listed here because the roster below it is
@@ -709,11 +721,15 @@ export function displayName(view: SessionView): string {
  * "agents" because the count covers both kinds the table reports, and a session waiting on two
  * backgrounded shells is not waiting on two agents.
  *
+ * `blocked` carries the count on the same terms as `working`. The card draws its Tasks block for
+ * either state, so a state line that dropped the count would deny a roster the card is showing two
+ * lines below it, and a roster the record still holds is still true of a run that has stopped.
+ *
  * The card is the only surface this reaches: the thread title carries the coarser title state.
  */
 function stateLabel(view: SessionView, state: SurfaceState): string {
   const waiting = view.backgroundTasks.length;
-  if (state !== "working" || waiting === 0) return state;
+  if ((state !== "working" && state !== "blocked") || waiting === 0) return state;
   return `${state} ${SEPARATOR} ${waiting} task${waiting === 1 ? "" : "s"}`;
 }
 

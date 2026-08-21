@@ -174,6 +174,20 @@ export type SessionRecord = {
   /** Timestamp of the most recent hook event for this session. */
   lastHookAt: number;
   /**
+   * Timestamp of the last signal that a person or live work drove this session: a `SessionStart`
+   * or `PostToolUse` intake, or an operator prompt arriving on the mirror path.
+   *
+   * The blocked-state derivation compares a `goal-blocked` event's timestamp against this field, so
+   * what stamps it is an explicit allowlist rather than everything but a denied few: an event this
+   * build does not know about is not engagement until someone says it is, and a silent stamp is a
+   * blocked session that renders as idle. Two credited events carry liveness and deliberately do
+   * not stamp. `Stop` is the blocked stop itself, whose own hook traffic must not clear the marker
+   * it raises. `PreToolUse` is matched to `AskUserQuestion` alone by the installed hook fragment,
+   * so it fires at the instant a session parks on a person, the opposite of engagement; stamping it
+   * would clear a standing block for the whole life of an open question.
+   */
+  lastEngagementAt: number;
+  /**
    * Timestamp of the most recent relay liveness signal, set by `relaySeen` when a pipe attaches
    * and on every heartbeat it answers. Null for a session no relay has ever attached to, which is
    * a session announced by hook posts alone: the wrapper starts a relay with every session it
@@ -294,6 +308,20 @@ export type Registry = {
    * cause reads it here.
    */
   impostorStart: (intake: HookIntake) => boolean;
+  /**
+   * Stamps `lastEngagementAt` for a session an operator has just spoken to, which is what the
+   * outbound router calls when a prompt reaches the mirror path: an operator's message arrives
+   * between the intakes that stamp on their own, and is the signal that a person is driving.
+   *
+   * Engagement alone, never liveness: `lastHookAt` and the staleness state have their own writers
+   * in the hook path, and every turn a prompt starts still closes with a credited `Stop`, so a
+   * session the operator is typing at cannot rot stale for want of this stamp.
+   *
+   * A session the registry does not hold unended is a no-op rather than an error: a prompt can
+   * still be in flight when a `/clear` replaces the session it named, and engagement is a fact
+   * about a running session that nothing needs to record against a tombstone.
+   */
+  engage: (sessionId: string) => void;
   /**
    * Records what a transcript line said about the model and the context size. Returns the changes
    * to announce now, and an empty array otherwise: a first sighting over an unseeded opening model
@@ -472,6 +500,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       previous.source = intake.source ?? previous.source;
       previous.name = intake.sessionName ?? previous.name;
       previous.lastHookAt = now();
+      previous.lastEngagementAt = now();
       return previous;
     }
 
@@ -527,6 +556,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       turnCount: 0,
       startedAt: now(),
       lastHookAt: now(),
+      lastEngagementAt: now(),
       lastRelayAt: null,
       endedAt: null,
       openingModel: null,
@@ -635,6 +665,11 @@ export function createRegistry(options: RegistryOptions): Registry {
     if (record.state !== "ended") {
       record.state = "live";
       record.lastHookAt = now();
+      // A completed tool call is the one credited event here that is live work, and it is named
+      // rather than deduced from what is left over: `Stop` ends the turn a blocked run raises its
+      // marker on, and `PreToolUse` fires only for `AskUserQuestion`, which is a session parking on
+      // a person. `SessionStart` stamps in `start()`, on the branch that handles it.
+      if (intake.event === "PostToolUse") record.lastEngagementAt = now();
     }
     mutated();
     return record;
@@ -645,6 +680,17 @@ export function createRegistry(options: RegistryOptions): Registry {
     const record = sessions.get(sessionId);
     if (record === undefined || record.state === "ended") return null;
     return record;
+  }
+
+  function engage(sessionId: string): void {
+    const record = reading(sessionId);
+    if (record === null) return;
+    record.lastEngagementAt = now();
+    // Persisted, unlike the relay heartbeat: the router calls this for prompts a person typed and
+    // for nothing else, the harness's own wake injections included, so the write rate is a human
+    // one rather than a per-second one. A restart that read back a stale engagement stamp would
+    // paint a session the operator has already answered as still blocked on them.
+    mutated();
   }
 
   function noteModel(sessionId: string, read: ModelReading): ModelChange[] {
@@ -855,6 +901,7 @@ export function createRegistry(options: RegistryOptions): Registry {
     apply,
     subprocessStart,
     impostorStart,
+    engage,
     noteModel,
     noteFallback,
     noteGoal,

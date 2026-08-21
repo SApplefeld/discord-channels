@@ -45,6 +45,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     lastHookAt: NOW,
     endedAt: null,
     needsAttention: false,
+    blocked: false,
     lifecycle: "live",
     model: null,
     openingModel: null,
@@ -196,15 +197,33 @@ test("a thread name puts the glyph first and the title state last", () => {
   assert.equal(threadName(view(), "working"), "⚙ neo-intake · active");
   assert.equal(threadName(view(), "idle"), "⚙ neo-intake · active");
   assert.equal(threadName(view(), "needs you"), "⏹ neo-intake · needs you");
+  assert.equal(threadName(view(), "blocked"), "⛔ neo-intake · blocked");
   assert.equal(threadName(view(), "exited"), "⚠ neo-intake · exited");
 });
 
-test("the card draws one glyph per state, and the four are pinned here", () => {
-  // The card is the surface carrying the whole state, so it is the one with four glyphs. They are
-  // written out as literals here so a change to one is a change to this test.
-  assert.deepEqual(GLYPHS, { working: "⚙", "needs you": "⏹", idle: "⏸", exited: "⚠" });
+test("the title's own vocabulary is pinned here", () => {
+  // A rename writes a notice into the thread that nothing can remove, so the set of states worth a
+  // title is a deliberate list rather than the card's, and its glyphs are written out as literals.
+  assert.deepEqual(TITLE_GLYPHS, {
+    active: "⚙",
+    "needs you": "⏹",
+    blocked: "⛔",
+    exited: "⚠",
+  });
+});
 
-  for (const state of ["working", "needs you", "idle", "exited"] as const) {
+test("the card draws one glyph per state, and the five are pinned here", () => {
+  // The card is the surface carrying the whole state, so it is the one with five glyphs. They are
+  // written out as literals here so a change to one is a change to this test.
+  assert.deepEqual(GLYPHS, {
+    working: "⚙",
+    "needs you": "⏹",
+    blocked: "⛔",
+    idle: "⏸",
+    exited: "⚠",
+  });
+
+  for (const state of ["working", "needs you", "blocked", "idle", "exited"] as const) {
     assert.ok(renderCard(view(), state, NOW).startsWith(`${GLYPHS[state]} `), state);
   }
 });
@@ -473,6 +492,11 @@ test("the goal is dropped the moment the session reads idle or exited", () => {
     ["ship the pin reconcile"],
     "a session waiting on a person has not finished what it is doing",
   );
+  assert.deepEqual(
+    blocksOf(renderCard({ ...under, blocked: true }, "blocked", NOW)).goal,
+    ["ship the pin reconcile"],
+    "and a run stopped on the operator is the case where the goal names what it stopped on",
+  );
   assert.equal(blocksOf(renderCard(under, "idle", NOW)).goal, null);
   assert.equal(
     blocksOf(renderCard({ ...under, lifecycle: "ended", endedAt: NOW }, "exited", NOW)).goal,
@@ -626,6 +650,7 @@ test("the tool line carries what the tool was called with, from the record throu
     turnCount: 1,
     startedAt: NOW,
     lastHookAt: NOW,
+    lastEngagementAt: NOW,
     lastRelayAt: null,
     endedAt: null,
     openingModel: null,
@@ -753,6 +778,7 @@ test("neither the view nor the card can carry the process token", () => {
     turnCount: 1,
     startedAt: NOW,
     lastHookAt: NOW,
+    lastEngagementAt: NOW,
     lastRelayAt: null,
     endedAt: null,
     openingModel: null,
@@ -2381,9 +2407,14 @@ test("a session waiting on agents says so on the card", () => {
     "35m · implementer-fable",
     "        Grooming S6 implementation",
   ]);
-  // The count rides the state, since the four states cannot say waiting on agents. The word is
+  // The count rides the state, since the five states cannot say waiting on agents. The word is
   // "tasks" because the count covers shell tasks too.
   assert.equal(value(card, "State"), "working · 2 tasks");
+  // A blocked run carries the count on the same terms, because the card draws its Tasks block: a
+  // state line that dropped the count would deny a roster the card is showing two lines below it.
+  const halted = renderCard(waiting, "blocked", NOW);
+  assert.equal(value(halted, "State"), "blocked · 2 tasks");
+  assert.deepEqual(blocksOf(halted).order, ["### Tool", "### Tasks"], halted);
   // The tasks sit below the fields the card always carries, because the roster is the one part
   // sized by another program's fan-out, and below the tool, which nearly every session has where
   // few have tasks.

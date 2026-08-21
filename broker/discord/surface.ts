@@ -21,6 +21,15 @@ import type { CallOutcome, DiscordTransport } from "./transport.ts";
 /**
  * States worth a rename the moment they appear. Both of them are waiting on a person, and damping
  * them would be damping the only thing the thread list exists to show.
+ *
+ * `blocked` is not one of them, though it also waits on a person, because it can be transient in a
+ * way the other two cannot: a run that blocks one plan and carries on to the next derives `blocked`
+ * for the part of a model turn between the event and that turn's first completed tool call, and the
+ * refresh tick runs every few seconds inside that window. Undamped, one such transient writes
+ * Discord's irremovable rename notice twice and empties a per-thread rename bucket that holds about
+ * two in ten minutes, which is the same bucket the final exited rename and the archive need. A real
+ * block lasts minutes to hours, so one dwell window of title lag costs nothing, and the alert that
+ * pings the operator is the fast channel.
  */
 const URGENT: ReadonlySet<SurfaceState> = new Set<SurfaceState>(["needs you", "exited"]);
 
@@ -157,6 +166,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       backgroundTasks: [],
       goal: null,
       needsAttention: false,
+      blocked: false,
       lifecycle: "ended",
     };
   }
@@ -497,6 +507,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       ...entry.lastView,
       lifecycle: "ended",
       needsAttention: false,
+      blocked: false,
       endedAt: entry.lastView.endedAt ?? options.now(),
     };
     entry.lastView = view;

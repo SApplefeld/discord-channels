@@ -52,6 +52,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     lastHookAt: NOW - 2 * MINUTE,
     endedAt: null,
     needsAttention: false,
+    blocked: false,
     lifecycle: "live",
     ...overrides,
   };
@@ -1036,11 +1037,20 @@ test("live sessions render one row each and ended ones are omitted", () => {
   const body = card({ available: true, accounts: [] }, [
     view({ sessionId: "a", name: "CHNL: Answering" }),
     view({ sessionId: "b", name: "CHNL: Usage card", lastHookAt: NOW - 30 * MINUTE }),
+    view({
+      sessionId: "d",
+      name: "CHNL: Stopped",
+      blocked: true,
+      lastHookAt: NOW - 12 * MINUTE,
+    }),
     view({ sessionId: "c", name: "CHNL: Finished", lifecycle: "ended", endedAt: NOW - MINUTE }),
   ]);
 
   assert.match(body, /^CHNL: Answering · working · 2m$/m);
   assert.match(body, /^CHNL: Usage card · idle · 30m$/m);
+  // The fleet card draws the state word alone, so a blocked run reads as blocked here whatever its
+  // hook clock says, exactly as the thread's own card does.
+  assert.match(body, /^CHNL: Stopped · blocked · 12m$/m);
   assert.match(body, /^\*\*Sessions\*\*$/m);
   assert.doesNotMatch(body, /Finished/);
 });

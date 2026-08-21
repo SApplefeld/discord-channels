@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deriveSurfaceState, toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
+import type { SessionRecord } from "../registry.ts";
 
 const NOW = 1_000_000;
 const IDLE_AFTER_MS = 120_000;
@@ -25,6 +26,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     lastHookAt: NOW,
     endedAt: null,
     needsAttention: false,
+    blocked: false,
     lifecycle: "live",
     ...overrides,
   };
@@ -121,6 +123,52 @@ test("a session waiting on agents is working, however long its hooks have been s
   );
 });
 
+test("a blocked run outranks the roster and both live states", () => {
+  // A run stopped on the operator is waiting on a person, and hook recency measures nothing about
+  // a session that has deliberately stopped.
+  const halted = view({ blocked: true });
+
+  assert.equal(deriveSurfaceState(halted, NOW, WINDOWS), "blocked");
+  assert.equal(
+    deriveSurfaceState({ ...halted, backgroundTasks: [AGENT] }, NOW, WINDOWS),
+    "blocked",
+    "and an outstanding roster does not talk it out of it",
+  );
+  assert.equal(
+    deriveSurfaceState({ ...halted, lastHookAt: NOW - 10 * IDLE_AFTER_MS }, NOW, WINDOWS),
+    "blocked",
+    "nor does the silence that would otherwise read idle",
+  );
+  assert.equal(
+    deriveSurfaceState({ ...halted, lifecycle: "stale" }, NOW, WINDOWS),
+    "blocked",
+    "nor the staleness sweep, which measures the same silence",
+  );
+});
+
+test("a block does not outrank a person or a death", () => {
+  const halted = view({ blocked: true });
+
+  assert.equal(
+    deriveSurfaceState({ ...halted, needsAttention: true }, NOW, WINDOWS),
+    "needs you",
+    "the ordering is nominal, since a stopped run holds no permission prompt open",
+  );
+  assert.equal(
+    deriveSurfaceState({ ...halted, lifecycle: "ended", endedAt: NOW }, NOW, WINDOWS),
+    "exited",
+  );
+  assert.equal(
+    deriveSurfaceState(
+      { ...halted, lifecycle: "stale", lastHookAt: NOW - EXITED_AFTER_MS },
+      NOW,
+      WINDOWS,
+    ),
+    "exited",
+    "and the silence backstop reaches it too: a session that stopped answering stopped waiting",
+  );
+});
+
 test("a roster does not outrank a person or a death", () => {
   const waiting = view({ backgroundTasks: [AGENT], lastHookAt: NOW - EXITED_AFTER_MS });
 
@@ -132,34 +180,54 @@ test("a roster does not outrank a person or a death", () => {
   assert.equal(deriveSurfaceState({ ...waiting, lifecycle: "stale" }, NOW, WINDOWS), "exited");
 });
 
-test("a view starts without attention until something reports it", () => {
-  const narrowed = toView({
-    sessionId: "session-a",
-    processToken: "token",
-    name: "neo-intake",
-    host: "NEO",
-    source: "startup",
-    state: "live",
-    lastTool: "Bash",
-    lastToolInput: "npm test",
-    toolCount: 1,
-    turnCount: 0,
-    startedAt: NOW,
-    lastHookAt: NOW,
-    lastRelayAt: null,
-    endedAt: null,
-    openingModel: null,
-    model: null,
-    contextTokens: null,
-    downgrade: null,
-    backgroundTasks: [],
-    goal: null,
-  });
+const RECORD: SessionRecord = {
+  sessionId: "session-a",
+  processToken: "token",
+  name: "neo-intake",
+  host: "NEO",
+  source: "startup",
+  state: "live",
+  lastTool: "Bash",
+  lastToolInput: "npm test",
+  toolCount: 1,
+  turnCount: 0,
+  startedAt: NOW,
+  lastHookAt: NOW,
+  lastEngagementAt: NOW,
+  lastRelayAt: null,
+  endedAt: null,
+  openingModel: null,
+  model: null,
+  contextTokens: null,
+  downgrade: null,
+  backgroundTasks: [],
+  goal: null,
+};
+
+test("a view starts without attention or a block until something reports one", () => {
+  const narrowed = toView(RECORD);
 
   assert.equal(narrowed.needsAttention, false);
+  assert.equal(narrowed.blocked, false);
   assert.equal(narrowed.lifecycle, "live");
   assert.equal(narrowed.lastTool, "Bash");
   // The tool line's two halves are surfaced together, so a preview cannot arrive at the card
   // without the tool name it belongs to.
   assert.equal(narrowed.lastToolInput, "npm test");
+});
+
+test("the two signals waiting on a person are threaded onto the view independently", () => {
+  // Both arrive from outside the record: attention from the permission relay, the block from the
+  // kit event stream, so each is passed rather than read off the session.
+  const attending = toView(RECORD, { needsAttention: true });
+  const halted = toView(RECORD, { blocked: true });
+
+  assert.deepEqual(
+    { attention: attending.needsAttention, blocked: attending.blocked },
+    { attention: true, blocked: false },
+  );
+  assert.deepEqual(
+    { attention: halted.needsAttention, blocked: halted.blocked },
+    { attention: false, blocked: true },
+  );
 });

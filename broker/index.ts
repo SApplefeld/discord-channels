@@ -601,7 +601,9 @@ export function usageCardWiring(options: {
     channel: options.channel,
     sessions: () => {
       const waiting = options.waiting();
-      return options.registry.list().map((record) => toView(record, waiting.has(record.sessionId)));
+      return options.registry
+        .list()
+        .map((record) => toView(record, { needsAttention: waiting.has(record.sessionId) }));
     },
     interimMirror: options.interimMirror,
     cacheRoot: options.config.usageCacheRoot,
@@ -1088,7 +1090,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // as waiting without anything having to remember to clear it.
       const waiting = permissions.waiting();
       inFlight = surface
-        .tick(registry.list().map((record) => toView(record, waiting.has(record.sessionId))))
+        .tick(
+          registry
+            .list()
+            .map((record) => toView(record, { needsAttention: waiting.has(record.sessionId) })),
+        )
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
         // spends no Discord call here at all.

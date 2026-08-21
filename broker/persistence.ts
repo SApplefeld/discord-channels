@@ -169,6 +169,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     isFiniteNumber(value.turnCount) &&
     isFiniteNumber(value.startedAt) &&
     isFiniteNumber(value.lastHookAt) &&
+    absentOrNumber(value.lastEngagementAt) &&
     optionalNumber(value.lastRelayAt) &&
     optionalNumber(value.endedAt) &&
     absentOrString(value.openingModel) &&
@@ -190,6 +191,12 @@ function cleanRecord(record: SessionRecord): SessionRecord {
   // fields lands as null rather than as undefined on a record every surface reads.
   const openingModel: string | null | undefined = record.openingModel;
   const model: string | null | undefined = record.model;
+  // Widened for the same reason, and defaulted to `lastHookAt` because that is the closest thing a
+  // snapshot predating the field carries: the conservative direction, since it may read a session
+  // that stands blocked as freshly engaged (a blocked stop stamps `lastHookAt`) and so clear its
+  // marker early, across the one restart that upgrades the file, rather than pinning a blocked
+  // state onto a session nobody is waiting on.
+  const lastEngagementAt: number | null | undefined = record.lastEngagementAt;
   return {
     ...record,
     sessionId: clean(record.sessionId),
@@ -202,6 +209,10 @@ function cleanRecord(record: SessionRecord): SessionRecord {
       lastToolInput === undefined || lastToolInput === null ? null : clean(lastToolInput),
     openingModel: openingModel === undefined || openingModel === null ? null : clean(openingModel),
     model: model === undefined || model === null ? null : clean(model),
+    lastEngagementAt:
+      lastEngagementAt === undefined || lastEngagementAt === null
+        ? record.lastHookAt
+        : lastEngagementAt,
     // Dropped rather than restored: the context size is a live figure, and one written hours ago
     // would render as the size the session is running at right now. The next transcript line
     // reports the real one, and until it does the card carries the model without a figure beside it.
@@ -293,6 +304,7 @@ function persisted(record: SessionRecord): PersistedRecord {
     turnCount: record.turnCount,
     startedAt: record.startedAt,
     lastHookAt: record.lastHookAt,
+    lastEngagementAt: record.lastEngagementAt,
     lastRelayAt: record.lastRelayAt,
     endedAt: record.endedAt,
     openingModel: record.openingModel,
