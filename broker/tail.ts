@@ -493,15 +493,23 @@ function createRepeatLog(
  * on. They differ in where they go, `deliver` against `deliverPrompt` against `deliverQuestion`,
  * and therefore in how the thread presents them.
  *
+ * Two more are posted as their own message and carry text a peer session wrote: a message another
+ * session sent this one while it was working, and a message this session sent another. They are the
+ * two halves of one exchange, rendered under an attribution of their own, which is what keeps the
+ * quoted operator register the operator's alone.
+ *
  * The other three feed a session's record rather than the thread: the model that answered a line
  * and the context size its usage adds up to, a structured record naming why a model was forced
  * down, and the goal a `/goal` command set. They reach the operator on the card, which is why they
  * are neutralized at the render site rather than at the read, and the goal reaches nowhere else:
  * `PublicSessionRecord` and `PersistedRecord` both omit it.
  */
-type TailItem =
-  | { kind: "text" | "prompt"; text: string }
+export type TailItem =
+  | { kind: "text"; text: string }
+  | { kind: "prompt"; text: string }
   | { kind: "question"; questions: readonly AskedQuestion[] }
+  | { kind: "peer-in"; name: string; body: string }
+  | { kind: "peer-out"; to: string; summary: string | null; message: string }
   | { kind: "model"; reading: ModelReading }
   | { kind: "fallback"; fallback: ModelFallback }
   | { kind: "goal"; goal: string | null };
@@ -652,6 +660,320 @@ function goalCommand(text: string): string | null | undefined {
   return written.toLowerCase() === GOAL_CLEAR ? null : args[1];
 }
 
+/**
+ * Whether a user line is one the operator wrote at their own console.
+ *
+ * The console's own command lines carry no `origin` at all, a typed prompt carries
+ * `origin.kind` `human` beside `promptSource` `typed`, and a peer message delivered to an idle
+ * session carries `origin.kind` `peer` beside `promptSource` `system`. Two independent locks
+ * rather than one, because either field alone is the harness's contract and can move: an origin
+ * this reader does not recognize is refused whatever the prompt source says, and a
+ * system-sourced line is refused whatever its origin says.
+ *
+ * The fail direction is the operator's, deliberately. A harness revision that starts stamping
+ * console lines with an origin this does not admit costs the operator the one command read off
+ * this file, which the card shows by going blank; admitting the wrong line costs the operator
+ * their goal card overwritten by whoever wrote the text, which is not theirs to lose.
+ */
+function typedAtTheConsole(record: Record<string, unknown>): boolean {
+  if (record["promptSource"] === "system") return false;
+  const origin = record["origin"];
+  if (origin === undefined) return true;
+  if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return false;
+  return (origin as Record<string, unknown>)["kind"] === "human";
+}
+
+/**
+ * What a peer message's counterparty is called when the shape it arrived in carries no name this
+ * reader can use.
+ *
+ * The name is the one field of a peer reading that falls back instead of gating. A body this
+ * reader cannot read is a message it does not have; a name it cannot read still leaves the whole
+ * message and a counterparty nobody can point to, and dropping the message over it would let a
+ * peer take itself off the thread by choosing a blank display name. The name is peer-chosen text,
+ * so it is exactly the field a peer controls.
+ *
+ * Exported because the two shapes a peer message reaches a thread in, the structured origin the
+ * tailer reads and the wrapper text the prompt path reads, name an unnameable counterparty by this
+ * one literal, and the pins over them read it rather than repeating the words.
+ */
+export const PEER_NAME_FALLBACK = "another session";
+
+/**
+ * What is drawn where a peer message's own body would be when the delivery is a peer message this
+ * reader could not read the body of.
+ *
+ * A classified delivery always renders under the peer attribution, whether or not its body could
+ * be read, because the alternative is the failure this whole reading exists to close: text a peer
+ * wrote reaching the thread in the operator's own quoted register. A peer that can make its body
+ * unreadable would otherwise hold the switch that puts its words there. So an unreadable body is
+ * reported as one, under a name and an attribution that say exactly where the message came from,
+ * and the operator reads the message itself at the console.
+ *
+ * A peer can write this same sentence as its body, and it renders the same way. Nothing is lost by
+ * that: both readings say a peer sent something this thread cannot show, which is true either way.
+ */
+export const PEER_BODY_UNREADABLE = "(a message this broker could not read)";
+
+/**
+ * The most code points a name, a summary, or any other short peer-written label contributes.
+ *
+ * Code points rather than UTF-16 units, the unit every other bounded reading in this module counts
+ * in, so one emoji in a display name costs one of this budget rather than two. Which makes the
+ * bound a reading this module applies rather than a regex quantifier: an attribute pattern counts
+ * units, so the bound is taken after the capture, on the string, exactly as `modelName` takes its
+ * own.
+ *
+ * Exported because it is one bound over both shapes a peer message arrives in, and a pin that the
+ * two paths agree about a name has to be able to build a name that is over it.
+ */
+export const MAX_PEER_NAME_LENGTH = 120;
+
+/** The most characters an outbound message's one-line summary contributes. */
+const MAX_PEER_SUMMARY_LENGTH = 300;
+
+/**
+ * How a peer session is addressed on the wire: a named pipe, the one stable sender key, and the
+ * one field of a delivery that is infrastructure rather than anything an operator reads.
+ *
+ * It renders nowhere, so a reading that finds one where a display name belongs treats the name as
+ * absent. Live `SendMessage` calls really do address a peer by this string when the sender has no
+ * display name for it, and drawing it would put a pipe address where a thread's reader is looking
+ * for the counterparty they know by name.
+ */
+const PEER_ADDRESS_SCHEME = "uds:";
+
+/**
+ * One field of a peer message: the string it was written as, or null when there is nothing there.
+ *
+ * Absent, non-string, and empty once the invisible class is stripped and the rest trimmed all read
+ * as nothing, `askedQuestions`' rule that a field the surface would draw blank is not a field. What
+ * is returned is the string as it was written rather than the stripped reading the test was made
+ * on: peer text is untrusted content of the same class as a mirrored reply, neutralized at the
+ * render site the way an option label is, and this reader's job is only to decide whether there is
+ * anything to render.
+ *
+ * No bound here, because the fields this gates divide into two kinds that take two different ones.
+ * A message body is the content itself and is bounded where a mirrored prompt is bounded, at the
+ * render site that splits it across messages; a name or a summary is a label and is bounded at the
+ * read below, where being over the bound is a property of the field rather than of the surface.
+ */
+function peerField(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return withoutInvisible(value).trim() === "" ? null : value;
+}
+
+/**
+ * A peer message's body, or null when there is nothing readable in it.
+ *
+ * Trimmed, whichever shape it came out of. On the wrapper path the surrounding whitespace is the
+ * harness's markup, the newlines it writes the body on its own lines with; on the structured path
+ * there is usually none. Trimming both is what makes the two readings return the identical body for
+ * one message, which is the property that keeps a thread from telling two stories about one
+ * exchange depending on whether its session was busy when the message landed.
+ */
+function peerBody(value: unknown): string | null {
+  const body = peerField(value);
+  return body === null ? null : body.trim();
+}
+
+/**
+ * A peer-written label, bounded: a counterparty's display name or an outbound summary, or null when
+ * there is nothing usable there.
+ *
+ * A name is refused whole when it is over the bound rather than cut to it, `modelName`'s reasoning
+ * about a model name exactly: half a display name names a counterparty nobody can look up, and the
+ * fallback that replaces it says plainly that no usable name arrived. A pipe address is refused by
+ * the same door, because it is a name for a machine rather than for a reader.
+ */
+function peerName(value: unknown): string | null {
+  const name = peerField(value);
+  if (name === null) return null;
+  const written = withoutInvisible(name).trim();
+  if (written.toLowerCase().startsWith(PEER_ADDRESS_SCHEME)) return null;
+  return [...name].length > MAX_PEER_NAME_LENGTH ? null : name;
+}
+
+/**
+ * The peer message a `queued_command` attachment's structured `origin` carries, or null when that
+ * origin is not a readable peer delivery.
+ *
+ * The harness's contract, not this project's: an `origin` object whose `kind` is `peer`, whose
+ * `body` holds the message's own text with no wrapper markup around it, and whose `name` holds the
+ * sender's chosen display name. Read from those fields rather than from the sibling `prompt`, which
+ * carries the same message inside the `<cross-session-message>` wrapper: structured fields need no
+ * markup parsing, so nothing a peer writes inside its own message can move what this reads. The
+ * `from` pipe address, `msg_id`, `hopChain` and `fromMode` are read by nobody: none of them is
+ * actionable from a thread.
+ *
+ * The failure direction is silence. A harness revision that moves this shape leaves a peer message
+ * delivered to a busy session reaching the thread nowhere, visible at the console alone. Observable
+ * on any exchange, and not an action.
+ */
+function peerDelivery(origin: unknown): { name: string; body: string } | null {
+  if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return null;
+  const fields = origin as Record<string, unknown>;
+  if (fields["kind"] !== "peer") return null;
+  const body = peerBody(fields["body"]);
+  if (body === null) return null;
+  return { name: peerName(fields["name"]) ?? PEER_NAME_FALLBACK, body };
+}
+
+/**
+ * The outbound peer message a `SendMessage` `tool_use` block's `input` holds, or null when nothing
+ * renderable is in it.
+ *
+ * `message` carries the weight, on `askedQuestions`' rule about a question: a call whose message is
+ * unreadable is a call this reader cannot report faithfully, so it yields nothing rather than an
+ * attribution line over an empty body. `to` falls back by `PEER_NAME_FALLBACK`, the pipe address
+ * live calls address an unnamed peer by included, and `summary` is genuinely optional, a shape this
+ * reader meets rather than a failure, so an unreadable one reads as absent. The summary is cut to
+ * its bound rather than refused, unlike a name: it is a sentence about the message, and the front
+ * of one still says what the message was about.
+ *
+ * The input carries duplicate aliases beside those three, `type` naming the message class,
+ * `recipient` duplicating `to` and `content` duplicating `message`. Three fields are read and the
+ * rest ignored, so an alias moving upstream costs nothing.
+ *
+ * What is read is the call, so what is reported is the attempt: a send whose `tool_result` came
+ * back an error renders as sent. The result lands on a later transcript line and this reader is
+ * per-line, so nothing here can see it, and the correlation machinery that could is a standing cost
+ * against a rare case the thread's own next lines usually explain. The read of the result would add
+ * little even then: its success does not distinguish queued from delivered.
+ *
+ * The failure direction is silence, the same one `peerDelivery` carries: a shape move leaves an
+ * outbound message invisible on the thread while the status card's tool preview still names the
+ * call.
+ */
+function peerSend(input: unknown): { to: string; summary: string | null; message: string } | null {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const fields = input as Record<string, unknown>;
+  const message = peerBody(fields["message"]);
+  if (message === null) return null;
+  const summary = peerField(fields["summary"]);
+  return {
+    to: peerName(fields["to"]) ?? PEER_NAME_FALLBACK,
+    summary: summary === null ? null : fit(summary, MAX_PEER_SUMMARY_LENGTH),
+    message,
+  };
+}
+
+/**
+ * How the Claude Code harness opens a peer message delivered to an idle session, in the two shapes
+ * one is written in: the wrapper element itself, and the prose preamble the harness writes in front
+ * of the wrapper.
+ *
+ * The harness's contract, not this project's, like `TASK_NOTIFICATION` in the routing layer: an
+ * external shape that can change without notice. The failure direction is a visible one rather than
+ * silence, because this text reaches a thread through the prompt path whatever this reading says. A
+ * shape move that stops this matching costs the delivery its own attribution, leaving it drawn in
+ * the operator's quoted register carrying the wrapper markup as the operator's own words; a false
+ * positive costs a prompt the operator really typed the peer attribution, and, where that prompt
+ * also carries a whole wrapper for the reading to fail on, the placeholder body. Both are read off
+ * the thread at a glance, and both are a misattribution rather than a lost message.
+ *
+ * The wrapper literal deliberately stops before the attribute list, on `TASK_NOTIFICATION`'s
+ * reasoning exactly: the tag is never written bare, so matching the tag name alone is what survives
+ * a harness revision that adds an attribute. The preamble is matched whole because it is a
+ * sentence, and half a sentence is a prefix an operator could type.
+ */
+const CROSS_SESSION_WRAPPER = "<cross-session-message";
+const CROSS_SESSION_PREAMBLE = "Another Claude session sent a message:";
+
+/**
+ * One cross-session wrapper, read as one match: its attribute region, then its body.
+ *
+ * Sticky rather than searching, and run only at the opening the classification found, which is what
+ * makes the reading the harness's own tag rather than any tag. A searching pattern restarts at
+ * every later occurrence of the literal, and a peer writes its own body, so it can plant an
+ * occurrence there and be found by the restart: the attribution of the message would then be the
+ * one its own sender chose to plant. It is also what keeps the cost linear on hostile text, since a
+ * restart at every occurrence of a literal a sender can repeat is quadratic in the length they
+ * choose.
+ *
+ * The attribute region admits `>` inside a quoted value and nowhere else, so a display name
+ * containing one closes at its own quote instead of ending the tag early and spilling the harness's
+ * remaining attributes into the body. The body is taken non-greedily between that one opening and
+ * the first close, `COMMAND_NAME`'s discipline: markup a message quotes inside its own body is
+ * content, so it can truncate what this reads and never re-aim it.
+ *
+ * Sticky patterns carry their own `lastIndex`, so this one is positioned at every use rather than
+ * reused as it was left.
+ */
+const CROSS_SESSION_MESSAGE = new RegExp(
+  `${CROSS_SESSION_WRAPPER}((?:[^">]|"[^"]*")*)>([\\s\\S]*?)</cross-session-message>`,
+  "y",
+);
+
+/** The sender's chosen display name, read out of one wrapper's own attribute region. */
+const CROSS_SESSION_FROM_NAME = /from-name="([^"]*)"/;
+
+/**
+ * A peer message read out of the text one was delivered to an idle session in: the counterparty it
+ * came from, the body to draw, and whether that body is the message's own or the placeholder that
+ * stands in for one this reader could not make out. A caller renders both the same way and under
+ * the same attribution; the flag is there so one that wants to say less about an unreadable
+ * delivery than about a readable one can.
+ */
+export type CrossSessionDelivery = { name: string; body: string; readable: boolean };
+
+/**
+ * What a prompt is carrying when it is a peer message delivered to an idle session: null when the
+ * prompt is no such delivery, and otherwise the message, marked with whether its body could be
+ * read.
+ *
+ * Three states rather than two, and the third is the load-bearing one. A delivery whose body this
+ * reader cannot make out is still a delivery, and returning null for it would hand a peer's own
+ * text back to the caller as an ordinary prompt, to be drawn in the operator's quoted register: a
+ * peer that writes a body this cannot read would hold the switch on the one attribution this
+ * surface keeps unforgeable. So `readable` false still names the counterparty and still renders
+ * under the peer attribution, with `PEER_BODY_UNREADABLE` where the body would be.
+ *
+ * One reading for both paths a peer message reaches a thread by, so the two cannot answer
+ * differently for one message: the transcript tailer sees the structured origin and reads it
+ * through `peerDelivery`, while the prompt path sees text alone, because the `UserPromptSubmit`
+ * payload carries the prompt string and nothing else.
+ *
+ * Classified on the invisible-stripped, trim-started prefix, `isTaskNotification`'s reasoning
+ * exactly: a zero-width character in front of the marker changes nothing a reader sees, so it must
+ * not be what decides the attribution, and only the opening counts, so a prompt quoting the wrapper
+ * mid-text is the operator typing about it. Extraction then runs on the raw text at the first
+ * occurrence of the opening literal, which under that classification is the harness's own opening:
+ * the preamble in front of it is prose with no tag in it. Markup that an invisible strip would have
+ * to repair therefore reads as unreadable rather than as a guess at what it meant.
+ *
+ * Classified text carrying no opening tag at all is no delivery, the one case that goes back to the
+ * caller as an ordinary prompt: every real delivery carries the wrapper, so what this admits is an
+ * operator opening their own prompt with the preamble sentence, whose words are then their own on
+ * the thread rather than a placeholder. No peer can reach it, since the harness writes the wrapper
+ * around whatever a peer sends.
+ *
+ * The preamble in front of the wrapper and the harness's advisory paragraph behind it are dropped
+ * with everything else outside the tags: neither is the peer's message.
+ */
+export function crossSessionDelivery(text: string): CrossSessionDelivery | null {
+  const opening = withoutInvisible(text).trimStart();
+  if (
+    !opening.startsWith(CROSS_SESSION_WRAPPER) &&
+    !opening.startsWith(CROSS_SESSION_PREAMBLE)
+  ) {
+    return null;
+  }
+  const at = text.indexOf(CROSS_SESSION_WRAPPER);
+  if (at === -1) return null;
+  CROSS_SESSION_MESSAGE.lastIndex = at;
+  const wrapper = CROSS_SESSION_MESSAGE.exec(text);
+  if (wrapper === null) {
+    return { name: PEER_NAME_FALLBACK, body: PEER_BODY_UNREADABLE, readable: false };
+  }
+  const attribute = CROSS_SESSION_FROM_NAME.exec(wrapper[1] ?? "");
+  const name = (attribute === null ? null : peerName(attribute[1])) ?? PEER_NAME_FALLBACK;
+  const body = peerBody(wrapper[2]);
+  return body === null
+    ? { name, body: PEER_BODY_UNREADABLE, readable: false }
+    : { name, body, readable: true };
+}
+
 /** The three usage figures that add up to the context a turn ran against. */
 const CONTEXT_FIELDS: readonly string[] = [
   "input_tokens",
@@ -789,8 +1111,24 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * anything, and none of them yields conversation text: a typed prompt reaches the thread through
  * its own hook.
  *
- * Everything else yields nothing: thinking blocks, tool calls, tool results, attachments of other
- * types, a `queued_command` whose `commandMode` is not `prompt`, withdrawn queue entries, system
+ * A peer message delivered to an idle session is a user line too, carrying the wrapper text in its
+ * content and the same structured `origin` the attachment below carries. It yields nothing, on both
+ * counts that matter: it fires the prompt hook, so the mirror path posts it and a second reading
+ * here would put the message on the thread twice, and its content is text a peer wrote, which the
+ * goal read above refuses to take a command out of.
+ *
+ * A line yields an inbound peer message when it is that same `queued_command` attachment shape and
+ * its `origin.kind` is `peer` instead of `human`: the message another session sent this one while
+ * the model was working, which the harness queues and injects without firing a prompt hook. What is
+ * yielded is `peerDelivery`'s reading of the structured origin, never the wrapper-wrapped copy the
+ * `prompt` field carries beside it. A line yields an outbound peer message when its `type` is
+ * `assistant` and a block in `message.content` is a `tool_use` block naming `SendMessage`, read
+ * through `peerSend`. The two together are what puts a whole exchange on one thread: this session's
+ * half of it is on its own transcript, and the counterparty's half arrives as the deliveries above.
+ *
+ * Everything else yields nothing: thinking blocks, tool calls other than those two, tool results,
+ * attachments of other types, a `queued_command` whose `commandMode` is not `prompt`, withdrawn
+ * queue entries, arrival records for a peer message that has not been delivered yet, system
  * lines, every other user line, and every line type this build has never seen. The transcript is another
  * program's file format that can grow new line types without notice, so the safe default for the
  * unrecognized is silence, never publication.
@@ -803,8 +1141,13 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * A parse failure yields nothing and the error is discarded unread: the file is written by
  * another process, so a half-flushed line is not an error, and the parse error's message embeds
  * an excerpt of the line's own text, which must never reach a log.
+ *
+ * Exported for the tests that pin these readings against whole transcript lines in the shapes
+ * Claude Code actually writes: what each line type contributes is this module's contract with an
+ * external file format, and a reading taken of a hand-built object handed to one of the helpers
+ * above cannot catch a gate two levels up admitting the wrong line.
  */
-function lineItems(line: string, sessionId: string): TailItem[] {
+export function lineItems(line: string, sessionId: string): TailItem[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -833,6 +1176,18 @@ function lineItems(line: string, sessionId: string): TailItem[] {
       if (fields["type"] === "tool_use" && fields["name"] === "AskUserQuestion") {
         const questions = askedQuestions(fields["input"]);
         if (questions.length > 0) items.push({ kind: "question", questions });
+        continue;
+      }
+      if (fields["type"] === "tool_use" && fields["name"] === "SendMessage") {
+        const sent = peerSend(fields["input"]);
+        if (sent !== null) {
+          items.push({
+            kind: "peer-out",
+            to: sent.to,
+            summary: sent.summary,
+            message: sent.message,
+          });
+        }
         continue;
       }
       if (fields["type"] !== "text") continue;
@@ -872,6 +1227,12 @@ function lineItems(line: string, sessionId: string): TailItem[] {
     ];
   }
   if (record["type"] === "user") {
+    // The console-command markup is read only off a line the operator wrote at their own console.
+    // Peer messages and the harness's own injections arrive as user lines too, carrying text this
+    // broker did not write and its sender chose, and `COMMAND_NAME` matches that markup wherever in
+    // a line it sits: without this gate a peer that writes the markup into its own message sets the
+    // goal on the operator's status card, or clears it.
+    if (!typedAtTheConsole(record)) return [];
     const goal = goalCommand(userText(record["message"]));
     return goal === undefined ? [] : [{ kind: "goal", goal }];
   }
@@ -885,6 +1246,8 @@ function lineItems(line: string, sessionId: string): TailItem[] {
     if (fields["commandMode"] !== "prompt") return [];
     const origin = fields["origin"];
     if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return [];
+    const peer = peerDelivery(origin);
+    if (peer !== null) return [{ kind: "peer-in", name: peer.name, body: peer.body }];
     if ((origin as Record<string, unknown>)["kind"] !== "human") return [];
     const prompt = fields["prompt"];
     if (typeof prompt !== "string" || prompt === "") return [];
@@ -1425,7 +1788,16 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
           }
           continue;
         }
-        const text = item.text;
+        if (item.kind === "peer-in" || item.kind === "peer-out") {
+          // Peer traffic, in both directions. It is drawn under an attribution of its own rather
+          // than as this session's narration, so it does not join the chain below.
+          continue;
+        }
+        // What is left is the assistant's own narration. The assignment is the check: a kind added
+        // to the union without a branch of its own above stops being assignable to never, so the
+        // build fails here rather than the kind going unrouted in silence.
+        const narration: { kind: "text"; text: string } = item;
+        const text = narration.text;
         // The Stop mirror may already have posted this exact text as the turn's final reply, and
         // an earlier pass may have posted it as the last interim chunk. Either match is an echo,
         // skipped rather than shown to the operator twice.

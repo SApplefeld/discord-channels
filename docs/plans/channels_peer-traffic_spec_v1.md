@@ -1,6 +1,6 @@
 # Channels: peer traffic on the mirror
 
-Status: Ready
+Status: In Progress
 Commit Model: Commit-and-Push
 Created: 2026-08-25
 
@@ -58,18 +58,29 @@ must state its failure direction the way `TASK_NOTIFICATION` does in `broker/rou
   "<clean text, no wrapper>"}`, and `prompt` carrying the wrapper-wrapped text. The structured
   `origin` is the read of choice: `body` needs no wrapper parsing, `name` needs no attribute
   parsing.
-- **Delivery, receiver idle:** an ordinary user turn whose text carries the
+- **Delivery, receiver idle:** a user line carrying the
   `<cross-session-message from="..." from-name="..." from-mode="...">...</cross-session-message>`
-  wrapper (attributes observed: `from` = the pipe address, the only stable sender key; `from-name`
-  = peer-chosen display name; `from-mode` = sender's permission mode; sometimes `hop-chain`). A
-  prose preamble (`Another Claude session sent a message...`) and a trailing harness advisory
-  paragraph can ride with it. Inferred, to confirm in section 1: this delivery fires
+  wrapper in `message.content` as a plain string (attributes observed: `from` = the pipe address,
+  the only stable sender key; `from-name` = peer-chosen display name; `from-mode` = sender's
+  permission mode; sometimes `hop-chain`). A prose preamble (`Another Claude session sent a
+  message...`) and a trailing harness advisory paragraph ride with it. It is not an ordinary user
+  turn: it carries `isMeta: true`, `promptSource: "system"`, a `promptId`, and the same structured
+  root-level `origin: {kind: "peer", from, msg_id, name, fromMode, body}` the mid-turn attachment
+  carries under `attachment.origin`. The structured origin sits at the line's root here, not under
+  an attachment. Two consequences: the wrapper text parsing is needed only where the structured
+  origin is unavailable, which is the mirror path (the `UserPromptSubmit` hook payload delivers
+  `prompt` text alone, `broker/intake.ts:74`); and the tailer, which does see the whole line,
+  deliberately does not read this shape, because the mirror path already posts it and a second
+  reading would double-post. Inferred, to confirm in section 4: this delivery fires
   `UserPromptSubmit`, which is how it reaches the mirror today, and the mid-turn delivery fires no
   prompt hook (the queued-injection rule), so no single delivery reaches both the mirror path and
   the tailer path. If the probe in section 4 falsifies that and one delivery can post twice, dedup
   by digest through the echo-memory pattern is the named fallback.
 - **Outbound:** an assistant `tool_use` block, `name: "SendMessage"`, `input: {to, summary?,
-  message, notify_when_idle?}`; the `tool_result` carries `{"success":true,"message":"\u201c<summary>\u201d
+  message, ...}`. The input carries duplicate aliases beside those three, observed as
+  `type: "message"`, `recipient` (duplicating `to`), and `content` (duplicating `message`); the
+  reading takes `to`, `summary`, and `message` and ignores the rest, so an alias moving upstream
+  costs nothing. The `tool_result` carries `{"success":true,"message":"\u201c<summary>\u201d
   → <resolved name> (...)","msg_id":"<guid>"}`. The input is what renders; the result is not read
   (a success does not distinguish queued from delivered, so it adds nothing renderable).
 - **No correlation id exists** anywhere: outbound `msg_id`s never appear in inbound wrappers.
@@ -191,4 +202,69 @@ docs curation, archive the plan.
 
 ## Chapters
 
-(Ready; none yet.)
+(Section 1 complete.)
+
+### Chapter 1 - 2026-08-25
+Completed: 1. The peer reading (tail)
+Implemented By: implementer-opus (one build, one review-fix round; no escalation)
+Metrics: review rounds 1; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The spec's ground truth was wrong in two places and both were corrected in
+  the doc before dispatch. The idle delivery is not an ordinary user turn: it carries `isMeta:
+  true`, `promptSource: "system"`, a `promptId`, and the same structured `origin` the mid-turn
+  attachment carries, at the line's root rather than under an attachment. That is why the wrapper
+  text reading is needed only on the mirror path, which receives `prompt` text alone
+  (`broker/intake.ts:74`), and why the tailer deliberately does not read the idle shape (the mirror
+  posts it; a second reading double-posts). The `SendMessage` input also carries duplicate aliases
+  (`type`, `recipient`, `content`) beside `to`/`summary`/`message`. The shared wrapper reading was
+  homed in `broker/tail.ts` and exported for section 3; the resulting `outbound` to `tail` runtime
+  import is acyclic, since both modules import each other type-only today. Two implementer
+  refinements were accepted: classified text carrying no wrapper tag at all still reads as no
+  delivery (only an operator can reach that branch, and a placeholder there would delete their
+  words), and an unreadable delivery keeps a readable name rather than always falling back.
+  `PEER_BODY_UNREADABLE` is broker-authored text a peer can write verbatim as its own body; no
+  anti-forgery machinery was built, since both readings then say the same true thing and the string
+  renders under the peer attribution either way. Noted at the constant for section 2 to revisit.
+Assumptions: The shared wrapper reading lives in `broker/tail.ts` rather than beside the prefix
+  checks in `broker/routing/outbound.ts`; the spec authorized either, and tail.ts is where this
+  module's other exported shape readers already live (route (b), low-blast, reversible, section 1).
+  Inferred and still unconfirmed: that no single delivery reaches both the mirror path and the
+  tailer path. Section 4 probes it; the spec's "confirm in section 1" was moved to section 4,
+  because the tailer cannot observe what the hook receives.
+Review Findings: Two Criticals, both fixed, both re-verified by me against the real module before
+  and after. C1: peer-authored body text could set the operator's goal card, because the
+  `type === "user"` branch read it through `goalCommand` whose command regexes are unanchored,
+  while the new comment claimed the line was not read there. Gated by `typedAtTheConsole`, which
+  refuses `promptSource: "system"` and any present-but-non-`human` origin; the two operator shapes
+  measured on this repo's live transcript both stay admitted. C2: `crossSessionDelivery` conflated
+  "not a delivery" with "a delivery I could not read", so a peer opening its body with a fake close
+  tag routed its own text into the operator's quoted register. Now a three-state result. Majors
+  fixed: the unanchored `from-name` read let a peer plant a tag in its own body and choose its
+  attribution; `[^>]*>` let a `>` in a display name spill harness attributes into the body (both
+  closed by one sticky, anchored match reading the attribute region and body together); a `to` that
+  is a pipe address now falls back; the two paths now agree on trimming and share one code-point
+  name bound. Security Minor closed as a side effect: the searching pattern was superlinear
+  (3,382ms on 471KB of crafted text against a 256KB route ceiling), now 26.6ms, and 40.9ms at 1MB.
+  One Major accepted with justification: a `SendMessage` whose `tool_result` is an error still
+  renders as sent, because `lineItems` is per-line and cannot see a result that lands on a later
+  line; building correlation machinery was judged out of proportion, and the constant now says
+  plainly that a failed send renders as sent. Minors fixed: an invented `queue-operation` fixture
+  replaced with the real root-level arrival record, `usage` added to the SendMessage fixture so
+  assertions run against the real two-item yield, a `never`-typed exhaustiveness guard so section 3
+  cannot silently forget a kind, and read-time bounds on the peer fields. One Minor deliberately
+  not fixed: the em dash inside `PEER_ADVISORY` stays, because that string is a verbatim quote of
+  the harness's own advisory text and fidelity beats the house rule for external literals. One
+  blind finding adjudicated as not-a-defect: the new readers reach no production consumer, which is
+  the section split working as designed; section 3 wires them.
+Stamps: adjudicated 2, stamped 2 (`grep-directory-sweeps-miss-transcript-jsonl`,
+  `editing-a-crlf-file-with-perl-from-the-bash-tool`). `memq unstamped --since 4h` reported zero in
+  both tiers; both were applied this section and stamped on the generous bar regardless.
+Gates: baseline at 0e24f76 was lint exit 0, test exit 0, 1417 tests / 1416 pass / 0 fail / 1
+  skipped. Now lint exit 0, test exit 0, 1436 tests / 1435 pass / 0 fail / 1 skipped: +19 tests, no
+  regression. One full-suite run went red on "a mirror run that landed nothing after the tailer
+  deferred still gets the text posted" inside the `until` helper. Discriminated rather than assumed:
+  three isolated runs of the file were green at 130/130, the full suite was green on re-run, the
+  test sits in the pre-existing echo-dedup group far from this diff, and `docs/backlog.md:214` and
+  `:37` document this exact helper and group as a known load-sensitive flake. The helper bounds its
+  wait by 1,000 microtask turns rather than by time, which is why it fails under load.
+Next: 2. The rendering (render)
+Commit Model: Commit-and-Push
