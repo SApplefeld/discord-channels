@@ -427,3 +427,64 @@ Scope: Four files were folded in beyond the section's named `broker/routing/outb
   clears a standing block one tool call later through `PostToolUse` needs one sentence.
 Next: 4. Live verification and docs
 Commit Model: Commit-and-Push
+
+### Interim board 1 - 2026-08-25
+Section 4 (Live verification and docs) is part-done and its remaining leg is blocked on an
+elevation only the operator can give. Nothing is in flight; no dispatch is live.
+
+Verified this session, each by measurement rather than inference:
+- The idle-delivery shape, re-confirmed against a fresh live delivery rather than the recorded
+  fixture: `isMeta: true`, `promptSource: "system"`, a `promptId`, and a root-level `origin` whose
+  `kind` is `peer`, carrying `name` and an unwrapped `body`. Confirmed independently from the
+  sending side by `CHANNEL: Fable` against its own transcript.
+- The no-double-post contract, which Chapters 1 and 3 both carried as inferred, is now confirmed on
+  both halves. Idle half: the shipped `lineItems` yields `[]` for the exact real transcript line an
+  idle delivery landed on, so the tailer is structurally blind to that shape and the mirror's copy
+  is the only one. Busy half: across a window from 10:26:48.969Z to 10:29:48.105Z in which this
+  session ran no tool at all (`toolCount` frozen at 870 across 36 samples of `GET /sessions`), a
+  real mid-turn peer delivery arrived at 10:27:37Z and `lastHookAt` did not move from
+  1787653603013. A mid-turn delivery therefore fires no `UserPromptSubmit`, the mirror path never
+  sees it, and the echo-digest fallback is not needed. The instrument was chosen because the
+  obvious one cannot speak: `broker.log` records only hook refusals and drops, never a mirror
+  success, pinned at `broker/intake.test.ts:957`, so its silence there proves nothing either way.
+- From the same window, `lastEngagementAt` was frozen too, so a mid-turn peer delivery stamps no
+  engagement at arrival and a blocked session keeps its `⛔` at the moment a peer writes. The known
+  residual is unchanged and now documented: the woken session's next completed tool call stamps.
+- The shipped readers over this session's real transcript: six real `SendMessage` blocks yield
+  `peer-out` with `to`, `summary`, and `message` read correctly, three real mid-turn attachments
+  yield `peer-in`, and all render correctly in both `full` and `brief`.
+- On real broker boots rather than in the suite: the startup line fires exactly in the state it
+  guards (`CHANNEL_PEER_MESSAGES` on, `CHANNEL_INTERIM_MIRROR=false`), stays silent under its
+  control (`CHANNEL_PEER_MESSAGES=off`), and `CHANNEL_PEER_MESSAGES=fully` refuses at exit 1
+  naming the vocabulary.
+
+Docs delivered, which the section also owns and which needed no live broker: `docs/operations.md`
+gains the `CHANNEL_PEER_MESSAGES` row, the note that the knob governs volume and cannot put a path
+on the wire, the startup line verbatim, and a peer-traffic reading section carrying all four new
+`routing:` lines. `docs/architecture.md` corrects the tailer's line-shape count from three to five
+and gains a peer-traffic section covering the three paths, the one reading, and why they cannot
+double-post. `docs/security-model.md` corrects both stale enumerations (six named shapes to eight,
+five neutralized text kinds to six), documents the extra attribution-opener pass a peer body takes
+and why a reply does not need it, and adds the peer surface with its two reachable residuals and
+the stamp exclusion with its `PostToolUse` residual.
+
+Blocked, and the only thing blocked: the Discord-side rendering eyeball. The live broker on this
+host is an orphaned process (PID 10272) running pre-change code and holding port 8787. A restart
+attempt through the repository's own `install/Repair-Broker.ps1` could not kill it, and neither
+could `taskkill /F` nor a WMI `Terminate` (return value 2, access denied); the replacement started,
+connected, hit `EADDRINUSE` at 10:23:04Z, and died, which is the exact orphan failure
+`docs/operations.md` documents. Killing it needs elevation this session does not have and must not
+self-grant. Until it clears, no process carrying the shipped rendering can receive a mirror post,
+so `📡` cannot be seen on a thread whatever else is true.
+
+Not this plan's problem but worth recording, since it was measured while chasing the above: the
+card-edit starvation on this host predates the restart attempt (61 bucket-empty drops in the
+10:00Z window, 66 in the 10:10Z window). Exactly one node process holds any HTTPS connection, so
+there is one gateway rather than two. That is the load problem
+`channels_mirror-load-tolerance_spec_v1.md` exists to fix, which is plan 2 of 2 in the armed queue.
+
+Next action when the elevation lands: run `install/Repair-Broker.ps1`, confirm the summary's commit
+line reads the shipped HEAD and readiness is answering, then drive one exchange with
+`CHANNEL: Fable` in both directions and both receiver states and read the thread. Then close the
+backlog item with receipts and run section 5.
+Commit Model: Commit-and-Push

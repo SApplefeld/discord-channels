@@ -692,6 +692,51 @@ together, so a question asked in that same unarmed stretch raises no alert eithe
 `UserPromptSubmit` re-arms it as normal. See [`security-model.md`](security-model.md) for why the gate fails in that
 direction rather than the other.
 
+## Peer traffic between sessions
+
+Claude Code sessions message each other directly, and a session's thread carries both halves of
+every exchange it is party to, so one surface shows a whole conversation without tabbing between
+terminals. Peer traffic is drawn under a 📡 attribution of its own, and the direction is which side
+of the arrow this session sits on:
+
+```
+📡 KIT: Messaging → **Claude**
+the message that session sent, drawn below
+
+📡 **Claude** → KIT: Messaging
+the message this session sent, drawn below
+```
+
+The bold `Claude` is this session, always, and it is bold for a reason worth knowing: every
+counterparty here is itself a Claude session, so a peer whose display name is `Claude` would
+otherwise draw an identical header in both directions. A counterparty name goes through the full
+markdown neutralization, so a name cannot supply that token.
+
+**Peer traffic never renders in the `>>>` quoted block.** That block means the operator typed
+something, and it is the one attribution this surface holds unforgeable. A peer message is drawn
+outside it on every setting, which is what stops another session's words from arriving in the
+channel permission prompts are answered in as if you had written them. For the same reason a peer
+message never clears a `⛔` blocked state: the engagement stamp records that a person is driving,
+and another machine writing is not that. A woken session that genuinely resumes stamps on its own
+first completed tool call, so a run that really restarts still clears its own block.
+
+Peer messages post on the mirror budget rather than the alert tier and ping nobody. An exchange
+between two sessions is worth reading, not worth waking someone for.
+
+Four `routing:` lines belong to this path, and each carries the direction and the session and never
+the text, because a peer message is conversation content. `routing: the <inbound|outbound> peer
+message for session <id> was dropped, CHANNEL_PEER_MESSAGES is off` is that setting working as set,
+and it is the only evidence of it anywhere. On the inbound direction it ends `; a prompt read as
+peer traffic is dropped here too`, which names the one thing this setting can delete: a prompt you
+really typed that the classification misreads as a delivery reaches the thread nowhere under `off`,
+where under `full` and `brief` the same misreading costs only the attribution. `routing: the
+<inbound|outbound> peer message for session <id> was dropped, it carried no visible text` is a
+message that held nothing once the invisible class was stripped. `routing: the <inbound|outbound>
+peer message for session <id> was dropped, its thread is not open yet` is an exchange that happened
+before the session's thread existed. `routing: the <inbound|outbound> peer message for session <id>
+stopped after N of M messages: <error>` is the post itself failing, with the transport's error class
+and no content.
+
 ## Tunables
 
 Everything below lives in `broker.env` and takes effect when the broker restarts. Only these keys are
@@ -734,6 +779,7 @@ refused by name rather than guessed at.
 | `CHANNEL_TASK_NOTIFICATION` | brief | How a background task's wake prompt reaches the thread: `brief` posts the one-line 📨 notice, `full` mirrors the whole injected report, `off` posts nothing |
 | `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, and open-question alerts; also gated by `CHANNEL_MIRROR` |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
+| `CHANNEL_PEER_MESSAGES` | full | How much of a message this session exchanges with another Claude session reaches the thread, in both directions: `full` draws each message whole under its own 📡 attribution, `brief` draws one line per message, `off` posts none of it. Volume only; attribution is not a knob |
 | `CHANNEL_USAGE_CARD` | off | Whether the Fleet: Usage thread and its card exist on this host |
 | `CHANNEL_USAGE_CARD_REFRESH_MS` | 60 s | How often the fleet card is re-read and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_USAGE_CACHE_ROOT` | the profile's claude-swap backup | Where the usage cache and account list are read from |
@@ -762,6 +808,16 @@ Three windows are ordered and the broker refuses a configuration where they cros
 `CHANNEL_DISCORD_IDLE_AFTER_MS` must be below `CHANNEL_STALE_AFTER_MS`, or a session is marked stale
 before it could ever render idle, and `CHANNEL_DISCORD_EXITED_AFTER_MS` must be above it, or every
 quiet session is instantly called dead.
+
+`CHANNEL_PEER_MESSAGES` governs how much of a peer message is drawn and never whether the path
+exists. Two of the three ways a peer message reaches a thread are read off the transcript, so with
+`CHANNEL_MIRROR` or `CHANNEL_INTERIM_MIRROR` off this host's own sends and every message arriving
+while a session is working reach no thread at all, whatever this is set to. Only the inbound half
+delivered to an idle session rides the independent mirror route. A thread in that state shows one
+side of a conversation and reads like the whole of it, so the broker says so once at startup:
+`broker: peer messages are on without the transcript tailer, so this host's outbound peer messages
+and the ones that arrive mid-turn reach no thread; they need CHANNEL_MIRROR and
+CHANNEL_INTERIM_MIRROR both on`.
 
 `CHANNEL_BROKER_PORT` is the trap. Moving it here moves the broker only. Every `http` hook URL in
 `hooks/settings-fragment.json` and the literal in `hooks/session-start.ps1` carry their own copies,

@@ -158,11 +158,13 @@ session's transcript, JSONL appended beside the session and never authored for t
 The tailer polls, on `CHANNEL_INTERIM_POLL_MS` (20 seconds by default), every session the registry
 currently holds live. For each one it reads past the byte offset the previous pass left, up to a
 bounded ceiling per pass, and stops at the last complete line so a line still being flushed is left
-for the next pass. Three line shapes contribute anything, and all must be non-sidechain lines
+for the next pass. Five line shapes contribute anything, and all must be non-sidechain lines
 carrying the session ID the path was learned for: a `text` content block on an `assistant` line is
 one interim chunk, a `queued_command` attachment recording a human-origin prompt is one mid-turn
-typed message, delivered in transcript order among the chunks around it, and a `tool_use` block
-naming `AskUserQuestion` is one open-question alert. That transcript line exists only once the
+typed message, delivered in transcript order among the chunks around it, a `queued_command`
+attachment whose structured origin names a peer is one message another session sent this one
+while it was working, a `tool_use` block naming `SendMessage` is one message this session sent
+another, and a `tool_use` block naming `AskUserQuestion` is one open-question alert. That transcript line exists only once the
 picker is answered, so this yield is the fallback behind the `PreToolUse` hook post that alerts
 the same question at emission; a bounded per-session set of outstanding digests lets the yield
 recognize and skip a question the hook path already alerted, and a session whose installed hooks
@@ -240,6 +242,50 @@ memory, keyed per session, is what collapses that to one copy in the thread; it 
 Reading a session's transcript at all is gated on an explicit mirror-on verdict seen for that session
 under the current broker process; see [`security-model.md`](security-model.md) for what that gate
 covers and why it fails in the direction it does.
+
+## Peer traffic between sessions
+
+Claude Code sessions message each other directly, and the mirror predates that surface. Left
+alone it mishandled peer traffic in both directions: an inbound message delivered to an idle
+session was drawn in the operator's own quoted block carrying the harness's wrapper markup, one
+delivered mid-turn reached the thread nowhere, and an outbound send was invisible because it is an
+ordinary `tool_use` block. A thread therefore showed a session mid-negotiation as if it were
+silent, or showed another session's words as the operator's own.
+
+Peer traffic now renders under a `📡` attribution of its own, in both directions, so one session's
+thread carries every exchange it is party to, chronologically, and an operator watches a
+cross-session conversation without tabbing between terminals. `CHANNEL_PEER_MESSAGES` governs how
+much of each message is drawn (`full`, `brief`, `off`) and governs nothing else: the attribution
+and the engagement-stamp exclusion below hold on every setting.
+
+**Three paths, one reading, one rendering.** A message reaches a thread three ways, and the three
+must not disagree about one message. Only one of them rides the prompt seams: a delivery landing
+while the session is idle fires `UserPromptSubmit`, so it arrives at the mirror as prompt text with
+the wrapper markup around it, and the classification that recognizes it is the same exported
+reading the tailer owns rather than a second copy beside it. The other two are read off the
+transcript by the tailer: the mid-turn attachment and this session's own `SendMessage` block. All
+three render through one mode dispatch, so no path draws whole what another compresses.
+
+**Why that cannot double-post.** The idle delivery is a user line, and the tailer does not read
+user lines for peer traffic at all, so the mirror's copy is the only copy. The mid-turn delivery
+fires no prompt hook, on the queued-injection rule the operator's own typed mid-turn message
+follows, so the tailer's copy is the only copy. Both halves are measured rather than assumed: the
+shipped reader yields nothing for a real idle-delivery line, and a real mid-turn arrival moved the
+session's `lastHookAt` not at all across a window in which the session ran no tool of its own.
+Were that ever to change, the fallback is the mechanism already here, the shared echo memory that
+collapses the turn-close duplicate below.
+
+**The attribution names a counterparty, which is why it is composed rather than tabled.** The
+existing attributions are fixed literals in a keyed record; a peer line embeds a name, so it is
+built from component constants and the name goes through the full markdown neutralization a card
+title takes, bounded to the same length the reader bounds it to. This session's own side of the
+arrow renders as a bold token a name cannot supply, because every counterparty here is itself a
+Claude session and a peer named `Claude` would otherwise draw an identical header in both
+directions.
+
+A peer message posts through the thread's ordering chain like any other line, so it takes its place
+among the narration around it and ends any narration block being grown there. It spends the mirror
+budget, never the alert tier, and mentions nobody.
 
 ## One copy of a turn's close
 

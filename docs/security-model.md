@@ -193,9 +193,15 @@ which is what keeps this advisory rather than enforced.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
-matching one of six named shapes whole: an assistant line's `text` content block; an attachment
+matching one of eight named shapes whole: an assistant line's `text` content block; an attachment
 whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
-prompt is a non-empty string; an assistant line's `tool_use` block naming exactly
+prompt is a non-empty string; an attachment of that same type whose structured origin kind is
+instead `peer`, which yields the message another session sent this one, read from the origin's own
+`body` and `name` fields rather than by parsing wrapper markup, and never from the `from` pipe
+address, `msg_id`, `hopChain`, or `fromMode`, none of which is actionable from a thread; an
+assistant line's `tool_use` block naming exactly `SendMessage`, whose `to`, `summary`, and
+`message` yield the message this session sent, the duplicate aliases the harness carries beside
+them read by nobody; an assistant line's `tool_use` block naming exactly
 `AskUserQuestion`, whose bounded reading (at most 4 questions and 4 option labels, each readable
 only as a non-empty string once invisibles are stripped) becomes the open-question alert; an
 assistant line's own model name and the usage figures that sum to a context size; a structured
@@ -618,12 +624,26 @@ and both apply it:
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 
 **Conversation text is neutralized on a narrower rule than a name is.** A mirrored prompt, a
-mid-turn typed message, a mirrored reply, a mid-turn narration chunk, and a `reply` tool call are
-prose with code in them, so escaping the whole of markdown would trade the readability of the
-surface away. All five go through one fence-aware escape that neutralizes Discord's angle-bracket
-chip syntax and a line-leading quote marker and leaves the rest alone. `renderMirror` applies it to
-mirrored, typed, and narration text, `renderAnswer` to the reply tool's, and `appendNarration` to a
-chunk entering an existing message by edit, all before the text reaches the message path. That is what stops any of them from drawing a
+mid-turn typed message, a mirrored reply, a mid-turn narration chunk, a `reply` tool call, and a
+peer message's body in either direction are prose with code in them, so escaping the whole of
+markdown would trade the readability of the surface away. All six go through one fence-aware
+escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote marker and
+leaves the rest alone. `renderMirror` applies it to
+mirrored, typed, and narration text, `renderAnswer` to the reply tool's, the peer renderings to a
+peer body, and `appendNarration` to a chunk entering an existing message by edit, all before the
+text reaches the message path.
+
+A peer body takes one pass the other five do not, and the difference is who is forging what. The
+escape above stops a chip and a line-leading quote marker; it does not stop an attribution line,
+and the reply marker's accepted residual is why it did not have to: there the forger and the
+claimed author are the same party, so a Claude reply drawing a Claude attribution says nothing
+untrue about who wrote it. A peer is a different author, and a peer body drawing this session's
+own outbound peer line says this session sent something it did not send, in the one channel
+permission prompts are answered in. So an attribution glyph opening a line inside a peer body is
+escaped as well, on the same reasoning as the quote marker, and the opener set is derived from the
+renderer's own attributions rather than hand-listed, so a later attribution joins it without
+anyone remembering to. An emoji has no markdown escape, so the backslash renders visibly there;
+that is the accepted cost of the pass and it is stated at the constant. That is what stops any of them from drawing a
 mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one channel
 the operator answers permission prompts in.
 
@@ -647,6 +667,41 @@ operator takes rather than an approval the thread can extract. Nothing here is a
 which is answered by a component or by a typed reply and never by a link.
 
 `processToken` never reaches either.
+
+**Peer traffic is a sixth untrusted-input surface, and its author holds the weakest credential of
+any of them.** Another Claude session's message is remote-authored text that reaches a thread with
+no process token and no per-attachment reply key: what mints it is the ability to send a
+cross-session message to a session this host watches. Two residuals accepted above are therefore
+reachable by that author, and both are worth naming as reachable rather than left to inference. The
+masked link survives into a peer body, so another session can post a link whose visible words name
+one destination and whose target is another; it is bounded by exactly what bounds it for
+conversation text generally, since a link draws no mention pill, no chip, no quote bar and no copy
+of the attribution, and following one is an act the operator takes rather than an approval the
+thread can extract. The readable-notice text is the other. Neither is a widening of what content
+can do, and the attribution and the quoted block stay unforgeable against a peer body by the pass
+described above.
+
+**A peer message never stamps engagement, and the classification decides that as well as the
+attribution.** The engagement stamp records that a person is driving, and it is what clears a `⛔`
+standing blocked state; another machine writing is not a person, so a peer-classified prompt is
+excluded at both stamp sites on the wake injection's own ground, under every setting. Because one
+reading now decides two things, its two failure directions are asymmetric and the quiet one is the
+expensive one. A harness shape move that stops the classification matching costs a delivery its
+attribution, which is read off the thread at a glance, and it silently restores the stamp, so a
+machine-generated message clears a block again with nothing to show for it. A false positive, a
+prompt the operator really typed read as a delivery, costs the peer attribution under `full` and
+`brief`, costs the message entirely under `off`, and withholds the stamp on every setting, so a
+block the operator typed to clear stands until their next completed tool call. The classification
+is a prefix match on the harness's own opening for that reason: what an operator types does not
+open with it.
+
+One residual on that exclusion is accepted rather than closed. Withholding the stamp at delivery
+keeps the block standing at the moment a peer writes, but a woken session that goes on to run any
+tool stamps on that tool's `PostToolUse`, so a peer message that actually causes work clears the
+block one tool call later. That is the same ordering the task-notification exclusion accepts and
+for the same reason: the gate exists to wait on a person, and a run that genuinely resumes is the
+evidence the gate was waiting for. What it is not is a way for a peer to clear a block without
+moving the session, since the session has to actually act.
 
 ## Files that must not be writable
 
