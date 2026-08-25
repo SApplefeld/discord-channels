@@ -503,3 +503,39 @@ renamed log lines the operator's own catalogue still documented by their old str
 **Next action.** Section 3's live verification, and with it section 4's finishing pass, waits on an
 elevated kill of PID 10272 followed by `install\Repair-Broker.ps1`. That same action unblocks the
 peer-traffic plan's section 4. Everything else in section 3 is delivered and pushed.
+
+### Correction to interim board 2 - 2026-08-25
+
+The blocker recorded above is wrong in its diagnosis and smaller than it was written. Re-measured
+directly: the broker answers `GET /sessions` with 200 in 1.2 ms, and `/health`, the path the earlier
+reading probed, is not a route at all and returns 404. PID 10272 is serving normally. The earlier
+`curl` exit 28 stands as what was observed at that moment, but nothing in it supported the standing
+conclusion that the process was wedged, and re-measuring is what caught it.
+
+What actually blocks the live verification is staleness, not a wedge. The broker process began at
+`2026-08-25T02:24:50Z`, which is local `2026-08-24T22:24`, roughly twelve hours before section 2's
+code landed in `d2e4c30` at `2026-08-25T10:11:48-04:00`. It is serving pre-feature code, so none of
+section 3's three checks can be exercised against it. The corroborating read is the log itself: over
+its whole length it carries neither the new `transcript-read prompt` string nor the `queued prompt`
+string it replaced, and the only `was dropped, the ...` line present is the unrelated rate-limit
+one. That silence alone proves nothing, which is why the process start time and the commit time are
+the evidence and the grep is only corroboration.
+
+The remedy is a restart onto the current checkout rather than a kill. `SapplefeldChannelsBroker`
+already runs `install\Start-Broker.ps1` out of `D:\discord-channels`, so restarting picks up
+`dc3f8b1` with no reinstall. `install\Repair-Broker.ps1` performs the whole sequence itself,
+including the kill: its header states the orphan-outlives-its-task failure it exists for, and
+`Test-IsChannelBrokerPortHolder` treats a node process whose command line this account cannot read
+as a provable orphan and kills it. The separate pre-kill recorded above is therefore redundant, and
+skipping it keeps each kill inside the script's own proof discipline, which reports every PID it
+kills and what identified it.
+
+Elevation is still required. `Win32_Process` returns a row for PID 10272 naming `node.exe` with an
+empty `CommandLine`, which is what Windows reports for a process this account cannot open, so an
+unelevated repair reaches the kill and fails there. The run was not attempted from this session on
+purpose: the script stops the scheduled task before it kills, so a failed unelevated attempt trades
+a working stale relay for a stopped one while the orphan goes on holding the port.
+
+One further deployment gap, separate from the above and not a blocker for the broker restart: this
+host's hook fragment still carries the five-second mirror timeout, so the raised timeout the plan
+ships is not deployed here and needs `Install-Host`.
