@@ -50,6 +50,34 @@ import type { Sketch } from "./similarity.ts";
 export const MAX_TAIL_READ_BYTES = 256 * 1024;
 
 /**
+ * Which path put a prompt on a thread: the `UserPromptSubmit` hook, or the tailer's own read of the
+ * transcript. Each path has a prompt slot of its own, writes only that one and reads only the
+ * other's, so a caller names its own path once and the slot arithmetic follows from it: a path
+ * cannot reach its own claim, and a drop line worded from a match names the path that really
+ * dispatched the surviving copy rather than the path that usually does.
+ */
+export type PromptPath = "mirror" | "tailer";
+
+/**
+ * The four claimable slots. Named at every release so a run gives up its own claim and no other:
+ * a run's text can equal text some other path genuinely posted, and sweeping every slot on a digest
+ * match would spend a record that is doing its job.
+ */
+export type EchoSlot = "interim" | "reply" | "prompt-mirror" | "prompt-tailer";
+
+/**
+ * Which shape of prompt a transcript line carried: the typed prompt that opens a turn, which the
+ * `UserPromptSubmit` mirror also posts, or the message the operator types mid-turn, which the
+ * harness queues and injects without firing any hook.
+ *
+ * The router branches on it because the two shapes have different path counts. A turn-opening
+ * prompt exists twice and needs the dedup; a queued one exists once, so a claim it made could only
+ * swallow a later prompt and a consult it made could only lose the operator's words to a claim
+ * standing over the same text.
+ */
+export type PromptSource = "turn-open" | "queued";
+
+/**
  * The per-session echo memory the tailer and the Stop mirror consult from both sides.
  *
  * A turn's final reply arrives twice: the /mirror Stop hook posts it within milliseconds of turn
@@ -77,6 +105,33 @@ export const MAX_TAIL_READ_BYTES = 256 * 1024;
  * fresh claim on a slot clears it, because a new run is one nothing has deferred to yet, and because
  * the mirror records its own reply digest immediately after deferring to an interim claim.
  *
+ * The prompt pair is the same discipline over the other duplicate pair, the operator's own typed
+ * words: the `UserPromptSubmit` mirror posts a turn-opening prompt within milliseconds, and the
+ * tailer reads the same line off the transcript up to a poll interval later. Either side records
+ * and either side consults, because both orderings are real: the mirror hook is normally far the
+ * faster of the two, so it is normally the tailer's copy that defers, but a hook the harness timed
+ * out under load posts nothing at all and a slow one can land behind a poll.
+ *
+ * A pair rather than one shared record, built exactly as the reply pair above is built. `mirror`
+ * writes `promptMirror` and reads `promptTailer`; the tailer does the reverse. A path meeting its
+ * own claim is then impossible by construction rather than by a test: `continue` typed twice in a
+ * row is an ordinary way to drive a session, and one record for both paths would let the second
+ * copy match the first's and vanish from the thread with nothing anywhere saying so. Two slots also
+ * keep the deferral bits disjoint, so one path's fresh claim cannot spend the deferral the other
+ * path's still-running delivery is owed. Where only one path exists at all, which is a supported
+ * host, the split is what makes the pair inert: mirroring on with interim mirroring off builds this
+ * memory and no tailer, so `promptTailer` is never written and the mirror's every consult of it
+ * reads null.
+ *
+ * A prompt claim expires, which the reply pair needs no equivalent of because a reply is bounded by
+ * its own turn. A claim the other path never answered stands until something spends it, and the
+ * tailer legitimately never answers one: a transcript past `MAX_TAIL_READ_BYTES`, a session learned
+ * after the turn opened, a broker restarted mid-turn, a window with interim mirroring off. The next
+ * identical prompt, with no live competitor anywhere, would then meet that record and be dropped as
+ * an echo of a copy nothing ever posted. So each claim carries the time it was made, and a consult
+ * refuses and discards a record older than `promptClaimMs`. The fail direction of the bound is a
+ * duplicate prompt, never a lost one.
+ *
  * The answer record is the third digest, for the other duplicate pair: on a long turn the model
  * often calls the reply tool with its closing summary and the turn's closing text arrives moments
  * later as the Stop mirror, or off the transcript by a tailer poll that lands first, carrying the
@@ -98,25 +153,74 @@ export type EchoMemory = {
   noteInterim: (sessionId: string, text: string) => void;
   /** Records the last final reply the Stop mirror posted for this session; the mirror's half. */
   noteReply: (sessionId: string, text: string) => void;
+  /**
+   * Records the last turn-opening prompt this session dispatched, in the slot belonging to the path
+   * dispatching it: `by` is the caller's own path, never the path it is asking about.
+   */
+  notePrompt: (sessionId: string, text: string, by: PromptPath) => void;
   /** Records the last reply-tool answer posted for this session, replacing the previous one. */
   noteAnswer: (sessionId: string, text: string) => void;
-  /** True when the text matches either remembered digest, consuming what it matched. */
+  /**
+   * True when the text matches either remembered digest, consuming what it matched. The prompt
+   * slots are not among them: this is the narration path's lookup, and the operator's words and
+   * Claude's are two registers on the thread, so a chunk of narration quoting a prompt back is not
+   * that prompt's second copy.
+   */
   isEcho: (sessionId: string, text: string) => boolean;
   /** True when the text matches the last interim chunk, consuming it on a match. */
   isInterimEcho: (sessionId: string, text: string) => boolean;
+  /**
+   * True when the text matches a turn-opening prompt the *other* path claimed, consuming it on a
+   * match. `by` names the path asking, and the slot read is the other path's, so two identical
+   * prompts down one path both post: the asking path's own claim is not reachable from here.
+   *
+   * A record older than `promptClaimMs` never matches and is discarded where it is found, whatever
+   * its digest says. It is a claim the other path never came to answer, and left standing it would
+   * suppress a later prompt that has no second copy anywhere.
+   */
+  isPromptEcho: (sessionId: string, text: string, by: PromptPath) => boolean;
   /** True when the text matches the last answer, exactly or nearly, consuming it on a match. */
   isAnswerEcho: (sessionId: string, text: string) => boolean;
   /**
    * Drops a claim over this text, made by whichever half is reporting that its run landed nothing.
    *
-   * Only a digest equal to this text's is dropped, so a release cannot spend a record some other
-   * text established, and the answer record is never touched: it carries its own turn boundary and
-   * neither posting path claims it.
+   * Scoped to the slot the caller claimed, its own prompt slot included, and to a digest equal to
+   * this text's, with one exception: an interim release also spends a reply record over the same
+   * digest, which the reply-kind mirror leaves behind when it defers to an interim claim and posts
+   * nothing. The answer record is never touched at all, since it carries its own turn boundary and
+   * no posting path claims it. The implementation states which cross-slot clears are safe and why.
    *
    * True when a claim being dropped here had already suppressed the other path's own copy, which
    * makes the releasing site the last place this text can still reach the thread.
    */
-  release: (sessionId: string, text: string) => boolean;
+  release: (sessionId: string, text: string, slot: EchoSlot) => boolean;
+  /**
+   * Drops both prompt claims for a session, leaving the deferral bits, the interim and reply
+   * records and the answer record where they are.
+   *
+   * Called by the tailer wherever it commits to never reading a stretch of a session's transcript.
+   * There are four places its read position jumps forward over bytes nobody read: the baseline a
+   * resolved probe writes, which is the ordinary way a freshly learned or re-learned session
+   * starts; the same baseline taken inside a pass, the fallback for a probe that never resolved;
+   * a file that shrank below the held offset; and a backlog past `MAX_TAIL_READ_BYTES` skipped to
+   * the file's end. All four call this. A prompt claim made before such a jump is one this path
+   * has now guaranteed it will never answer, and the age bound only caps how long it can suppress:
+   * this closes the generator, which matters most under exactly the saturated host where a skip
+   * and a timed-out hook are both likely and the next identical prompt is the one the recovery
+   * exists for.
+   *
+   * The claims only. A deferral bit records something that already happened, that the other path
+   * met a claim and dropped its own copy, and the run it belongs to is still in flight: clearing it
+   * would take away the one retry that run is owed and the text would reach the thread by neither
+   * path, which is the loss this whole section prevents. A bit left standing over a claim that is
+   * gone costs nothing, since `notePrompt` clears one over its own digest when the slot is claimed
+   * again and `release` spends it.
+   *
+   * The reply pair is untouched too, and has no equivalent exposure: a reply claim is bounded by
+   * its own turn and released by the run that made it, and clearing one here would let a reply the
+   * Stop mirror is still posting be posted a second time by the next pass.
+   */
+  forgetPrompts: (sessionId: string) => void;
   /** Drops the session's answer record unread; the reply-kind mirror's turn boundary. */
   clearAnswer: (sessionId: string) => void;
   forget: (sessionId: string) => void;
@@ -133,21 +237,59 @@ export type EchoMemory = {
  */
 export const ANSWER_LENGTH_ALLOWANCE = 1.1;
 
-export function createEchoMemory(): EchoMemory {
+/**
+ * How long a prompt claim may stand before a consult refuses it, where the caller names no bound.
+ * The caller that wires the broker derives its own from the poll interval; this is the floor that
+ * derivation starts from, and it is what a memory built by a test gets.
+ *
+ * A minute is far wider than the window it has to cover, which is the gap between the two copies of
+ * one prompt: milliseconds for the hook, one poll pass for the tailer. Wide because the cost of the
+ * two directions is not symmetric. Too short only ever costs a second copy of a prompt the operator
+ * is looking at anyway; too long is the loss the bound exists to close.
+ */
+export const DEFAULT_PROMPT_CLAIM_MS = 60_000;
+
+export type EchoMemoryOptions = {
+  /**
+   * How long a prompt claim stands before a consult refuses and discards it. Scaled by the caller
+   * to the poll interval, since a claim has to outlive the pass that would answer it.
+   */
+  promptClaimMs?: number;
+  /** Stamps and ages prompt claims. Injected so a test moves the window without sleeping. */
+  now?: () => number;
+};
+
+export function createEchoMemory(options: EchoMemoryOptions = {}): EchoMemory {
+  const promptClaimMs = options.promptClaimMs ?? DEFAULT_PROMPT_CLAIM_MS;
+  const now = options.now ?? Date.now;
+
+  /** A prompt claim: the digest of the text, and when the run carrying it was dispatched. */
+  type PromptClaim = { digest: string; at: number };
+
   type Entry = {
     interim: string | null;
     reply: string | null;
+    /**
+     * One prompt slot per path, on the reply pair's own arrangement: `promptMirror` is written by
+     * the `UserPromptSubmit` mirror and read by the tailer, `promptTailer` the reverse. Neither
+     * path can reach the slot it writes, so two identical prompts down one path both post.
+     */
+    promptMirror: PromptClaim | null;
+    promptTailer: PromptClaim | null;
     /**
      * The digest of the claim in each slot that the other path matched and dropped its own copy
      * over, held past the match that consumed the claim itself: the release comes from the run that
      * made the claim, which is seconds of paced posting later, and what it needs to know then is
      * whether anything else is still carrying this text.
      *
-     * Held per slot, and reset by a fresh claim on that slot alone, because the two slots defer to
+     * Held per slot, and reset by a fresh claim on that slot alone, because the reply pair defer to
      * each other within one turn: the mirror matching the tailer's interim claim records its own
-     * reply digest one line later, and that record says nothing about the tailer's deferral.
+     * reply digest one line later, and that record says nothing about the tailer's deferral. The
+     * prompt slots being per path is what extends that property to them: a fresh claim by either
+     * path touches only its own bit, so the deferral the other path's still-running delivery is
+     * owed survives it.
      */
-    deferred: { interim: string | null; reply: string | null };
+    deferred: Record<EchoSlot, string | null>;
     /**
      * The digest answers an exact repeat; the sketch answers a light rewording of it; the
      * normalized length is what refuses a candidate that grew past the allowance above.
@@ -163,10 +305,37 @@ export function createEchoMemory(): EchoMemory {
   function entry(sessionId: string): Entry {
     let held = state.get(sessionId);
     if (held === undefined) {
-      held = { interim: null, reply: null, deferred: { interim: null, reply: null }, answer: null };
+      held = {
+        interim: null,
+        reply: null,
+        promptMirror: null,
+        promptTailer: null,
+        deferred: {
+          interim: null,
+          reply: null,
+          "prompt-mirror": null,
+          "prompt-tailer": null,
+        },
+        answer: null,
+      };
       state.set(sessionId, held);
     }
     return held;
+  }
+
+  /** The entry field a path claims into: its own, never the one it reads. */
+  function owned(by: PromptPath): "promptMirror" | "promptTailer" {
+    return by === "mirror" ? "promptMirror" : "promptTailer";
+  }
+
+  /** The slot name a path's own claim is released under, the release site's argument. */
+  function ownedSlot(by: PromptPath): EchoSlot {
+    return by === "mirror" ? "prompt-mirror" : "prompt-tailer";
+  }
+
+  /** The path a caller reads, which is the one it is not. */
+  function other(by: PromptPath): PromptPath {
+    return by === "mirror" ? "tailer" : "mirror";
   }
 
   return {
@@ -179,6 +348,21 @@ export function createEchoMemory(): EchoMemory {
       const held = entry(sessionId);
       held.reply = digest(text);
       held.deferred.reply = null;
+    },
+    notePrompt(sessionId, text, by) {
+      const held = entry(sessionId);
+      const mark = digest(text);
+      // The deferral bit is cleared only where it stands over these same words, unlike the reply
+      // pair's own claims, which clear theirs outright. Neither prompt path is serialized: the
+      // intake answers a `UserPromptSubmit` and dispatches its delivery without awaiting it
+      // (intake.ts), so two prompts for one session overlap, and a second one claiming here
+      // while the first one's run is still posting would spend a bit the first one is owed. That
+      // run then lands nothing, finds no deferral, and never takes the retry that is the only thing
+      // left carrying the operator's words. A bit over this same text is a different matter: it can
+      // only have been set against the claim this call is replacing, and the run behind it is the
+      // one now being re-dispatched.
+      if (held.deferred[ownedSlot(by)] === mark) held.deferred[ownedSlot(by)] = null;
+      held[owned(by)] = { digest: mark, at: now() };
     },
     noteAnswer(sessionId, text) {
       entry(sessionId).answer = {
@@ -214,6 +398,35 @@ export function createEchoMemory(): EchoMemory {
       held.interim = null;
       return true;
     },
+    isPromptEcho(sessionId, text, by) {
+      const held = state.get(sessionId);
+      if (held === undefined) return false;
+      // The other path's slot, always: `by` is the caller's own path, and the caller's own claim is
+      // not reachable from here. The operator typing the same words twice is two messages and not
+      // one echo, and this is what keeps the second one on the thread.
+      const slot = owned(other(by));
+      const claim = held[slot];
+      if (claim === null) return false;
+      // Age before digest, and the stale record is discarded whether or not this text matches it.
+      // A claim this old is one the claiming path made and the asking path never came to answer,
+      // which is what a transcript past the read ceiling, a session learned mid-turn, a restarted
+      // broker, or a mirror-only window leaves behind. Left standing it would suppress a prompt
+      // that has no second copy anywhere.
+      //
+      // A claim stamped in the future is expired too, which is what a wall clock stepped backwards
+      // produces: the elapsed time goes negative and stays there, so a plain upper bound would let
+      // one stale record refuse every consult until something overwrote the slot. Both directions
+      // out of the window are answered the same way, and the cost either way is one duplicate.
+      const elapsed = now() - claim.at;
+      if (elapsed < 0 || elapsed > promptClaimMs) {
+        held[slot] = null;
+        return false;
+      }
+      if (digest(text) !== claim.digest) return false;
+      held.deferred[ownedSlot(other(by))] = claim.digest;
+      held[slot] = null;
+      return true;
+    },
     isAnswerEcho(sessionId, text) {
       const held = state.get(sessionId);
       if (held === undefined || held.answer === null) return false;
@@ -233,27 +446,46 @@ export function createEchoMemory(): EchoMemory {
       held.answer = null;
       return true;
     },
-    release(sessionId, text) {
+    release(sessionId, text, slot) {
       const held = state.get(sessionId);
       if (held === undefined) return false;
       const mark = digest(text);
-      // Both slots, because the only way the other half's slot holds this digest is that it
-      // matched this claim and dropped its own post, which makes that record worthless; a record
-      // standing for text the other half really did post carries a different digest and stays.
-      if (held.interim === mark) held.interim = null;
-      if (held.reply === mark) held.reply = null;
+      // The caller's own slot always, and one cross-slot clear beside it.
+      //
+      // The scoping is the general rule: a digest standing in a slot the caller did not claim is
+      // usually a record some other path established over text it really did post or is still
+      // posting, and dropping that would put a second copy of the same words on the thread. On a
+      // prompt slot it would additionally hand a failed run's digest to a path that never claimed
+      // it, which is why those two are released by name and never swept.
+      //
+      // The exception is the reply record against an interim release, and one site makes it
+      // necessary: the reply-kind mirror that meets a standing interim claim records its own reply
+      // digest and posts nothing (routing/outbound.ts, the isInterimEcho drop branch), on the
+      // strength of the tailer's interim run carrying the text. If that run and its one retry both
+      // land nothing, the reply digest is standing over text that reached the thread by neither
+      // path, and it would suppress the next identical narration chunk through isEcho. So an
+      // interim release spends it. The clear is one-directional: a reply release leaves an interim
+      // record alone, because that record is a live claim by a run that is still posting.
+      if (slot === "interim") {
+        if (held.interim === mark) held.interim = null;
+        if (held.reply === mark) held.reply = null;
+      } else if (slot === "reply") {
+        if (held.reply === mark) held.reply = null;
+      } else {
+        const field = slot === "prompt-mirror" ? "promptMirror" : "promptTailer";
+        if (held[field]?.digest === mark) held[field] = null;
+      }
       // The deferral is spent here too, so a second release over the same text reports nothing left
       // to save and the releasing site's retry stays bounded to one.
-      let deferred = false;
-      if (held.deferred.interim === mark) {
-        held.deferred.interim = null;
-        deferred = true;
-      }
-      if (held.deferred.reply === mark) {
-        held.deferred.reply = null;
-        deferred = true;
-      }
-      return deferred;
+      if (held.deferred[slot] !== mark) return false;
+      held.deferred[slot] = null;
+      return true;
+    },
+    forgetPrompts(sessionId) {
+      const held = state.get(sessionId);
+      if (held === undefined) return;
+      held.promptMirror = null;
+      held.promptTailer = null;
     },
     clearAnswer(sessionId) {
       const held = state.get(sessionId);
@@ -293,12 +525,24 @@ export type TranscriptTailerOptions = {
    */
   deliver: (sessionId: string, text: string) => Promise<ReplyResult>;
   /**
-   * Posts one queued mid-turn prompt to the session's own thread; the outbound router's
-   * `interimPrompt`. The status is read only to keep the shared result vocabulary; nothing here
-   * queues or retries, and no echo digest is recorded for a prompt, because no other path posts
-   * this text.
+   * Posts one typed prompt to the session's own thread; the outbound router's `interimPrompt`.
+   * Carries both prompt shapes this reader yields, named by `source`: the mid-turn message the
+   * harness queues without firing a hook, and the turn-opening prompt the `UserPromptSubmit` mirror
+   * normally posts first. The status is read only to keep the shared result vocabulary; nothing
+   * here queues or retries.
+   *
+   * The echo digest for this path's prompt slot is claimed and released inside the router, beside
+   * the count of messages that landed, exactly as the interim chunk's is, and only for the
+   * turn-opening shape: that one reaches the thread by two paths, and whichever arrives second
+   * finds the other's claim and drops its copy. The queued shape stays out of the memory entirely,
+   * having no second copy anywhere to dedup against.
    */
-  deliverPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
+  deliverPrompt: (
+    sessionId: string,
+    text: string,
+    source: PromptSource,
+    at: number | null,
+  ) => Promise<ReplyResult>;
   /**
    * Posts one peer message, in either direction, to the session's own thread; the outbound router's
    * `peer`. The status is read only to keep the shared result vocabulary; nothing here queues or
@@ -502,10 +746,22 @@ function createRepeatLog(
 
 /**
  * One thing a transcript line contributes. Three of them are posted as their own message and carry
- * untrusted content into the thread: a block of assistant narration, a mid-turn message the
- * operator typed at the console, and the questions an `AskUserQuestion` call is holding the session
- * on. They differ in where they go, `deliver` against `deliverPrompt` against `deliverQuestion`,
- * and therefore in how the thread presents them.
+ * untrusted content into the thread: a block of assistant narration, a prompt the operator typed at
+ * the console, and the questions an `AskUserQuestion` call is holding the session on. They differ
+ * in where they go, `deliver` against `deliverPrompt` against `deliverQuestion`, and therefore in
+ * how the thread presents them.
+ *
+ * The prompt carries which shape of prompt it is, because the two shapes have different path
+ * counts: a turn-opening prompt is also posted by the `UserPromptSubmit` mirror and needs the
+ * dedup, while a mid-turn message the harness queued fires no hook and has no second copy to dedup
+ * against. They render identically and are told apart only by that field.
+ *
+ * It also carries `at`, the instant the line records for itself, which is when the operator
+ * pressed return rather than when this module read it. The engagement stamp is taken against that
+ * instant, because a poll runs up to an interval behind the line it reads and a stamp at read time
+ * would sit past anything the session did in between. Null where the line names no parseable
+ * timestamp, which leaves the stamp at read time, and every user line the harness writes carries
+ * one.
  *
  * Two more are posted as their own message and carry text a peer session wrote: a message another
  * session sent this one while it was working, and a message this session sent another. They are the
@@ -520,7 +776,7 @@ function createRepeatLog(
  */
 export type TailItem =
   | { kind: "text"; text: string }
-  | { kind: "prompt"; text: string }
+  | { kind: "prompt"; text: string; source: PromptSource; at: number | null }
   | { kind: "question"; questions: readonly AskedQuestion[] }
   | PeerTraffic
   | { kind: "model"; reading: ModelReading }
@@ -701,12 +957,121 @@ function goalCommand(text: string): string | null | undefined {
  * this file, which the card shows by going blank; admitting the wrong line costs the operator
  * their goal card overwritten by whoever wrote the text, which is not theirs to lose.
  */
+/**
+ * When a transcript line says it was written, as milliseconds, or null when it names no timestamp
+ * this build can read.
+ *
+ * The engagement stamp is taken against this rather than against the moment the poll read the
+ * line. A pass runs up to a poll interval behind the file, so a stamp at read time would land past
+ * whatever the session did in between, and the blocked derivation compares a `goal-blocked` event
+ * against exactly that field: a block the turn raised after the operator's prompt would be cleared
+ * by the prompt that preceded it.
+ *
+ * The value is the harness's, so it is read defensively and never trusted beyond ordering: a
+ * missing or unparseable field yields null and the caller falls back to read time, which is the
+ * behaviour every path here had before the field was read at all. Nothing is published from it.
+ */
+function lineInstant(record: Record<string, unknown>): number | null {
+  const stamp = record["timestamp"];
+  if (typeof stamp !== "string") return null;
+  const at = Date.parse(stamp);
+  return Number.isFinite(at) ? at : null;
+}
+
 function typedAtTheConsole(record: Record<string, unknown>): boolean {
   if (record["promptSource"] === "system") return false;
   const origin = record["origin"];
   if (origin === undefined) return true;
   if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return false;
   return (origin as Record<string, unknown>)["kind"] === "human";
+}
+
+/**
+ * The whole of a user line's content when it is the operator's words and nothing else: a plain
+ * string, or a content array holding exactly one text block beside any number of image blocks.
+ * Null for anything else.
+ *
+ * Narrower than `userText` above deliberately, and the narrowness is the point. `userText` joins
+ * every text block with a newline, which is the right reading for finding a command in a line; it
+ * is the wrong reading for republishing a line as the operator's own message. Two things follow
+ * from a multi-block line, and the second decides it. The mirror's copy of the same prompt is the
+ * raw `UserPromptSubmit` string, so a joined reading digests differently, misses the dedup, and
+ * posts a second copy carrying blocks the hook's copy never had. And a harness that attaches an
+ * injected block to a typed line, a `system-reminder` for instance, would have that text published
+ * inside the operator's own quoted register, which is the one attribution this surface holds
+ * unforgeable and which no upstream shape change may be allowed to breach.
+ *
+ * So this one gate fails toward no recovery rather than toward a duplicate, against the direction
+ * the rest of the prompt path takes. What it admits is the two shapes a person's own submission
+ * arrives in: the plain string of a typed prompt, and the array a prompt with pasted screenshots
+ * attached to it carries, which is one text block beside its images. An image block is admitted
+ * because it carries no text and so cannot reach the register at all; the recovered copy is the
+ * words alone, since the mirror hook's own copy of that prompt is the prompt string and the images
+ * were never part of what the thread shows.
+ *
+ * The cost of the refusal is the rest: a line carrying two text blocks, or a text block beside a
+ * block of a kind this build has never seen, is not recovered at all when its hook is lost. That
+ * is the direction the register requires, because a second text block is either content the hook's
+ * copy never had or an injection the operator did not write.
+ */
+function soleTypedText(message: unknown): string | null {
+  if (typeof message !== "object" || message === null || Array.isArray(message)) return null;
+  const content = (message as Record<string, unknown>)["content"];
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  let found: string | null = null;
+  for (const block of content) {
+    if (typeof block !== "object" || block === null || Array.isArray(block)) return null;
+    const fields = block as Record<string, unknown>;
+    // Images pass and contribute nothing. Every other kind, a second text block included, refuses
+    // the whole line: one is content the hook's copy never carried, the other is a block the
+    // operator did not write, and neither may reach their register.
+    if (fields["type"] === "image") continue;
+    if (fields["type"] !== "text" || found !== null) return null;
+    const text = fields["text"];
+    if (typeof text !== "string") return null;
+    found = text;
+  }
+  return found;
+}
+
+/**
+ * The typed prompt that opened a turn, or null: the one thing the mirror carries whose loss is
+ * otherwise permanent.
+ *
+ * The `UserPromptSubmit` hook is an http post the harness waits on and abandons at its timeout, so
+ * a saturated host loses the prompt and the thread shows a reply with no question above it. Every
+ * other mirror loss self-heals off this file within a poll; this reading is what makes that true of
+ * prompts too. Structural throughout, never a text sniff: the harness stamps provenance on user
+ * lines, and what a person typed is a property of the line rather than of the words in it.
+ *
+ * Four independent locks over the line, because each one alone is the harness's contract and can
+ * move upstream without notice. `promptSource` `typed` is the stamp itself. `origin.kind` `human`
+ * is the second reading of the same fact, the pairing `typedAtTheConsole` above already rests on.
+ * `isMeta` true marks the harness's own injections, the peer delivery and the local-command caveat
+ * among them. And command markup excludes a slash command, whose user line carries the markup where
+ * the words the operator typed would be: whether the mirror hook fires for local commands is
+ * unestablished, so admitting one here would risk a copy of something the mirror never posts, and
+ * it is also what keeps a `/goal` line's one reading from becoming two. A fifth lock sits in
+ * `soleTypedText` over the content, on its own reasoning.
+ *
+ * The fail direction is a prompt the thread does not show, deliberately. A harness revision that
+ * drops one of these stamps costs the recovery and leaves the mirror hook carrying prompts alone,
+ * which is what carried them before this reading existed; admitting the wrong line costs text
+ * somebody else wrote, drawn in the operator's own quoted register.
+ */
+function typedPromptText(record: Record<string, unknown>): string | null {
+  if (record["promptSource"] !== "typed") return null;
+  const origin = record["origin"];
+  if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return null;
+  if ((origin as Record<string, unknown>)["kind"] !== "human") return null;
+  if (record["isMeta"] === true) return null;
+  const text = soleTypedText(record["message"]);
+  if (text === null || COMMAND_NAME.test(text)) return null;
+  // A prompt the surface would draw blank is not a prompt, `askedQuestions`' own rule. What is
+  // returned is the string as it was written rather than the stripped reading the test was made on:
+  // it is untrusted content of the same class as a mirrored reply, neutralized at the render site.
+  return withoutInvisible(text).trim() === "" ? null : text;
 }
 
 /**
@@ -1149,9 +1514,15 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * A line yields a queued prompt when its `type` is `attachment` and its `attachment` is an object
  * whose `type` is `queued_command`, whose `commandMode` is `prompt`, whose `origin.kind` is
  * `human`, and whose `prompt` is a non-empty string. That is the shape of a message typed at the
- * console while the model was working, which fires no hook and writes no user line. The narrower
- * clauses are each load-bearing against a real line: `task-notification` is the mode of the
- * machine-written background-task notices that make up the bulk of `queued_command` lines,
+ * console while the model was working, which fires no hook and writes no user line, and it carries
+ * `source: "queued"` for that reason: with no second copy anywhere, it stays out of the prompt
+ * dedup on both sides. Where the same words do appear as both a queued prompt and a typed user
+ * line, they are two submissions the operator made separately, a queued message and a later
+ * retype, rather than one message the transcript wrote twice: each carries its own copy and each
+ * is owed its own place on the thread.
+ *
+ * The narrower clauses are each load-bearing against a real line: `task-notification` is the mode
+ * of the machine-written background-task notices that make up the bulk of `queued_command` lines,
  * `origin.kind` `channel` is the harness's injection of a message the operator posted in the
  * thread itself, and a `prompt` that is an object rather than a string carries pasted image
  * references rather than prose.
@@ -1159,15 +1530,22 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * A `user` line yields a goal when its content carries the console-command markup and the command
  * named in it is `/goal`. One command by allowlist, never a sweep: a command's arguments are
  * operator prose, and most of it is nobody's business on a surface that leaves the machine. What is
- * yielded is the goal's own text, or null for the explicit `/goal clear`. No other user line yields
- * anything, and none of them yields conversation text: a typed prompt reaches the thread through
- * its own hook.
+ * yielded is the goal's own text, or null for the explicit `/goal clear`.
+ *
+ * A `user` line also yields a prompt when it is the typed prompt that opened a turn, read through
+ * `typedPromptText`: the same `prompt` kind the queued attachment below yields, so both reach the
+ * thread by one path, distinguished only by `source`. The `UserPromptSubmit` mirror normally posts
+ * this text first and the echo memory's prompt pair is what keeps the two copies to one in the
+ * thread; this reading is what makes the prompt survive a mirror hook the harness timed out under
+ * load, which is otherwise the one mirror loss nothing heals. The two readings of a `user` line are
+ * independent, so a line that satisfied both would yield both.
  *
  * A peer message delivered to an idle session is a user line too, carrying the wrapper text in its
  * content and the same structured `origin` the attachment below carries. It yields nothing, on both
  * counts that matter: it fires the prompt hook, so the mirror path posts it and a second reading
  * here would put the message on the thread twice, and its content is text a peer wrote, which the
- * goal read above refuses to take a command out of.
+ * goal read above refuses to take a command out of. Three of the prompt reading's own tests refuse
+ * it independently, which is what keeps that no-double-post rule standing.
  *
  * A line yields an inbound peer message when it is that same `queued_command` attachment shape and
  * its `origin.kind` is `peer` instead of `human`: the message another session sent this one while
@@ -1285,8 +1663,19 @@ export function lineItems(line: string, sessionId: string): TailItem[] {
     // a line it sits: without this gate a peer that writes the markup into its own message sets the
     // goal on the operator's status card, or clears it.
     if (!typedAtTheConsole(record)) return [];
-    const goal = goalCommand(userText(record["message"]));
-    return goal === undefined ? [] : [{ kind: "goal", goal }];
+    const text = userText(record["message"]);
+    // Two readings of one line, neither of which may swallow the other: the goal card's and the
+    // thread's. They are disjoint in practice, since a command line carries the markup the prompt
+    // reading refuses, but that is a property of two independent tests rather than of the order
+    // they run in, and an early return for either would make it the order's property instead.
+    const items: TailItem[] = [];
+    const goal = goalCommand(text);
+    if (goal !== undefined) items.push({ kind: "goal", goal });
+    const typed = typedPromptText(record);
+    if (typed !== null) {
+      items.push({ kind: "prompt", text: typed, source: "turn-open", at: lineInstant(record) });
+    }
+    return items;
   }
   if (record["type"] === "attachment") {
     const attachment = record["attachment"];
@@ -1303,7 +1692,7 @@ export function lineItems(line: string, sessionId: string): TailItem[] {
     if ((origin as Record<string, unknown>)["kind"] !== "human") return [];
     const prompt = fields["prompt"];
     if (typeof prompt !== "string" || prompt === "") return [];
-    return [{ kind: "prompt", text: prompt }];
+    return [{ kind: "prompt", text: prompt, source: "queued", at: lineInstant(record) }];
   }
   return [];
 }
@@ -1499,6 +1888,11 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
       .then((probe) => {
         if (probe === null || !stillValid()) return;
         held.offset = probe.size;
+        // The primary baseline, and the first of this module's four offset jumps over unread
+        // bytes: everything already in the file when a session is learned, or re-learned after a
+        // restart or a mirror-off window, is behind this position and will never be read. A prompt
+        // claim standing for a line back there is one nothing here can answer.
+        options.echo.forgetPrompts(sessionId);
       })
       .catch(() => {
         // Swallowed unread; the poll-time null-offset branch in pollOne is the fallback for a
@@ -1679,6 +2073,14 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
       // check races this read); only write when the field is still unset, so this fallback never
       // clobbers a baseline the real probe already established.
       if (held.offset === null) held.offset = probe.size;
+      // The same baseline the probe writes, taken here for a probe that never resolved usefully,
+      // and the second of this module's four offset jumps over unread bytes; the shrink below and
+      // the skip below that are the other two. Each one is a promise that a prompt claim standing
+      // for a line behind the new position will never be answered from here. A claim made for a
+      // line still ahead of it is given up too, which costs one duplicate copy of that prompt; the
+      // alternative is the loss this whole recovery exists to prevent, and the fail direction
+      // throughout is the duplicate.
+      options.echo.forgetPrompts(sessionId);
       return;
     }
 
@@ -1690,6 +2092,7 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
       // republish the whole conversation into the operator's thread, so the offset moves to the
       // file's current end instead and narration picks up from there.
       held.offset = slice.size;
+      options.echo.forgetPrompts(sessionId);
       repeats(
         `session ${sessionId}'s transcript shrank below the held offset`,
         `resuming from its current end at ${slice.size} bytes`,
@@ -1699,6 +2102,7 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     if (slice.size - held.offset > MAX_TAIL_READ_BYTES) {
       const skipped = slice.size - held.offset;
       held.offset = slice.size;
+      options.echo.forgetPrompts(sessionId);
       repeats(
         `session ${sessionId}'s transcript outgrew one pass`,
         `${skipped} bytes skipped to its current end`,
@@ -1822,18 +2226,21 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         if (item.kind === "prompt") {
           // The operator's own typed words, delivered on the same one-await-per-item rule the
           // chunks below follow, so a prompt sitting between two assistant lines reaches the
-          // thread between them. No echo digest is recorded: no other path posts this text, so
-          // there is no duplicate to answer for. A delivery that could not be made is dropped and
-          // never retried, and the error is discarded unread, because it can quote the text.
+          // thread between them. The shape rides along because the router branches on it: the echo
+          // digest is claimed and released inside the router, where the count of messages that
+          // landed is, the interim chunk's own arrangement, and only a turn-opening prompt has a
+          // mirror copy for that to answer for.
+          // A delivery that could not be made is dropped and never retried, and the error is
+          // discarded unread, because it can quote the text.
           try {
-            await options.deliverPrompt(sessionId, item.text);
+            await options.deliverPrompt(sessionId, item.text, item.source, item.at);
             // Every point past an await re-checks the epoch it started under, the rule the rest of
             // this function follows: a suppress landing during this delivery stops the batch here
             // rather than publishing the items behind it.
             if (!stillValid()) return;
           } catch {
             repeats(
-              `session ${sessionId}'s queued prompt delivery failed`,
+              `session ${sessionId}'s transcript-read prompt delivery failed`,
               "the prompt is dropped; the error detail is withheld, it can carry content",
             );
             if (!stillValid()) return;

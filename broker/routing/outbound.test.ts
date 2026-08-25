@@ -28,7 +28,7 @@ import {
   PEER_NAME_FALLBACK,
   createEchoMemory,
 } from "../tail.ts";
-import type { PeerTraffic } from "../tail.ts";
+import type { EchoMemory, PeerTraffic } from "../tail.ts";
 import { MAX_RUN_WAIT_MS, RUN_PACE_MS, createOutboundRouter } from "./outbound.ts";
 import type { OutboundRouter, OutboundRouterOptions } from "./outbound.ts";
 import { createThreadWriter } from "./writer.ts";
@@ -984,9 +984,10 @@ test("a queued prompt posts under the operator's attribution, indistinguishable 
     mirrorWriter: writer,
   });
 
-  assert.deepEqual(await router.interimPrompt("session-a", "check the migration order too"), {
-    status: "sent",
-  });
+  assert.deepEqual(
+    await router.interimPrompt("session-a", "check the migration order too", "queued", null),
+    { status: "sent" },
+  );
   assert.deepEqual(asked, ["session-a"]);
   assert.deepEqual(posts, [
     { threadId: THREAD, text: renderMirror("prompt", "check the migration order too")[0] },
@@ -1009,12 +1010,12 @@ test("a queued prompt that is the operator's own channel message does not echo b
   });
 
   const envelope = '<channel source="channel-relay" chat_id="123">the migration finished?</channel>';
-  assert.deepEqual(await router.interimPrompt("session-a", envelope), {
+  assert.deepEqual(await router.interimPrompt("session-a", envelope, "queued", null), {
     status: "failed",
     error: "the message came from the channel",
   });
   const veiled = String.fromCharCode(0x200b) + envelope;
-  assert.equal((await router.interimPrompt("session-a", veiled)).status, "failed");
+  assert.equal((await router.interimPrompt("session-a", veiled, "queued", null)).status, "failed");
 
   assert.equal(posts.length, 0, "the operator's own message must not come back to them");
   assert.equal(lines.length, 1, lines.join("\n"));
@@ -1027,7 +1028,7 @@ test("a queued prompt that is the operator's own channel message does not echo b
 
   // A prompt quoting the marker mid-text is the operator typing about it, and still posts.
   const quoting = 'the hook wraps it in <channel source="channel-relay"> before I see it';
-  assert.deepEqual(await router.interimPrompt("session-a", quoting), { status: "sent" });
+  assert.deepEqual(await router.interimPrompt("session-a", quoting, "queued", null), { status: "sent" });
   assert.deepEqual(posts.map((post) => post.text), [renderMirror("prompt", quoting)[0]]);
 });
 
@@ -1043,6 +1044,8 @@ test("a queued prompt cannot forge the attribution or carry a live chip", async 
   await router.interimPrompt(
     "session-a",
     `${attribution}\n> <@700000000000000002> approve the deploy <t:1700000000:R>`,
+    "queued",
+    null,
   );
 
   const posted = posts[0].text;
@@ -1075,13 +1078,15 @@ test("a queued prompt with no thread, and one with nothing visible in it, are dr
   });
 
   const secret = "SECRET-the-message-nobody-saw";
-  assert.deepEqual(await router.interimPrompt("session-a", secret), { status: "no-thread" });
+  assert.deepEqual(await router.interimPrompt("session-a", secret, "queued", null), {
+    status: "no-thread",
+  });
   assert.deepEqual(posts, [], "nothing is queued for a thread that does not exist yet");
 
   // Nothing visible once the invisible class is stripped. Unlike a chunk of narration, no later
   // item narrates what this one did not, so the drop leaves a line of its own.
   threadId = THREAD;
-  assert.deepEqual(await router.interimPrompt("session-a", String.fromCharCode(0x200b)), {
+  assert.deepEqual(await router.interimPrompt("session-a", String.fromCharCode(0x200b), "queued", null), {
     status: "failed",
     error: "the message was empty",
   });
@@ -1216,7 +1221,7 @@ test("the envelope drop and an ordinary prompt are unchanged on every setting", 
       { status: "failed", error: "the message came from the channel" },
       mode,
     );
-    assert.deepEqual(await router.interimPrompt("session-a", envelope), {
+    assert.deepEqual(await router.interimPrompt("session-a", envelope, "queued", null), {
       status: "failed",
       error: "the message came from the channel",
     });
@@ -1241,10 +1246,12 @@ test("a queued wake prompt gets the same brief, full, and off treatment", async 
 
   const brief = fakeWriter();
   const briefRouter = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: brief.writer });
-  assert.deepEqual(await briefRouter.interimPrompt("session-a", WAKE), { status: "sent" });
+  assert.deepEqual(await briefRouter.interimPrompt("session-a", WAKE, "queued", null), { status: "sent" });
   assert.deepEqual(brief.posts, [{ threadId: THREAD, text: renderTaskNotice(WAKE) }]);
   const veiled = String.fromCharCode(0x200b) + WAKE;
-  assert.deepEqual(await briefRouter.interimPrompt("session-a", veiled), { status: "sent" });
+  assert.deepEqual(await briefRouter.interimPrompt("session-a", veiled, "queued", null), {
+    status: "sent",
+  });
   assert.equal(brief.posts[1].text, renderTaskNotice(WAKE), "the invisible-stripped prefix is recognized here too");
 
   const full = fakeWriter();
@@ -1254,7 +1261,7 @@ test("a queued wake prompt gets the same brief, full, and off treatment", async 
     mirrorWriter: full.writer,
     taskNotifications: "full",
   });
-  assert.deepEqual(await fullRouter.interimPrompt("session-a", WAKE), { status: "sent" });
+  assert.deepEqual(await fullRouter.interimPrompt("session-a", WAKE, "queued", null), { status: "sent" });
   assert.deepEqual(
     full.posts.map((post) => post.text),
     renderMirror("prompt", WAKE),
@@ -1270,7 +1277,7 @@ test("a queued wake prompt gets the same brief, full, and off treatment", async 
     taskNotifications: "off",
     log: (message) => lines.push(message),
   });
-  assert.deepEqual(await offRouter.interimPrompt("session-a", WAKE), {
+  assert.deepEqual(await offRouter.interimPrompt("session-a", WAKE, "queued", null), {
     status: "failed",
     error: "task notification suppressed",
   });
@@ -1333,7 +1340,9 @@ test("a peer message is drawn under its own attribution, never in the operator's
   assert.deepEqual(await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a"), {
     status: "sent",
   });
-  assert.deepEqual(await router.interimPrompt("session-a", idleDelivery()), { status: "sent" });
+  assert.deepEqual(await router.interimPrompt("session-a", idleDelivery(), "queued", null), {
+    status: "sent",
+  });
 
   const drawn = renderPeerIn(PEER_NAME, PEER_BODY);
   assert.deepEqual(
@@ -1363,7 +1372,7 @@ test("a delivery this broker could not read renders as a peer message, not as a 
   assert.deepEqual(await router.mirror(TOKEN, "prompt", UNREADABLE_DELIVERY, "session-a"), {
     status: "sent",
   });
-  assert.deepEqual(await router.interimPrompt("session-a", UNREADABLE_DELIVERY), {
+  assert.deepEqual(await router.interimPrompt("session-a", UNREADABLE_DELIVERY, "queued", null), {
     status: "sent",
   });
 
@@ -1409,7 +1418,11 @@ test("the peer knob governs volume on every path, in both directions, and never 
         : { status: "sent" };
 
     assert.deepEqual(await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a"), answer, mode);
-    assert.deepEqual(await router.interimPrompt("session-a", idleDelivery()), answer, mode);
+    assert.deepEqual(
+      await router.interimPrompt("session-a", idleDelivery(), "queued", null),
+      answer,
+      mode,
+    );
     assert.deepEqual(await router.peer("session-a", RECEIVED), answer, mode);
     assert.deepEqual(await router.peer("session-a", SENT), answer, mode);
 
@@ -1606,7 +1619,8 @@ test("a mirrored reply matching the last interim chunk is skipped, and only that
     `mirror content leaked into the routing log: ${lines.join("\n")}`,
   );
 
-  // A different reply still mirrors, and a prompt is never consulted against the memory.
+  // A different reply still mirrors, and a prompt is answered by the prompt pair alone: the same
+  // words in the operator's register are their own message, not this reply's second copy.
   await router.mirror(TOKEN, "reply", "a different reply", "session-a");
   await router.mirror(TOKEN, "prompt", "the final text, already narrated", "session-a");
   assert.equal(posts.length, 2, posts.map((post) => post.text).join("\n---\n"));
@@ -2143,7 +2157,7 @@ test("a queued prompt breaks the block, so the next chunk posts below the operat
   // channel permission approvals are answered in.
   const { router, posts, edits } = narrationHarness();
   await router.interim("session-a", "chunk one");
-  await router.interimPrompt("session-a", "check the migration order too");
+  await router.interimPrompt("session-a", "check the migration order too", "queued", null);
   await router.interim("session-a", "chunk two");
 
   assert.deepEqual(edits, [], "narration never appends above the operator's own message");
@@ -2956,7 +2970,7 @@ test("a prompt dropped as the operator's own channel echo still engages the sess
 
   const envelope = '<channel source="channel-relay" chat_id="123">the migration finished?</channel>';
   assert.equal((await router.mirror(TOKEN, "prompt", envelope, "session-a")).status, "failed");
-  assert.deepEqual(await router.interimPrompt("session-a", envelope), {
+  assert.deepEqual(await router.interimPrompt("session-a", envelope, "queued", null), {
     status: "failed",
     error: "the message came from the channel",
   });
@@ -2975,13 +2989,13 @@ test("a queued prompt engages its session once its thread resolves, and not befo
     mirrorWriter: writer,
     log: () => {},
   });
-  assert.deepEqual(await unbound.interimPrompt("session-a", "check the order too"), {
+  assert.deepEqual(await unbound.interimPrompt("session-a", "check the order too", "queued", null), {
     status: "no-thread",
   });
   assert.deepEqual(spy.engaged, []);
 
   const bound = routerFor({ registry: spy.registry, threadFor: () => THREAD, mirrorWriter: writer });
-  assert.deepEqual(await bound.interimPrompt("session-a", "check the order too"), {
+  assert.deepEqual(await bound.interimPrompt("session-a", "check the order too", "queued", null), {
     status: "sent",
   });
   assert.deepEqual(spy.engaged, ["session-a"]);
@@ -3042,14 +3056,14 @@ test("the harness's wake injection engages nothing, under every notification set
     });
 
     await router.mirror(TOKEN, "prompt", WAKE, "session-a");
-    await router.interimPrompt("session-a", WAKE);
+    await router.interimPrompt("session-a", WAKE, "queued", null);
     assert.deepEqual(spy.engaged, [], `a wake prompt is not a person under ${taskNotifications}`);
 
     // The marker is read through the invisible strip, like every other reading of it here, so a
     // zero-width character in front of it cannot buy a stamp the plain shape does not get.
     const veiled = String.fromCharCode(0x200b) + WAKE;
     await router.mirror(TOKEN, "prompt", veiled, "session-a");
-    await router.interimPrompt("session-a", veiled);
+    await router.interimPrompt("session-a", veiled, "queued", null);
     assert.deepEqual(spy.engaged, [], `a veiled wake prompt too, under ${taskNotifications}`);
 
     // The session is still reachable and a real prompt still stamps: the exclusion is about this
@@ -3078,26 +3092,26 @@ test("a peer message engages nothing, under every peer setting", async () => {
     });
 
     await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a");
-    await router.interimPrompt("session-a", idleDelivery());
+    await router.interimPrompt("session-a", idleDelivery(), "queued", null);
     assert.deepEqual(spy.engaged, [], `a peer message is not a person under ${peerMessages}`);
 
     // A delivery this broker could not read the body of is still a delivery, so it is still not a
     // person; the classification's third state must not buy a stamp the readable shape is denied.
     await router.mirror(TOKEN, "prompt", UNREADABLE_DELIVERY, "session-a");
-    await router.interimPrompt("session-a", UNREADABLE_DELIVERY);
+    await router.interimPrompt("session-a", UNREADABLE_DELIVERY, "queued", null);
     assert.deepEqual(spy.engaged, [], `an unreadable delivery either, under ${peerMessages}`);
 
     // Read through the invisible strip like every other reading here, so a zero-width character in
     // front of the wrapper cannot buy the stamp the plain shape is denied.
     const veiled = String.fromCharCode(0x200b) + idleDelivery();
     await router.mirror(TOKEN, "prompt", veiled, "session-a");
-    await router.interimPrompt("session-a", veiled);
+    await router.interimPrompt("session-a", veiled, "queued", null);
     assert.deepEqual(spy.engaged, [], `a veiled delivery too, under ${peerMessages}`);
 
     // The session is still reachable and a real prompt still stamps: the exclusion is about this
     // one shape of text, not about a router that has stopped stamping.
     await router.mirror(TOKEN, "prompt", "run the migration", "session-a");
-    await router.interimPrompt("session-a", "and the seed after it");
+    await router.interimPrompt("session-a", "and the seed after it", "queued", null);
     assert.deepEqual(
       spy.engaged,
       ["session-a", "session-a"],
@@ -3148,9 +3162,706 @@ test("a peer message leaves a standing blocked state standing, and the operator'
 
   clock = at;
   await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a");
-  await router.interimPrompt("session-a", idleDelivery());
+  await router.interimPrompt("session-a", idleDelivery(), "queued", null);
   assert.equal(standing(), true, "a peer message is not the person the block waits on");
 
   await router.mirror(TOKEN, "prompt", "go ahead, take the second option", "session-a");
   assert.equal(standing(), false, "the operator answering is what clears it");
+});
+
+// The prompt pair: a turn-opening prompt reaches a thread by the `UserPromptSubmit` mirror and,
+// when that hook is slow or the harness timed it out, by the tailer reading the same line off the
+// transcript. One slot per path, each written by its own path and read by the other. The mid-turn
+// message the harness queues is out of it entirely, having no second copy anywhere.
+
+/** What the operator typed, in the tests below. */
+const PROMPT = "run the migration against the staging copy first";
+
+/**
+ * Whether any standing prompt claim covers this text, asked from both sides and consuming whatever
+ * it finds.
+ *
+ * Each path reads the other's slot, so a one-sided question is blind to the claim the asking path
+ * made itself, which reads exactly like no claim at all. Every assertion here that a path left
+ * nothing behind goes through this, so it cannot go quiet for the wrong reason.
+ */
+function promptClaimStanding(echo: EchoMemory, sessionId: string, text: string): boolean {
+  const asTailer = echo.isPromptEcho(sessionId, text, "tailer");
+  return echo.isPromptEcho(sessionId, text, "mirror") || asTailer;
+}
+
+test("a recovered prompt matching one the mirror already posted is skipped, and only that one", async () => {
+  // The tailer's half of the prompt dedup, which is the normal case: the hook posted the operator's
+  // words within milliseconds of the keystroke, and the poll reading the same line an interval
+  // later says nothing the thread does not already show.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const lines: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  echo.notePrompt("session-a", PROMPT, "mirror");
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 0, "the text is already on the thread and must not double");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(
+    !lines[0].includes("migration"),
+    `prompt content leaked into the routing log: ${lines[0]}`,
+  );
+
+  // The control, and the bound: the match consumed the record, so the same words typed again post.
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.deepEqual(posts.map((post) => post.text), renderMirror("prompt", PROMPT));
+});
+
+test("a mirrored prompt matching one the tailer already recovered is skipped, and only that one", async () => {
+  // The mirror's half, which is the slow-hook case the recovery exists for: the poll read the line
+  // off the transcript and posted it while this hook was still queued behind whatever saturated the
+  // host.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const lines: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  echo.notePrompt("session-a", PROMPT, "tailer");
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 0, "the tailer's copy is already on the thread");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(
+    !lines[0].includes("migration"),
+    `prompt content leaked into the routing log: ${lines[0]}`,
+  );
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
+  assert.deepEqual(posts.map((post) => post.text), renderMirror("prompt", PROMPT));
+});
+
+test("an invisible character cannot hide a prompt from the dedup, on either path", async () => {
+  // The two copies of one prompt come from a file read and from a hook payload, so they can differ
+  // by characters nobody sees. Both sides compare the normalized pre-render text, exactly as the
+  // envelope check does.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  echo.notePrompt("session-a", `${PROMPT}  `, "mirror");
+  await router.interimPrompt("session-a", `${String.fromCharCode(0x200b)}${PROMPT}`, "turn-open", null);
+  echo.notePrompt("session-a", `${PROMPT}  `, "tailer");
+  await router.mirror(TOKEN, "prompt", `${String.fromCharCode(0x200b)}${PROMPT}`, "session-a");
+  assert.deepEqual(posts, [], "a zero-width difference must not manufacture a second copy");
+});
+
+test("neither prompt path records after deferring, so the run still posting keeps its deferral", async () => {
+  // A claim asserts that a run is putting this text on the thread now. The path that just deferred
+  // is putting nothing there, so a record it made would stand over a copy it never sent and swallow
+  // the operator's next retype of the same words.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  echo.notePrompt("session-a", PROMPT, "tailer");
+  await router.mirror(TOKEN, "prompt", PROMPT, "session-a");
+  assert.equal(
+    echo.release("session-a", PROMPT, "prompt-tailer"),
+    true,
+    "the claiming run must be told its text has nobody else carrying it",
+  );
+  assert.equal(
+    echo.release("session-a", PROMPT, "prompt-tailer"),
+    false,
+    "the deferral is spent once",
+  );
+
+  echo.notePrompt("session-a", PROMPT, "mirror");
+  await router.interimPrompt("session-a", PROMPT, "turn-open", null);
+  assert.equal(echo.release("session-a", PROMPT, "prompt-mirror"), true);
+});
+
+test("a fresh claim on one prompt slot leaves the other path's deferral where it was", async () => {
+  // What the split buys that one shared record could not. The tailer dispatches a prompt and claims
+  // its own slot; the mirror hook arrives inside that run, defers to the claim, and posts nothing;
+  // the operator then types the same words again and the mirror claims for that second copy. With
+  // one record for both paths, the mirror's fresh claim would wipe the bit the tailer's first run
+  // is owed, and a run that landed nothing would find nothing left to save it. Each path clearing
+  // only its own key is what makes that impossible.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const lines: string[] = [];
+  const posts: string[] = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      if (posts.length === 1) {
+        // The mirror hook, inside the tailer's run: it finds the claim, drops its own copy, and
+        // then the operator's retype arrives and the hook claims for that one.
+        assert.equal(echo.isPromptEcho("session-a", PROMPT, "mirror"), true);
+        echo.notePrompt("session-a", PROMPT, "mirror");
+      }
+      return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  assert.equal((await router.interimPrompt("session-a", PROMPT, "turn-open", null)).status, "failed");
+  assert.equal(posts.length, 2, `the run goes again exactly once: ${posts.join("\n")}`);
+  assert.ok(
+    lines.some((line) => line.includes("reached the thread by neither path")),
+    lines.join("\n"),
+  );
+});
+
+test("a prompt that landed nothing is not remembered as posted, on either path", async () => {
+  // The fail direction this whole slot is built around. A claim standing over a prompt the
+  // transport refused would silence the other path's copy, and the operator's question would appear
+  // nowhere: the recovery exists to close exactly that hole, not to open a second one.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  // Asked as the path that did not make the claim, which is the only path a standing claim could
+  // ever silence, and so the only question that can see one left behind.
+  assert.equal((await router.mirror(TOKEN, "prompt", PROMPT, "session-a")).status, "failed");
+  assert.equal(
+    echo.isPromptEcho("session-a", PROMPT, "tailer"),
+    false,
+    "a mirror that never landed must not suppress the tailer's copy",
+  );
+
+  assert.equal((await router.interimPrompt("session-a", PROMPT, "turn-open", null)).status, "failed");
+  assert.equal(
+    echo.isPromptEcho("session-a", PROMPT, "mirror"),
+    false,
+    "a recovered prompt that never landed must not suppress the mirror's copy",
+  );
+});
+
+test("a prompt the other path deferred to goes again once when its run landed nothing", async () => {
+  // The claim's cost on a prompt slot, bounded exactly as it is on the reply pair: the other path
+  // met the claim mid-run and dropped its own copy, so a run that then lands nothing is the last
+  // thing carrying the operator's question. It goes again, once, and the loss gets its own line.
+  for (const which of ["mirror", "tailer"] as const) {
+    /** The path that did not make the claim: the only one whose match can ever spend it. */
+    const other = which === "mirror" ? "tailer" : "mirror";
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const echo = createEchoMemory();
+    const lines: string[] = [];
+    const posts: string[] = [];
+    const messenger: ThreadMessenger = {
+      postToThread: async (input) => {
+        posts.push(input.text);
+        // The other path arriving inside the run: it finds the claim and drops its own copy.
+        if (posts.length === 1) echo.isPromptEcho("session-a", PROMPT, other);
+        return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+      },
+      editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    };
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+      echo,
+      log: (message) => lines.push(message),
+    });
+
+    const outcome =
+      which === "mirror"
+        ? await router.mirror(TOKEN, "prompt", PROMPT, "session-a")
+        : await router.interimPrompt("session-a", PROMPT, "turn-open", null);
+    assert.equal(outcome.status, "failed", which);
+    assert.equal(posts.length, 2, `${which}: the run goes again exactly once: ${posts.join("\n")}`);
+    assert.ok(
+      lines.some((line) => line.includes("reached the thread by neither path")),
+      `${which}: ${lines.join("\n")}`,
+    );
+    assert.ok(
+      !lines.join("\n").includes("migration"),
+      `${which}: prompt content leaked into the routing log: ${lines.join("\n")}`,
+    );
+    assert.equal(
+      echo.isPromptEcho("session-a", PROMPT, other),
+      false,
+      `${which}: text on the thread by neither path is claimed by neither path`,
+    );
+  }
+});
+
+test("a second prompt claiming a slot leaves the deferral the first one's run is owed", async () => {
+  // The prompt paths are not serialized: the intake answers a `UserPromptSubmit` and dispatches
+  // its delivery without awaiting it, so two prompts for one session overlap. The first one's run
+  // is behind the thread's ordering chain when the tailer meets its claim, drops its own copy and
+  // leaves the deferral bit; the second one's claim arrives inside that window. Clearing the bit
+  // there would leave the first run, on landing nothing, with no deferral to find and no retry to
+  // take, and the operator's words would reach the thread by neither path.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const echo = createEchoMemory();
+  const lines: string[] = [];
+  const posts: string[] = [];
+  const second = "and the seed after it";
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      if (posts.length === 1) {
+        // The tailer, inside the first run: it finds the claim and drops its own copy.
+        assert.equal(echo.isPromptEcho("session-a", PROMPT, "tailer"), true);
+        // The operator's next prompt, whose own hook claims the same slot for different words.
+        echo.notePrompt("session-a", second, "mirror");
+      }
+      return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  assert.equal((await router.mirror(TOKEN, "prompt", PROMPT, "session-a")).status, "failed");
+  assert.equal(posts.length, 2, `the first run goes again exactly once: ` + posts.join("|"));
+  assert.ok(
+    lines.some((line) => line.includes("reached the thread by neither path")),
+    lines.join("|"),
+  );
+});
+
+test("a prompt that rendered to nothing leaves no claim behind", async () => {
+  // The claim is made after the render on both prompt paths, so nothing visible means nothing
+  // claimed: a digest left standing here would suppress the other path's copy of the same text.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  const blank = String.fromCharCode(0x200b);
+  assert.equal((await router.interimPrompt("session-a", blank, "turn-open", null)).status, "failed");
+  assert.equal((await router.mirror(TOKEN, "prompt", blank, "session-a")).status, "failed");
+  assert.deepEqual(posts, []);
+  assert.equal(
+    promptClaimStanding(echo, "session-a", blank),
+    false,
+    "nothing posted, nothing claimed",
+  );
+});
+
+test("the prompt pair and the reply pair answer for their own registers only", async () => {
+  // The operator's words and Claude's are two attributions on the thread, so one is never the
+  // other's duplicate: a reply repeating the question back does not become the prompt's second
+  // copy, and narration is not consulted against the prompt slots at all.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  echo.notePrompt("session-a", PROMPT, "mirror");
+  await router.mirror(TOKEN, "reply", PROMPT, "session-a");
+  await router.interim("session-a", PROMPT);
+  assert.equal(posts.length, 2, posts.map((post) => post.text).join("\n---\n"));
+  assert.equal(
+    echo.isPromptEcho("session-a", PROMPT, "tailer"),
+    true,
+    "the prompt's own record is untouched by either reply-register path",
+  );
+
+  // And the reverse: neither reply-register claim suppresses a prompt carrying the same words.
+  echo.noteInterim("session-a", PROMPT);
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 3, "narration's claim is not a prompt slot's");
+
+  const other = "and check the index while you are there";
+  echo.noteReply("session-a", other);
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", other, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 4, "a reply's claim is not a prompt slot's");
+});
+
+test("one turn-opening prompt stamps engagement once, on the path that actually posted it", async () => {
+  // The stamp records that a person spoke, and one prompt is one person speaking once. The
+  // recovery reads the same line up to a poll interval after the hook carried it, so a stamp taken
+  // there for a copy the hook already accounted for would move `lastEngagementAt` forward with
+  // nobody behind the move. The test below pins what that costs.
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry: spy.registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  echo.notePrompt("session-a", PROMPT, "mirror");
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.deepEqual(posts, []);
+  assert.deepEqual(spy.engaged, [], "the suppressed copy stamps nothing");
+
+  // The control, and the case the recovery exists for: with no mirror claim standing, this read is
+  // the operator's only copy and it stamps.
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 1);
+  assert.deepEqual(spy.engaged, ["session-a"]);
+
+  // A queued mid-turn message consults nothing, so it stamps whatever else is standing: it has no
+  // second copy anywhere and is always words a person just typed.
+  echo.notePrompt("session-a", "check the index too", "mirror");
+  assert.deepEqual(await router.interimPrompt("session-a", "check the index too", "queued", null), {
+    status: "sent",
+  });
+  assert.deepEqual(spy.engaged, ["session-a", "session-a"]);
+});
+
+test("a suppressed turn-opening prompt does not clear a block raised after its hook", async () => {
+  // The failure the position of that stamp closes, through the desk that owns the comparison
+  // rather than through the arithmetic. The hook stamps at the instant the operator pressed
+  // return; the session then stops blocked and writes its `goal-blocked`; the poll reads the same
+  // line an interval later. A stamp there would be newer than the block and would clear it, and
+  // the fleet card would show as idle a session that is standing on a person.
+  const at = 1_800_000_000_000;
+  let clock = at - 20_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: () => clock });
+  announce(registry, "session-a");
+  const blocked: SessionGoalEvent = {
+    event: "goal-blocked",
+    ts: new Date(at - 5_000).toISOString(),
+    tsMs: at - 5_000,
+    plan: "docs/plans/widget_spec_v1.md",
+  };
+  const desk = createBlockedDesk({
+    // Never opened: the fold below is injected, the way the desk's own tests inject one.
+    eventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
+    threadFor: () => THREAD,
+    alert: async () => ({ status: "ok", value: { messageId: "900000000000000011" }, rate: NO_RATE_INFO }),
+    operatorId: "700000000000000002",
+    now: () => at,
+    readEvents: () => ({
+      state: {
+        offset: 0,
+        identity: null,
+        midLine: false,
+        malformed: 0,
+        latest: new Map([["session-a", blocked]]),
+      },
+      unreadable: false,
+    }),
+    log: () => {},
+  });
+  await desk.tick();
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+  const standing = (): boolean => desk.standing(registry.list()[0]);
+
+  // The hook, ten seconds before the block: it posts, claims, and stamps.
+  clock = at - 10_000;
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1);
+  assert.equal(standing(), true, "the block is newer than the hook's stamp, so it stands");
+
+  // The poll, five seconds after the block, reading the line the hook already carried.
+  clock = at;
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 1, "the copy is suppressed, as the healthy case requires");
+  assert.equal(standing(), true, "and it clears nothing on its way out");
+
+  // The control: a prompt the operator really typed after the block, with no claim standing, is
+  // what clears it. Without this the assertion above could pass on a desk that never clears.
+  assert.deepEqual(await router.interimPrompt("session-a", "go ahead", "turn-open", null), {
+    status: "sent",
+  });
+  assert.equal(standing(), false, "the operator answering is what clears it");
+});
+
+test("a recovered prompt is engagement at the instant it was typed, not the instant it was read", async () => {
+  // The case the whole section exists for, and the direction round 3 did not close. The hook is
+  // lost, so the poll's copy is the only one; but the poll runs up to an interval behind the file,
+  // and a stamp taken at read time would sit past a `goal-blocked` the turn raised in between and
+  // clear a block nobody answered. The line's own timestamp is when the operator spoke.
+  const at = 1_800_000_000_000;
+  let clock = at - 30_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: () => clock });
+  announce(registry, "session-a");
+  const blocked: SessionGoalEvent = {
+    event: "goal-blocked",
+    ts: new Date(at - 5_000).toISOString(),
+    tsMs: at - 5_000,
+    plan: "docs/plans/widget_spec_v1.md",
+  };
+  const desk = createBlockedDesk({
+    // Never opened: the fold below is injected, the way the desk's own tests inject one.
+    eventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
+    threadFor: () => THREAD,
+    alert: async () => ({ status: "ok", value: { messageId: "900000000000000011" }, rate: NO_RATE_INFO }),
+    operatorId: "700000000000000002",
+    now: () => at,
+    readEvents: () => ({
+      state: {
+        offset: 0,
+        identity: null,
+        midLine: false,
+        malformed: 0,
+        latest: new Map([["session-a", blocked]]),
+      },
+      unreadable: false,
+    }),
+    log: () => {},
+  });
+  await desk.tick();
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo: createEchoMemory(),
+    log: () => {},
+  });
+  const standing = (): boolean => desk.standing(registry.list()[0]);
+  assert.equal(standing(), true, "the session stands blocked before anything arrives");
+
+  // The poll, five seconds after the block, reading a line written twenty seconds before it. The
+  // copy posts, because nothing else carried it, and the stamp it takes is the line's own.
+  clock = at;
+  assert.deepEqual(
+    await router.interimPrompt("session-a", PROMPT, "turn-open", at - 20_000),
+    { status: "sent" },
+  );
+  assert.equal(posts.length, 1, "the recovery still posts: this is the copy that was lost");
+  assert.equal(
+    standing(),
+    true,
+    "a prompt typed before the block does not clear the block that followed it",
+  );
+
+  // The other direction, which must keep working: words typed after the block clear it.
+  assert.deepEqual(
+    await router.interimPrompt("session-a", "go ahead", "turn-open", at - 1_000),
+    { status: "sent" },
+  );
+  assert.equal(standing(), false, "a prompt typed after the block clears it");
+});
+
+test("a prompt line naming no readable instant stamps at read time", async () => {
+  // The fallback, and the behaviour every path here had before the line's own timestamp was read
+  // at all: the field is the harness's, so a shape change that drops or malforms it costs the
+  // precision and not the stamp.
+  const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+  announce(spy.registry, "session-a");
+  const { writer } = fakeWriter();
+  const router = routerFor({
+    registry: spy.registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo: createEchoMemory(),
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), {
+    status: "sent",
+  });
+  assert.deepEqual(spy.engaged, ["session-a"]);
+});
+
+test("a peer delivery and a wake notice reach the thread before a prompt slot ever sees them", async () => {
+  // The dedup sits after every check that decides what a prompt's text is, so the slot only ever
+  // answers for prompts drawn in the operator's own register. A delivery redrawn under the peer
+  // attribution and a wake compressed to a notice claim nothing, which is what keeps a peer from
+  // silencing an operator prompt that happens to repeat its words.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  for (const redrawn of [idleDelivery(), WAKE]) {
+    for (const send of [
+      () => router.mirror(TOKEN, "prompt", redrawn, "session-a"),
+      () => router.interimPrompt("session-a", redrawn, "turn-open", null),
+    ]) {
+      const before = posts.length;
+      assert.deepEqual(await send(), { status: "sent" });
+      assert.ok(posts.length > before, "the redrawn message still reaches the thread");
+      assert.equal(
+        promptClaimStanding(echo, "session-a", redrawn),
+        false,
+        "a message drawn outside the operator's register claims no prompt digest",
+      );
+    }
+  }
+
+  // The channel envelope, which posts nothing at all, claims nothing either.
+  const envelope =
+    '<channel source="channel-relay" chat_id="123">the migration finished?</channel>';
+  assert.equal((await router.mirror(TOKEN, "prompt", envelope, "session-a")).status, "failed");
+  assert.equal(promptClaimStanding(echo, "session-a", envelope), false);
+});
+
+test("two identical prompts down the recovered path both land: a path never consumes its own claim", async () => {
+  // The claim carries which path made it, and a match is only ever the other path's. Without that
+  // tag the second of two identical prompts matches the first's own claim and is dropped with a
+  // `sent` status and nothing posted, which is the operator's words gone from the thread. The fail
+  // direction here is a duplicate prompt and never a lost one.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.interimPrompt("session-a", "continue", "turn-open", null), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.interimPrompt("session-a", "continue", "turn-open", null), {
+    status: "sent",
+  });
+  assert.deepEqual(posts.map((post) => post.text), [
+    renderMirror("prompt", "continue")[0],
+    renderMirror("prompt", "continue")[0],
+  ]);
+});
+
+test("two identical mirrored prompts both land: a path never consumes its own claim", async () => {
+  // The hook's half of the same property. `continue` twice in a row is an ordinary way to drive a
+  // session, and the second one reaching the thread must not depend on a tailer existing to have
+  // claimed the first.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "continue", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "continue", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(posts.map((post) => post.text), [
+    renderMirror("prompt", "continue")[0],
+    renderMirror("prompt", "continue")[0],
+  ]);
+});
+
+test("a mirror-only host, where nothing ever writes the tailer's prompt slot, posts every prompt", async () => {
+  // The supported knob combination this pins: `CHANNEL_MIRROR` on with `CHANNEL_INTERIM_MIRROR`
+  // off builds the echo memory and no tailer at all. The mirror writes `promptMirror` and reads
+  // `promptTailer`, which nothing on that host ever writes, so the dedup is inert there by
+  // construction. A repeated prompt has no second path to have claimed it, and every copy is the
+  // only copy.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: (message) => lines.push(message),
+  });
+
+  for (const typed of ["run it", "run it", "run it"]) {
+    assert.deepEqual(await router.mirror(TOKEN, "prompt", typed, "session-a"), { status: "sent" });
+  }
+  assert.equal(posts.length, 3, posts.map((post) => post.text).join("\n---\n"));
+  assert.deepEqual(lines, [], "nothing was suppressed, so nothing is reported as suppressed");
+  assert.equal(
+    echo.isPromptEcho("session-a", "run it", "mirror"),
+    false,
+    "the slot the mirror reads is the one no path on this host writes",
+  );
+
+  // The control, so the silence above is the absent path and not an echo memory that stopped
+  // answering: the same question, with the slot the tailer would have written written by hand.
+  echo.notePrompt("session-a", "run it", "tailer");
+  assert.equal(echo.isPromptEcho("session-a", "run it", "mirror"), true);
 });

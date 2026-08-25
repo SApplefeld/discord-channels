@@ -54,7 +54,12 @@ import type {
   QuestionTerminalDetail,
   QuestionTerminalState,
 } from "./question-desk.ts";
-import { createEchoMemory, createTranscriptTailer, questionDigest } from "./tail.ts";
+import {
+  DEFAULT_PROMPT_CLAIM_MS,
+  createEchoMemory,
+  createTranscriptTailer,
+  questionDigest,
+} from "./tail.ts";
 import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
@@ -785,9 +790,27 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   });
   // The echo memory exists whenever the Stop mirror does: it carries the dedup between the
   // reply tool's answer and the mirrored reply, which needs no tailer, so switching interim
-  // narration off must not disarm it. The tailer half of the memory only ever fills under
-  // interim mirroring below, because only the tailer writes it.
-  const echo = config.mirror ? createEchoMemory() : null;
+  // narration off must not disarm it. Its interim slot and its tailer prompt slot only ever fill
+  // under interim mirroring below, because only the tailer writes those two: with the tailer not
+  // constructed at all, the mirror writes `promptMirror` and every consult it makes reads a
+  // `promptTailer` that is null, so the prompt dedup is inert on that host by construction.
+  const echo = config.mirror
+    ? createEchoMemory({
+        // How long a prompt claim stands before a consult refuses it. A claim the other path never
+        // answers is what a transcript past the tailer's read ceiling, a session learned mid-turn,
+        // a restarted broker, or a mirror-only window leaves behind, and left standing it would
+        // suppress the next identical prompt, which is the loss the recovery exists to prevent.
+        // Three poll passes, floored for a fast poll setting, on the pattern the registry's
+        // fallback-attach window above uses. The window a claim has to cover is one pass, but a
+        // pass legitimately outlasts one interval when Discord is slow, and this module's own
+        // watchdog below does not call a pass late until three of them have gone by. Derived to
+        // agree with that number: a claim window narrower than a delay the same module calls
+        // normal would expire on every slow pass and cost a duplicate prompt there, which is the
+        // common case rather than the edge. The floor is the memory's own default, so the wired
+        // host and a memory built without options answer to one number.
+        promptClaimMs: Math.max(DEFAULT_PROMPT_CLAIM_MS, config.interimPollMs * 3),
+      })
+    : null;
   const outbound = createOutboundRouter({
     registry,
     threadFor: (sessionId) => threadFor(sessionId),
@@ -880,7 +903,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           .filter((record) => record.state === "live")
           .map((record) => record.sessionId),
       deliver: (sessionId, text) => outbound.interim(sessionId, text),
-      deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
+      deliverPrompt: (sessionId, text, source, at) =>
+        outbound.interimPrompt(sessionId, text, source, at),
       deliverPeer: (sessionId, traffic) => outbound.peer(sessionId, traffic),
       // The release wrapper above. The delivery is read through a closure rather than passed
       // directly, because `deliverQuestion` is replaced further down once Discord's surfaces

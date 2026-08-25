@@ -102,27 +102,84 @@ The tailer yields a turn-opening typed prompt as the existing `prompt` item kind
 the queued path whole: the operator attribution, the unforgeable-quote escape, the channel-envelope
 and task-notification checks, and the engagement stamp, all at `interimPrompt`'s existing seam.
 Classification in `lineItems`, structural per the ground truth: a non-sidechain `user` line for
-this session, `promptSource === "typed"`, root `origin.kind === "human"`, content read through
-`userText`, excluded when the text carries `<command-name>` markup, and excluded when `isMeta` is
-true. The peer shape is excluded by these tests already; keep the assertion explicit so the
-peer-traffic plan's no-double-post rule survives both plans.
+this session, `promptSource === "typed"`, root `origin.kind === "human"`, excluded when the text
+carries `<command-name>` markup, and excluded when `isMeta` is true. The peer shape is excluded by
+these tests already; keep the assertion explicit so the peer-traffic plan's no-double-post rule
+survives both plans.
+
+The content is read through a reader narrower than `userText`, and the narrowing is a security
+gate rather than a convenience. `userText` joins every text block with a newline, which is right
+for finding a command in a line and wrong for republishing one as the operator's own words: a
+harness that ever attached an injected block to a typed line would have that text published inside
+the operator's unforgeable quoted register. So the reader admits a plain string, or a content array
+holding exactly one `text` block beside any number of `image` blocks, which is the operator
+pasting a screenshot with their prompt, and refuses everything else. An image carries no text and
+cannot reach the register. This one gate therefore fails toward no recovery rather than toward a
+duplicate, against the direction the rest of this section takes, and the cost is real rather than
+notional: about three percent of typed prompts on this machine carry an image beside their words,
+and any future multi-text shape is refused outright.
 
 The normal case now produces the same prompt twice (the mirror hook within milliseconds, the
-tailer up to a poll interval later), so the echo memory gains a prompt slot beside the reply pair,
-worked the same way: the mirror-prompt path records and consults, the tailer-prompt path consults
-and records, whichever arrives first suppresses the other's exact repeat, every match consumes the
-record, digests only, never text. Both orderings are real: the tailer can read the line before a
-slow mirror post lands. Declared residuals, accepted and stated in tests where cheap: a queued
-mid-turn message whose text exactly repeats the last turn-opening prompt can be suppressed as its
-echo (consume-on-match bounds it to one), and a recovered prompt arrives up to a poll interval
-late and below any narration the turn already posted, which is honest transcript order. The fail
-direction throughout is a duplicate prompt, never a lost one; the suppression must never be the
-mirror's copy when both survive classification, so the faster path wins and the thread reads
-identically to today's healthy case.
+tailer up to a poll interval later), so the echo memory gains a prompt **pair** beside the reply
+pair, built the way the reply pair is built rather than as one shared record: `promptMirror` is
+written only by the mirror path and read only by the tailer path, `promptTailer` the reverse.
+Two slots make a path consuming its own claim structurally impossible instead of conditionally
+impossible, and they keep the deferral bits disjoint so one path's fresh claim cannot spend the
+deferral the other path's still-running delivery is owed. Whichever arrives first suppresses the
+other's exact repeat, every match consumes the record, digests only, never text. Both orderings
+are real: the tailer can read the line before a slow mirror post lands. On a host running the
+mirror with interim mirroring off no tailer is constructed at all, so that host writes
+`promptMirror` and reads a `promptTailer` that is always null: the dedup is inert there by
+construction rather than by a tag.
+
+A claim expires. Without a bound, a claim the tailer never answered (its transcript past the read
+ceiling, a freshly learned session, a broker restarted mid-turn) stands indefinitely and swallows
+the next identical prompt that has no live competitor, which is the exact loss this plan exists to
+prevent. Each prompt claim is stamped with the time it was made and refused once older than
+`promptClaimMs`, derived as `Math.max(60_000, interimPollMs * 3)` on the house pattern the
+registry's fallback-attach window and the pass watchdog already use. Three intervals rather than
+the one the duplicate window physically spans, because the module already treats a pass outlasting
+an interval as normal and does not call one overdue until three: a claim window narrower than a
+delay the module itself tolerates would cost a duplicate on every slow pass. The clock is injected
+so a test moves it without sleeping.
+
+The bound caps that loss without closing its generator, so the claims are also given up wherever
+the tailer's read position jumps over bytes it will never read. There are four such jumps (the
+probe's own baseline, the fallback rebaseline after a dropped offset, the shrink branch, and the
+skip past the read ceiling) and each one is the tailer guaranteeing it can no longer answer a claim
+standing behind it. Only the two prompt claims are given up; the deferral bits are not, because a
+deferral records something that already happened to a run still in flight and dropping it would
+take away the one retry that run is owed.
+
+The queued mid-turn message stays out of the dedup entirely, neither claiming nor consulting. It
+fires no prompt hook, so it has no second copy anywhere: a claim it makes serves nothing and can
+only swallow a later prompt, and a consult it makes can only lose the operator's own words to a
+standing mirror claim. The two shapes are already distinct at classification, so the item kind
+carries which one it is and the router branches on it. The fail direction throughout is a
+duplicate prompt, never a lost one; the suppression must never be the mirror's copy when both
+survive classification, so the faster path wins and the thread reads identically to today's
+healthy case. The one accepted residual is timing rather than loss: a recovered prompt arrives up
+to a poll interval late and below any narration the turn already posted, which is honest
+transcript order.
+
+The engagement stamp is taken at the instant the prompt was typed rather than the instant it was
+read. The stamp is what clears a standing blocked state, and the derivation is a comparison of
+times, so a recovered prompt stamped at read time would clear a block the turn that prompt started
+went on to raise. The prompt item therefore carries the transcript line's own instant, the router
+passes it to the registry, and the registry never moves the field backwards. A line naming no
+readable instant falls back to read time. On the mirror path the stamp stays where it is, ahead of
+the dedup: that hook fires as the operator presses return, so it cannot be newer than a block
+raised by the turn its own prompt started, and a suppressed mirror stamping again is a duplicate
+stamp with no hazard behind it.
 
 Tests red-first against real line shapes (fixtures from the transcript named above): recovery when
-no mirror copy arrives, suppression in both orderings, command-markup and meta and peer exclusions,
-engagement stamped by the recovered prompt, envelope and task-notification checks honored.
+no mirror copy arrives, suppression in both orderings, an expired claim posting rather than
+swallowing, a queued mid-turn repeat posting both copies, the cross-path deferral surviving the
+other path's fresh claim, a deferral surviving an offset jump that gives up the claims, every
+offset jump giving up the claims behind it, an interim-off control proving the tailer slot can
+never match there, a block surviving the recovery of a prompt typed before it and clearing for one
+typed after it, an image-bearing prompt recovered and a second text block refused, command-markup
+and meta and peer exclusions, envelope and task-notification checks honored.
 
 ### 3. Live verification and docs
 
@@ -259,4 +316,97 @@ one-slot premise, since the defect class repeated across two rounds and the impl
 the brief faithfully both times, which points at the premise rather than the tier. Then re-dispatch
 with the ruling folded in, re-review, and close. Section 3 (live verification and docs) and section
 4 (finishing) follow in order.
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-25
+Completed: 2. Turn-opening prompt recovery (tail, echo memory, outbound)
+Implemented By: implementer-opus (four review rounds; one consult on the spec's own premise; no
+tier escalation)
+Metrics: 4 review rounds; NEEDS_CONTEXT 0; escalations 0; consults 1
+Decisions / Surprises: The spec's central mechanism was wrong and a fresh-context consultant said
+so. The spec asked for one prompt slot in the echo memory, justified as "mirroring the
+pre-existing interim and reply slots". Those slots are a pair, one per path, and `broker/tail.ts`
+said so verbatim in a comment predating this plan; one shared slot broke the pattern rather than
+copying it, and the claimant tag round 1 added was restoring by convention what the existing pair
+gets by construction. Both of the first two rounds' defect sets are downstream of that one
+departure. The section now ships the pair: `promptMirror` written by the hook path and read by
+the tailer, `promptTailer` the reverse. Two further rulings came with it. The queued mid-turn
+message leaves the dedup entirely, neither claiming nor consulting, because it fires no hook and
+so has no second copy for either operation to answer for; a consult it made could only lose the
+operator's words to a claim standing over an earlier prompt of the same text, which the suite was
+pinning as an accepted residual while the spec's own fail direction forbade it. And a claim
+expires, because a claim the tailer never answers (a transcript past the read ceiling, a session
+learned mid-turn, a restarted broker) would otherwise stand over the next identical prompt
+forever, destroying with the recovery the very prompt the recovery exists to save.
+
+Two review rounds produced Criticals, rounds 1 and 3, and the escalation ladder's comparison was
+run before deciding not to spend a tier bump: the classes do not repeat. Round 1's was the
+self-suppression the shared slot made possible; round 3's was an engagement stamp taken ahead of
+the dedup consult. Different ground, so the ladder routes to a consult on the premise rather than
+a stronger implementer, and that consult had already run and produced round 3.
+
+Round 3's Critical is worth recording in full because it is the section's least obvious hazard.
+The engagement stamp is what clears a standing blocked state, and the derivation is a comparison
+of times. A recovered prompt stamped at read time is stamped up to a poll interval after it was
+typed, so a session that opened a turn with that prompt, ran, and stopped BLOCKED inside the poll
+interval had the block it just raised cleared by its own opening prompt. Round 3 closed the half
+where the copy was suppressed; round 4 found the other half, the recovery path itself, still open.
+The fix is that the prompt item carries the transcript line's own instant and the registry stamps
+with it, never moving the field backwards. That is correct in both directions rather than only
+one: a prompt typed before a block no longer clears it, and a prompt typed after one still does.
+
+Two comments shipped in round 3 asserting measurements that do not survive a full-scale sweep, and
+one of those measurements was this session's own. A subsample of six transcripts per project
+directory said no queued mid-turn prompt ever also appears as a typed user line, and that figure
+went into a dispatch brief and from there into a shipped comment. Across all 318 transcripts on
+this machine it is 2 of 106, both intra-session, and both trace to two separate operator
+submissions of the same words rather than one message written twice, so the design decision
+survives and the sentence did not. The same sweep falsified a second comment claiming the
+content-array refusal "costs nothing observable": 10 of 321 typed turn-opening lines carry a
+content array, every one of them `text|image`, the operator pasting a screenshot with their
+words. Those prompts were silently unrecoverable. The reader now admits one text block beside any
+number of image blocks, which closes that gap while keeping the gate that matters, since an image
+carries no text and cannot reach the operator's unforgeable register.
+
+The section widened twice, both recorded here as the drift they are. `broker/registry.ts` joined
+the files in scope for the optional engagement instant. And a `forgetPrompts` method was folded in
+so the tailer gives up prompt claims wherever its read position jumps over bytes it will never
+read; there are four such jumps, and round 3 covered three of them while naming the fourth, the
+probe's own baseline, as though it did not exist.
+Assumptions: The claim window's multiplier was this session's to pick and was picked twice. It
+went in at two poll intervals on the reasoning that a shorter window is the safer direction
+against the loss; round 4's evidence reversed it to three, because the module already treats a
+pass outlasting one interval as normal and does not call one overdue until three, so a window
+narrower than a delay the module tolerates costs a duplicate on every slow pass (declared
+2026-08-25, section 2). `createEchoMemory()` with no options takes the 60-second floor and the
+system clock; the production caller always passes both, and no test that does not move the clock
+is affected (declared 2026-08-25, section 2). Clearing claims at an offset jump also gives up a
+claim whose line happens to sit just after the new baseline, costing one duplicate copy of that
+prompt, which is the section's declared fail direction (declared 2026-08-25, section 2). Spec
+section 2 was rewritten to match all of the above, per the deviation rule.
+Review Findings: Four rounds. Round 1: one Critical, found independently by all three reviewers,
+fixed. Round 2: no Critical, several Majors sharing one root, which the consult then ruled on.
+Round 3: one Critical (the engagement stamp) plus three Majors and four Minors; the Critical and
+every Major fixed, two of them after this session verified the reviewers' reachability claims and
+found one of them false. That one is worth naming: two reviewers independently rated a
+wake-notice double-post a Major, and it is unreachable, because every task-notification user line
+on this machine carries `promptSource` system or sdk with `origin.kind` task-notification and is
+refused at the recovery's first lock. What misled them is a test: `broker/tail.test.ts` hand-builds
+a typed wake line, a shape the harness does not write, and to a fresh reader a fixture asserting
+behaviour on an impossible shape reads as evidence the shape exists. That test now says so in its
+own comment. Round 4: no Critical, five Majors and five Minors; all fixed except two, both
+justified rather than fixed. First, prompt claims carry no run identity, so two overlapping runs
+of identical text can mis-attribute a release: this is the structure the reply slot has always
+had, the consult ruled it out of scope, and tagging runs means touching all four slots. Second,
+the mirror path stamps engagement above its own dedup consult, so a suppressed mirror stamps
+twice: the hook fires as the operator presses return and cannot be newer than a block raised by
+the turn its own prompt started, so it is a duplicate stamp with no hazard, and the site now says
+why. One further residual is stated rather than closed: a prompt whose hook was lost and which is
+also a channel echo stamps on neither path.
+Stamps: adjudicated 1, stamped 1. `memq unstamped --since 8h` surfaced one operator-tier record,
+that an unservable model override yields an agent which never runs and that the transcript's
+assistant-line model tally is how to tell. It steered re-dispatching this section's reviewers at
+opus rather than reaching for fable after round 2's first attempt wedged, and reading that wedge
+as an environment fault rather than an unservable override.
+Next: 3. Live verification and docs
 Commit Model: Commit-and-Push

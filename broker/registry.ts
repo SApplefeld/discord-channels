@@ -175,7 +175,9 @@ export type SessionRecord = {
   lastHookAt: number;
   /**
    * Timestamp of the last signal that a person or live work drove this session: a `SessionStart`
-   * or `PostToolUse` intake, or an operator prompt arriving on the mirror path.
+   * or `PostToolUse` intake, an operator prompt arriving on the mirror path, or one the transcript
+   * tailer read off the session's own file, which covers the mid-turn message the harness queues
+   * and the turn-opening prompt recovered when its hook was lost.
    *
    * The blocked-state derivation compares a `goal-blocked` event's timestamp against this field, so
    * what stamps it is an explicit allowlist rather than everything but a denied few: an event this
@@ -320,8 +322,14 @@ export type Registry = {
    * A session the registry does not hold unended is a no-op rather than an error: a prompt can
    * still be in flight when a `/clear` replaces the session it named, and engagement is a fact
    * about a running session that nothing needs to record against a tombstone.
+   *
+   * `at` is when the person actually spoke, for a caller that knows it and is not learning of it
+   * at the time it happened: the transcript tailer reads a prompt up to a poll interval after the
+   * line was written, and stamping the read time would move this field past a `goal-blocked` the
+   * session raised in between, clearing a block nobody answered. Absent, the stamp is now. The
+   * field never moves backwards, so a late-arriving older instant leaves a newer stamp alone.
    */
-  engage: (sessionId: string) => void;
+  engage: (sessionId: string, at?: number) => void;
   /**
    * Records what a transcript line said about the model and the context size. Returns the changes
    * to announce now, and an empty array otherwise: a first sighting over an unseeded opening model
@@ -682,10 +690,12 @@ export function createRegistry(options: RegistryOptions): Registry {
     return record;
   }
 
-  function engage(sessionId: string): void {
+  function engage(sessionId: string, at?: number): void {
     const record = reading(sessionId);
     if (record === null) return;
-    record.lastEngagementAt = now();
+    // The later of the two, never a move backwards: this field is a high-water mark for when a
+    // person last drove the session, and an out-of-order arrival must not un-engage it.
+    record.lastEngagementAt = Math.max(record.lastEngagementAt, at ?? now());
     // Persisted, unlike the relay heartbeat: the router calls this for prompts a person typed and
     // for nothing else, the harness's own wake injections included, so the write rate is a human
     // one rather than a per-second one. A restart that read back a stale engagement stamp would

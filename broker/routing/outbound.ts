@@ -22,7 +22,7 @@ import type { Registry } from "../registry.ts";
 // reaches a thread by cannot answer differently about one message. A runtime import back into the
 // tailer, which imports this module type-only, so the modules stay acyclic at run time.
 import { crossSessionDelivery } from "../tail.ts";
-import type { EchoMemory, PeerTraffic } from "../tail.ts";
+import type { EchoMemory, EchoSlot, PeerTraffic, PromptSource } from "../tail.ts";
 import type { ThreadWriter } from "./writer.ts";
 
 export type OutboundRouterOptions = {
@@ -39,18 +39,29 @@ export type OutboundRouterOptions = {
    */
   mirrorWriter: ThreadWriter;
   /**
-   * The dedup memory, present whenever the Stop mirror is on; the transcript tailer shares it
-   * and additionally requires interim mirroring to exist at all, so on a mirror-only host the
-   * memory serves the reply-tool dedup alone. The tailer reads the turn's final reply off the
-   * transcript up to a poll interval after
-   * the Stop mirror posts it, so the two paths consult one memory: `mirror` with the reply kind
-   * skips a post matching the tailer's last interim chunk, records its own digest once the text
-   * is on the thread (by this post or by the tailer's), and the tailer skips a chunk matching
-   * either digest. A match consumes the digest it matched, so nothing here becomes a standing
-   * blocklist. The memory also carries the reply-tool dedup: `reply` records the answer it
-   * posted, and `mirror` with the reply kind skips a post matching it exactly or nearly, because
-   * a long turn's closing reply-tool summary and its Stop mirror are frequently the same words.
-   * Without the memory, replies mirror exactly as they did before interim mirroring existed.
+   * The dedup memory, present whenever the Stop mirror is on. The transcript tailer shares it and
+   * additionally requires interim mirroring, so a mirror-only host has this memory and no tailer.
+   * There the reply-tool dedup is the only pairing that ever matches: nothing writes the interim
+   * slot or the tailer's prompt slot at all, so the prompt dedup answers nothing rather than
+   * swallowing the operator's next identical prompt.
+   *
+   * The tailer reads the turn's final reply off the transcript up to a poll interval after the Stop
+   * mirror posts it, so the two paths consult one memory: `mirror` with the reply kind skips a post
+   * matching the tailer's last interim chunk, records its own digest once the text is on the thread
+   * (by this post or by the tailer's), and the tailer skips a chunk matching either digest. A match
+   * consumes the digest it matched, so nothing here becomes a standing blocklist.
+   *
+   * The prompt pair is the same pairing over the operator's typed words that open a turn, which
+   * reach a thread by the `UserPromptSubmit` mirror and, when that hook is slow or the harness
+   * timed it out, by the tailer's read of the same line. One slot per path, each written by its own
+   * path and read by the other, so whichever sends first wins and neither path can reach its own
+   * claim. A claim also expires, since a claim the other path never answers would otherwise stand
+   * over the next identical prompt forever.
+   *
+   * The memory also carries the reply-tool dedup: `reply` records the answer it posted, and
+   * `mirror` with the reply kind skips a post matching it exactly or nearly, because a long turn's
+   * closing reply-tool summary and its Stop mirror are frequently the same words. Without the
+   * memory, prompts and replies mirror exactly as they did before interim mirroring existed.
    */
   echo?: EchoMemory;
   /**
@@ -58,8 +69,17 @@ export type OutboundRouterOptions = {
    * is idle, reaches the thread. `brief`, the default when absent, posts the one-line notice
    * `renderTaskNotice` composes in place of the injected report; `full` mirrors the whole report
    * exactly as an ordinary prompt; `off` posts nothing and leaves a log line. Applied on both
-   * paths a prompt reaches a thread by, the hook-carried mirror and the queued prompt the
-   * transcript tailer extracts, so one wake prompt gets one answer whichever way it arrived.
+   * paths a prompt reaches a thread by, the hook-carried mirror and the prompts the transcript
+   * tailer reads, so one wake prompt gets one answer whichever way it arrived.
+   *
+   * That one answer rests on the harness's own stamping rather than on there being one path. Every
+   * task-notification user line the harness writes carries `promptSource` `system` or `sdk` with
+   * `origin.kind` `task-notification`, so the tailer's turn-open reading refuses the shape at its
+   * first lock and only the hook-carried mirror ever sees a wake; the queued reading admits the
+   * mid-turn shape the harness queues, which is the other way one arrives. Should a revision start
+   * stamping a wake the way it stamps a typed prompt, both paths would see one wake and the setting
+   * would apply twice to it, which is why the treatment is identical on both rather than owned by
+   * one.
    */
   taskNotifications?: "brief" | "full" | "off";
   /**
@@ -385,11 +405,24 @@ export type OutboundRouter = {
    * for the same reason, because whichever line shape the harness records it under, the operator's
    * own channel message must not echo back into the thread it was typed in.
    *
+   * The tailer also recovers the typed prompt that opens a turn, which the `UserPromptSubmit`
+   * mirror normally posts first and loses outright when the harness times that hook out. So for
+   * that shape alone, named by `source`, this path claims its own echo slot and consults the
+   * mirror's, and whichever gets there first suppresses the other's exact repeat: the healthy case
+   * reads as it always did, one copy under one attribution, and a lost hook costs a prompt arriving
+   * a poll interval late rather than never. The queued shape neither claims nor consults, having
+   * fired no hook and so having no second copy for either operation to answer for.
+   *
    * Delivered through the thread's ordering chain, so the post takes its place among the messages
    * around it and ends any narration block being grown there: the operator's message is newer than
    * the narration above it, and the next chunk belongs below it.
    */
-  interimPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
+  interimPrompt: (
+    sessionId: string,
+    text: string,
+    source: PromptSource,
+    at: number | null,
+  ) => Promise<ReplyResult>;
   /**
    * Posts one peer message the transcript tailer read, in either direction, to the session's own
    * thread.
@@ -721,6 +754,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     sessionId: string,
     text: string,
     messages: string[],
+    slot: EchoSlot,
     reclaim: () => void,
     subject: string,
     firstError: string,
@@ -738,7 +772,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       );
       return retry;
     }
-    options.echo?.release(sessionId, text);
+    options.echo?.release(sessionId, text, slot);
     log(
       `routing: the ${subject} from session ${sessionId} reached the thread by neither path: the ` +
         `run the other path deferred to landed nothing (${firstError}) and its one retry landed ` +
@@ -981,6 +1015,13 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // stamp, and a machine-generated prompt clears a standing block again, silently. A false
       // positive withholds the stamp from words a person really typed, and the block they typed to
       // clear stands until their next completed tool call.
+      // Taken here, above this path's own dedup consult, and deliberately still taken when that
+      // consult goes on to suppress this copy. This hook fires as the operator presses return, so
+      // its stamp is the instant they spoke however the words reach the thread, and it cannot be
+      // newer than a block raised by the turn the prompt started: that block comes from the same
+      // turn's `Stop`, which is later by construction. The transcript-read path stamps below its
+      // consult instead, because it reads the line up to a poll interval after it was written and
+      // a stamp there would land past whatever the session did in between.
       if (kind === "prompt" && delivery === null && !isTaskNotification(text)) {
         options.registry.engage(located.sessionId);
       }
@@ -1081,26 +1122,75 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "failed", error: "the message was empty" };
       }
 
+      // The dedup against the tailer's own reading of the prompt that opened this turn, which it
+      // recovers off the transcript whenever this hook is slow or lost. Consulted here rather than
+      // beside the reply's check above, because everything between decided what this text is: a
+      // channel echo, a wake notice, and a peer delivery are all dropped or redrawn before this
+      // line, so the slot only ever answers for prompts drawn in the operator's own register, and
+      // the tailer's copy of one went through the same gauntlet. Reported sent on the reply
+      // branch's own rule: the text is in front of the operator, it just got there by the other
+      // path.
+      //
+      // Nothing is recorded on this branch, unlike the reply echo above. A claim asserts that a run
+      // is putting this text on the thread right now, and this branch is putting nothing on the
+      // thread: a record made here would stand over a copy this path never posted and suppress the
+      // operator's next retype of the same words.
+      //
+      // The line states what the slot makes knowable and no more. `promptTailer` is written only by
+      // the tailer's own delivery seam, at dispatch, so a match here means the tailer dispatched a
+      // transcript-read copy of this text to this thread ahead of this hook, inside the claim
+      // window. Whether that dispatch landed is a separate question its own run answers, in its own
+      // line if it landed nothing by either path.
+      if (
+        kind === "prompt" &&
+        options.echo?.isPromptEcho(located.sessionId, text, "mirror") === true
+      ) {
+        dropped(
+          `the mirrored prompt from session ${located.sessionId} was dropped, the tailer had ` +
+            `already dispatched the same text to this thread, read off the transcript`,
+        );
+        return { status: "sent" };
+      }
+
       // The digest is claimed here, as the run is dispatched, rather than after it lands. A long
       // reply posts as several paced messages, so a digest recorded on the way out would sit
       // seconds behind the check that needed it, and the tailer polling inside those seconds would
       // find a gap and post the same text as narration. Released below when the run lands nothing
       // at all, which is what keeps a reply the transport refused from appearing nowhere: the text
-      // is then still owed to whichever path can post it.
-      if (kind === "reply") options.echo?.noteReply(located.sessionId, text);
+      // is then still owed to whichever path can post it. A prompt claims its own slot on the same
+      // reasoning and against the same reader, and normally wins the race outright: this hook fires
+      // within milliseconds of the operator pressing return, and the tailer's copy a poll behind.
+      //
+      // Named by kind rather than assumed, so a mirror kind added to the vocabulary without a slot
+      // of its own claims nothing and costs a duplicate at worst, never a suppression it has no
+      // record to answer for. The slot rides beside the claim so the release below gives up this
+      // run's own record and never one another path is standing on.
+      const claimed: { slot: EchoSlot; claim: () => void } | null =
+        kind === "reply"
+          ? { slot: "reply", claim: () => options.echo?.noteReply(located.sessionId, text) }
+          : kind === "prompt"
+            ? {
+                slot: "prompt-mirror",
+                claim: () => options.echo?.notePrompt(located.sessionId, text, "mirror"),
+              }
+            : null;
+      claimed?.claim();
       const run = await deliver(located.threadId, messages);
       if (run.error === null) return { status: "sent" };
-      if (kind === "reply" && run.landed === 0) {
+      if (claimed !== null && run.landed === 0) {
         // The release reports whether the tailer had already skipped its own copy of this text over
         // this claim. If it had, its transcript bytes are behind its offset and this run is the last
-        // thing carrying the text, so it goes again once.
-        if (options.echo?.release(located.sessionId, text) === true) {
+        // thing carrying the text, so it goes again once. The release itself matters even when
+        // nothing deferred: a claim left standing over text that never landed is what would make
+        // the tailer skip the only copy still recoverable.
+        if (options.echo?.release(located.sessionId, text, claimed.slot) === true) {
           const retry = await retryDeferredRun(
             located.threadId,
             located.sessionId,
             text,
             messages,
-            () => options.echo?.noteReply(located.sessionId, text),
+            claimed.slot,
+            () => claimed.claim(),
             `mirrored ${kind}`,
             run.error,
           );
@@ -1233,13 +1323,15 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // have grown is gone either way, and the fail direction of coalescing is more messages rather
       // than lost narration. A chunk that rendered to nothing is excluded by the count below, since
       // there is nothing to post a second time.
-      const deferred = run.landed === 0 && options.echo?.release(sessionId, text) === true;
+      const deferred =
+        run.landed === 0 && options.echo?.release(sessionId, text, "interim") === true;
       if (deferred && run.total > 0) {
         const retry = await retryDeferredRun(
           threadId,
           sessionId,
           text,
           renderMirror("interim", text),
+          "interim",
           () => options.echo?.noteInterim(sessionId, text),
           "interim narration",
           run.error,
@@ -1260,39 +1352,53 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       return { status: "failed", error: run.error };
     },
 
-    async interimPrompt(sessionId, text) {
+    async interimPrompt(sessionId, text, source, at) {
       const threadId = options.threadFor(sessionId);
       // Dropped, never queued, like every other post here, and the line carries the cause and the
-      // session and never the text: a queued prompt that never lands is silence in the thread,
-      // which reads exactly like a session nobody typed at.
+      // session and never the text: a prompt that never lands is silence in the thread, which reads
+      // exactly like a session nobody typed at.
+      //
+      // "Transcript-read" rather than "queued" throughout this path's lines, because two shapes
+      // arrive here and an operator reading one of them has to know which was lost: the mid-turn
+      // message the harness queues without firing a hook, and the turn-opening prompt recovered
+      // after the hook was lost. Both are prompts this router read off the transcript, and neither
+      // is described by the other's name.
       if (threadId === null) {
         dropped(
-          `the queued prompt from session ${sessionId} was dropped, its thread is not open yet`,
+          `the transcript-read prompt from session ${sessionId} was dropped, its thread is not ` +
+            `open yet`,
         );
         return { status: "no-thread" };
       }
 
       // The same peer classification the mirror path takes, held in one reading so the two paths
-      // cannot answer differently about one message. The tailer's own line gate admits a queued
-      // prompt only where the harness marked it typed at the console, so what this catches here is
-      // a shape that gate ever came to admit rather than anything observed today; the reading costs
-      // one prefix test and the failure it forecloses is a peer's text in the operator's register.
+      // cannot answer differently about one message. The tailer's own line gates admit a prompt
+      // only where the harness marked it typed at the console, so what this catches here is a shape
+      // those gates ever came to admit rather than anything observed today; the reading costs one
+      // prefix test and the failure it forecloses is a peer's text in the operator's register.
       const delivery = crossSessionDelivery(text);
 
-      // The queued prompt's own engagement stamp, on the mirror path's reasoning exactly: a person
-      // is driving, and neither the envelope check below nor the delivery after it changes that,
-      // while the harness's wake injection and a peer session's message are not a person and are
-      // excluded on both paths under every notification and peer setting, in both failure directions
-      // the mirror path's own comment names: a recognizer that stops matching restores the stamp for
+      // The queued shape's engagement stamp, on the mirror path's reasoning exactly: a person is
+      // driving, and neither the envelope check below nor the delivery after it changes that, while
+      // the harness's wake injection and a peer session's message are not a person and are excluded
+      // on both paths under every notification and peer setting, in both failure directions the
+      // mirror path's own comment names: a recognizer that stops matching restores the stamp for
       // machine-generated text, and one that matches too much withholds it from a person. A session
       // whose thread is not open yet is dropped whole above and stamps nothing, which costs one
       // prompt's worth of engagement at the start of a session's life.
-      if (delivery === null && !isTaskNotification(text)) options.registry.engage(sessionId);
+      //
+      // Here, ahead of everything, because a queued message consults nothing: it has no second copy
+      // anywhere, so every one of them is words a person just typed and no later branch can find
+      // them already accounted for. The turn-opening shape stamps further down, where that question
+      // has been asked.
+      if (source === "queued" && delivery === null && !isTaskNotification(text)) {
+        options.registry.engage(sessionId, at ?? undefined);
+      }
 
       if (fromChannel(text)) {
         dropped(
-          `the queued prompt from session ${sessionId} was dropped, it is the operator's own ` +
-            `channel message echoed back to the thread it was posted in`,
+          `the transcript-read prompt from session ${sessionId} was dropped, it is the ` +
+            `operator's own channel message echoed back to the thread it was posted in`,
         );
         return { status: "failed", error: "the message came from the channel" };
       }
@@ -1331,10 +1437,74 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // thread is worth a line.
       if (messages.length === 0) {
         dropped(
-          `the queued prompt from session ${sessionId} was dropped, it carried no visible text`,
+          `the transcript-read prompt from session ${sessionId} was dropped, it carried no ` +
+            `visible text`,
         );
         return { status: "failed", error: "the message was empty" };
       }
+
+      // The dedup against the `UserPromptSubmit` mirror, which carries the prompt that opens a turn
+      // and which this path recovers off the transcript when that hook was slow or timed out. In
+      // the mirror path's own position, after every check that decides what this text is, so the
+      // two paths meet the pair having answered the same questions of it. Reported sent: the
+      // operator is looking at their words already, sent by the faster path, which under a healthy
+      // broker is the hook.
+      //
+      // The turn-opening shape alone, because it is the only one that exists twice. A queued
+      // mid-turn message fires no hook, so nothing else is carrying it, and a consult here could
+      // only drop the operator's words against a claim the mirror left over some earlier prompt of
+      // the same text.
+      //
+      // The slot read is the mirror's, never this path's own, so the line states which path
+      // dispatched the surviving copy rather than which path usually does, and two identical
+      // prompts read off the transcript in one turn both post. `promptMirror` is written only by
+      // the mirror seam, at dispatch, and refused once older than the claim window, so a match here
+      // means the hook dispatched this text to this thread within that window and ahead of this
+      // read.
+      //
+      // Nothing is recorded on this branch, the mirror branch's rule and for its reason: a claim
+      // asserts a run is putting this text on the thread now, and this branch posts nothing, so a
+      // record here would stand over a copy this path never sent.
+      if (source === "turn-open" && options.echo?.isPromptEcho(sessionId, text, "tailer") === true) {
+        dropped(
+          `the transcript-read prompt from session ${sessionId} was dropped, the mirror hook had ` +
+            `already dispatched the same text to this thread`,
+        );
+        return { status: "sent" };
+      }
+
+      // The turn-opening shape's engagement stamp, below the consult above rather than beside the
+      // queued one. A turn-opening prompt reaches the registry by the hook as well, which stamps at
+      // the instant the operator pressed return, and this read of the same line lands up to a poll
+      // interval later. Stamping again for a prompt the hook already accounted for moves
+      // `lastEngagementAt` forward in time with no person behind the move, and the blocked
+      // derivation reads exactly that field against the latest `goal-blocked` event: a session that
+      // stopped blocked inside the interval would be cleared by this path and render as idle. So
+      // the stamp is taken only where nothing was suppressed, which is the copy that is the
+      // operator's only one.
+      //
+      // The wake test is still live here, because `full` mirrors a wake as an ordinary prompt and
+      // falls through to this line; a peer delivery cannot reach it, having been redrawn and
+      // returned above under its own attribution.
+      //
+      // The cost of the position: a turn-opening prompt that is the operator's own channel message
+      // echoed back, or one that renders to nothing, is refused above this line and stamps nothing
+      // on this path. It is the intersection of a lost hook with a prompt that was never going to
+      // post, and it costs one stamp that the operator's next completed tool call replaces.
+      if (source === "turn-open" && !isTaskNotification(text)) {
+        options.registry.engage(sessionId, at ?? undefined);
+      }
+
+      // Claimed as the run is dispatched rather than after it lands, the interim chunk's own
+      // arrangement: a prompt long enough to split posts as several paced messages behind whatever
+      // holds the thread's chain, and a mirror hook arriving inside that window would find a gap
+      // and post the operator's words a second time. Released below when the run lands nothing.
+      //
+      // The turn-opening shape alone, on the consult's reasoning: a claim over a queued message
+      // answers no copy this broker will ever see, and the only thing it could do is swallow a
+      // later turn-opening prompt carrying the same words.
+      const claiming = source === "turn-open";
+      if (claiming) options.echo?.notePrompt(sessionId, text, "tailer");
 
       // Through the chained doorway, which clears the thread's narration state as the run goes on
       // the wire: what follows the operator's message posts fresh below it rather than growing the
@@ -1342,10 +1512,35 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       const run = await deliver(threadId, messages);
       if (run.error === null) return { status: "sent" };
 
-      // The counts and the transport's error class only: a queued prompt is conversation content,
-      // and it never appears in the broker log at any level.
+      // The release hands the text back to the mirror path, which is the failure direction this
+      // whole pair is built around: a claim standing over a prompt that never landed would silence
+      // the one copy still able to reach the thread. Its report says the mirror had already dropped
+      // its own copy over this claim, in which case nothing else is carrying the operator's words
+      // and this run goes again, once. Reached only where a claim was made, since a run that
+      // claimed nothing has nothing to give up and no other path to give it back to.
+      if (
+        claiming &&
+        run.landed === 0 &&
+        options.echo?.release(sessionId, text, "prompt-tailer") === true
+      ) {
+        const retry = await retryDeferredRun(
+          threadId,
+          sessionId,
+          text,
+          messages,
+          "prompt-tailer",
+          () => options.echo?.notePrompt(sessionId, text, "tailer"),
+          "transcript-read prompt",
+          run.error,
+        );
+        if (retry.error === null) return { status: "sent" };
+        return { status: "failed", error: retry.error };
+      }
+
+      // The counts and the transport's error class only: a prompt is conversation content, and it
+      // never appears in the broker log at any level.
       log(
-        `routing: the queued prompt from session ${sessionId} stopped after ` +
+        `routing: the transcript-read prompt from session ${sessionId} stopped after ` +
           `${run.landed} of ${messages.length} messages: ${run.error}`,
       );
       return { status: "failed", error: run.error };
