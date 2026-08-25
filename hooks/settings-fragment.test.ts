@@ -271,12 +271,18 @@ test("the mirror hooks post content to their own route on their own timeout", ()
     "the content-bearing route is for the UserPromptSubmit and Stop mirror posts",
   );
   for (const { event, hook } of mirror) {
-    // Bounded on both sides. The ceiling keeps a slow broker from stalling a turn; the floor is what
-    // stops a later edit from quietly cutting the content-bearing post to the liveness tick's budget,
-    // which would abandon the largest replies, the ones the mirror exists to carry.
-    assert.ok(
-      typeof hook.timeout === "number" && hook.timeout >= 3 && hook.timeout <= 10,
-      `${event}'s mirror timeout must leave room for a whole reply and still bound the turn`,
+    // One exact value rather than a band, because both directions off it are wrong in ways a range
+    // would admit. Below it, a saturated host exceeds the budget: the mirror is what carries the
+    // operator's typed prompt, and intake.ts answers 202 only once it has read the whole body, so
+    // a hook the CLI abandons before that point posts nothing at all, while one abandoned after it
+    // still reaches the thread. What the value buys is the broker's room to reach that answer
+    // under load. Above it, the harness holds the turn open while the hook runs, so the cost lands
+    // on every prompt in every session on the machine, watched or not, and that trade is the
+    // operator's to make in the fragment rather than a later edit's to make quietly here.
+    assert.equal(
+      hook.timeout,
+      10,
+      `${event}'s mirror timeout is 10s, the ceiling of the band that leaves room for a whole reply`,
     );
   }
 });

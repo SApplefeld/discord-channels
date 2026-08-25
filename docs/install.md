@@ -140,6 +140,25 @@ directory. Re-run the installer after moving or re-cloning the repository; the l
 to start a session when the installed hook points somewhere else, rather than letting every session
 run unwatched.
 
+The two mirror hooks carry a 10-second timeout, pinned to that exact value by the test suite.
+They post the console prompt and the turn's final reply, which are larger than a liveness tick
+and slower to accept, and the CLI holds the turn open while the post runs, so the value is what a
+prompt pays at worst when the broker is busy rather than a cost every prompt pays. It is paid by
+every session on the machine, though, not only the ones being watched: these hooks are installed
+user-level and fire for every Claude Code session on the host.
+
+A session saturated enough to blow through the timeout says so at the console, on a line
+beginning `UserPromptSubmit hook timed out after 10s`. That prompt does not reach the thread and
+cannot be recovered, which is what makes it worth watching for: the thread then shows a reply
+with no question above it. A run of those means the host is oversubscribed.
+
+Changing the value means editing the fragment and its pin together. A timeout edited by hand in
+a host's own `~/.claude/settings.json` does not survive: the installer recognizes this project's
+hook entries by their headers, ignores their timeouts, and re-adds them from the fragment as
+written. For the same reason a host already installed keeps whatever value it was installed with
+until its next `Install-Host` run, and nothing at launch reports the difference, so a fleet host
+that has not been re-installed since a timeout change is still running the old one.
+
 ## 3. Install the service
 
 Elevated, once:

@@ -1,6 +1,6 @@
 # Channels: mirror fidelity under machine load
 
-Status: Ready
+Status: In Progress
 Commit Model: Commit-and-Push
 Created: 2026-08-25
 
@@ -62,16 +62,21 @@ so the tree is never shared.
 ### 1. The mirror timeout raise (fragment)
 
 Model: sonnet
+Locus: inline
 
 In `hooks/settings-fragment.json`: both mirror entries' `timeout` from 5 to 10, the top of the
 designed band. In `hooks/settings-fragment.test.ts`: the band pin tightens to assert the value is
-exactly 10 rather than a range that 5 also satisfies, with the comment carrying the load reasoning:
-5s was observed insufficient on a saturated host (2026-08-25, five sessions plus a test gate), 10
-is the band's own ceiling, and the escalation past 10 is a design decision about per-prompt latency
-that belongs to the operator, not to a future edit that quietly widens the band. The fragment's
-`_comment` and `docs/install.md`'s deploy note say what is true now: mirror timeouts are 10s;
-hosts pick the fragment up at their next `Install-Host` run. The liveness ticks' 2s and the
-question hook's hold-ceiling margin are untouched, and the existing pins prove it.
+exactly 10 rather than a range that 5 also satisfies. The comment carries the reasoning as
+present-tense fact rather than as a dated observation, which is the house rule for a shipped
+artifact: below the value a saturated host exceeds the budget and the prompt is lost, above it the
+cost lands on every session on the machine, and the trade is the operator's to make in the
+fragment rather than a later edit's to make quietly in the pin. The load observation and its date
+live in the Chapter. The fragment's `_comment` and `docs/install.md`'s deploy note say what is
+true now: mirror timeouts are 10s, changing one means editing the fragment and its pin together
+because a host-side edit does not survive the installer's merge, and hosts pick the fragment up at
+their next `Install-Host` run with nothing at launch reporting the drift until they do. The
+liveness ticks' 2s and the question hook's hold-ceiling margin are untouched, and the existing
+pins prove it.
 
 Acceptance: the fragment carries 10 on exactly the two mirror entries; the suite is green; no
 other timeout moved.
@@ -129,4 +134,52 @@ curation, archive the plan.
 
 ## Chapters
 
-(Ready; none yet.)
+### Chapter 1 - 2026-08-25
+Completed: 1. The mirror timeout raise (fragment)
+Implemented By: main session
+Metrics: 1 review round; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The section carries `Model: sonnet` and ran inline anyway, because it
+writes `docs/install.md` and the docs-write-guard denies a non-curator subagent that write; the
+section now records `Locus: inline` so the override reads as a routing decision rather than a
+downgrade. The plan header arrived as `Status: Ready`, outside the kit's two-value vocabulary,
+and was normalized to `In Progress` at the run's open so the SessionStart recovery inventory can
+see it. Two surprises came out of the review round, both confirmed at source rather than taken on
+report. First, a mirror timeout edited by hand in a host's own `~/.claude/settings.json` does not
+survive: `Test-IsChannelHookEntry` recognizes this project's entries by their
+`X-Channel-Hook-Event` header and never reads their timeout
+(`install/Install-Functions.ps1:92-108`), and `Merge-ChannelHooksFragment` then drops and re-adds
+them from the fragment verbatim (`:349-368`). The fragment's comment had invited exactly that
+edit; it now names the two-file change that actually works. Second, the loss window for a timed
+out `UserPromptSubmit` is narrower than the spec's framing: `broker/intake.ts:807-817` answers
+202 only after reading the whole body and then delivers fire-and-forget, so a hook the CLI
+abandons after that point still reaches the thread and one abandoned before it posts nothing.
+What the raised value buys is the broker's room to reach that answer under load, which is a
+better statement of the same fix, and the shipped comment says it that way.
+Assumptions: The spec asked for a deploy note in `docs/install.md` stating the timeout; neither
+that file nor `docs/operations.md` stated any timeout, so there was no stale figure to correct and
+the note was written new, placed after the user-level-settings paragraph (declared 2026-08-25,
+section 1). The spec directed the pin's comment to carry the load observation with its date; the
+house rule keeps a dated change narrative out of a shipped artifact, so the comment states the
+reasoning in the present tense and the observation lives here instead (declared 2026-08-25,
+section 1). Spec section 1 was updated to match both, per the deviation rule.
+Review Findings: One Critical, addressed: the first draft of the deploy note claimed the tailer
+recovers a lost prompt, which is section 2's unbuilt work, and under Commit-and-Push that doc
+would have reached origin while false. The note now states the loss plainly; section 3 adds the
+recovery sentence once the code exists. Two Majors. The first is addressed: the fragment comment
+invited a host-side edit the installer silently reverts. The second is justified rather than
+fixed: nothing at launch compares an installed host's mirror timeout against the fragment, so
+every already-installed host keeps 5 with no surface reporting the drift. Adding a launch-time
+assertion is a different surface from this section's, and the spec already routes the deployment
+through section 3's `Install-Host` walk; the drift is now stated in `docs/install.md` so it is at
+least visible where an operator reads. Six Minors, five fixed (band-versus-exact-pin prose on both
+surfaces, a quoted console line truncated before the character that was substituted out of it, the
+dated narrative in the pin comment, the overstated loss window, the unnamed machine-wide blast
+radius of the raise) and one noted: the literal 10 now sits in the fragment, the pin, and
+`docs/install.md`, and only the first two are mechanically held together.
+Stamps: adjudicated 7, stamped 7. `memq unstamped --since 2h` reported zero in both tiers, so the
+seven were adjudicated off the recall digest's own hits: the CRLF-per-file rule and the
+read-the-bytes verification, the `sed -i` strips-CR trap, the node:test count-line glyph, the
+probe-with-a-control discipline, the reviewer tier substitution, and the JS replace dollar-sequence
+trap. Each steered a concrete step in this section.
+Next: 2. Turn-opening prompt recovery (tail, echo memory, outbound)
+Commit Model: Commit-and-Push
