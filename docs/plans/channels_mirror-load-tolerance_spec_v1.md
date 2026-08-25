@@ -53,6 +53,19 @@ card staleness and a late engagement stamp rather than content, and the next tic
   commands is unestablished; the recovery below therefore excludes command-markup lines, which
   keeps it inside what the mirror observably posts today.
 
+## Standing Brief Amendments
+
+Every entry here binds every section opened after it, dispatched or inline.
+
+- **A comment, doc line, or log line states only what the code actually does.** Two review rounds
+  produced this class in a row: section 1 shipped a deploy note claiming a recovery that did not
+  exist yet, and section 2 shipped a fail-direction comment describing behaviour its own code
+  contradicted plus two drop lines naming a path the code cannot know was involved. Before writing
+  any explanatory line, trace the claim through the code you just wrote and confirm it holds in
+  every configuration the knobs allow, the single-path ones included. A drop or log line in
+  particular is the operator's only discriminator between a deliberate suppression and a broken
+  path, so it states what is known rather than what is usually true.
+
 ## Sections of work
 
 Gates for every section: `npm run lint`, `npm test`, baseline captured before the first change.
@@ -118,9 +131,14 @@ Model: fable
 On a real session: type a prompt with the broker healthy and confirm one copy in the thread; stop
 the broker's answer path or induce load (a second gate run suffices) and confirm the prompt still
 lands from the tailer within a poll interval; confirm a slash command mirrors exactly as it did
-before this plan. Update `docs/architecture.md` (the mid-turn narration section's three line shapes
-become four, and the one-copy story now covers prompts) and `docs/operations.md`/`docs/install.md`
-where the timeout is stated. Deploy: the fragment change reaches SCOTT, NEO, and ASR at their next
+before this plan. Update `docs/architecture.md` (the mid-turn narration section's line-shape count and the
+one-copy story, which now covers prompts) and `docs/operations.md`/`docs/install.md` where the
+timeout is stated. `docs/security-model.md` is in scope too: its allowlist enumeration of the
+shapes the tailer admits gains the turn-opening prompt, and its accepted risk on the operator
+attribution resting on the transcript file now covers the ordinary turn-opening prompt through a
+shallower shape rather than the mid-turn message alone. The precondition has not changed, since
+both rest on write access to the transcript, but the enumeration is the control a reader checks
+against, and nothing else in this plan would have caught it. Deploy: the fragment change reaches SCOTT, NEO, and ASR at their next
 `Install-Host` plus broker restart; add that to the backlog's deploy walk rather than a new item.
 
 ### 4. Finishing
@@ -182,4 +200,63 @@ read-the-bytes verification, the `sed -i` strips-CR trap, the node:test count-li
 probe-with-a-control discipline, the reviewer tier substitution, and the JS replace dollar-sequence
 trap. Each steered a concrete step in this section.
 Next: 2. Turn-opening prompt recovery (tail, echo memory, outbound)
+Commit Model: Commit-and-Push
+
+### Interim board 1 - 2026-08-25
+Section 1 is closed and pushed as `a22adcf`. Section 2 has taken two review rounds and is about to
+take a third dispatch. Nothing is in flight as this is written; no dispatch is live.
+
+**Section 2's stage.** Built, gates green, twice reviewed. Round 1 (adversarial, blind, security,
+all at opus/max) returned one Critical all three found independently: the echo memory's prompt slot
+carried no record of which path claimed it, so a path consumed its own claim and a repeated prompt
+was dropped with `status: "sent"` and nothing posted. Reachable on a host with `CHANNEL_MIRROR` on
+and `CHANNEL_INTERIM_MIRROR` off, and also whenever an unconsumed claim is left standing, which the
+tailer's own offset rules produce (a transcript past the read ceiling, a freshly learned session, a
+broker restarted mid-turn). Fixed by tagging each claim with the path that made it, with three
+regression tests watched red first. Round 2 (adversarial, blind, at opus/xhigh) returned no
+Critical and several Majors that share one root: one overwritable, turn-unbounded record cannot
+serve two message shapes whose path counts differ. A queued mid-turn message fires no hook and so
+has no second copy to dedup against, yet it claims and consults the same slot a turn-opening prompt
+does; a fresh claim by either path wipes the deferral bit the other path's still-running delivery
+needs; and a claim outlives its turn, so a stale one suppresses a later identical prompt with no
+live competitor. The claimant tag was a correct fix for round 1's defect and does not reach these.
+
+**Live dispatches.** None. Round 2's first attempt (three reviewers at opus/max) wedged: all three
+transcripts stopped growing within the same second, ended mid-tool-result, and the run's journal
+held only `started` lines for 49 minutes. Read as a common-cause environment fault rather than
+three independent stalls, stopped with TaskStop, and re-dispatched once as two reviewers at
+opus/xhigh, which returned normally. The security reviewer was not re-run in that second attempt;
+section 4's finishing pass runs a security-reviewer over the whole changeset, which is where that
+coverage lands.
+
+**Gate baseline.** Section 1's opening baseline was 1463 tests, 1462 pass, 0 fail, 1 skipped, exit
+0. The tree now stands at 1492 / 1491 / 0 / 1, lint exit 0, measured by the implementer on a box
+carrying no review agents. This session's own full-suite run, taken while three review agents
+worked the same box, came back
+with one failure, `a tailer run that landed nothing after the mirror deferred still gets the text
+posted`, inside `tail.test.ts`'s own `until` helper. Three isolated runs of that file returned
+152/152 exit 0. That is the flake `docs/backlog.md` already records with receipts from a clean tree
+at `3417f79`, predating every line of this plan; this section added a member to the group it
+covers, and the backlog entry now says so.
+
+**Rulings adopted since the last boundary.**
+- Section 1 ran inline despite its `sonnet` tier, because it writes `docs/install.md` and the
+  docs-write-guard denies a non-curator subagent that write. Recorded as `Locus: inline`.
+- The plan header's `Status: Ready` was normalized to `In Progress`, the kit's own vocabulary.
+- Section 1's second Major, that nothing at launch compares an installed host's mirror timeout
+  against the fragment, was justified rather than fixed: adding a launch-time assertion is a
+  different surface, and the spec already routes deployment through section 3's `Install-Host`
+  walk. The drift is now stated in `docs/install.md` where an operator reads.
+- A `## Standing Brief Amendments` block was created after two consecutive rounds produced the same
+  class: a comment, doc line, or log line that asserts something the code does not do. It binds
+  every section opened after it.
+- `docs/security-model.md` was added to section 3's docs scope. Its allowlist enumeration of the
+  shapes the tailer admits is stale against section 2's new shape, and nothing else in this plan
+  would have caught it.
+
+**Next action per section.** Section 2: adjudicate round 2 through a consult on the spec's own
+one-slot premise, since the defect class repeated across two rounds and the implementer executed
+the brief faithfully both times, which points at the premise rather than the tier. Then re-dispatch
+with the ruling folded in, re-review, and close. Section 3 (live verification and docs) and section
+4 (finishing) follow in order.
 Commit Model: Commit-and-Push

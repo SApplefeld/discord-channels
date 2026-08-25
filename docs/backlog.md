@@ -35,7 +35,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   gets the text posted" each failed the same way, always with the `until` helper's "the condition
   never held", always green alone and in-file (111/111 across repeated runs) and green on full-suite
   re-run, so the flake covers the in-flight echo-dedup group in `tail.test.ts`, not one test, and
-  the shared `until` polling window under parallel suite load is the prime suspect.
+  the shared `until` polling window under parallel suite load is the prime suspect. The group has
+  since grown: the prompt slot's own deferral tests joined it on 2026-08-25, and "a tailer run that
+  landed nothing after the mirror deferred still gets the text posted" failed the same way in a
+  full-suite run taken while three review agents were working the same box, then passed 152/152 in
+  each of three isolated runs of the file. A separate full-suite run over the same code, taken on a
+  box carrying no review agents, came back 1492/1491/0/1 exit 0. So the member list tracks whatever
+  the echo-dedup group holds rather than a fixed set of names, and the fix belongs in the helper.
 
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
   from the title-states security review).** `classifyMessage`'s thread branch drops
