@@ -40,7 +40,10 @@ and none carries a date of its own. An item added from here on carries `(parked 
   landed nothing after the mirror deferred still gets the text posted" failed the same way in a
   full-suite run taken while three review agents were working the same box, then passed 152/152 in
   each of three isolated runs of the file. A separate full-suite run over the same code, taken on a
-  box carrying no review agents, came back 1492/1491/0/1 exit 0. So the member list tracks whatever
+  box carrying no review agents, came back 1492/1491/0/1 exit 0. "A reply record left by a deferral
+  dies with the interim run that never landed" joined on the same day, failing once in a full-suite
+  run with the same "the condition never held", then passing 159/159 in each of three isolated runs
+  and green on the next full-suite run at 1505/1504/0/1 exit 0. So the member list tracks whatever
   the echo-dedup group holds rather than a fixed set of names, and the fix belongs in the helper.
 
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
@@ -140,8 +143,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   [`archive/plans/channels_usage-card_spec_v1.md`](archive/plans/channels_usage-card_spec_v1.md)
   and
   [`archive/plans/channels_mirror-fidelity-repairs_spec_v1.md`](archive/plans/channels_mirror-fidelity-repairs_spec_v1.md).
-  1. Pull and restart the broker on SCOTT, NEO and ASR, and set `CHANNEL_USAGE_CARD` on wherever
-     the fleet card is wanted. Nothing else on this list can run before this.
+  1. Pull, re-run `Install-Host`, and restart the broker on SCOTT, NEO and ASR, and set
+     `CHANNEL_USAGE_CARD` on wherever the fleet card is wanted. The `Install-Host` run is what
+     carries the mirror hooks' 10-second timeout onto a host: an installed host keeps the value it
+     was installed with until then, and nothing at launch reports the difference. That run is not
+     a bare re-invocation, so it is a keyboard job rather than a phone one: `-HostName`,
+     `-ChannelId` and `-AllowedUserId` are mandatory, and the bot token is prompted for as a
+     SecureString unless `-BotToken` or `-BotTokenFile` supplies it. Nothing else on this list can
+     run before this.
   2. Read both cards on a phone and confirm neither costs a horizontal drag. The width bound counts
      code points, while a glyph-led line can draw one column wider, so this is the check the bound
      itself cannot make. The downgrade marker's glyph beside the state glyph is read in the same
@@ -186,6 +195,30 @@ and none carries a date of its own. An item added from here on carries `(parked 
   11. Confirm the board card takes and keeps a pin beside the usage card. The pin list's permanent
      slot became a list for this, and that arithmetic was verified against a test double rather than
      a live channel's pin ceiling.
+  12. Confirm a turn-opening prompt survives a lost mirror hook. Read the broker log for this, not
+     the thread alone: both paths render the prompt identically, so a prompt in the thread says
+     nothing about which path put it there. Run it on a session the tailer has already polled since
+     the restart in step 1, and not on a prompt typed before the tailer had a baseline for that
+     session, which sits behind the read position and is not recoverable by design. Type a prompt
+     with the host
+     quiet and confirm one copy in the thread beside a `routing: the transcript-read prompt from
+     session <id> was dropped, the mirror hook had already dispatched the same text to this thread`
+     line, which is the healthy race. Then take the mirror's copy away while leaving everything
+     else running, and read the same log. Load alone is not that test: the broker answers 202 once
+     it has read the body, so a hook the CLI abandons after that point still posts and the mirror
+     still wins. What is needed is a `UserPromptSubmit` post the broker never receives while `/hook`
+     posts keep flowing, so the session stays armed and polled; pointing that one hook entry's URL
+     at a dead port in the host's own settings is the candidate, and it is untried, because no
+     mechanism for this was exercised before shipping. Whatever induces it, the session must have
+     been armed and polled since the last broker restart, since a restart re-baselines the tailer
+     past anything already written. With the mirror's copy gone the prompt should reach the thread
+     up to a poll interval late with no drop line at all, which is the recovery carrying it alone;
+     a drop line means the mirror got through after all and the run must be repeated.
+     Confirm in the same pass that a slash command mirrors exactly as it
+     did before, since the recovery excludes command lines by design. Every ordering of the two
+     copies was exercised against a clock a test moves; what no test supplies is a real hook the CLI
+     actually abandons. The plan is
+     [`plans/channels_mirror-load-tolerance_spec_v1.md`](plans/channels_mirror-load-tolerance_spec_v1.md).
 - Confirm what Discord does with a rename on a still-archived thread. Inferred, never established:
   after the archive-revive fix, a session woken by hook traffic alone leaves the broker's archived
   flag cleared while Discord's thread may still be archived. If Discord refuses the rename as a
@@ -207,6 +240,24 @@ and none carries a date of its own. An item added from here on carries `(parked 
   deploy a keyboard trip on 2026-08-08; the corrected `claude-sessions-on-scott-run-elevated`
   memory carries the failure matrix). The task's own elevation is exactly what the startup script
   can use to clear the port safely, under the same proof discipline, never by name.
+
+- `COMMAND_NAME` in `broker/tail.ts` scans quadratically on a line carrying many unclosed
+  `<command-name>` tokens: a 224 KB synthetic line measured 403 ms of blocked event loop, against
+  1.7 ms at a thousand repeats. Found by the security review of the mirror-load-tolerance round and
+  left there deliberately: it is bounded by `MAX_TAIL_READ_BYTES` at 256 KB per pass, and reaching
+  its input is any user line the console-origin gate admits, which is a same-user write to a live
+  transcript, the accepted risk `security-model.md` already carries, plus the harness's own local
+  command output, so it is a hardening rather than a defect. The same regex ran on the same lines
+  before that round, through `goalCommand`. Worth doing if the transcript read ever accepts a
+  larger pass or a less trusted file.
+
+- Clamp `lastEngagementAt` when a snapshot is restored. `broker/registry.ts` bounds the engagement
+  stamp forward at the `engage` seam, so a transcript line cannot post-date a session out of its
+  blocked state, but `broker/persistence.ts` restores the persisted field verbatim, so a state file
+  carrying a future value survives a restart and suppresses `⛔` until the next completed tool call
+  overwrites it outright. Bounded and self-healing, and behind the same same-user write to local
+  state the security model already carries as an accepted risk, which is why it sits here rather
+  than in the round that found it.
 
 - Two invisible-character residues in the shared sanitizer, from the fleet-card round's security
   review, both display-spoofing at worst with no syntax reachable. U+0085 (NEL) survives

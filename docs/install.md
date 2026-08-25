@@ -148,9 +148,33 @@ every session on the machine, though, not only the ones being watched: these hoo
 user-level and fire for every Claude Code session on the host.
 
 A session saturated enough to blow through the timeout says so at the console, on a line
-beginning `UserPromptSubmit hook timed out after 10s`. That prompt does not reach the thread and
-cannot be recovered, which is what makes it worth watching for: the thread then shows a reply
-with no question above it. A run of those means the host is oversubscribed.
+beginning `UserPromptSubmit hook timed out after 10s`. That line on its own does not mean the
+prompt was lost: the broker answers the post once it has read the body and delivers afterwards, so
+a hook the CLI abandons after that point still reaches the thread. What the timeout costs is the
+prompt the CLI gave up on before the broker had the body. On a host running mid-turn narration that
+one is usually recovered too, because the transcript tailer reads the turn-opening prompt off the
+session's own transcript and posts it within a poll interval.
+
+That recovery has a reach and a shape, and both matter on a loaded host. Its reach is the tailer's
+read position: a session is read only from the baseline taken whenever the broker comes to hold
+both a mirror-on verdict for it and the path to its transcript, and a prompt written before that
+position is behind the tailer for good. Which prompts those are depends on when the session was
+armed, so what to know is the shape of the case rather than a count of it: a prompt typed before
+the tailer had a baseline for that session is not recovered, whether that is a session's very first
+prompt or the first after a stretch in which nothing armed it. The same position moves forward
+without reading when a transcript grows past the tailer's per-pass ceiling between two polls, and
+wherever else the tailer gives up a stretch it can no longer read, taking that stretch with it.
+
+Its shape is what the reading will accept. The recovery refuses a line carrying a console command's
+markup rather than the words typed, a prompt whose content is anything other than plain text or a
+single block of text beside images, a line missing either of the harness stamps the whole reading
+rests on, a line the harness marked as its own injection, and a prompt that would draw blank once
+invisible characters are stripped. [`security-model.md`](security-model.md) carries the same gate
+field by field, as the enumeration a reader audits the code against.
+
+With `CHANNEL_INTERIM_MIRROR` off no tailer is constructed at all and a lost prompt is simply
+gone, leaving a reply in the thread with no question above it. A run of those console lines means
+the host is oversubscribed either way.
 
 Changing the value means editing the fragment and its pin together. A timeout edited by hand in
 a host's own `~/.claude/settings.json` does not survive: the installer recognizes this project's

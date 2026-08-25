@@ -66,6 +66,16 @@ Every entry here binds every section opened after it, dispatched or inline.
   particular is the operator's only discriminator between a deliberate suppression and a broken
   path, so it states what is known rather than what is usually true.
 
+- **Trace the arming path and re-derive the figure, not just the working path and the prose.** The
+  entry above did not hold: the class returned a third time in section 3, on the two shapes it does
+  not reach. A coverage claim was traced through the code that does the work and not through the
+  code that arms it, so a doc promised a recovery in exactly the state the tailer sets its read
+  baseline and cannot deliver one. And a figure was carried out of a Chapter into a shipped doc
+  without re-deriving what it had measured, so a number recorded as the population a gate admits
+  was republished as the cost that gate imposes. So a claim about when something happens traces the
+  initialization and arming paths as well, and any figure is re-derived at the source that produced
+  it rather than copied from earlier prose about it.
+
 ## Sections of work
 
 Gates for every section: `npm run lint`, `npm test`, baseline captured before the first change.
@@ -115,9 +125,10 @@ the operator's unforgeable quoted register. So the reader admits a plain string,
 holding exactly one `text` block beside any number of `image` blocks, which is the operator
 pasting a screenshot with their prompt, and refuses everything else. An image carries no text and
 cannot reach the register. This one gate therefore fails toward no recovery rather than toward a
-duplicate, against the direction the rest of this section takes, and the cost is real rather than
-notional: about three percent of typed prompts on this machine carry an image beside their words,
-and any future multi-text shape is refused outright.
+duplicate, against the direction the rest of this section takes. The image allowance is what keeps
+that failure notional rather than real: about three percent of typed prompts on this machine carry
+an image beside their words, and refusing them would have cost the recovery on all of those. What
+is refused is a second text block or a block of an unknown kind, neither seen on this machine.
 
 The normal case now produces the same prompt twice (the mirror hook within milliseconds, the
 tailer up to a poll interval later), so the echo memory gains a prompt **pair** beside the reply
@@ -410,3 +421,85 @@ opus rather than reaching for fable after round 2's first attempt wedged, and re
 as an environment fault rather than an unservable override.
 Next: 3. Live verification and docs
 Commit Model: Commit-and-Push
+
+### Interim board 2 - 2026-08-25
+Section 3 is half delivered and half blocked, so this is a board entry rather than a Chapter: the
+section registers no `Completed:` line, because its live verification has not run. Nothing is in
+flight as this is written; no dispatch is live.
+
+**Section 3's stage.** The docs half is built, gated, and reviewed four times. `architecture.md`,
+`operations.md`, `install.md` and `security-model.md` now describe the recovery as shipped, and
+`docs/backlog.md`'s deploy walk carries the `Install-Host` step the fragment change needs plus the
+live check as step 12. The live half is blocked on the same orphaned broker as the peer-traffic
+plan's section 4, confirmed at source this session rather than carried forward on report: PID
+10272 owns the listening socket on port 8787 and does not answer `/health` inside five seconds
+(`curl` exit 28, code 000), and the process is opaque to this account, which is the access-denied
+signature an elevated kill exists for.
+
+**A code defect came out of the review, and it is section 2's.** `registry.engage` gained an
+optional instant in section 2 so a recovered prompt could stamp engagement with the moment it was
+typed. It high-water-marked that instant with no forward bound, while `broker/discord/blocked.ts`
+decides a session stands blocked by comparing the blocking event against that same field. One
+transcript line carrying a far-future timestamp therefore suppressed the blocked state on the
+card, the board and the thread title indefinitely, and across restarts, since the field is
+persisted. Section 2's own four rounds missed it because every one of them was asking whether the
+borrowed instant could be too old, which was the round-3 Critical there; nobody asked what a
+too-new one did. It is now clamped to the read clock at the `engage` seam, red-first, with the
+pin proving both directions and the null-versus-undefined narrowing that a first draft of the
+clamp introduced. A security Major is never parked, which is why this fix rides a docs section.
+The one residue is routed rather than fixed: `broker/persistence.ts` restores the persisted stamp
+verbatim, so a state file carrying a future value survives a restart until the next completed tool
+call overwrites it outright. Bounded, self-healing, and behind the same-user write to local state
+the security model already carries, so it went to the backlog with that reasoning stated.
+
+**The recurrence rule fired, and the amendment it produced was not enough.** One finding class ran
+through every round of this plan: a doc or comment line asserting more, or less, than the code
+does. The Standing Brief Amendments block gained a second entry after round 1 of this section,
+naming the two shapes the first entry did not reach, a coverage claim traced through the working
+path but not the arming path, and a figure copied out of a Chapter without re-deriving what it had
+measured. Round 2 then produced the same class in the opposite direction: the correction to round
+1's arming finding denied a recovery that does exist, because any credited `/mirror` post arms the
+tailer and `MIRROR_EVENTS` admits `Stop` as well as `UserPromptSubmit`. What finally moved it was
+structural rather than another patch: the coverage prose now states the mechanism, the tailer's
+read position, and lets the bound follow, instead of naming cases. Round 4's prose findings dropped
+to Majors and Minors accordingly.
+
+**What did not converge is the live-verification recipe, and that is the reason for the blocked
+stop.** Rounds 3 and 4 each returned a Critical on the procedure written into backlog step 12,
+never on the same error: the first named a mechanism that would have killed the tailer along with
+the mirror, the second named a knob (`CHANNEL_MIRROR_MAX_BYTES`) with a 64 KB floor whose
+violation is fatal at startup, and which needs the restart that unarms the session under test.
+Both were invented rather than exercised, because the broker on this host cannot be run. The step
+now says what to observe and names its candidate mechanism as untried, which is honest; writing a
+third guess would not be.
+
+**Gate baseline.** Section 3 opened at 1504 tests, 1503 pass, 0 fail, 1 skipped, lint exit 0. It
+stands at 1505 / 1504 / 0 / 1, exit 0: one test added, the engagement clamp's own pin. One
+full-suite run inside the section came back with a single failure, `a reply record left by a
+deferral dies with the interim run that never landed`, on the `until` helper's `the condition never
+held`. Three isolated runs of `tail.test.ts` returned 159/159 exit 0 and the next full suite
+returned green, so it is named a flake on the repeat test rather than a regression; it is a member
+of the echo-dedup group `docs/backlog.md` already records with receipts from a clean tree at
+`3417f79`, and the entry now names it.
+
+**Scope widened three times, all recorded here as the drift they are.** `broker/registry.ts` and
+`broker/registry.test.ts` joined a docs section for the engagement clamp above. `docs/backlog.md`
+gained two entries beyond the deploy-walk line the section asked for, the persisted-stamp clamp and
+the `COMMAND_NAME` quadratic scan, both routed out of review findings rated below the never-park
+bar. And `docs/operations.md` took corrections the section did not anticipate, because section 2
+renamed log lines the operator's own catalogue still documented by their old strings.
+
+**Rulings adopted since the last boundary.**
+- The blind reviewer was skipped in rounds 1 through 3 and run in round 4. A docs-only diff gives
+  that lens nothing to read; the registry clamp is what gave it a diff.
+- Two reviewers disagreed on the persisted-stamp residue, Major from the blind lens and Minor from
+  the security lens. The security rating was adopted, on its stated ground that a completed tool
+  call overwrites the field outright, which was confirmed at `broker/registry.ts:680`.
+- The repeatable half of the live check was left in the deploy walk rather than moved to
+  `docs/operator-checks.md`, which a reviewer proposed. The spec directed this section to add to
+  the deploy walk rather than create an item, and the move is a curation call for the finishing
+  pass rather than a correctness one.
+
+**Next action.** Section 3's live verification, and with it section 4's finishing pass, waits on an
+elevated kill of PID 10272 followed by `install\Repair-Broker.ps1`. That same action unblocks the
+peer-traffic plan's section 4. Everything else in section 3 is delivered and pushed.

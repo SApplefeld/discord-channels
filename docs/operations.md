@@ -579,16 +579,24 @@ Two knobs govern it, both in `broker.env`:
 
 | Setting | Default | What it decides |
 |---|---|---|
-| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed at all, which is what carries mid-turn narration, a message typed at the console mid-turn, and the open-question alert; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns all three off together |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed at all, which is what carries mid-turn narration, a message typed at the console mid-turn, the open-question alert, and the recovery of a turn-opening prompt whose mirror hook was lost; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns off everything below it too |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; refuses below 1 s or above 5 min |
 
-Turning `CHANNEL_INTERIM_MIRROR` off silences everything the tailer carries: mid-turn narration,
-mid-turn typed messages, and the open-question alert alike. That last one is the costly loss, so
-it is worth deciding deliberately rather than as a side effect: a session parked on an
-`AskUserQuestion` picker then signals nothing anywhere off the console, where narration merely goes
-quiet. The prompt that opens a turn and the reply that closes it keep mirroring either way: those
-two ride hooks rather than the transcript, and the two mechanisms stop independently. What an
-interim-off host loses on the prompt side is the mid-turn kind alone, the one no hook fires for.
+Turning `CHANNEL_INTERIM_MIRROR` off silences what the tailer carries, mid-turn narration,
+mid-turn typed messages, the open-question alert, and the turn-opening prompt recovery among it.
+The peer traffic it carries stops too, but not all of it: a peer message delivered to an idle
+session arrives as prompt text on the mirror's own route and keeps posting, which is
+`CHANNEL_PEER_MESSAGES`' business rather than this knob's. The question alert is the costly loss,
+so it is worth deciding deliberately rather than as a side effect: a session parked on an
+`AskUserQuestion` picker then signals nothing anywhere off the
+console, where narration merely goes quiet. The prompt that opens a turn and the reply that closes
+it ride hooks rather than the transcript, so both keep mirroring on an interim-off host whenever
+those hooks land. What stops with the tailer is the second copy that covers a hook the CLI
+abandoned under load: with interim mirroring off, a lost prompt and a lost closing reply are both
+gone for good, where a host running the tailer usually recovers either within a poll interval.
+Both recoveries sit inside the tailer's read position, the reach bound
+[`install.md`](install.md) sets out; only the prompt is additionally gated on the shape of the
+line, since the closing reply is read from an assistant text block that carries no such test.
 `CHANNEL_MIRROR` off stops all of it, hooks included. The one-copy close above
 survives an interim-off host, because the record the mirror compares against is written by the reply
 tool rather than by the tailer, and it exists whenever `CHANNEL_MIRROR` is on. A session launched
@@ -610,9 +618,10 @@ transcript text:
   chunk Discord refused, or one for a thread that is not open yet, returns a status rather than
   throwing and logs under `routing:` instead, so narration that is missing without a `tail:` line
   to explain it should be looked for there.
-- `tail: session <id>'s queued prompt delivery failed (...)`: the delivery of one mid-turn typed
-  message threw, and it was dropped without holding up the rest of the pass. The thread carries no
-  copy of that message; the console does.
+- `tail: session <id>'s transcript-read prompt delivery failed (...)`: the delivery of one prompt
+  the tailer read off the transcript threw, and it was dropped without holding up the rest of the
+  pass. That prompt is either a message typed at the console mid-turn or the prompt that opened the
+  turn, and the line does not distinguish them. The thread carries no copy of it; the console does.
 - `tail: session <id>'s question alert was refused (...)`: an open-question alert was not written,
   because the per-thread window dropped it or Discord refused the write. The console still shows
   the question; the thread does not.
@@ -663,18 +672,33 @@ A path claims the turn's closing text when it starts posting, so the other path 
 if that run then lands nothing at all, nothing else is still carrying the text, and the run goes
 again once. `routing: the mirrored reply from session <id> landed nothing (...) with the other path
 already deferred to it; its one retry posted N of M messages` is that retry working, and the thread
-has the text. `routing: the <mirrored reply|interim narration> from session <id> reached the thread
-by neither path` is the one to act on: the retry failed too, the text reached the thread nowhere,
+has the text. `routing: the <mirrored reply|interim narration|mirrored prompt|transcript-read
+prompt> from session <id> reached the thread by neither path` is the one to act on: the retry
+failed too, the text reached the thread nowhere,
 and the console holds its only copy. It is rarer than the duplicate it replaced, since it needs a
 race and a total transport failure rather than a race alone, but it is the expensive direction and a
 repeat of it is a defect rather than noise.
 
-One further `routing:` line costs a message rather than a header. `routing: the queued prompt from
-session <id> was dropped, it is the operator's own channel message echoed back to the thread it was
-posted in` is the check that keeps a message you typed in the thread from arriving back in it a
-second time. A message typed at the console is recorded differently and never matches that check, so
-this line beside a console message missing from the thread means the message opened with the text
-the harness wraps a channel message in, and the console holds its only copy.
+One further `routing:` line costs a message rather than a header. `routing: the transcript-read
+prompt from session <id> was dropped, it is the operator's own channel message echoed back to the
+thread it was posted in` is the check that keeps a message you typed in the thread from arriving
+back in it a second time. A message typed at the console is recorded differently and never matches
+that check, so this line beside a console message missing from the thread means the message opened
+with the text the harness wraps a channel message in, and the console holds its only copy.
+
+Two `routing:` lines report a prompt suppressed as a duplicate. The mirror hook and the tailer
+both carry the prompt that opens a turn, so whichever dispatches first suppresses the other.
+`routing: the transcript-read prompt from session <id> was dropped, the mirror hook had already
+dispatched the same text to this thread` is the ordinary healthy case: the hook posts within
+milliseconds of the prompt being typed, while the tailer reaches the same line on its next pass,
+up to a poll interval later. `routing: the mirrored prompt from session <id> was dropped, the
+tailer had already dispatched the same text to this thread, read off the transcript` is the tailer
+having got there first, which means the hook took longer to arrive than the tailer's next pass over
+that line. A run of that second line is the load symptom the raised mirror timeout addresses.
+Neither line is a lost prompt on its own, with one exception, the same one the reply pair carries:
+if the copy that won then lands nothing at all, the `reached the thread by neither path` line above
+reports it under the subject `mirrored prompt` or `transcript-read prompt`, and that line is the
+one to act on.
 
 Two more `routing:` lines belong to the background-task wake above. `routing: the task notification
 waking session <id> was dropped, task notifications are off` is `CHANNEL_TASK_NOTIFICATION=off`
@@ -689,8 +713,13 @@ carrying that session's mirror-on verdict, not by the session simply being live,
 restarted mid-turn narrates nothing for the remainder of that turn: the verdict that would arm it
 already arrived before the restart, under the previous process. The whole transcript read is armed
 together, so a question asked in that same unarmed stretch raises no alert either. The next turn's
-`UserPromptSubmit` re-arms it as normal. See [`security-model.md`](security-model.md) for why the gate fails in that
-direction rather than the other.
+`UserPromptSubmit` re-arms it as normal, and so do the interrupted turn's own `Stop` mirror post
+and a credited `PreToolUse` question post, the first on the same `/mirror` route and the second
+on `/hook`, which is this paragraph's one exception. What no re-arming recovers
+is anything written before the tailer took its read baseline, so a prompt typed while the session
+had no baseline reaches the thread by the mirror hook or not at all. See
+[`security-model.md`](security-model.md) for why the gate fails in that direction rather than the
+other.
 
 ## Peer traffic between sessions
 
@@ -777,7 +806,7 @@ refused by name rather than guessed at.
 | `CHANNEL_MIRROR` | on | Whether console prompts and turn replies are mirrored into the thread |
 | `CHANNEL_MIRROR_MAX_BYTES` | 256 KB | Largest mirror post accepted; a larger one is dropped |
 | `CHANNEL_TASK_NOTIFICATION` | brief | How a background task's wake prompt reaches the thread: `brief` posts the one-line 📨 notice, `full` mirrors the whole injected report, `off` posts nothing |
-| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, and open-question alerts; also gated by `CHANNEL_MIRROR` |
+| `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, open-question alerts, and the recovery of a turn-opening prompt whose mirror hook was lost; also gated by `CHANNEL_MIRROR` |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
 | `CHANNEL_PEER_MESSAGES` | full | How much of a message this session exchanges with another Claude session reaches the thread, in both directions: `full` draws each message whole under its own 📡 attribution, `brief` draws one line per message, `off` posts none of it. Volume only; attribution is not a knob |
 | `CHANNEL_USAGE_CARD` | off | Whether the Fleet: Usage thread and its card exist on this host |

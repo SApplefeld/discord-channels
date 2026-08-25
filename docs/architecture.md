@@ -158,10 +158,13 @@ session's transcript, JSONL appended beside the session and never authored for t
 The tailer polls, on `CHANNEL_INTERIM_POLL_MS` (20 seconds by default), every session the registry
 currently holds live. For each one it reads past the byte offset the previous pass left, up to a
 bounded ceiling per pass, and stops at the last complete line so a line still being flushed is left
-for the next pass. Five line shapes contribute anything, and all must be non-sidechain lines
-carrying the session ID the path was learned for: a `text` content block on an `assistant` line is
+for the next pass. Six line shapes carry conversation into the thread, and all must be
+non-sidechain lines carrying the session ID the path was learned for: a `text` content block on
+an `assistant` line is
 one interim chunk, a `queued_command` attachment recording a human-origin prompt is one mid-turn
-typed message, delivered in transcript order among the chunks around it, a `queued_command`
+typed message, delivered in transcript order among the chunks around it, a `user` line the harness
+stamps as typed by a human is the prompt that opened the turn, recovered so a mirror hook the CLI
+abandoned under load costs the delay rather than the words, a `queued_command`
 attachment whose structured origin names a peer is one message another session sent this one
 while it was working, a `tool_use` block naming `SendMessage` is one message this session sent
 another, and a `tool_use` block naming `AskUserQuestion` is one open-question alert. That transcript line exists only once the
@@ -233,11 +236,13 @@ outside one in-flight run's own pacing and rate-limit waits, and a refused edit 
 fresh post of the same chunk in the same call: the fail direction of coalescing is more messages,
 never lost narration.
 
-**How this relates to the mirror the tailer deduplicates against.** The turn's own final reply is
-read twice by design: once by the Stop mirror within milliseconds of turn end, and again by the
-tailer's own next pass over the same transcript line, up to one poll interval later. A shared echo
-memory, keyed per session, is what collapses that to one copy in the thread; it is described under
-"One copy of a turn's close" below, and it serves a second duplicate pair as well.
+**How this relates to the mirror the tailer deduplicates against.** Two of a turn's moments are
+read twice by design. The turn's final reply reaches the thread once from the Stop mirror within
+milliseconds of turn end and again from the tailer's next pass over the same transcript line, up to
+one poll interval later; the prompt that opens the turn arrives the same two ways, from the
+`UserPromptSubmit` mirror hook and from the tailer. A shared echo memory, keyed per session, is
+what collapses each of those to one copy in the thread; it is described under "One copy of a
+turn's open and close" below, and it serves the reply tool's own near-duplicate as well.
 
 Reading a session's transcript at all is gated on an explicit mirror-on verdict seen for that session
 under the current broker process; see [`security-model.md`](security-model.md) for what that gate
@@ -287,7 +292,7 @@ A peer message posts through the thread's ordering chain like any other line, so
 among the narration around it and ends any narration block being grown there. It spends the mirror
 budget, never the alert tier, and mentions nobody.
 
-## One copy of a turn's close
+## One copy of a turn's open and close
 
 Three streams can carry the same closing words into one thread, so a shared per-session echo memory
 (`broker/tail.ts`) decides which copy the operator sees. The reply tool posts a closing summary
@@ -295,9 +300,10 @@ mid-turn as `📣 Claude · answer`, the Stop mirror posts the turn's final text
 the tailer reads that same final text off the transcript up to one poll interval later as
 `✨ Claude · working`.
 
-The memory holds one record per session with three slots: the digest of the last interim chunk, the
-digest of the last mirrored reply, and the reply-tool answer record. The first two answer an exact
-repeat between the tailer and the Stop mirror, in whichever order the two arrive. The third answers
+The memory holds one record per session with five slots: the digest of the last interim chunk, the
+digest of the last mirrored reply, the reply-tool answer record, and one prompt claim per path.
+The first two answer an exact repeat between the tailer and the Stop mirror, in whichever order
+the two arrive. The third answers
 a rewording, so it carries a normalized length and a bottom-k similarity sketch (word 3-gram
 shingles, 128 hashes, `broker/similarity.ts`) beside its digest: a candidate matches at an estimated
 Jaccard similarity of **0.85** or above, and only while its normalized length is within **1.10** of
@@ -305,6 +311,24 @@ the answer's, so a final text that grew past the allowance always posts. The rep
 never the suppressed one, because it posted first and its text is already in front of the operator;
 what the answer record suppresses is the Stop mirror, and a tailer poll landing between the two,
 which is what collapses both orderings to one copy.
+
+The same memory answers the turn's opening prompt, which arrives twice for the reason the closing
+reply does. Two slots rather than one: `promptMirror` is written only by the mirror hook's path and
+`promptTailer` only by the tailer's, each read by the other, so no path can consume its own claim
+and neither path's fresh claim can spend the deferral the other's still-running delivery is owed.
+Whichever copy arrives first suppresses the other's exact repeat. A prompt claim also expires,
+after the longer of a minute and three poll intervals, and is given up wherever the tailer's read
+position jumps over bytes it will never read: a claim nothing can now answer would otherwise stand
+over the next identical prompt and swallow it, which is the loss the recovery exists to prevent.
+The fail direction of the dedup is a duplicate prompt rather than a missing one, with the one
+exception the reply pair also carries: a copy that won the race and then landed nothing at all,
+whose single retry landed nothing either, is reported on its own log line and is genuinely lost.
+The reader that decides whether a transcript line is a prompt at all fails the other way on
+purpose, and so does an unarmed session: both yield no recovery rather than risk the operator's
+register or a wrong attribution.
+The mid-turn message the
+operator types while the model works stays outside this entirely, because it fires no hook and so
+has no second copy for a claim to answer for.
 
 Every match consumes the record it matched, and the reply-kind mirror clears the answer record
 whether or not it matched, which bounds it to one turn. What is held is a digest, a number, and
@@ -496,13 +520,23 @@ surface exists to draw one.
 A session **stands blocked** while its latest kept goal event is a `goal-blocked` whose instant is
 newer than the session's engagement stamp. Engagement is the registry's record that a person or live
 work drove the session, moved on an explicit allowlist rather than on everything but a denied few: a
-`SessionStart`, a `PostToolUse`, and an operator prompt on either prompt path (the hook-carried
-mirror and the tailer's queued-prompt yield), minus the harness's own background-task wake injection,
+`SessionStart`, a `PostToolUse`, and an operator prompt on any of the three prompt paths (the
+hook-carried mirror, the tailer's mid-turn queued yield, and the tailer's turn-opening yield),
+minus the harness's own background-task wake injection,
 which is machine-generated and must not clear a gate that waits on a person. Two credited events
 carry liveness and deliberately do not stamp. `Stop` is the blocked stop itself, whose own hook
 traffic would otherwise clear the marker it raises. `PreToolUse` fires only for `AskUserQuestion`
 here, so it marks the instant a session parks on a person, and stamping it would clear a standing
-block for the whole life of an open question. A `goal-complete` newer than the block replaces it in
+block for the whole life of an open question.
+
+Both of the tailer's prompt paths stamp with a borrowed instant rather than the moment they ran:
+the transcript line's own timestamp, with read time as the fallback for a line naming no readable
+instant. Only the hook-carried mirror stamps when it runs. The borrowed instant is bounded at both
+ends by the registry, never moving the field backwards and never landing later than now, so a line
+can neither un-engage a session nor post-date its way past a block. Without it, a prompt read a
+poll interval after it was typed would clear the very block the turn it opened went on to raise.
+
+A `goal-complete` newer than the block replaces it in
 the fold, so a run that finished can never stand blocked whatever the engagement clock says. The
 standing computation is one function, read at both `toView` call sites, which is what keeps the
 fleet card and the session's own thread from disagreeing about who is blocked.

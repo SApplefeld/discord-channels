@@ -536,6 +536,44 @@ test("engage stamps an unended session, persists it, and refuses an ended one", 
   assert.equal(writes, afterEnd, "and nothing is written for it");
 });
 
+test("an engagement instant is a high-water mark bounded by now, in both directions", () => {
+  // The instant reaches this seam from a transcript line the broker did not author, so it is
+  // bounded forward as well as backward. A backwards stamp would un-engage a session; a forward
+  // one would suppress its blocked state for as long as the clock takes to catch up, since
+  // discord/blocked.ts decides a session stands blocked by comparing the event against this
+  // field. Neither is a shape a caller can be trusted to have screened.
+  const time = clock();
+  const sessions = registry(time.now, 60_000);
+  sessions.apply(sessionStart("session-a", "startup"));
+
+  time.advance(5_000);
+  const engaged = time.now();
+  sessions.engage("session-a", engaged);
+  assert.equal(sessions.list()[0].lastEngagementAt, engaged, "an instant this side of now stands");
+
+  sessions.engage("session-a", engaged - 4_000);
+  assert.equal(
+    sessions.list()[0].lastEngagementAt,
+    engaged,
+    "an earlier instant never moves it back",
+  );
+
+  sessions.engage("session-a", engaged + 86_400_000);
+  assert.equal(
+    sessions.list()[0].lastEngagementAt,
+    engaged,
+    "and a future one is clamped to now, which is no later than the stamp already held",
+  );
+
+  time.advance(1_000);
+  sessions.engage("session-a", time.now() + 86_400_000);
+  assert.equal(
+    sessions.list()[0].lastEngagementAt,
+    time.now(),
+    "a clamped future instant still stamps the moment it arrived",
+  );
+});
+
 test("a silent session goes stale on the sweep with no inbound event", () => {
   const time = clock();
   const sessions = registry(time.now, 60_000);

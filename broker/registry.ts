@@ -327,7 +327,9 @@ export type Registry = {
    * at the time it happened: the transcript tailer reads a prompt up to a poll interval after the
    * line was written, and stamping the read time would move this field past a `goal-blocked` the
    * session raised in between, clearing a block nobody answered. Absent, the stamp is now. The
-   * field never moves backwards, so a late-arriving older instant leaves a newer stamp alone.
+   * field never moves backwards, so a late-arriving older instant leaves a newer stamp alone, and
+   * it never moves past now, so an instant read out of a file this broker did not author cannot
+   * post-date a session out of a blocked state it is standing in.
    */
   engage: (sessionId: string, at?: number) => void;
   /**
@@ -695,7 +697,19 @@ export function createRegistry(options: RegistryOptions): Registry {
     if (record === null) return;
     // The later of the two, never a move backwards: this field is a high-water mark for when a
     // person last drove the session, and an out-of-order arrival must not un-engage it.
-    record.lastEngagementAt = Math.max(record.lastEngagementAt, at ?? now());
+    //
+    // Bounded forward as well, because a caller may pass an instant read out of a transcript line
+    // this broker did not author. discord/blocked.ts decides a session stands blocked by comparing
+    // the blocking event against this field, so an unclamped future stamp would suppress that
+    // state for as long as the clock took to reach it, across restarts, with the card, the board,
+    // and the thread title all reading clear. Clamping costs nothing real: an instant later than
+    // now cannot describe a person who has already driven the session.
+    const clock = now();
+    // `== null` rather than `=== undefined`: the seam a transcript instant arrives on declares it
+    // `number | null`, and a null reaching `Math.min` would resolve to zero and stamp nothing at
+    // all, which is a silent no-op where the absent case wants the read clock.
+    const stamp = at == null ? clock : Math.min(at, clock);
+    record.lastEngagementAt = Math.max(record.lastEngagementAt, stamp);
     // Persisted, unlike the relay heartbeat: the router calls this for prompts a person typed and
     // for nothing else, the harness's own wake injections included, so the write rate is a human
     // one rather than a per-second one. A restart that read back a stale engagement stamp would

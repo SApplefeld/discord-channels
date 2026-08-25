@@ -169,6 +169,13 @@ session whose mirror-on verdict it holds. The transcript line for an open questi
 only at resolution, which is why the emission-time hook post is the one signal that exists while
 the operator can still act on it.
 
+One further yield is a recovery rather than a gap. The prompt that opens a turn is carried by a hook
+payload, but that hook is one the CLI abandons when a saturated host makes the broker answer late,
+and a prompt lost before the broker accepts the post would be lost permanently on the hook path
+alone. So the tailer reads that
+prompt off the transcript as well, which moves a line the mirror hook normally supplies onto a path
+where the file is the only authority for it.
+
 That inverts the direction a mirror switch has to fail in, and the design accounts for it.
 Everywhere else, suppression means the hooks post nothing, so an absent signal means absent content.
 Here an absent signal would mean the broker reads and publishes anyway. **So the tailer reads
@@ -193,7 +200,7 @@ which is what keeps this advisory rather than enforced.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
-matching one of eight named shapes whole: an assistant line's `text` content block; an attachment
+matching one of nine named shapes whole: an assistant line's `text` content block; an attachment
 whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
 prompt is a non-empty string; an attachment of that same type whose structured origin kind is
 instead `peer`, which yields the message another session sent this one, read from the origin's own
@@ -206,14 +213,37 @@ them read by nobody; an assistant line's `tool_use` block naming exactly
 only as a non-empty string once invisibles are stripped) becomes the open-question alert; an
 assistant line's own model name and the usage figures that sum to a context size; a structured
 model-fallback record, whose subtype is read through an own-property check so a prototype key names
-no cause; and a `queued_command` naming exactly `/goal`, whose argument becomes the goal line. A
+no cause; a `user` line whose console-command markup names exactly `/goal`, whose argument becomes
+the goal line; and a `user` line whose `promptSource` is `typed` and whose root `origin` kind is
+`human`, carrying no `isMeta` stamped `true`, no closed `<command-name>`/`</command-name>` pair
+anywhere in its text, and text that is not blank once invisibles are stripped, which becomes the
+turn-opening prompt. That
+last shape reads its content through a narrower reader than any other entry here, and the
+narrowing is the gate rather than a convenience: it admits a plain string, or exactly one `text`
+block beside any number of `image` blocks, and refuses everything else, because this is the one
+register-bound yield whose content is read out of a multi-block array, and a second text block
+attached to a typed line would otherwise be published as the operator's words. An image carries
+no text and
+cannot reach that register. What the reader refuses is a second text block or a block of a kind it
+does not know. Neither shape appears in a sweep of this host's own transcripts, where the
+image-bearing shape the reader admits accounts for about three percent of typed prompts; that
+sweep and its method are recorded in the plan doc this reading shipped under, not here. The
+refusal costs the recovery rather than
+risking the register, which is the direction this one gate fails in. A
 deviation in any field yields silence.
 
 The `/goal` yield is a class of egress worth naming on its own, because it sends operator prose
 rather than model output. What the operator types after `/goal` at the console is extracted from
 the transcript and drawn on the session card in Discord, which means a completion goal is written
-wherever that channel is read. Four things bound it. The allowlist admits that one command and no
-other, so no other slash command's arguments are ever extracted. The read is gated on the same
+wherever that channel is read. Five things bound it. The allowlist admits that one command and no
+other, so no other slash command's arguments are ever extracted. The reading is gated on the line
+having been typed at the console: a line whose `promptSource` is `system`, or whose `origin` names
+anything other than a human, yields no goal, which is what keeps another session's delivered
+message from setting or clearing the goal on the operator's card. That gate admits a line carrying
+no `origin` at all, the shape the harness writes for its own local command output, since it
+refuses a `system` prompt source and any named non-human origin and admits everything else. What
+it establishes is that no peer wrote the line rather than that the operator typed it. The read is
+gated on the same
 mirror-on verdict every other transcript read is gated on, so a session with mirroring off yields
 nothing. The rendered value is drawn through the fenced-field neutralizer, so a crafted goal
 manufactures no mention, chip, or markup. And it is withheld from `GET /sessions` and omitted from
@@ -684,7 +714,8 @@ described above.
 **A peer message never stamps engagement, and the classification decides that as well as the
 attribution.** The engagement stamp records that a person is driving, and it is what clears a `⛔`
 standing blocked state; another machine writing is not a person, so a peer-classified prompt is
-excluded at both stamp sites on the wake injection's own ground, under every setting. Because one
+excluded at all three stamp sites on the wake injection's own ground, under every setting. Because
+one
 reading now decides two things, its two failure directions are asymmetric and the quiet one is the
 expensive one. A harness shape move that stops the classification matching costs a delivery its
 attribution, which is read off the thread at a glance, and it silently restores the stamp, so a
@@ -795,12 +826,22 @@ authenticated account or a non-administrative service account.
   hooks report, mid-turn narration stops entirely and nothing distinguishes that from a model that
   wrote nothing between tool calls. The feature goes inert rather than publishing wrongly, which is
   the direction to fail in, but it fails quietly.
-- **The operator attribution on a mid-turn typed message rests on the transcript file.** Such a
+- **The operator attribution on a typed message rests on the transcript file.** Such a
   message reaches the thread in the operator's own quoted block because a line in the session's
-  transcript records that a human typed it. The escape makes that block undrawable by content, and
+  transcript records that a human typed it. This covers the ordinary prompt that opens a turn as
+  well as the message typed mid-turn, and on a shallower shape: a plain `user` line carrying the
+  harness's typed and human stamps, rather than a `queued_command` attachment. The narrower
+  content reader is one of four controls that shape adds over the mid-turn one, beside the typed
+  prompt source, the meta exclusion, and the command-markup refusal; all four bound what can ride
+  in rather than establishing who typed it. The instant that same block's engagement stamp carries
+  comes from the file too, bounded at both ends by the registry, never moving the stamp backwards
+  and never landing later than now, so an appended line cannot post-date a session out of its own
+  blocked state. The escape makes that block undrawable by content, and
   nothing beyond the file's own contents establishes whose words are in it: anything running as the
-  operator that can append a `queued_command` line with a human origin to a live session's
-  transcript puts words in the operator's mouth, in the channel where tool approvals are answered.
+  operator that can append either shape to a live session's transcript, a `queued_command` line
+  with a human origin or a plain `user` line stamped `promptSource: "typed"` with a root
+  `origin.kind` of `human`, puts words in the operator's mouth, in the channel where tool approvals
+  are answered.
   That is the wall a process holding the process token already stands behind, and this is a third
   door through it rather than a capability the door did not already open. Unforgeable is therefore a
   property of the renderer, not a claim about where the words came from.
