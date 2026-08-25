@@ -2,19 +2,33 @@
 // nothing else, which is what lets Claude reply unprompted and still land in the right thread.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import {
   MAX_MESSAGE_LENGTH,
   appendNarration,
   renderAnswer,
   renderMirror,
+  renderPeerIn,
+  renderPeerInBrief,
+  renderPeerOut,
+  renderPeerOutBrief,
   renderTaskNotice,
 } from "../discord/render.ts";
+import { createBlockedDesk } from "../discord/blocked.ts";
+import type { SessionGoalEvent } from "../board/events.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "../similarity.ts";
-import { ANSWER_LENGTH_ALLOWANCE, createEchoMemory } from "../tail.ts";
+import {
+  ANSWER_LENGTH_ALLOWANCE,
+  PEER_BODY_UNREADABLE,
+  PEER_NAME_FALLBACK,
+  createEchoMemory,
+} from "../tail.ts";
+import type { PeerTraffic } from "../tail.ts";
 import { MAX_RUN_WAIT_MS, RUN_PACE_MS, createOutboundRouter } from "./outbound.ts";
 import type { OutboundRouter, OutboundRouterOptions } from "./outbound.ts";
 import { createThreadWriter } from "./writer.ts";
@@ -1267,6 +1281,301 @@ test("a queued wake prompt gets the same brief, full, and off treatment", async 
     !lines[0].includes("agent-42") && !lines[0].includes("report"),
     `wake prompt content leaked into the routing log: ${lines[0]}`,
   );
+});
+
+// Peer traffic. A message another session sent this one reaches the two prompt seams as the
+// harness's wrapper text and nothing else, because the `UserPromptSubmit` payload carries the
+// prompt string alone; the tailer's own two kinds arrive whole through `peer`. The fixtures below
+// carry the delivery shape a live exchange writes, with the body shortened.
+
+/** The pipe address a peer session is addressed by on the wire, which renders nowhere. */
+const PEER_PIPE = "uds:\\\\.\\pipe\\LOCAL\\cc-msg-5b54bcd5ec2e5910d3a6618b3f8c54d8";
+const PEER_NAME = "KIT: Messaging";
+const PEER_BODY = "Blast radius: answers only, nothing touching your tree.";
+
+/** A peer message as the harness delivers it to an idle session: the preamble, then the wrapper. */
+function idleDelivery(body: string = PEER_BODY, name: string = PEER_NAME): string {
+  return (
+    "Another Claude session sent a message:\n" +
+    `<cross-session-message from="${PEER_PIPE}" from-name="${name}" from-mode="bypass">\n` +
+    `${body}\n</cross-session-message>`
+  );
+}
+
+/**
+ * A delivery whose wrapper never closes: a peer message this broker cannot read the body of, which
+ * is a different answer from "not a delivery" and must not fall back into the operator's register.
+ */
+const UNREADABLE_DELIVERY =
+  "Another Claude session sent a message:\n" +
+  `<cross-session-message from="${PEER_PIPE}" from-name="${PEER_NAME}" from-mode="bypass">\n` +
+  "the close tag the harness writes never arrives";
+
+/** The outbound half, as the tailer reads one off a `SendMessage` call. */
+const SENT = {
+  kind: "peer-out",
+  to: PEER_NAME,
+  summary: "Questions about cross-session messaging",
+  message: "Hello from CHANNEL: Fable, the session in the Discord broker repo.",
+} satisfies PeerTraffic;
+
+/** The inbound half in the shape the tailer hands it over, for the paths that take an item. */
+const RECEIVED = { kind: "peer-in", name: PEER_NAME, body: PEER_BODY } satisfies PeerTraffic;
+
+test("a peer message is drawn under its own attribution, never in the operator's quoted register", async () => {
+  // The failure this whole classification exists to close: the harness's wrapper text mirrored as
+  // the operator's own words, in the one register this surface holds unforgeable.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.interimPrompt("session-a", idleDelivery()), { status: "sent" });
+
+  const drawn = renderPeerIn(PEER_NAME, PEER_BODY);
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    [...drawn, ...drawn],
+    "one message, one rendering, whichever seam it arrived on",
+  );
+  for (const post of posts) {
+    assert.equal(post.threadId, THREAD);
+    assert.ok(!post.text.startsWith(">>>"), `drawn in the operator's register: ${post.text}`);
+    assert.ok(!post.text.includes("cross-session-message"), post.text);
+    assert.ok(!post.text.includes("Another Claude session sent a message"), post.text);
+    // The mirror budget and nothing louder: a peer exchange is worth reading, not worth a ping.
+    assert.ok(!post.text.includes("<@"), `a peer post carried a mention: ${post.text}`);
+  }
+});
+
+test("a delivery this broker could not read renders as a peer message, not as a prompt", async () => {
+  // Section 1's third state. Collapsing it into "not a delivery" would hand a peer the switch that
+  // puts its own text in the operator's register: write a body this reader cannot parse, and the
+  // fall-through does the rest.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", UNREADABLE_DELIVERY, "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.interimPrompt("session-a", UNREADABLE_DELIVERY), {
+    status: "sent",
+  });
+
+  const drawn = renderPeerIn(PEER_NAME_FALLBACK, PEER_BODY_UNREADABLE);
+  assert.deepEqual(posts.map((post) => post.text), [...drawn, ...drawn]);
+  assert.ok(posts[0].text.includes(PEER_BODY_UNREADABLE), posts[0].text);
+  assert.ok(
+    !posts[0].text.includes("the close tag the harness writes never arrives"),
+    "the unparsed text must not ride through under any attribution",
+  );
+});
+
+test("the peer knob governs volume on every path, in both directions, and never attribution", async () => {
+  // The mode matrix: the two prompt seams and the tailer's own doorway, inbound and outbound.
+  for (const mode of ["full", "brief", "off"] as const) {
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const { writer, posts } = fakeWriter();
+    const lines: string[] = [];
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      peerMessages: mode,
+      log: (message) => lines.push(message),
+    });
+
+    const drawnIn =
+      mode === "off"
+        ? []
+        : mode === "brief"
+          ? renderPeerInBrief(PEER_NAME, PEER_BODY)
+          : renderPeerIn(PEER_NAME, PEER_BODY);
+    const drawnOut =
+      mode === "off"
+        ? []
+        : mode === "brief"
+          ? renderPeerOutBrief(SENT.to, SENT.summary, SENT.message)
+          : renderPeerOut(SENT.to, SENT.message);
+    const answer =
+      mode === "off"
+        ? { status: "failed", error: "peer messages suppressed" }
+        : { status: "sent" };
+
+    assert.deepEqual(await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a"), answer, mode);
+    assert.deepEqual(await router.interimPrompt("session-a", idleDelivery()), answer, mode);
+    assert.deepEqual(await router.peer("session-a", RECEIVED), answer, mode);
+    assert.deepEqual(await router.peer("session-a", SENT), answer, mode);
+
+    assert.deepEqual(
+      posts.map((post) => post.text),
+      [...drawnIn, ...drawnIn, ...drawnIn, ...drawnOut],
+      mode,
+    );
+    if (mode === "off") {
+      // Two lines rather than four: the drop log aggregates a repeat of one line for one session,
+      // and the two directions are two lines. Neither carries the message.
+      assert.equal(lines.length, 2, lines.join("\n"));
+      for (const line of lines) {
+        assert.ok(line.includes("session-a"), line);
+        assert.ok(
+          !line.includes(PEER_BODY) && !line.includes(SENT.message) && !line.includes(SENT.summary),
+          `peer content leaked into the routing log: ${line}`,
+        );
+      }
+    } else {
+      assert.deepEqual(lines, [], mode);
+    }
+
+    // Whatever the setting, the operator's own prompt still mirrors exactly as it always did.
+    assert.deepEqual(await router.mirror(TOKEN, "prompt", "run the migration", "session-a"), {
+      status: "sent",
+    });
+    assert.equal(
+      posts[posts.length - 1].text,
+      renderMirror("prompt", "run the migration")[0],
+      mode,
+    );
+  }
+});
+
+test("a peer message with no thread, and one with nothing visible in it, are dropped with content-free lines", async () => {
+  // Dropped, never queued, like every other post here, and each line is the discriminator for a
+  // thread that shows an exchange nowhere: it carries the direction and the session and no text.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => null,
+    mirrorWriter: writer,
+    log: (message) => lines.push(message),
+  });
+  assert.deepEqual(await router.peer("session-a", RECEIVED), { status: "no-thread" });
+
+  const open = fakeWriter();
+  const opened = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: open.writer,
+    log: (message) => lines.push(message),
+  });
+  // Nothing visible once the invisible class is stripped: the renderer returns no messages, and
+  // Discord refuses an empty one.
+  assert.deepEqual(
+    await opened.peer("session-a", { kind: "peer-in", name: PEER_NAME, body: "​" }),
+    { status: "failed", error: "the message was empty" },
+  );
+
+  assert.deepEqual(posts, []);
+  assert.deepEqual(open.posts, []);
+  assert.equal(lines.length, 2, lines.join("\n"));
+  for (const line of lines) {
+    assert.ok(line.includes("session-a") && line.includes("peer"), line);
+    assert.ok(!line.includes(PEER_NAME), `a counterparty's name reached the log: ${line}`);
+  }
+});
+
+test("a prompt suppressed as peer traffic leaves the one line that says what became of it", async () => {
+  // `off` deletes what it suppresses rather than compressing it, and a prompt the classification
+  // read as a delivery is deleted with it. That is still the better answer than falling through to
+  // the mirror, which would draw a peer's words in the operator's own quoted register on exactly the
+  // setting chosen to hear less from peers. It is defensible only while the drop leaves a trace an
+  // operator can act on, so this line is that trace: the direction, the session, the knob that
+  // restores it, and the fact that a typed prompt can be what it dropped.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const lines: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    peerMessages: "off",
+    log: (message) => lines.push(message),
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a"), {
+    status: "failed",
+    error: "peer messages suppressed",
+  });
+  assert.deepEqual(posts, [], "a suppressed message reaches no thread");
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0], /CHANNEL_PEER_MESSAGES is off/);
+  assert.match(lines[0], /prompt read as peer traffic is dropped here too/);
+  assert.ok(lines[0].includes("session-a"), lines[0]);
+  assert.ok(!lines[0].includes(PEER_BODY), `peer content leaked into the routing log: ${lines[0]}`);
+
+  // The outbound line carries no such clause: nothing the operator typed arrives on that path, so
+  // saying a prompt might be what was dropped would send a reader hunting for one that never was.
+  await router.peer("session-a", SENT);
+  assert.equal(lines.length, 2, lines.join("\n"));
+  assert.doesNotMatch(lines[1], /prompt read as peer traffic/);
+  assert.match(lines[1], /CHANNEL_PEER_MESSAGES is off/);
+});
+
+test("a reply that opens with the wrapper is still Claude's own reply", async () => {
+  // Only a prompt is classified, on the envelope check's reasoning exactly: a reply is Claude's own
+  // words about a delivery rather than one, so a turn that opens by quoting the message it just
+  // read must not be redrawn as the peer that sent it. Without the guard this renders under the
+  // peer attribution, saying a counterparty wrote what this session did.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", idleDelivery(), "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    renderMirror("reply", idleDelivery()),
+    "the reply rendering, byte for byte",
+  );
+});
+
+test("a peer message ends the narration block it lands under", async () => {
+  // The chained doorway's own effect: what a session says after an exchange belongs below it, not
+  // appended into the block that was growing above it.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const edits: string[] = [];
+  const posts: string[] = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      return { status: "ok", value: { messageId: "900000000000000010" }, rate: NO_RATE_INFO };
+    },
+    editInThread: async (input) => {
+      edits.push(input.text);
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+  };
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+  });
+
+  await router.interim("session-a", "reading the failing test");
+  await router.interim("session-a", "still reading");
+  assert.equal(edits.length, 1, "consecutive chunks coalesce into the block");
+
+  await router.peer("session-a", RECEIVED);
+  await router.interim("session-a", "found the off-by-one");
+  assert.equal(edits.length, 1, "the chunk after a peer message posts fresh below it");
+  assert.deepEqual(posts, [
+    renderMirror("interim", "reading the failing test")[0],
+    ...renderPeerIn(PEER_NAME, PEER_BODY),
+    renderMirror("interim", "found the off-by-one")[0],
+  ]);
 });
 
 test("a mirrored reply matching the last interim chunk is skipped, and only that one", async () => {
@@ -2748,4 +3057,100 @@ test("the harness's wake injection engages nothing, under every notification set
     await router.mirror(TOKEN, "prompt", "run the migration", "session-a");
     assert.deepEqual(spy.engaged, ["session-a"], `a typed prompt still stamps under ${taskNotifications}`);
   }
+});
+
+test("a peer message engages nothing, under every peer setting", async () => {
+  // A message another session sent this one is machine-generated, exactly as the wake injection
+  // above is, and engagement is what clears a gate that waits on a person. The setting governs how
+  // the message is drawn in the thread, never whether a human wrote it, so `full` and `off` exclude
+  // it as the default does.
+  const settings: Array<"full" | "brief" | "off"> = ["full", "brief", "off"];
+  for (const peerMessages of settings) {
+    const spy = engagementSpy(createRegistry({ host: "NEO", staleAfterMs: 60_000 }));
+    announce(spy.registry, "session-a");
+    const { writer } = fakeWriter();
+    const router = routerFor({
+      registry: spy.registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      peerMessages,
+      log: () => {},
+    });
+
+    await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a");
+    await router.interimPrompt("session-a", idleDelivery());
+    assert.deepEqual(spy.engaged, [], `a peer message is not a person under ${peerMessages}`);
+
+    // A delivery this broker could not read the body of is still a delivery, so it is still not a
+    // person; the classification's third state must not buy a stamp the readable shape is denied.
+    await router.mirror(TOKEN, "prompt", UNREADABLE_DELIVERY, "session-a");
+    await router.interimPrompt("session-a", UNREADABLE_DELIVERY);
+    assert.deepEqual(spy.engaged, [], `an unreadable delivery either, under ${peerMessages}`);
+
+    // Read through the invisible strip like every other reading here, so a zero-width character in
+    // front of the wrapper cannot buy the stamp the plain shape is denied.
+    const veiled = String.fromCharCode(0x200b) + idleDelivery();
+    await router.mirror(TOKEN, "prompt", veiled, "session-a");
+    await router.interimPrompt("session-a", veiled);
+    assert.deepEqual(spy.engaged, [], `a veiled delivery too, under ${peerMessages}`);
+
+    // The session is still reachable and a real prompt still stamps: the exclusion is about this
+    // one shape of text, not about a router that has stopped stamping.
+    await router.mirror(TOKEN, "prompt", "run the migration", "session-a");
+    await router.interimPrompt("session-a", "and the seed after it");
+    assert.deepEqual(
+      spy.engaged,
+      ["session-a", "session-a"],
+      `a typed prompt still stamps under ${peerMessages}`,
+    );
+  }
+});
+
+test("a peer message leaves a standing blocked state standing, and the operator's prompt clears it", async () => {
+  // What the stamp exclusion buys: `⛔` is a `goal-blocked` event newer than the session's last
+  // engagement, and it stands until a person answers. Read through the desk that owns that
+  // comparison rather than through the arithmetic, so the writer and the reader of the stamp are
+  // pinned against each other rather than each against its own literal.
+  const at = 1_800_000_000_000;
+  let clock = at - 10_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: () => clock });
+  announce(registry, "session-a");
+  const blocked: SessionGoalEvent = {
+    event: "goal-blocked",
+    ts: new Date(at - 5_000).toISOString(),
+    tsMs: at - 5_000,
+    plan: "docs/plans/widget_spec_v1.md",
+  };
+  const desk = createBlockedDesk({
+    // Never opened: the fold below is injected, the way the desk's own tests inject one.
+    eventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
+    threadFor: () => THREAD,
+    alert: async () => ({ status: "ok", value: { messageId: "900000000000000011" }, rate: NO_RATE_INFO }),
+    operatorId: "700000000000000002",
+    now: () => at,
+    readEvents: () => ({
+      state: {
+        offset: 0,
+        identity: null,
+        midLine: false,
+        malformed: 0,
+        latest: new Map([["session-a", blocked]]),
+      },
+      unreadable: false,
+    }),
+    log: () => {},
+  });
+  await desk.tick();
+  const { writer } = fakeWriter();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer });
+  const standing = (): boolean => desk.standing(registry.list()[0]);
+  assert.equal(standing(), true, "the session stands blocked before anything arrives");
+
+  clock = at;
+  await router.mirror(TOKEN, "prompt", idleDelivery(), "session-a");
+  await router.interimPrompt("session-a", idleDelivery());
+  assert.equal(standing(), true, "a peer message is not the person the block waits on");
+
+  await router.mirror(TOKEN, "prompt", "go ahead, take the second option", "session-a");
+  assert.equal(standing(), false, "the operator answering is what clears it");
 });

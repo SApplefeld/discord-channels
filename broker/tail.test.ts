@@ -25,10 +25,10 @@ import {
   lineItems,
   questionDigest,
 } from "./tail.ts";
-import type { TranscriptSlice, TranscriptTailerOptions } from "./tail.ts";
+import type { PeerTraffic, TranscriptSlice, TranscriptTailerOptions } from "./tail.ts";
 import { createQuestionDesk } from "./question-desk.ts";
 import type { QuestionTerminalState } from "./question-desk.ts";
-import { renderAnswer, renderMirror } from "./discord/render.ts";
+import { renderAnswer, renderMirror, renderPeerIn, renderPeerOut } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { ThreadMessenger } from "./discord/transport.ts";
@@ -247,6 +247,8 @@ function modelFallback(
 function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   const posts: string[] = [];
   const prompts: string[] = [];
+  /** The peer messages the tailer handed the router, in transcript order, whole. */
+  const peers: PeerTraffic[] = [];
   const questions: (readonly AskedQuestion[])[] = [];
   /** The asks reported as answered at the console, in the order their resolution lines landed. */
   const consoleAnswers: (readonly AskedQuestion[])[] = [];
@@ -270,6 +272,15 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     deliverPrompt: async (_sessionId, text) => {
       prompts.push(text);
       delivered.push(`prompt:${text}`);
+      return { status: "sent" };
+    },
+    deliverPeer: async (_sessionId, traffic) => {
+      peers.push(traffic);
+      delivered.push(
+        traffic.kind === "peer-in"
+          ? `peer-in:${traffic.name}:${traffic.body}`
+          : `peer-out:${traffic.to}:${traffic.message}`,
+      );
       return { status: "sent" };
     },
     deliverQuestion: async (_sessionId, asked) => {
@@ -301,6 +312,7 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     tailer,
     posts,
     prompts,
+    peers,
     questions,
     consoleAnswers,
     delivered,
@@ -2373,6 +2385,7 @@ function integration(
     liveSessions: () => [SESSION],
     deliver: (sessionId, text) => outbound.interim(sessionId, text),
     deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
+    deliverPeer: (sessionId, traffic) => outbound.peer(sessionId, traffic),
     // The router carries no question path; index.ts wires this seam to the steering writer
     // instead, so a stub keeps this helper about the dedup seam the two halves really share.
     deliverQuestion: async () => ({ status: "sent" }),
@@ -3537,6 +3550,17 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
       if (explode) throw new Error(`prompt delivery exploded while posting: ${text}`);
       return { status: "sent" };
     },
+    deliverPeer: async (_sessionId, traffic) => {
+      // The message itself, like every sibling stub here: an error carrying only the kind would
+      // satisfy the assertion below by construction, and this control has to be able to speak.
+      if (explode) {
+        throw new Error(
+          `peer delivery exploded while posting: ` +
+            `${traffic.kind === "peer-in" ? traffic.body : traffic.message}`,
+        );
+      }
+      return { status: "sent" };
+    },
     deliverQuestion: async (_sessionId, asked) => {
       if (explode) throw new Error(`question alert exploded while posting: ${asked[0]?.question}`);
       return { status: "sent" };
@@ -3562,6 +3586,7 @@ test("no log line produced by the tailer carries transcript text", async (t) => 
     file,
     assistantText("SECRET-exploding-chunk") +
       queuedPrompt("SECRET-exploding-prompt") +
+      peerAttachment(peerOrigin({ body: "SECRET-exploding-peer-message" })) +
       askUserQuestion({ questions: [{ question: "SECRET-exploding-question" }] }),
     "utf8",
   );
@@ -4205,14 +4230,26 @@ test("a peer message delivered mid-turn is read from the structured origin, not 
   assert.ok(!JSON.stringify(items).includes("cross-session-message"));
 });
 
-test("a peer delivery this reader cannot read the body of contributes silence, never a guess", () => {
-  const unreadable: [string, unknown][] = [
+test("an origin that is no peer delivery contributes silence, never a guess", () => {
+  const nothing: [string, unknown][] = [
     ["origin is a string", "peer"],
     ["origin is null", null],
     ["origin is an array", [{ kind: "peer", body: PEER_BODY }]],
     ["no kind at all", peerOrigin({ kind: undefined })],
     ["another kind entirely", peerOrigin({ kind: "agent" })],
     ["kind is an object", peerOrigin({ kind: { kind: "peer" } })],
+  ];
+
+  for (const [why, origin] of nothing) {
+    assert.deepEqual(lineItems(peerAttachment(origin).trimEnd(), SESSION), [], why);
+  }
+});
+
+test("a peer delivery this reader cannot read the body of is still the delivery it is", () => {
+  // Silence here would be the two readings disagreeing about one message: the wrapper reading
+  // answers an unreadable body with the placeholder, so a message that arrived while the session
+  // was working must not vanish where the same message delivered to an idle session is drawn.
+  const unreadable: [string, unknown][] = [
     ["no body at all", peerOrigin({ body: undefined })],
     ["body is not a string", peerOrigin({ body: { text: PEER_BODY } })],
     ["body is empty", peerOrigin({ body: "" })],
@@ -4221,8 +4258,31 @@ test("a peer delivery this reader cannot read the body of contributes silence, n
   ];
 
   for (const [why, origin] of unreadable) {
-    assert.deepEqual(lineItems(peerAttachment(origin).trimEnd(), SESSION), [], why);
+    assert.deepEqual(
+      lineItems(peerAttachment(origin).trimEnd(), SESSION),
+      [{ kind: "peer-in", name: PEER_NAME, body: PEER_BODY_UNREADABLE }],
+      why,
+    );
   }
+});
+
+test("both paths draw one broken message the same way, rather than one drawing nothing", () => {
+  // The one-reading invariant, taken where it is easiest to break: a message whose body neither
+  // reading can make out. The mid-turn shape and the idle shape must produce the same rendering,
+  // because which one a message arrives in is decided by whether the receiving session happened to
+  // be busy, which says nothing about the message.
+  const [mine] = lineItems(peerAttachment(peerOrigin({ body: "  " })).trimEnd(), SESSION);
+  const theirs = crossSessionDelivery(idleDelivery("  "));
+
+  assert.deepEqual(mine, { kind: "peer-in", name: PEER_NAME, body: PEER_BODY_UNREADABLE });
+  assert.deepEqual(theirs, { name: PEER_NAME, body: PEER_BODY_UNREADABLE, readable: false });
+  assert.ok(mine !== undefined && mine.kind === "peer-in");
+  assert.ok(theirs !== null);
+  assert.deepEqual(
+    renderPeerIn(mine.name, mine.body),
+    renderPeerIn(theirs.name, theirs.body),
+    "one message, one rendering, whichever state the receiving session was in",
+  );
 });
 
 test("a peer message with no usable name is still the message, under a fixed fallback name", () => {
@@ -4518,9 +4578,12 @@ test("a delivery whose body cannot be read is still a delivery, never an ordinar
     readable: false,
   });
 
-  // The mid-turn path meets the same condition by yielding nothing, which is silence rather than a
-  // misattribution: the two paths fail in the same direction, never into the operator's register.
-  assert.deepEqual(lineItems(peerAttachment(peerOrigin({ body: "" })).trimEnd(), SESSION), []);
+  // The mid-turn path meets the same condition with the same answer, so which reading a message
+  // takes is decided by nothing an operator would notice: a body neither can make out is the
+  // placeholder either way, never the operator's register and never silence on one side alone.
+  assert.deepEqual(lineItems(peerAttachment(peerOrigin({ body: "" })).trimEnd(), SESSION), [
+    { kind: "peer-in", name: PEER_NAME, body: PEER_BODY_UNREADABLE },
+  ]);
 });
 
 test("a peer's own text cannot re-aim the reading of the wrapper it arrived in", () => {
@@ -4630,4 +4693,106 @@ test("both paths one message reaches a thread by read the same message out of it
 
   assert.deepEqual(mine, { kind: "peer-in", name: PEER_NAME, body: PEER_BODY });
   assert.deepEqual(theirs, { name: PEER_NAME, body: PEER_BODY, readable: true });
+});
+
+// The tailer's own routing of peer traffic: the seam index.ts wires to the router's peer doorway.
+
+test("peer traffic reaches the router in transcript order, whole, in both directions", async (t) => {
+  // Ordered against the narration around it, on the queued prompt's own one-await-per-item rule: a
+  // message that arrived between two assistant lines belongs between them in the thread.
+  const file = transcriptFile(t);
+  const { tailer, peers, delivered } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantText("reading the failing test") +
+      peerAttachment(peerOrigin()) +
+      sendMessage(sendInput()) +
+      assistantText("found the off-by-one"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(peers, [{ kind: "peer-in", name: PEER_NAME, body: PEER_BODY }, SENT]);
+  assert.deepEqual(delivered, [
+    "interim:reading the failing test",
+    `peer-in:${PEER_NAME}:${PEER_BODY}`,
+    `peer-out:${PEER_NAME}:${SENT.message}`,
+    "interim:found the off-by-one",
+  ]);
+});
+
+test("a peer message the router could not post is dropped, not retried", async (t) => {
+  // The rule the whole routing layer follows: a message that lands minutes late answers a question
+  // the operator stopped asking. No digest is recorded either, because no other path posts this
+  // text.
+  const file = transcriptFile(t);
+  const attempts: PeerTraffic[] = [];
+  const { tailer } = harness({
+    deliverPeer: async (_sessionId, traffic) => {
+      attempts.push(traffic);
+      return { status: "no-thread" };
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, peerAttachment(peerOrigin()), "utf8");
+  await tailer.poll();
+  await tailer.poll();
+
+  assert.equal(attempts.length, 1, "the refused message is attempted once");
+});
+
+test("a peer delivery that throws loses its own message and nothing behind it", async (t) => {
+  // The consumed bytes are already behind the offset, so a throw that escaped the loop would lose
+  // every item behind it with no way to read them again. The line names the session and the
+  // failure; the error detail is withheld, because it can quote the message.
+  const file = transcriptFile(t);
+  const { tailer, posts, logs } = harness({
+    deliverPeer: async () => {
+      throw new Error(`peer delivery exploded while posting: ${PEER_BODY}`);
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, peerAttachment(peerOrigin()) + assistantText("still narrating"), "utf8");
+  await tailer.poll();
+
+  assert.deepEqual(posts, ["still narrating"], "the chunk behind the failure still posts");
+  assert.equal(logs.length, 1, logs.join("\n"));
+  assert.ok(logs[0].includes(SESSION), logs[0]);
+  assert.ok(!logs[0].includes(PEER_BODY), `peer content leaked into the log: ${logs[0]}`);
+});
+
+test("a peer message takes its place on the thread between the chunks it interrupted", async (t) => {
+  // End to end over the seam index.ts wires: both new item kinds reach the thread through the
+  // router's peer doorway, drawn under the peer attribution, in the order the transcript holds
+  // them, and the narration block above them does not grow after them.
+  const { file, tailer, posts, edits } = integration(t);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    assistantText("reading the failing test") +
+      peerAttachment(peerOrigin()) +
+      sendMessage(sendInput()) +
+      assistantText("found the off-by-one"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(posts, [
+    renderMirror("interim", "reading the failing test")[0],
+    ...renderPeerIn(PEER_NAME, PEER_BODY),
+    ...renderPeerOut(SENT.to, SENT.message),
+    renderMirror("interim", "found the off-by-one")[0],
+  ]);
+  assert.deepEqual(edits, [], "the chunk after an exchange posts fresh below it, never into it");
 });

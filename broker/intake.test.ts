@@ -139,6 +139,7 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     interimPollMs: 20_000,
     questionHoldMs: 14_400_000,
     taskNotifications: "brief",
+    peerMessages: "full",
     usageCard: false,
     usageCardRefreshMs: 60_000,
     modelChangeAlert: false,
@@ -1796,6 +1797,7 @@ test("a PreToolUse post re-arms the verdict after a restart: on and absent alert
       liveSessions: () => ["session-a"],
       deliver: async () => ({ status: "sent" }),
       deliverPrompt: async () => ({ status: "sent" }),
+      deliverPeer: async () => ({ status: "sent" }),
       deliverQuestion: async (_sessionId, questions) => {
         delivered.push(questions.map((entry) => entry.question));
         return { status: "sent" };
@@ -2078,6 +2080,7 @@ function composedQuestionPath(): {
     liveSessions: () => ["session-a"],
     deliver: async () => ({ status: "sent" }),
     deliverPrompt: async () => ({ status: "sent" }),
+    deliverPeer: async () => ({ status: "sent" }),
     deliverQuestion: async (_sessionId, questions) => {
       delivered.push(questions.map((entry) => entry.question));
       return { status: "sent" };

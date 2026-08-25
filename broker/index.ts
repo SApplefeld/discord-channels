@@ -793,6 +793,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     threadFor: (sessionId) => threadFor(sessionId),
     mirrorWriter,
     taskNotifications: config.taskNotifications,
+    peerMessages: config.peerMessages,
     log: note,
     ...(echo === null ? {} : { echo }),
   });
@@ -870,7 +871,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // constructed: no transcript is ever opened, no poll timer runs, and the intake gets no seam
   // to learn a path through, so "off" is the absence of the machinery rather than a check
   // inside it.
-  if (echo !== null && config.interimMirror) {
+  const tailing = echo !== null && config.interimMirror;
+  if (tailing) {
     const tailer = createTranscriptTailer({
       liveSessions: () =>
         registry
@@ -879,6 +881,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           .map((record) => record.sessionId),
       deliver: (sessionId, text) => outbound.interim(sessionId, text),
       deliverPrompt: (sessionId, text) => outbound.interimPrompt(sessionId, text),
+      deliverPeer: (sessionId, traffic) => outbound.peer(sessionId, traffic),
       // The release wrapper above. The delivery is read through a closure rather than passed
       // directly, because `deliverQuestion` is replaced further down once Discord's surfaces
       // exist, and the tailer is constructed before that.
@@ -928,6 +931,19 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         note("broker: a transcript poll pass failed; the error detail is withheld, it can carry content");
       });
     }, config.interimPollMs);
+  }
+  // The gap the mirror switches leave in an exchange, named once here rather than per message,
+  // because it is a configuration an operator can act on and not an event. Only the inbound half
+  // delivered to an idle session rides the mirror route; this session's own sends and every message
+  // that arrived while it was working are read off the transcript, so without the tailer a thread
+  // shows one side of a conversation and reads like the whole of it. Silence about that is worse
+  // than the gap.
+  if (config.peerMessages !== "off" && !tailing) {
+    note(
+      "broker: peer messages are on without the transcript tailer, so this host's outbound peer " +
+        "messages and the ones that arrive mid-turn reach no thread; they need CHANNEL_MIRROR and " +
+        "CHANNEL_INTERIM_MIRROR both on",
+    );
   }
   // Replaced below when Discord is configured. Without a channel there is no thread to ask in and
   // no operator to ask, so a prompt is reported and dropped rather than held: the session is at a

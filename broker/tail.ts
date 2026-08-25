@@ -300,6 +300,20 @@ export type TranscriptTailerOptions = {
    */
   deliverPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
   /**
+   * Posts one peer message, in either direction, to the session's own thread; the outbound router's
+   * `peer`. The status is read only to keep the shared result vocabulary; nothing here queues or
+   * retries.
+   *
+   * No echo digest is recorded, which rests on a contract rather than on a measurement: that no one
+   * delivery reaches both this path and the mirror path. This reader does not read the idle-delivery
+   * line at all, which is half of it; the other half is that the mid-turn delivery fires no prompt
+   * hook, and that is inferred from the harness's queued-injection behavior rather than observed.
+   * Only a live exchange against a running harness settles that half, which is not something this
+   * module can observe. Where it does not hold, one delivery posts twice, and the answer is the
+   * mechanism already here: dedup by digest through the echo memory the mirror and the tailer share.
+   */
+  deliverPeer: (sessionId: string, traffic: PeerTraffic) => Promise<ReplyResult>;
+  /**
    * Posts one open-question alert to the session's own thread. Both question paths ride this one
    * closure: `question()`, fed by the `AskUserQuestion` PreToolUse hook at emission, and the
    * poll's own read of the call's transcript line, which Claude Code withholds until the picker
@@ -508,11 +522,23 @@ export type TailItem =
   | { kind: "text"; text: string }
   | { kind: "prompt"; text: string }
   | { kind: "question"; questions: readonly AskedQuestion[] }
-  | { kind: "peer-in"; name: string; body: string }
-  | { kind: "peer-out"; to: string; summary: string | null; message: string }
+  | PeerTraffic
   | { kind: "model"; reading: ModelReading }
   | { kind: "fallback"; fallback: ModelFallback }
   | { kind: "goal"; goal: string | null };
+
+/**
+ * One peer message off the transcript, in either direction: a message another session sent this one
+ * while it was working, or a message this session sent another.
+ *
+ * Named apart from the rest of the union because it is also what crosses the seam to the routing
+ * layer whole. The two directions render under one attribution vocabulary and post through one
+ * doorway, so the router takes the item rather than a per-direction argument list, and a field
+ * added to either kind reaches the render site without a second signature to keep in step.
+ */
+export type PeerTraffic =
+  | { kind: "peer-in"; name: string; body: string }
+  | { kind: "peer-out"; to: string; summary: string | null; message: string };
 
 /**
  * The most questions one `AskUserQuestion` line contributes, the tool's own ceiling.
@@ -796,7 +822,7 @@ function peerName(value: unknown): string | null {
 
 /**
  * The peer message a `queued_command` attachment's structured `origin` carries, or null when that
- * origin is not a readable peer delivery.
+ * origin is not a peer delivery at all.
  *
  * The harness's contract, not this project's: an `origin` object whose `kind` is `peer`, whose
  * `body` holds the message's own text with no wrapper markup around it, and whose `name` holds the
@@ -806,6 +832,14 @@ function peerName(value: unknown): string | null {
  * `from` pipe address, `msg_id`, `hopChain` and `fromMode` are read by nobody: none of them is
  * actionable from a thread.
  *
+ * An origin that names a peer delivery and carries no readable body is still a delivery, and reads
+ * as one under `PEER_BODY_UNREADABLE`, exactly as the wrapper reading answers the same message. The
+ * two shapes one message arrives in are read in two places, so they are held to one answer here: a
+ * message this broker cannot make out is a visible placeholder whether it landed while the session
+ * was idle or while it was working, rather than a placeholder on one and silence on the other. Only
+ * the gate above is silence, and it is the honest one: an origin that is not a peer delivery is not
+ * this reader's line.
+ *
  * The failure direction is silence. A harness revision that moves this shape leaves a peer message
  * delivered to a busy session reaching the thread nowhere, visible at the console alone. Observable
  * on any exchange, and not an action.
@@ -814,9 +848,10 @@ function peerDelivery(origin: unknown): { name: string; body: string } | null {
   if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return null;
   const fields = origin as Record<string, unknown>;
   if (fields["kind"] !== "peer") return null;
-  const body = peerBody(fields["body"]);
-  if (body === null) return null;
-  return { name: peerName(fields["name"]) ?? PEER_NAME_FALLBACK, body };
+  return {
+    name: peerName(fields["name"]) ?? PEER_NAME_FALLBACK,
+    body: peerBody(fields["body"]) ?? PEER_BODY_UNREADABLE,
+  };
 }
 
 /**
@@ -864,13 +899,25 @@ function peerSend(input: unknown): { to: string; summary: string | null; message
  * of the wrapper.
  *
  * The harness's contract, not this project's, like `TASK_NOTIFICATION` in the routing layer: an
- * external shape that can change without notice. The failure direction is a visible one rather than
- * silence, because this text reaches a thread through the prompt path whatever this reading says. A
- * shape move that stops this matching costs the delivery its own attribution, leaving it drawn in
- * the operator's quoted register carrying the wrapper markup as the operator's own words; a false
- * positive costs a prompt the operator really typed the peer attribution, and, where that prompt
- * also carries a whole wrapper for the reading to fail on, the placeholder body. Both are read off
- * the thread at a glance, and both are a misattribution rather than a lost message.
+ * external shape that can change without notice. Both failure directions now reach past attribution,
+ * because the routing layer reads this classification for two decisions rather than one: how the
+ * text is drawn, and whether it stamps engagement.
+ *
+ * A shape move that stops this matching costs a delivery its own attribution, leaving it drawn in
+ * the operator's quoted register carrying the wrapper markup as the operator's own words, and it
+ * also restores the stamp: a peer message would again clear a standing blocked state that exists to
+ * wait on a person. The first is read off the thread at a glance; the second is silent, and it is
+ * the defect this reading exists to close.
+ *
+ * A false positive, a prompt the operator really typed that this reads as a delivery, costs three
+ * things. Under `full` and `brief` it is drawn under the peer attribution, and where the prompt also
+ * carries a whole wrapper for the extraction to fail on, under the placeholder body. Under `off` it
+ * is dropped: the operator's own words never reach the thread, and the routing layer's drop line is
+ * the only trace. And on every setting the engagement stamp is withheld, so a standing blocked state
+ * does not clear on words a person really typed.
+ *
+ * That is why the classification is a prefix match on the harness's own opening rather than anything
+ * looser: what an operator types does not open with this.
  *
  * The wrapper literal deliberately stops before the attribute list, on `TASK_NOTIFICATION`'s
  * reasoning exactly: the tag is never written bare, so matching the tag name alone is what survives
@@ -911,9 +958,14 @@ const CROSS_SESSION_FROM_NAME = /from-name="([^"]*)"/;
 /**
  * A peer message read out of the text one was delivered to an idle session in: the counterparty it
  * came from, the body to draw, and whether that body is the message's own or the placeholder that
- * stands in for one this reader could not make out. A caller renders both the same way and under
- * the same attribution; the flag is there so one that wants to say less about an unreadable
- * delivery than about a readable one can.
+ * stands in for one this reader could not make out.
+ *
+ * The routing layer deliberately does not read `readable`: both states render identically, under the
+ * peer attribution and under the peer setting, and a branch on this flag is the hole it looks like a
+ * safety valve for. A peer writes its own body, so it chooses whether that body parses; any path
+ * reserved for the unreadable case is therefore a path a peer can select, and the one worth
+ * selecting is the operator's quoted register. The flag is carried for a reader that wants to say
+ * less about an unreadable delivery than about a readable one without taking it somewhere else.
  */
 export type CrossSessionDelivery = { name: string; body: string; readable: boolean };
 
@@ -1790,7 +1842,25 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         }
         if (item.kind === "peer-in" || item.kind === "peer-out") {
           // Peer traffic, in both directions. It is drawn under an attribution of its own rather
-          // than as this session's narration, so it does not join the chain below.
+          // than as this session's narration, so it goes out through the router's peer doorway
+          // instead of the chunk delivery below, on the same one-await-per-item rule the prompt
+          // branch follows: a message sitting between two assistant lines reaches the thread
+          // between them. No echo digest is recorded, because no other path posts this text. A
+          // delivery that could not be made is dropped and never retried, and the error is
+          // discarded unread, because it can quote the message.
+          try {
+            await options.deliverPeer(sessionId, item);
+            // Every point past an await re-checks the epoch it started under, the rule the rest of
+            // this function follows: a suppress landing during this delivery stops the batch here
+            // rather than publishing the items behind it.
+            if (!stillValid()) return;
+          } catch {
+            repeats(
+              `session ${sessionId}'s peer message delivery failed`,
+              "the message is dropped; the error detail is withheld, it can carry content",
+            );
+            if (!stillValid()) return;
+          }
           continue;
         }
         // What is left is the assistant's own narration. The assignment is the check: a kind added

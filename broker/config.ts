@@ -77,6 +77,21 @@ export type BrokerConfig = {
    */
   taskNotifications: "brief" | "full" | "off";
   /**
+   * How much of the peer traffic a session exchanges with other Claude sessions reaches its thread,
+   * in both directions. `full` draws each message whole under its own peer attribution; `brief`
+   * draws one line per message, the sender's own `summary` where an outbound send wrote one and the
+   * body's opening line otherwise; `off` posts none of it.
+   *
+   * Volume is all this governs, and attribution is not a knob: on every setting a peer message is
+   * drawn under the peer attribution rather than the operator's quoted register, and stamps no
+   * engagement.
+   *
+   * What this knob cannot restore is a path that is not running. Two of the three ways a peer
+   * message reaches a thread ride the transcript tailer, so with `interimMirror` off only the
+   * inbound half delivered to an idle session survives, and the broker says so once at startup.
+   */
+  peerMessages: "full" | "brief" | "off";
+  /**
    * Whether a session's model change posts on the alert tier, with the mention that reaches the
    * operator's phone, rather than on the notice tier. Off by default: a model change is worth
    * reading rather than worth waking someone for, and whether the quiet tier is loud enough on a
@@ -294,22 +309,47 @@ export function strictFlag(raw: string | undefined, fallback: boolean): boolean 
   );
 }
 
+/**
+ * One knob whose value is a fixed vocabulary rather than a flag, read the way `strictFlag` reads a
+ * boolean one: trimmed, case folded, blank taken as absent, and a value outside the vocabulary
+ * refused rather than guessed at. A typo read permissively lands on whichever mode the parser leans
+ * toward, and a knob silently moved is a knob whose behavior nobody can reason about later.
+ *
+ * One implementation for every enum knob here, on the reasoning `strictFlag`'s own comment gives
+ * for being shared: two parsers are two admission rules, and a host writing a spelling one accepts
+ * and the other refuses gets a configuration it cannot reason about from the file it wrote. The
+ * refusal names the vocabulary in the order its caller declared it, so each knob's message reads in
+ * its own terms.
+ */
+function strictEnum<T extends string>(raw: string | undefined, modes: readonly T[], fallback: T): T {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim().toLowerCase();
+  const mode = modes.find((candidate) => candidate === value);
+  if (mode !== undefined) return mode;
+  throw new Error(`expected one of ${modes.join(", ")}, got ${JSON.stringify(raw)}`);
+}
+
 const TASK_NOTIFICATION_MODES: ReadonlyArray<"brief" | "full" | "off"> = ["brief", "full", "off"];
 
 /**
- * Refuses rather than guesses, holding the line `strictFlag` holds: the value is a three-way
- * choice rather than a flag, so a typo like `CHANNEL_TASK_NOTIFICATION=freif` read permissively
- * would silently land on whichever mode the parser leaned toward, and a knob silently moved is a
- * knob whose behavior nobody can reason about later.
+ * How a background task's wake prompt is drawn, defaulting to the compression: a typo like
+ * `CHANNEL_TASK_NOTIFICATION=freif` is refused by the reading above rather than landing silently on
+ * whichever mode it resembles.
  */
 function taskNotificationMode(raw: string | undefined): "brief" | "full" | "off" {
-  if (raw === undefined || raw.trim() === "") return "brief";
-  const value = raw.trim().toLowerCase();
-  const mode = TASK_NOTIFICATION_MODES.find((candidate) => candidate === value);
-  if (mode !== undefined) return mode;
-  throw new Error(
-    `expected one of ${TASK_NOTIFICATION_MODES.join(", ")}, got ${JSON.stringify(raw)}`,
-  );
+  return strictEnum(raw, TASK_NOTIFICATION_MODES, "brief");
+}
+
+const PEER_MESSAGE_MODES: ReadonlyArray<"full" | "brief" | "off"> = ["full", "brief", "off"];
+
+/**
+ * How much of a peer message is drawn, defaulting to the whole of it: a typo like
+ * `CHANNEL_PEER_MESSAGES=fully` is refused by the reading above rather than quietly halving what an
+ * operator watches an exchange through. The modes are declared loudest first, which is this knob's
+ * default and the one difference from the wake-up notice's vocabulary.
+ */
+function peerMessageMode(raw: string | undefined): "full" | "brief" | "off" {
+  return strictEnum(raw, PEER_MESSAGE_MODES, "full");
 }
 
 // A Windows path names the same place from every process only when it leads with a drive letter or a
@@ -448,6 +488,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     // the terminal it mirrors is the reported failure. `full` is the escape hatch for an operator
     // who wants the whole report in the thread.
     taskNotifications: taskNotificationMode(env.CHANNEL_TASK_NOTIFICATION),
+    // Full by default, where the wake-up notice above compresses: peer traffic is the whole content
+    // of an exchange the operator is watching from the thread rather than a wake-up the console
+    // already renders compactly, and half of a conversation answers nothing.
+    peerMessages: peerMessageMode(env.CHANNEL_PEER_MESSAGES),
     modelChangeAlert: strictFlag(env.CHANNEL_MODEL_CHANGE_ALERT, false),
     // Off by default: the card reads another program's files and opens a thread of its own in the
     // operator's channel, and neither belongs on a host that never asked for it.

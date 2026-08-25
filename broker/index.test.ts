@@ -61,6 +61,7 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     interimPollMs: 20_000,
     questionHoldMs: 14_400_000,
     taskNotifications: "brief",
+    peerMessages: "full",
     usageCard: false,
     usageCardRefreshMs: 60_000,
     modelChangeAlert: false,
@@ -391,6 +392,44 @@ test("startBroker exposes the logger it started with", async (t) => {
 
   broker.logger.info("probe line from the test");
   assert.match(readFileSync(logFile, "utf8"), /probe line from the test/);
+});
+
+test("a host with peer messages on and no tailer is told which half of an exchange it loses", async (t) => {
+  // Two of the three paths a peer message reaches a thread by are read off the transcript, so with
+  // the interim mirror off a thread shows the inbound half of a conversation and nothing this
+  // session answered. Half an exchange reads like a whole one, which is why the gap is said out
+  // loud once, where an operator can act on it.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-peer-gap-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  async function startedWith(
+    name: string,
+    overrides: Partial<BrokerConfig>,
+  ): Promise<string> {
+    const logFile = path.join(dir, `${name}.log`);
+    const broker = await startBroker(
+      config({ stateFile: path.join(dir, `${name}.json`), logFile, port: 0, ...overrides }),
+    );
+    await broker.stop();
+    return existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  }
+
+  const gapped = await startedWith("gapped", { interimMirror: false, peerMessages: "full" });
+  assert.match(gapped, /peer messages are on without the transcript tailer/);
+  // Actionable or it is noise: the line names the two switches that close the gap.
+  assert.match(gapped, /CHANNEL_MIRROR/);
+  assert.match(gapped, /CHANNEL_INTERIM_MIRROR/);
+
+  // The host-wide mirror switch takes the tailer down with it, so the same half is missing.
+  const unmirrored = await startedWith("unmirrored", { mirror: false, peerMessages: "brief" });
+  assert.match(unmirrored, /peer messages are on without the transcript tailer/);
+
+  // And the two configurations with no gap to report say nothing: the tailer is running, or peer
+  // traffic was turned off deliberately and there is no half-exchange to warn about.
+  const whole = await startedWith("whole", { interimMirror: true, peerMessages: "full" });
+  assert.doesNotMatch(whole, /peer messages/);
+  const quiet = await startedWith("quiet", { interimMirror: false, peerMessages: "off" });
+  assert.doesNotMatch(quiet, /peer messages/);
 });
 
 test("the usage card knob builds nothing on a broker with no discord configured", async (t) => {

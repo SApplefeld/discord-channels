@@ -341,8 +341,89 @@ Gates: baseline at 22fcc5d was lint exit 0, test exit 0, 1436 tests / 1435 pass 
   byte-identical across six inputs, so the new pass rides its optional parameter and nothing
   inherited it.
 Scope: `install/Install-Functions.ps1` was folded into section 3, which had not named it. Its
-  `$script:ChannelBrokerEnvAllowlist` is a hand-maintained list and nothing pins it against
-  `broker/config.ts`, so `CHANNEL_PEER_MESSAGES` would parse correctly and never reach the broker
-  process. Approval drift, recorded here deliberately.
+  `$script:ChannelBrokerEnvAllowlist` is a hand-maintained list, and a knob absent from it parses
+  correctly and never reaches the broker process. Approval drift, recorded here deliberately.
+  Corrected in Chapter 3: this note first claimed nothing pinned the allowlist against
+  `broker/config.ts`. A pin does exist, at `install/Install-Functions.test.ts:842`, and it is
+  derived rather than enumerative, scanning `broker/config.ts` for `env.CHANNEL_*` and asserting
+  every knob it finds is on the list. The fold was still right and the pin is what proved it: the
+  test went red on its own the moment the config knob landed.
 Next: 3. The routing, the stamp, and the knob (outbound, config)
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-25
+Completed: 3. The routing, the stamp, and the knob (outbound, config)
+Implemented By: implementer-opus (one build, one review-fix round; no escalation)
+Metrics: review rounds 1; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: Two rulings shaped this section, both on gaps the spec did not foresee.
+  The first: the knob and the machinery it governs are gated independently, so
+  `CHANNEL_PEER_MESSAGES=full` with `CHANNEL_INTERIM_MIRROR=off` renders half an exchange. The
+  transcript tailer exists only when the echo memory and the interim mirror are both on
+  (`broker/index.ts:874`), and two of the three ways a peer message reaches a thread ride it; only
+  the inbound half delivered to an idle session rides the independent mirror route. Ruled against
+  building a peer-only tailer, because that duplicates the transcript machinery to serve a
+  configuration nobody has asked for, and a thread showing one side of a conversation reads like
+  the whole of it, which is the real cost. The answer is a one-time startup line naming exactly
+  what reaches no thread and which two switches restore it, plus the correction of a router
+  comment that had claimed one setting answered for a whole exchange. The second: under `off`, a
+  prompt the operator really typed that the classification misreads as a delivery is deleted from
+  the thread rather than merely misattributed. Both alternatives were worse and both hand a peer
+  the same switch: falling through to `renderMirror` draws whatever a peer wrote inside the
+  operator's quoted register on exactly the setting chosen to hear less from peers, and gating
+  suppression on `readable === true` lets a peer choose its own path by choosing whether its body
+  parses. So the behavior stands and the contract was corrected to say plainly what it costs, at
+  `CROSS_SESSION_WRAPPER` and at the `off` branch, with the drop line naming the misread as a
+  possibility. The same reasoning is why the router deliberately never reads
+  `CrossSessionDelivery.readable`, now documented at the type: a branch reserved for the
+  unreadable case is a branch a peer can select.
+Assumptions: `peerMessages` defaults to `full` where its sibling `taskNotifications` defaults to
+  `brief`; the divergence is deliberate and stated at both the type and the load site, because a
+  wake notice is a report the console already renders compactly while peer traffic is the content
+  of the exchange being watched (route (b), low-blast, reversible, section 3). The two enum knobs
+  now share one `strictEnum(raw, modes, fallback)` reader, on `strictFlag`'s own stated ground
+  that two parsers are two admission rules (route (a), the code's own conventions, section 3).
+Review Findings: Two Majors and eleven Minors, all addressed. M1 and M2 are the two rulings above.
+  Minors fixed: the engagement consequences are named at the classification constant and at both
+  stamp sites, in both failure directions, because this reading now decides the stamp as well as
+  the attribution and only the attribution failure is visible; `deliverPeer`'s no-double-post
+  claim is stated as a contract resting on an unobservable half rather than as fact, with
+  echo-digest dedup named as the fallback; `peerRun` gained a `never`-typed default, whose absence
+  would have let a later direction fall into the outbound arm and claim a session said something
+  it received; the mid-turn and idle paths were made to agree, so an origin naming a peer with an
+  unreadable body now yields the placeholder on both rather than a placeholder on one and silence
+  on the other; the knob's doc no longer says volume is all it governs without saying that `brief`
+  draws the sender's own summary; a runtime-cycle pin joined `import-hygiene.test.ts`; the
+  `kind === "prompt"` guard, the drop line, and the startup line each gained a durable test. The
+  cycle pin was proven able to speak before it was trusted: a temporary runtime import of
+  `RUN_PACE_MS` into `broker/tail.ts` made it fail with the intended message, restored from a file
+  copy, and it carries two controls so it cannot go quiet if the runtime edge it guards ever ends.
+  Two findings accepted rather than fixed: a `SendMessage` whose `tool_result` errored still
+  renders as sent, which is Chapter 1's accepted residual and unchanged here; and m2's contract
+  stays half-unobservable by construction, since only a live exchange settles whether the mid-turn
+  delivery fires a prompt hook, which section 4 probes.
+Stamps: `memq unstamped --since 5h` reported zero in both tiers; none surfaced this section.
+Gates: baseline at 10ed595 was lint exit 0, test exit 0, 1445 tests / 1444 pass / 0 fail / 1
+  skipped. Now lint exit 0, test exit 0, 1463 tests / 1462 pass / 0 fail / 1 skipped, run by me
+  rather than read off the implementer's report: +18 tests, no regression. The echo-dedup `until`
+  flake fired three times mid-section and was discriminated rather than assumed, this time with
+  the control the earlier sightings lacked: a clean HEAD tree extracted outside the shared
+  worktree went red twice in ten full runs with none of this section's code present. Pre-existing,
+  confirmed. The receipts and the two wording corrections they force went to `docs/backlog.md`.
+Scope: Four files were folded in beyond the section's named `broker/routing/outbound.ts` and
+  `broker/config.ts`. `broker/index.ts` wires both new seams and now carries M1's startup line;
+  `broker/index.test.ts` and `broker/intake.test.ts` pin them; `import-hygiene.test.ts` is where
+  this repo's import-shape pins live and so is where the runtime-cycle pin belongs. All four sit
+  in directories the section already touched, need no acceptance criterion the section did not
+  carry, and are covered by its gate. `install/Install-Functions.ps1` was the fold Chapter 2
+  recorded, and Chapter 2's note about it was factually wrong: it claimed nothing pinned the
+  allowlist against `broker/config.ts`. A derived pin does exist, at
+  `install/Install-Functions.test.ts:842`, and it went red on its own the moment the config knob
+  landed. Corrected in place in Chapter 2 with the original claim preserved. Three surfaces were
+  routed to section 4, which already owns the docs update, rather than fixed here:
+  `docs/operations.md` needs the `CHANNEL_PEER_MESSAGES` row and the three new `routing:` drop
+  lines; `docs/security-model.md` carries two enumerations peer traffic makes wrong ("one of six
+  named shapes", "All five go through one fence-aware escape") alongside the sixth-surface note
+  Chapter 2 already routed there; and the security reviewer's residual that a peer wake still
+  clears a standing block one tool call later through `PostToolUse` needs one sentence.
+Next: 4. Live verification and docs
 Commit Model: Commit-and-Push

@@ -228,6 +228,20 @@ and none carries a date of its own. An item added from here on carries `(parked 
   read the red as its own and reported against a baseline that was in fact clean. That is the real
   cost of leaving it, and it is why it is written down rather than left as folklore.
 
+  Measured again on 2026-08-25, during the peer-traffic round, with the control the earlier
+  measurement lacked: a clean HEAD tree extracted outside the shared worktree (`git archive HEAD
+  | tar -x`) ran the full suite ten times and went red twice, once on "a long reply the tailer is
+  still posting is not posted again by the Stop mirror" at `broker/tail.test.ts:2464`, same `until`
+  assertion, with none of that round's code present. So a red in this group is pre-existing by
+  default and no round needs to re-litigate whose it is. Two things in the wording above are
+  sharper than the evidence supports: 2 in 10 on a clean tree is a far higher rate than the 21-to-1
+  recorded here, and the reds arrived without the load the entry names as the trigger, so "only
+  under machine load" and "the polling window under parallel suite load is the prime suspect" are
+  both unproven. The helper's bound is a count of 1,000 `setImmediate` turns rather than wall clock
+  (`broker/tail.test.ts:2473-2479`), which is load-independent by construction: it expires when the
+  microtask loop spins fast relative to the paced run's real timer, which load would slow rather
+  than hasten. The instrument-first fix above is unchanged and is still the right first move.
+
 - Three display-spoofing residues on the per-row table shape, from that round's security review, none
   with syntax reachable and all in the same class. Drawing a table as lines of `label: value` gives a
   line semantic meaning it did not have inside a fence, so a cell that can compose a line can

@@ -46,6 +46,57 @@ test("every relative import carries an explicit TypeScript extension", () => {
   );
 });
 
+/**
+ * The specifiers a file imports at run time: a from-clause whose `import` is not a type-only one,
+ * and a bare side-effect import, which is a runtime edge carrying no binding.
+ *
+ * A type-only import is erased before anything executes, so it builds no edge in the module graph
+ * and cannot participate in a cycle. The lookahead is what tells the two apart, and it is anchored
+ * on the `import` keyword rather than searched, so a runtime import earlier in the file cannot lend
+ * its match to a type-only one below it.
+ */
+const RUNTIME_FROM = /\bimport\s+(?!type\b)[\s\S]*?\bfrom\s*["']([^"']+)["']/g;
+const RUNTIME_BARE = /\bimport\s*["']([^"']+)["']/g;
+
+function runtimeImports(source: string): string[] {
+  const stripped = code(source);
+  return [
+    ...[...stripped.matchAll(RUNTIME_FROM)].map((match) => match[1]),
+    ...[...stripped.matchAll(RUNTIME_BARE)].map((match) => match[1]),
+  ];
+}
+
+test("the tailer answers the routing layer's runtime import with no runtime import back", () => {
+  // The one layer edge in this repo that runs in both directions, and the only thing keeping it
+  // acyclic is that one side is type-only. The peer classification lives in the tailer and the
+  // routing layer calls it, while the tailer names the router's `ReplyResult` for its delivery
+  // seams. Erased at run time that is one edge; converted to a value import it is a cycle, and a
+  // cycle here does not fail the type check and does not fail at import: it leaves whichever module
+  // Node evaluates second holding an undefined binding, which throws at the first call, on a path
+  // that only a live peer message reaches.
+  const outbound = readFileSync("broker/routing/outbound.ts", "utf8");
+  const tail = readFileSync("broker/tail.ts", "utf8");
+
+  // The control. Without the runtime edge this pin is about, the assertion below is a check nobody
+  // could fail, and it would stay green through the refactor that removed the reason for it.
+  assert.ok(
+    runtimeImports(outbound).includes("../tail.ts"),
+    "the routing layer is expected to import the tailer at run time; if that ended, this pin has " +
+      "no subject and should be reconsidered rather than left passing",
+  );
+  assert.ok(
+    code(tail).includes('from "./routing/outbound.ts"'),
+    "the tailer is expected to name the router's result type; if that ended, likewise",
+  );
+
+  assert.deepEqual(
+    runtimeImports(tail).filter((specifier) => specifier.includes("routing/")),
+    [],
+    "broker/tail.ts must reach the routing layer by type-only imports alone: a runtime import back " +
+      "closes a cycle that type-checks clean and throws only when a peer message arrives",
+  );
+});
+
 test("the scan actually reaches this repo's sources", () => {
   // Without this, a glob that silently matched nothing would make the check above vacuously pass.
   assert.ok(SOURCES.includes("import-hygiene.test.ts"), `scanned files: ${SOURCES.join(", ")}`);

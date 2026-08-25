@@ -5,11 +5,24 @@
 // the thread this session owns now, and Claude may reply having received no event at all. Routing
 // by session is what makes an unprompted reply land correctly, and it is also what stops a reply
 // from being addressable: the relay never forwards a chat_id, so there is nothing here to honor.
-import { appendNarration, renderAnswer, renderMirror, renderTaskNotice } from "../discord/render.ts";
+import {
+  appendNarration,
+  renderAnswer,
+  renderMirror,
+  renderPeerIn,
+  renderPeerInBrief,
+  renderPeerOut,
+  renderPeerOutBrief,
+  renderTaskNotice,
+} from "../discord/render.ts";
 import type { MirrorKind } from "../discord/render.ts";
 import { withoutInvisible } from "../sanitize.ts";
 import type { Registry } from "../registry.ts";
-import type { EchoMemory } from "../tail.ts";
+// The peer classification is read here rather than duplicated, so the two paths a peer message
+// reaches a thread by cannot answer differently about one message. A runtime import back into the
+// tailer, which imports this module type-only, so the modules stay acyclic at run time.
+import { crossSessionDelivery } from "../tail.ts";
+import type { EchoMemory, PeerTraffic } from "../tail.ts";
 import type { ThreadWriter } from "./writer.ts";
 
 export type OutboundRouterOptions = {
@@ -49,6 +62,24 @@ export type OutboundRouterOptions = {
    * transcript tailer extracts, so one wake prompt gets one answer whichever way it arrived.
    */
   taskNotifications?: "brief" | "full" | "off";
+  /**
+   * How much of a peer message reaches the thread. `full`, the default when absent, draws the
+   * message whole under its own peer attribution; `brief` draws one line, the sender's own summary
+   * where an outbound send wrote one and the body's opening line otherwise; `off` posts nothing and
+   * leaves a log line. Applied on all three paths a peer message reaches a thread by and in both
+   * directions, so no path draws a message another path would compress.
+   *
+   * What this setting cannot do is put a path on the wire. Only the inbound half delivered to an
+   * idle session rides the prompt seams; this session's own sends and every message that arrived
+   * while it was working are read off the transcript, so they reach a thread only while the tailer
+   * exists. An exchange is whole here only while it does, and the broker says so once at startup
+   * rather than leaving half a conversation reading like all of one.
+   *
+   * Volume is all it governs, and attribution is not a knob: a peer message is drawn under the peer
+   * attribution and stamps no engagement on every setting, `full` included, because what a peer
+   * wrote is never the operator's own register and never evidence that a person is driving.
+   */
+  peerMessages?: "full" | "brief" | "off";
   log?: (message: string) => void;
   /**
    * The clock this router reads: the drop log's window, and what a paced run's reactive waits are
@@ -360,6 +391,21 @@ export type OutboundRouter = {
    */
   interimPrompt: (sessionId: string, text: string) => Promise<ReplyResult>;
   /**
+   * Posts one peer message the transcript tailer read, in either direction, to the session's own
+   * thread.
+   *
+   * Addressed by session ID through `threadFor`, exactly as `interim` is, and delivered through the
+   * thread's ordering chain, so a message takes its place among the lines around it and ends any
+   * narration block being grown there: what follows a peer message posts fresh below it. Spent
+   * against the mirror writer like every other conversation-carrying path here, never an alert-tier
+   * one, and it pings nobody: an exchange between two sessions is worth reading rather than worth
+   * waking someone for.
+   *
+   * The inbound half of this is also reached from the two prompt seams, which see a peer message
+   * delivered to an idle session as prompt text; all three render through one mode dispatch.
+   */
+  peer: (sessionId: string, traffic: PeerTraffic) => Promise<ReplyResult>;
+  /**
    * Records that a message landed in one of this broker's threads, as read off the gateway.
    *
    * This is the freshness signal narration coalescing rests on: a chunk appends into the
@@ -396,6 +442,10 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   // Brief when absent, matching the config knob's own default: a caller that says nothing gets
   // the compressed notice, and only an explicit `full` restores the whole-report mirror.
   const taskNotifications = options.taskNotifications ?? "brief";
+  // Full when absent, matching the config knob's own default: a caller that says nothing gets the
+  // whole message, because peer traffic is the content of an exchange rather than a notice about
+  // one.
+  const peerMessages = options.peerMessages ?? "full";
   const now = options.now ?? Date.now;
   const dropped = createDropLog(log, now);
   const sleep =
@@ -723,6 +773,99 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     return { status: "failed", error: run.error };
   }
 
+  /**
+   * The messages one peer message takes under the current setting, in the direction it was sent.
+   *
+   * The one mode dispatch, read by all three paths a peer message reaches a thread by, so a message
+   * cannot be drawn whole on one and compressed on another. `off` never reaches here: it is
+   * answered by the drop below, which posts nothing and says why.
+   */
+  function peerRun(traffic: PeerTraffic): string[] {
+    switch (traffic.kind) {
+      case "peer-in":
+        return peerMessages === "brief"
+          ? renderPeerInBrief(traffic.name, traffic.body)
+          : renderPeerIn(traffic.name, traffic.body);
+      case "peer-out":
+        // `brief` draws the sender's own summary here where it wrote one, which is the compression
+        // its author already made of its own message; the body's opening line is the fallback.
+        return peerMessages === "brief"
+          ? renderPeerOutBrief(traffic.to, traffic.summary, traffic.message)
+          : renderPeerOut(traffic.to, traffic.message);
+      default: {
+        // The assignment is the check, the rule the tailer's own dispatch follows: a direction added
+        // to the union without a case of its own stops being assignable to never, so the build fails
+        // here. Without it a new kind would fall into the outbound arm and draw as a message this
+        // session sent, which is this layer's one unforgivable error: claiming a session said
+        // something it received.
+        const unreachable: never = traffic;
+        return unreachable;
+      }
+    }
+  }
+
+  /** Which direction a peer message went, for the log lines that name a drop without its text. */
+  function peerSubject(traffic: PeerTraffic): string {
+    return traffic.kind === "peer-in" ? "inbound peer message" : "outbound peer message";
+  }
+
+  /**
+   * Posts one peer message, in either direction, shared by the three paths one arrives on so their
+   * rendering, their suppression, and their logging cannot drift apart.
+   *
+   * Through the chained `deliver` doorway rather than a bare write: the message takes its
+   * thread-order place among the lines around it and ends any narration block being grown there,
+   * because what a session says after an exchange belongs below it. On a run error, and on the
+   * empty render, the line carries the direction, the session, and the transport's error class
+   * only, the discipline every posting path here holds: a peer message is conversation content, and
+   * it never appears in the broker log at any level.
+   */
+  async function deliverPeerMessage(
+    threadId: string,
+    sessionId: string,
+    traffic: PeerTraffic,
+  ): Promise<ReplyResult> {
+    if (peerMessages === "off") {
+      // The cause and the session, never the text: peer traffic suppressed on purpose reads on
+      // every other surface exactly like a classification that broke, so this line is the
+      // discriminator, and it names the knob that restores what it dropped.
+      //
+      // It is also the only trace of one thing this setting deletes. A prompt the operator really
+      // typed that the peer classification reads as a delivery reaches here and is dropped from the
+      // thread entirely, where under `full` and `brief` the same misreading costs only the
+      // attribution. Suppressing it is still the better answer than falling through to the mirror:
+      // that would draw whatever a peer wrote inside the operator's quoted register on exactly the
+      // setting chosen to hear less from peers, and the register is the one thing this surface holds
+      // unforgeable. So the inbound line says plainly that a prompt can be what it dropped.
+      const misread =
+        traffic.kind === "peer-in" ? "; a prompt read as peer traffic is dropped here too" : "";
+      dropped(
+        `the ${peerSubject(traffic)} for session ${sessionId} was dropped, ` +
+          `CHANNEL_PEER_MESSAGES is off${misread}`,
+      );
+      return { status: "failed", error: "peer messages suppressed" };
+    }
+
+    const messages = peerRun(traffic);
+    // Nothing visible once the invisible class is stripped. Logged, like the queued prompt's own
+    // empty drop and unlike the interim path's: this is the thread's only copy of a message that
+    // really was exchanged, and a message the operator never sees is worth a line.
+    if (messages.length === 0) {
+      dropped(
+        `the ${peerSubject(traffic)} for session ${sessionId} was dropped, it carried no visible text`,
+      );
+      return { status: "failed", error: "the message was empty" };
+    }
+
+    const run = await deliver(threadId, messages);
+    if (run.error === null) return { status: "sent" };
+    log(
+      `routing: the ${peerSubject(traffic)} for session ${sessionId} stopped after ` +
+        `${run.landed} of ${messages.length} messages: ${run.error}`,
+    );
+    return { status: "failed", error: run.error };
+  }
+
   return {
     async reply(processToken, text) {
       const located = locate(processToken);
@@ -812,18 +955,35 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       }
       if (sessionId !== located.sessionId) return { status: "no-session" };
 
+      // What a peer session sent this one while it was idle, read before anything renders: the
+      // classification decides both the attribution below and the stamp on the next line, so it is
+      // taken here where the ordering the stamp depends on is undisturbed. Only a prompt is
+      // examined, on the envelope check's reasoning: a reply is Claude's own words about a delivery
+      // rather than one.
+      const delivery = kind === "prompt" ? crossSessionDelivery(text) : null;
+
       // A person is driving this session, which is the fact the engagement stamp records, so it is
       // stamped here rather than after delivery: whether the copy lands in the thread says nothing
       // about whether anyone spoke. Ahead of the envelope check below for the same reason, since a
       // message the harness injected from the channel is the operator answering from their phone,
       // and the drop there is about not echoing their words back at them.
       //
-      // A wake injection is the one prompt excluded: it is the harness reporting a finished
-      // background task, machine-generated, and the gate this stamp clears is one that waits on a
-      // person. Excluded whatever `taskNotifications` says, because the setting governs how the
-      // report is drawn in the thread and not whether a human wrote it; if the woken turn genuinely
-      // resumes the run, its first completed tool call stamps.
-      if (kind === "prompt" && !isTaskNotification(text)) options.registry.engage(located.sessionId);
+      // Two prompts are excluded, on one ground. A wake injection is the harness reporting a
+      // finished background task, and a peer message is another session writing to this one: both
+      // are machine-generated, and the gate this stamp clears is one that waits on a person, so a
+      // standing blocked state must survive either. Excluded whatever `taskNotifications` and
+      // `peerMessages` say, because those settings govern how the text is drawn in the thread and
+      // not whether a human wrote it; if the woken turn genuinely resumes the run, its first
+      // completed tool call stamps.
+      //
+      // Both exclusions rest on a reading of the harness's own text, so both fail in two directions
+      // that are worth knowing here. A shape move that stops a recognizer matching restores the
+      // stamp, and a machine-generated prompt clears a standing block again, silently. A false
+      // positive withholds the stamp from words a person really typed, and the block they typed to
+      // clear stands until their next completed tool call.
+      if (kind === "prompt" && delivery === null && !isTaskNotification(text)) {
+        options.registry.engage(located.sessionId);
+      }
 
       // The dedup against the transcript tailer, which reads this same text off the transcript up
       // to a poll interval from now. Matched on the normalized pre-render text, like the envelope
@@ -892,6 +1052,22 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           return { status: "failed", error: "task notification suppressed" };
         }
         return deliverTaskNotice(located.threadId, located.sessionId, text);
+      }
+
+      // A peer message the harness delivered to this session while it was idle, which reaches this
+      // path as prompt text because the `UserPromptSubmit` payload carries the prompt string alone.
+      // It is drawn under the peer attribution rather than falling through to the mirror below,
+      // which would put text a peer wrote inside the operator's quoted register, the one
+      // attribution this surface holds unforgeable. A delivery whose body could not be read is
+      // drawn the same way, carrying the placeholder body the classification returned: "not a
+      // delivery" and "a delivery this broker could not read" are different answers, and collapsing
+      // them would hand a peer the switch that puts its own words in that register.
+      if (delivery !== null) {
+        return deliverPeerMessage(located.threadId, located.sessionId, {
+          kind: "peer-in",
+          name: delivery.name,
+          body: delivery.body,
+        });
       }
 
       const messages = renderMirror(kind, text);
@@ -1096,13 +1272,22 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "no-thread" };
       }
 
+      // The same peer classification the mirror path takes, held in one reading so the two paths
+      // cannot answer differently about one message. The tailer's own line gate admits a queued
+      // prompt only where the harness marked it typed at the console, so what this catches here is
+      // a shape that gate ever came to admit rather than anything observed today; the reading costs
+      // one prefix test and the failure it forecloses is a peer's text in the operator's register.
+      const delivery = crossSessionDelivery(text);
+
       // The queued prompt's own engagement stamp, on the mirror path's reasoning exactly: a person
       // is driving, and neither the envelope check below nor the delivery after it changes that,
-      // while the harness's wake injection is not a person and is excluded on both paths under
-      // every notification setting. A session whose thread is not open yet is dropped whole above
-      // and stamps nothing, which costs one prompt's worth of engagement at the start of a
-      // session's life.
-      if (!isTaskNotification(text)) options.registry.engage(sessionId);
+      // while the harness's wake injection and a peer session's message are not a person and are
+      // excluded on both paths under every notification and peer setting, in both failure directions
+      // the mirror path's own comment names: a recognizer that stops matching restores the stamp for
+      // machine-generated text, and one that matches too much withholds it from a person. A session
+      // whose thread is not open yet is dropped whole above and stamps nothing, which costs one
+      // prompt's worth of engagement at the start of a session's life.
+      if (delivery === null && !isTaskNotification(text)) options.registry.engage(sessionId);
 
       if (fromChannel(text)) {
         dropped(
@@ -1126,6 +1311,17 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           return { status: "failed", error: "task notification suppressed" };
         }
         return deliverTaskNotice(threadId, sessionId, text);
+      }
+
+      // A peer message, drawn under the peer attribution for the reason the mirror path draws one
+      // there: whichever line shape a delivery arrives in, text a peer wrote never renders in the
+      // operator's quoted register, and an unreadable delivery renders there least of all.
+      if (delivery !== null) {
+        return deliverPeerMessage(threadId, sessionId, {
+          kind: "peer-in",
+          name: delivery.name,
+          body: delivery.body,
+        });
       }
 
       const messages = renderMirror("prompt", text);
@@ -1153,6 +1349,21 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           `${run.landed} of ${messages.length} messages: ${run.error}`,
       );
       return { status: "failed", error: run.error };
+    },
+
+    async peer(sessionId, traffic) {
+      const threadId = options.threadFor(sessionId);
+      // Dropped, never queued, like every other post here, and the line carries the direction and
+      // the session and never the text: an exchange missing from a thread reads exactly like a
+      // session that held none.
+      if (threadId === null) {
+        dropped(
+          `the ${peerSubject(traffic)} for session ${sessionId} was dropped, its thread is not ` +
+            `open yet`,
+        );
+        return { status: "no-thread" };
+      }
+      return deliverPeerMessage(threadId, sessionId, traffic);
     },
 
     noteThreadMessage(threadId, messageId) {

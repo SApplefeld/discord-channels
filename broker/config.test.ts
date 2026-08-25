@@ -139,6 +139,29 @@ test("the task notification knob defaults to brief, honors its three modes, and 
   }
 });
 
+test("the peer message knob defaults to full, honors its three modes, and refuses a typo", () => {
+  // Full is the default, where the wake-up notice's knob compresses: peer traffic is the content of
+  // an exchange the operator is watching from the thread, not a notice about one.
+  assert.equal(loadConfig({}).peerMessages, "full");
+  assert.equal(loadConfig({ CHANNEL_PEER_MESSAGES: "" }).peerMessages, "full");
+  assert.equal(loadConfig({ CHANNEL_PEER_MESSAGES: "   " }).peerMessages, "full");
+
+  assert.equal(loadConfig({ CHANNEL_PEER_MESSAGES: "full" }).peerMessages, "full");
+  assert.equal(loadConfig({ CHANNEL_PEER_MESSAGES: "brief" }).peerMessages, "brief");
+  assert.equal(loadConfig({ CHANNEL_PEER_MESSAGES: "off" }).peerMessages, "off");
+  assert.equal(loadConfig({ CHANNEL_PEER_MESSAGES: " BRIEF " }).peerMessages, "brief");
+
+  // A three-way knob read permissively turns a typo into a silent default, the same hazard every
+  // other knob here refuses; the refusal names the vocabulary and the value it got.
+  for (const raw of ["fully", "on", "1", "none", "true", "quiet"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_PEER_MESSAGES: raw }),
+      new RegExp(`expected one of full, brief, off, got ${JSON.stringify(raw)}`),
+      raw,
+    );
+  }
+});
+
 test("the usage card is off unless it is asked for, and a typo is refused rather than read", () => {
   // Off by default: the card reads another program's files and opens a thread of its own in the
   // operator's channel, and neither belongs on a host that never asked for it.
