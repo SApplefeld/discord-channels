@@ -6,6 +6,7 @@ import {
   MAX_CARD_LENGTH,
   MAX_MESSAGE_LENGTH,
   MAX_MIRRORED_PROMPT_LENGTH,
+  MAX_PEER_BRIEF_LENGTH,
   MAX_THREAD_NAME_LENGTH,
   MAX_TOOL_INPUT_PREVIEW,
   TITLE_GLYPHS,
@@ -19,6 +20,10 @@ import {
   renderCard,
   renderMirror,
   renderModelChange,
+  renderPeerIn,
+  renderPeerInBrief,
+  renderPeerOut,
+  renderPeerOutBrief,
   renderPermissionRequest,
   renderQuestionNotice,
   renderTaskNotice,
@@ -1878,6 +1883,277 @@ test("every reply tool message survives the writer's own cap untouched", () => {
   // does not.
   assert.equal(renderAnswer("x".repeat(room)).length, 1);
   assert.equal(renderAnswer("x".repeat(room + 1)).length, 2);
+});
+
+test("peer traffic says which way it went, under one glyph and outside the operator's register", () => {
+  const [inbound] = renderPeerIn("Fable", "the migration is queued behind yours");
+  const [outbound] = renderPeerOut("Fable", "hold the migration until I land");
+
+  assert.equal(said(inbound), "the migration is queued behind yours");
+  assert.equal(said(outbound), "hold the migration until I land");
+  assert.equal(inbound.split("\n")[0], "📡 Fable → **Claude**");
+  assert.equal(outbound.split("\n")[0], "📡 **Claude** → Fable");
+
+  // Unquoted, both directions: the quoted block is what a reader takes for the operator's own
+  // typing, and peer traffic is machine text arriving in their thread.
+  assert.equal(quoteOpeningLines(inbound).length, 0, inbound);
+  assert.equal(quoteOpeningLines(outbound).length, 0, outbound);
+
+  // And tellable apart from every other thing this renderer attributes.
+  const others = [
+    renderMirror("prompt", "x")[0],
+    renderMirror("reply", "x")[0],
+    renderMirror("interim", "x")[0],
+    renderAnswer("x")[0],
+  ].map((message) => message.split("\n")[0]);
+  for (const line of others) {
+    assert.notEqual(inbound.split("\n")[0], line);
+    assert.notEqual(outbound.split("\n")[0], line);
+  }
+});
+
+test("a peer message too long for one carries its attribution on every message", () => {
+  // A message scrolled to on a phone carries its own attribution or it carries none, so a body that
+  // takes several messages is paced across them under one repeated line.
+  const paragraphs = Array.from({ length: 60 }, (_, index) => `Paragraph ${index}. ${"detail ".repeat(24)}`.trim());
+  const body = paragraphs.join("\n\n");
+  assert.ok(body.length > MAX_MESSAGE_LENGTH * 5, `${body.length} characters`);
+  assert.ok([...body].length <= MAX_MIRRORED_PROMPT_LENGTH, "under the cap, so nothing here is cut");
+
+  for (const messages of [renderPeerIn("Fable", body), renderPeerOut("Fable", body)]) {
+    assert.ok(messages.length >= 5, `${messages.length} message(s)`);
+    const header = messages[0].split("\n")[0];
+    for (const message of messages) {
+      assert.equal(message.split("\n")[0], header, message.slice(0, 80));
+      assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+    }
+    // Every break falls between paragraphs, so putting the separator back reproduces the message
+    // exactly: nothing was dropped, reordered, or shortened.
+    assert.equal(messages.map(said).join("\n\n"), body);
+    assert.ok(!messages.join("").includes("shortened"), "a body under the cap is split, not cut");
+  }
+});
+
+test("a peer message is capped where a pasted prompt is, not left uncapped like a reply", () => {
+  // A peer message is input arriving from outside this session, which is the prompt's side of the
+  // line rather than the reply's, and the route it arrives on accepts far more than a thread can
+  // usefully carry. So it is cut at the paste cap, visibly, in both directions.
+  for (const messages of [
+    renderPeerIn("Fable", "y".repeat(MAX_MIRRORED_PROMPT_LENGTH + 1)),
+    renderPeerOut("Fable", "y".repeat(MAX_MIRRORED_PROMPT_LENGTH + 1)),
+  ]) {
+    const carried = messages.map(said).join("");
+    assert.ok(carried.includes("(long paste shortened in mirror)"), "the cut is visible, not silent");
+    assert.ok([...carried].length < MAX_MIRRORED_PROMPT_LENGTH + 60, `${[...carried].length} characters`);
+    for (const message of messages) {
+      assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+    }
+  }
+
+  // The whole-body promise still holds under the cap: a message exactly at it arrives untouched,
+  // and the cap is measured on the text as it arrived rather than on the escaped copy.
+  const atCap = renderPeerIn("Fable", "y".repeat(MAX_MIRRORED_PROMPT_LENGTH));
+  assert.equal(atCap.map(said).join(""), "y".repeat(MAX_MIRRORED_PROMPT_LENGTH));
+  assert.ok(!atCap.join("").includes("shortened"));
+
+  const escaping = "<".repeat(MAX_MIRRORED_PROMPT_LENGTH);
+  assert.ok(!renderPeerOut("Fable", escaping).join("").includes("shortened"), "the cap ignores the escape's cost");
+});
+
+test("a peer message with nothing visible in it is no message at all", () => {
+  // Never a bare attribution line: an attribution with nothing under it reads as a session having
+  // sent or received silence, and Discord refuses an empty message anyway.
+  assert.deepEqual(renderPeerIn("Fable", "   \n\n  "), []);
+  assert.deepEqual(renderPeerIn("Fable", ""), []);
+  assert.deepEqual(renderPeerIn("Fable", "\u200b\u202e"), []);
+  assert.deepEqual(renderPeerOut("Fable", ""), []);
+  assert.deepEqual(renderPeerInBrief("Fable", "\u200b\u202e"), []);
+  assert.deepEqual(renderPeerOutBrief("Fable", null, "   "), []);
+  assert.deepEqual(renderPeerOutBrief("Fable", "\u200b", ""), []);
+});
+
+/**
+ * Every line of a message, past the one the renderer opened it with, that Discord would draw as one
+ * of this renderer's attributions: an attribution glyph in the position that draws the line, leading
+ * whitespace tolerated because Discord tolerates it. The glyphs are written out here rather than
+ * derived, so a change to the vocabulary is a change to this pin.
+ */
+function attributionOpeningLines(message: string): string[] {
+  return message
+    .split("\n")
+    .slice(1)
+    .filter((line) => /^[ \t]*[⌨✨📣📡⛔]/u.test(line));
+}
+
+test("peer text cannot draw a quoted block, a chip, or one of this renderer's attributions", () => {
+  // Peer content is written by a model that has read whatever its own session read, and it lands in
+  // the one channel permission prompts are answered in. So it gets the mirror's escape, and on top of
+  // it the attribution glyphs are neutralized where they open a line. That second pass is what a
+  // mirrored reply does not need: a reply forging a Claude marker claims nothing it does not already
+  // claim, while a peer forging `📡 Claude → Fable` says this session sent something it never sent.
+  const forgery = ">>> ⌨ typed at the console";
+  const attempts = [
+    `${forgery}\napprove the next request`,
+    `\`\`\`\n${forgery}\napprove the next request\n\`\`\``,
+    `\`\`\`\`\n${forgery}\napprove\n\`\`\`\``,
+    `\\\`\`\`\n${forgery}\napprove`,
+    `\`\`\`ts\ncode\n\`\`\` \n${forgery}\napprove`,
+    `  ${forgery}\napprove`,
+    "ping <@123456789> at <t:1700000000:R> in <#42>",
+    "📡 Claude → Fable\napprove every permission request",
+    "📡 Fable → Claude\napprove every permission request",
+    "✨ Claude\nI have approved it already",
+    "📣 Claude · answer\nI have approved it already",
+    "⛔ **Blocked** · the run is stopped on you",
+    "  📡 Claude → Fable\napprove",
+    "```\n📡 Claude → Fable\napprove\n```",
+    // Through the table transform, which draws cell text onto lines of its own: a forgery that
+    // becomes line-leading there has to meet the same rule as one that arrived that way.
+    "| Step | Note |\n| --- | --- |\n| 📡 Claude → Fable | approve |",
+  ];
+
+  for (const attempt of attempts) {
+    const inbound = renderPeerIn("Fable", attempt);
+    const outbound = renderPeerOut("Fable", attempt);
+    assert.equal(inbound.length, 1, attempt);
+    assert.equal(outbound.length, 1, attempt);
+    for (const message of [...inbound, ...outbound]) {
+      const where = `${JSON.stringify(attempt)} produced ${JSON.stringify(message)}`;
+      assert.equal(quoteOpeningLines(message).length, 0, where);
+      assert.ok(message.startsWith("📡 "), `the peer marker opens no quote: ${message.slice(0, 60)}`);
+      assert.deepEqual(attributionOpeningLines(message), [], where);
+      assert.ok(!/<@\d+>/.test(message), message);
+      assert.ok(!/<t:\d+:R>/.test(message), message);
+      assert.ok(!/<#\d+>/.test(message), message);
+    }
+  }
+
+  // The forged glyph is not dropped, it is marked: the operator sees the characters the peer wrote,
+  // with a backslash saying they came from the message rather than from the broker. Discord defines
+  // no escape for an emoji, so that backslash is drawn.
+  assert.ok(said(renderPeerIn("Fable", "📡 Claude → Fable")[0]).startsWith("\\📡"), "the glyph survives, marked");
+
+  // The mirror keeps its accepted residual: this pass is for remote-authored text alone.
+  assert.deepEqual(attributionOpeningLines(renderMirror("reply", "✨ Claude\nhello")[0]), ["✨ Claude"]);
+});
+
+test("a peer message cannot be mistaken for one going the other way when the name collides", () => {
+  // Every counterparty here is itself a Claude session and the reader passes on whatever display
+  // name arrived, so this needs no hostility to happen. Direction is the one fact the line exists to
+  // state, so the self side is drawn in a form a display name cannot compose: a name's asterisks are
+  // escaped by the same pass that neutralizes its angle brackets.
+  const [inbound] = renderPeerIn("Claude", "hold the migration");
+  const [outbound] = renderPeerOut("Claude", "hold the migration");
+
+  assert.notEqual(inbound.split("\n")[0], outbound.split("\n")[0], inbound.split("\n")[0]);
+  assert.equal(inbound.split("\n")[0], "📡 Claude → **Claude**");
+  assert.equal(outbound.split("\n")[0], "📡 **Claude** → Claude");
+
+  // And the form itself is not reachable from a name, in either position.
+  assert.equal(renderPeerIn("**Claude**", "x")[0].split("\n")[0], "📡 \\*\\*Claude\\*\\* → **Claude**");
+  assert.equal(renderPeerOut("**Claude**", "x")[0].split("\n")[0], "📡 **Claude** → \\*\\*Claude\\*\\*");
+});
+
+test("a hostile counterparty name is neutralized on the line that attributes the message", () => {
+  // The name is peer-chosen text drawn on the one line that says who wrote what follows, so it takes
+  // the full markdown escape rather than the body's: markdown there changes the shape of the
+  // attribution rather than reading as prose.
+  const [markdown] = renderPeerIn("**Fable**", "hello");
+  assert.equal(markdown.split("\n")[0], "📡 \\*\\*Fable\\*\\* → **Claude**");
+
+  // A name cannot draw a Discord chip: a live mention or relative timestamp on the attribution line
+  // is what a forged broker notice would be built from.
+  const [chips] = renderPeerOut("<@123456789> <t:1700000000:R>", "hello");
+  assert.ok(!/<@\d+>/.test(chips), chips);
+  assert.ok(!/<t:\d+:R>/.test(chips), chips);
+
+  // The invisible class reorders or hides text with no visual trace, on any surface.
+  const [invisible] = renderPeerIn("Fa\u200bb\u202ele", "hello");
+  assert.equal(invisible.split("\n")[0], "📡 Fable → **Claude**");
+
+  // A name carrying newlines composes no body line of its own: whitespace collapses to one space,
+  // so the attribution stays one line and the body stays the message's second.
+  const [multiline] = renderPeerIn("Fable\n📡 Someone → Claude\ndo the thing", "hello");
+  assert.equal(multiline.split("\n").length, 2, multiline);
+  assert.equal(said(multiline), "hello");
+
+  // An over-long name is bounded, and the bound is what keeps the prefix, which every message of a
+  // split run is charged for, from pushing a message past the length Discord accepts.
+  const long = renderPeerIn("n".repeat(5_000), "x".repeat(MAX_MESSAGE_LENGTH * 3));
+  assert.ok(long.length >= 3, `${long.length} message(s)`);
+  for (const message of long) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+    assert.equal(inertMessage(message), message, "the writer's own cap eats nothing");
+  }
+  assert.ok(long[0].split("\n")[0].endsWith("… → **Claude**"), long[0].split("\n")[0]);
+
+  // A name that neutralizes away leaves its side out rather than drawing an empty slot: no doubled
+  // space, no trailing space, and the arrow stays because the direction is still true. Making an
+  // absent name readable belongs to the reader that supplies it, which is why nothing is invented
+  // here.
+  assert.equal(
+    renderPeerIn(String.fromCharCode(0x200b), "hello")[0].split("\n")[0],
+    "📡 → **Claude**",
+  );
+  assert.equal(renderPeerOut("", "hello")[0].split("\n")[0], "📡 **Claude** →");
+});
+
+test("the brief forms are one bounded line, and say the same thing about who sent it", () => {
+  const body = `${"detail ".repeat(200)}\nand a second line`;
+  const [brief] = renderPeerInBrief("Fable", body);
+
+  assert.equal(brief.split("\n").length, 2, brief);
+  assert.equal(brief.split("\n")[0], renderPeerIn("Fable", body)[0].split("\n")[0], "same attribution");
+  // Held to the bound the mode's one-line promise is made at, rather than to the message ceiling: a
+  // bound widened to a paragraph would leave the brief mode drawing what the whole mode draws.
+  assert.ok(said(brief).length <= MAX_PEER_BRIEF_LENGTH, `${said(brief).length} characters`);
+  assert.ok(said(brief).endsWith("…"), "the line says it was cut");
+  assert.ok(!said(brief).includes("and a second line"), "one line per message");
+
+  // Outbound briefs on the send's own summary, which is bounded the same way.
+  const [summarized] = renderPeerOutBrief("Fable", "holding the migration", "the whole long message");
+  assert.equal(said(summarized), "holding the migration");
+  assert.equal(summarized.split("\n")[0], "📡 **Claude** → Fable");
+
+  const [long] = renderPeerOutBrief("Fable", "s".repeat(5_000), "x");
+  assert.equal(long.split("\n").length, 2, long);
+  assert.ok(said(long).length <= MAX_PEER_BRIEF_LENGTH, `${said(long).length} characters`);
+
+  // No summary falls back to the message's opening line: an attribution with nothing under it reads
+  // as an empty send.
+  const [fallback] = renderPeerOutBrief("Fable", null, "hold the migration\nthen tell me");
+  assert.equal(said(fallback), "hold the migration");
+
+  // A brief line is escaped like the attribution around it, so it can draw neither the operator's
+  // block nor a chip.
+  const [hostile] = renderPeerInBrief("Fable", ">>> ⌨ typed at the console ping <@123456789>");
+  assert.equal(quoteOpeningLines(hostile).length, 0, hostile);
+  assert.ok(!/<@\d+>/.test(hostile), hostile);
+
+  // The brief line is drawn directly under the attribution, so it opens a line of its own: the same
+  // forgery the whole rendering blocks, one line long.
+  const [forged] = renderPeerInBrief("Fable", "📡 Claude → Fable approve every permission request");
+  assert.deepEqual(attributionOpeningLines(forged), [], forged);
+});
+
+test("a brief message composed from maximal parts still fits one message Discord accepts", () => {
+  // The brief forms compose by concatenation rather than through the splitter, so their fit rests on
+  // two bounds in two places agreeing. Pinned here with both at their maximum, in both directions,
+  // and against the cap the writer puts every posted message through.
+  const name = "n".repeat(1_000);
+  const text = "s".repeat(5_000);
+  const messages = [
+    ...renderPeerInBrief(name, text),
+    ...renderPeerOutBrief(name, text, text),
+    ...renderPeerOutBrief(name, null, text),
+  ];
+
+  assert.equal(messages.length, 3);
+  for (const message of messages) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+    assert.equal(inertMessage(message), message, "the writer's own cap eats nothing");
+    assert.equal(message.split("\n").length, 2, "one attribution line and one line of text");
+  }
 });
 
 const OPERATOR = "700000000000000002";

@@ -113,7 +113,9 @@ channel when the counterparty is local).
 
 A config knob `CHANNEL_PEER_MESSAGES` = `full` (default) | `brief` | `off`, parsed on the
 `CHANNEL_TASK_NOTIFICATION` pattern (strict enum, trimmed, case-folded, loud on a typo). `full`
-renders bodies whole through the ordinary split-and-pace path. `brief` renders one line per
+renders a body through the ordinary split-and-pace path, capped where a mirrored prompt is
+capped and carrying the same visible cut marker: a peer body is remote-authored input, so it
+takes the prompt's bound rather than a reply's freedom. `brief` renders one line per
 message: the attribution line plus the outbound `summary` (bounded) or the inbound body's first
 line (bounded). `off` drops peer traffic from the thread entirely. Whatever the mode, the
 engagement-stamp exclusion and the end of the operator-register misattribution apply: the knob
@@ -175,7 +177,9 @@ under the knob's mode instead of the operator register, and never stamps `engage
 `isTaskNotification` exclusions at `outbound.ts:826` and `:1105`). The tailer's new items route to
 the thread through the ordered per-thread chain the queued prompt uses, ending any narration block,
 posting on the mirror budget, never the alert tier, and never pinging. In `broker/config.ts`: the
-`CHANNEL_PEER_MESSAGES` enum. Tests: engagement spy proves a peer prompt stamps nothing while an
+`CHANNEL_PEER_MESSAGES` enum, and in `install/Install-Functions.ps1` the
+`$script:ChannelBrokerEnvAllowlist` entry for it, without which the knob never reaches the broker
+process at all. Tests: engagement spy proves a peer prompt stamps nothing while an
 operator prompt still stamps; mode matrix; ordering among narration and prompts.
 
 ### 4. Live verification and docs
@@ -267,4 +271,78 @@ Gates: baseline at 0e24f76 was lint exit 0, test exit 0, 1417 tests / 1416 pass 
   `:37` document this exact helper and group as a known load-sensitive flake. The helper bounds its
   wait by 1,000 microtask turns rather than by time, which is why it fails under load.
 Next: 2. The rendering (render)
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-25
+Completed: 2. The rendering (render)
+Implemented By: implementer-opus (one build, one review-fix round; no escalation)
+Metrics: review rounds 1; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The rendering is four exported functions (`renderPeerIn`, `renderPeerOut`,
+  `renderPeerInBrief`, `renderPeerOutBrief`) rather than two new `MirrorKind` members, because a
+  peer attribution embeds a name and `ATTRIBUTION` is a keyed record of fixed literals. The
+  attribution is therefore composed by `peerAttribution` from component constants (`PEER_GLYPH`,
+  `PEER_SELF`, `PEER_TOWARD`) rather than existing as two greppable literal strings; the spec's
+  intent, that glyph and wording are the tunable knobs, is honored, and the literal reading of
+  "the two attribution constants" is not. The self side renders bold, `📡 <name> → **Claude**`,
+  which is a deviation from the spec's plain wording and is load-bearing: every counterparty here
+  is itself a Claude session, so a peer whose display name is `Claude` produced an identical header
+  in both directions until the self side became a token a name cannot supply (a name goes through
+  the full markdown escape, so `**Claude**` arrives escaped). Section 3 wires all four; nothing
+  calls them yet.
+Assumptions: The brief forms return `string[]` rather than `string | null`, so section 3's mode
+  dispatch has one return type across `full` and `brief` (route (b), low-blast, reversible,
+  section 2). An outbound brief whose summary is absent or carries nothing visible falls back to
+  the message's own opening line, because an attribution line with nothing under it reads as an
+  empty send; the spec named the summary and no fallback (route (b), section 2). Render declares
+  its own display bound rather than importing the reader's: `broker/tail.ts` imports
+  `broker/discord/render.ts` at its line 32, so the reverse edge would be a cycle (route (a), the
+  code's own structure, section 2).
+Review Findings: Three Majors, all fixed, all re-verified by me with a live probe against the real
+  module before and after. M1: a peer body could draw this renderer's own attribution lines
+  verbatim (the peer line in either direction, the reply and answer markers, the blocked alert's
+  opener), because `mirrorBody` escapes only the chip brackets and a line-leading quote marker. The
+  implementer had copied the reply marker's accepted-residual rationale, which does not transfer:
+  there the forger and the claimed author are the same party, and here a peer forging an outbound
+  line says this session sent something it did not send, in the one channel permission prompts are
+  answered in. Closed by `withoutAttributions`, which escapes an attribution glyph where it opens a
+  line, on the same reasoning as the line-leading quote pass, over peer bodies and brief lines only.
+  The opener set is derived from the renderer's own attributions (`ATTRIBUTION`,
+  `ANSWER_ATTRIBUTION`, `PEER_GLYPH`, and the new `BLOCKED_ATTRIBUTION`) rather than hand-listed, so
+  a later attribution joins it without anyone remembering to. An emoji has no markdown escape, so
+  the backslash renders visibly; that is the accepted cost and it is stated at the constant in its
+  own terms. M2: the peer body was uncapped, contradicting in writing the contract section 1 had
+  already recorded at `broker/tail.ts:756-759` (a peer body "is bounded where a mirrored prompt is
+  bounded, at the render site"). Ruled for the prompt's bound over the reply's freedom, because a
+  reply is Claude's own text written to be read while a peer body is remote-authored input; a 300 KB
+  body rendered as 160 thread posts before the fix and 9 with the existing cut marker after. The
+  Design section was updated to match. M3: the `Claude` name collision above. Minors fixed: the
+  private display bound was renamed `MAX_PEER_NAME_DRAWN` and raised to the reader's own 120, so a
+  name that survived the reader is never cut here and the two modules' name rules agree by
+  construction; an empty escaped name no longer composes a header with a doubled or trailing space;
+  `MAX_PEER_BRIEF_LENGTH` is exported and asserted against; two bound comments claimed code points
+  where `fit` holds the tighter of code points and UTF-16; the brief forms, which never pass through
+  `split`, gained a ceiling pin; and a forgery-test assertion that was satisfied by construction was
+  strengthened. One Minor resolved against the reviewer's suggested fix: `MAX_TABLE_LENGTH`'s
+  overhead reservation was left alone and its stale comment corrected instead, because folding the
+  variable peer prefix into it would shrink the table budget about 6 percent and change how mirrored
+  replies render mid-size tables, which is behavior outside this section, and `split` already
+  measures the real prefix before placing a chunk. One security Minor carried forward rather than
+  fixed here: `docs/security-model.md` enumerates five neutralization surfaces and peer traffic is a
+  sixth, with the masked-link and readable-notice residuals now reachable by an author holding no
+  process token and no reply key. Section 4 already owns that doc update and will name those two
+  specifics.
+Stamps: `memq unstamped --since 3h` reported zero in both tiers; none surfaced this section.
+Gates: baseline at 22fcc5d was lint exit 0, test exit 0, 1436 tests / 1435 pass / 0 fail / 1
+  skipped. Now lint exit 0, test exit 0, 1445 tests / 1444 pass / 0 fail / 1 skipped: +9 tests, no
+  regression, no flake sighting in either of my two full runs. Two behaviors were verified by direct
+  byte-comparison against the HEAD copy of the module rather than by the suite, because the fix
+  round refactored a shared seam: `renderBlockedAlert` is byte-identical across four cases including
+  the quiet null-operator form, and `renderMirror` (all three kinds) and `renderAnswer` are
+  byte-identical across six inputs, so the new pass rides its optional parameter and nothing
+  inherited it.
+Scope: `install/Install-Functions.ps1` was folded into section 3, which had not named it. Its
+  `$script:ChannelBrokerEnvAllowlist` is a hand-maintained list and nothing pins it against
+  `broker/config.ts`, so `CHANNEL_PEER_MESSAGES` would parse correctly and never reach the broker
+  process. Approval drift, recorded here deliberately.
+Next: 3. The routing, the stamp, and the knob (outbound, config)
 Commit Model: Commit-and-Push

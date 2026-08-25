@@ -293,6 +293,126 @@ const ATTRIBUTION: Record<MirrorKind, string> = {
  */
 const ANSWER_ATTRIBUTION = "📣 Claude · answer\n";
 
+/**
+ * The glyph both directions of peer traffic are marked with, which is what lets a reader scanning a
+ * thread find every exchange this session was party to by one symbol. One glyph for the class, with
+ * the direction carried by the names around the arrow rather than by a second glyph, because the
+ * question a scroll answers first is whether a line is peer traffic at all.
+ */
+const PEER_GLYPH = "📡";
+
+/**
+ * How this session is named in a peer attribution, standing opposite the counterparty.
+ *
+ * Bold, and the bold is the load-bearing part rather than the emphasis. Every counterparty on this
+ * surface is itself a Claude session, and the reader hands over whatever display name arrived, so a
+ * peer named `Claude` draws the same two words this side does and the direction, which is the one
+ * fact the line exists to state, becomes unrecoverable. A name goes through `inertField`'s full
+ * markdown escape, so a name of `**Claude**` arrives with its asterisks escaped and renders as the
+ * characters that were typed: the bold form is a token only this renderer can compose.
+ */
+const PEER_SELF = "**Claude**";
+
+/** Which way the message travelled, drawn between the two names. */
+const PEER_TOWARD = "→";
+
+/**
+ * The most of a counterparty's display name a peer attribution draws, measured on the escaped text
+ * in code points and in UTF-16 units alike, since `fit` holds the tighter of the two counts.
+ *
+ * The transcript reader refuses a name over this bound whole and substitutes a readable fallback,
+ * on the reasoning that half a display name names a counterparty nobody can look up. So this is set
+ * to the reader's own bound, which makes the two agree by construction: a name that reached here
+ * from the reader is never over it, and is therefore never cut to a half-name the reader would have
+ * refused. What it is here for is the caller the reader is not, since these are exported functions
+ * that neutralize whatever they are handed. The value is not imported from the reader, because the
+ * reader imports this module and the edge back would be a cycle.
+ *
+ * Bounded at all because the splitter charges the whole prefix against every message's budget and
+ * floors the room a hard cut takes at `MIN_HARD_CUT`: an unbounded name would compose a prefix that
+ * pushes a message past `MAX_MESSAGE_LENGTH`, which Discord refuses outright. At this value the
+ * prefix costs under 140 units against that ceiling, so the floor is never the binding constraint.
+ */
+const MAX_PEER_NAME_DRAWN = 120;
+
+/**
+ * The most of a message's text a one-line peer rendering carries, measured on the escaped text in
+ * code points and in UTF-16 units alike, since `fit` holds the tighter of the two counts.
+ *
+ * The brief form's whole point is one line per message, so the bound is what makes it one: a line
+ * this long already reads as a summary, and the attribution and the text together sit far inside the
+ * message ceiling, which is what keeps the brief form a single message whatever it is handed.
+ *
+ * Exported so the promise is pinned where it is made. A bound this size raised to a paragraph's
+ * worth would leave the brief mode drawing what the whole mode draws, with nothing but the number
+ * saying otherwise.
+ */
+export const MAX_PEER_BRIEF_LENGTH = 200;
+
+/**
+ * What a peer message opens with, composed here and by nothing else, on every message of a split
+ * one.
+ *
+ * Unquoted, like the reply and answer markers and for the same reason: **a quoted message is the
+ * operator's text**, and it is that block alone that has to be unforgeable. Peer traffic is machine
+ * text arriving in the operator's thread, so drawing it inside the operator's register would say
+ * something false about who typed it, which is exactly the misattribution this rendering exists to
+ * end.
+ *
+ * The counterparty's name is peer-chosen text and takes the card-title escape: the full markdown
+ * set, which includes the angle brackets Discord builds its chip syntax from and the asterisks the
+ * self side is drawn with, whitespace collapsed so a name carrying a newline cannot compose a body
+ * line of its own, and bounded on the escaped text. Nothing is rejected here, and nothing is
+ * substituted: a name that neutralizes to nothing has its side of the arrow left out, so the line is
+ * well formed rather than carrying a doubled or a trailing space, and the arrow stays because the
+ * direction is still true. Making an absent name readable is the reader's job, not this one's, and a
+ * fallback word here would be a second answer to a question already answered.
+ */
+function peerAttribution(name: string, direction: "in" | "out"): string {
+  const peer = inertField(name, MAX_PEER_NAME_DRAWN);
+  const sides = direction === "in" ? [peer, PEER_TOWARD, PEER_SELF] : [PEER_SELF, PEER_TOWARD, peer];
+  return `${[PEER_GLYPH, ...sides.filter((side) => side !== "")].join(" ")}\n`;
+}
+
+/**
+ * The line a blocked alert opens with.
+ *
+ * Named beside the other attributions rather than written into the alert, because it is one of the
+ * openers a peer body may not draw and the set below is derived from these constants rather than
+ * listed by hand.
+ */
+const BLOCKED_ATTRIBUTION = "⛔ **Blocked**";
+
+/**
+ * The glyph an attribution opens its line with, past the quote marker a prompt leads with, which is
+ * already neutralized wherever untrusted text could carry it.
+ */
+function openingGlyph(attribution: string): string {
+  return [...attribution.replace(/^[>\s]+/, "")][0] ?? "";
+}
+
+/**
+ * Every glyph this renderer opens an attributed line with, matched where it opens a line, leading
+ * whitespace tolerated because Discord tolerates it when it draws the line.
+ *
+ * Derived from the attributions themselves rather than listed, so a vocabulary added later joins the
+ * set without anyone having to remember this. The characters are dropped into a class, escaped for
+ * the two positions a class gives meaning to, so a future opener that happens to be punctuation is
+ * matched as itself.
+ */
+const ATTRIBUTION_OPENERS = new RegExp(
+  `^([ \\t]*)([${[
+    ...new Set(
+      [...Object.values(ATTRIBUTION), ANSWER_ATTRIBUTION, PEER_GLYPH, BLOCKED_ATTRIBUTION].map(
+        openingGlyph,
+      ),
+    ),
+  ]
+    .join("")
+    .replace(/[\\\]^-]/g, "\\$&")}])`,
+  "gmu",
+);
+
 // Discord's chip syntax lives inside the angle brackets: `<@id>` draws a mention pill, `<t:...:R>`
 // a live relative timestamp, `<#id>` a channel link. Escaped, each renders as the characters that
 // were typed. That is what stops a mirrored prompt or reply from drawing a convincing copy of a
@@ -899,10 +1019,17 @@ const TABLE_SEPARATOR = " | ";
 /**
  * The room one fenced table has, in UTF-16 units.
  *
- * A message carries an attribution line beside the block, and the widest of them is what this
- * reserves, so a table that passes here fits whichever surface mirrors it. A table over the bound
- * is left as the Markdown the model wrote rather than cut: a block cut mid-row reads as a complete
- * table that says something different from what was written, where raw text reads as raw text.
+ * A message carries an attribution line beside the block, and the widest of the fixed ones is what
+ * this reserves. What that buys is the common case: a table under this bound is drawn as one block
+ * in one message under any of them. It is not a guarantee of fitting every surface, because a peer
+ * attribution carries a counterparty's name and is therefore as wide as `MAX_PEER_NAME_DRAWN` lets
+ * it be. Nothing rests on the difference: the splitter measures the real prefix before it places any
+ * chunk, so a block that does not fit beside a wide attribution is split across messages, each one
+ * re-opening the fence, rather than posted over the ceiling.
+ *
+ * A table over the bound is left as the Markdown the model wrote rather than cut: a block cut
+ * mid-row reads as a complete table that says something different from what was written, where raw
+ * text reads as raw text.
  */
 const MAX_TABLE_LENGTH =
   MAX_MESSAGE_LENGTH -
@@ -1287,6 +1414,111 @@ export function renderAnswer(text: string): string[] {
 }
 
 /**
+ * A message another session sent this one, rendered as the ordered messages it takes to carry it
+ * whole.
+ *
+ * The same machinery a mirrored reply goes through, because it is the same class of text landing in
+ * the same thread: written by a model, untrusted, and posted into the one channel the operator
+ * answers permission prompts in. So the escape is the mirror's own, the splitter is the mirror's
+ * own, and the attribution rides every message rather than the first: a second escape or a second
+ * splitter of the same shape would be two readings of where a code fence is, and a disagreement
+ * between them is the chip or the forged attribution one of them believed it had removed.
+ *
+ * Capped where a mirrored paste is capped, and shortened with the same visible marker. A reply is
+ * uncapped because it is Claude's own text, written to be read by the operator it is posted to; a
+ * pasted prompt is capped because it is input arriving from outside. A peer message is input
+ * arriving from outside, so it takes the prompt's side of that line, and the route it arrives on
+ * accepts a quarter of a megabyte, which uncapped is over a hundred posts from one message against a
+ * write budget the alert route shares.
+ *
+ * A body with nothing visible in it is no message at all rather than a bare attribution line, which
+ * is `attributed`'s contract and reads correctly here too: an attribution with nothing under it
+ * would say a peer sent silence.
+ */
+export function renderPeerIn(name: string, body: string): string[] {
+  return attributed(peerCapped(body), peerAttribution(name, "in"), withoutAttributions);
+}
+
+/**
+ * A message this session sent another, rendered as the ordered messages it takes to carry it whole.
+ *
+ * The outbound half of `renderPeerIn`, with the names either side of the arrow swapped, so one
+ * thread carries both halves of an exchange under one glyph and a reader tells the direction from
+ * the line rather than from the surrounding text. What renders is the message as it was sent; the
+ * send's summary is the brief form's material, and the address, the hop chain, and the message id
+ * render nowhere, none of them being anything an operator can act on from a thread.
+ *
+ * The same cap and the same escape as the inbound half. What this session sent is model-composed
+ * text quoting whatever it was working with, and the thread is one surface: a rule that held on one
+ * direction and not the other would be a hole the size of one `SendMessage` call.
+ */
+export function renderPeerOut(to: string, message: string): string[] {
+  return attributed(peerCapped(message), peerAttribution(to, "out"), withoutAttributions);
+}
+
+/**
+ * A peer message's text, stripped and held to the length a mirrored paste is held to, with the
+ * marker that says it was cut.
+ *
+ * The cap is measured on the text as it arrived, before escaping, exactly as `renderMirror` measures
+ * its own and for its reason: escaping adds a character per angle bracket it neutralizes, and a cap
+ * applied afterwards would shorten a message by characters nobody wrote.
+ */
+function peerCapped(text: string): string {
+  const seen = withoutInvisible(text).trim();
+  return [...seen].length > MAX_MIRRORED_PROMPT_LENGTH
+    ? shortened(sliceCodePoints(seen, MAX_MIRRORED_PROMPT_LENGTH))
+    : seen;
+}
+
+/** The opening line of a body, which is what a one-line rendering of it carries. */
+function firstLine(value: string): string {
+  return withoutInvisible(value).trim().split("\n")[0] ?? "";
+}
+
+/**
+ * Untrusted text for the one line a brief peer rendering draws: its opening line, escaped and
+ * bounded.
+ *
+ * The card-title escape rather than the mirror's, because this is one line of a composed message
+ * rather than a body of prose: markdown that would be readability in a whole mirrored message is
+ * only a way to change the shape of the line here, and the escape collapses the whitespace that
+ * would otherwise let text past the first line back onto the surface.
+ *
+ * The attribution glyphs are neutralized on top of it, because a brief line is drawn directly under
+ * the attribution and therefore opens a line of its own: this is the same forgery the whole
+ * rendering blocks, one line long.
+ */
+function peerLine(value: string): string {
+  return withoutAttributions(inertField(firstLine(value), MAX_PEER_BRIEF_LENGTH));
+}
+
+/**
+ * One inbound peer message as a single line: the attribution, and the body's opening line bounded.
+ *
+ * The volume the `brief` mode trades away is the body; the attribution is the same one the whole
+ * rendering opens with, because the knob governs how much of a peer message reaches the thread and
+ * never who it is attributed to. A body with nothing visible in it is no message, exactly as the
+ * whole rendering answers it.
+ */
+export function renderPeerInBrief(name: string, body: string): string[] {
+  const line = peerLine(body);
+  return line === "" ? [] : [`${peerAttribution(name, "in")}${line}`];
+}
+
+/**
+ * One outbound peer message as a single line: the attribution, and the send's summary bounded.
+ *
+ * A summary carrying nothing visible falls back to the message's own opening line. The summary is
+ * optional on the sending tool, and an attribution line with nothing under it would read as this
+ * session having sent an empty message.
+ */
+export function renderPeerOutBrief(to: string, summary: string | null, message: string): string[] {
+  const line = peerLine(summary ?? "") || peerLine(message);
+  return line === "" ? [] : [`${peerAttribution(to, "out")}${line}`];
+}
+
+/**
  * A mid-turn chunk merged into the narration message already sitting in the thread, or `null` when
  * it will not go there.
  *
@@ -1333,9 +1565,14 @@ export function appendNarration(existing: string, text: string): string | null {
  * attribution, the fence lines a split code block needs, and the text. That is why splitting and
  * attribution are one function rather than two: a splitter that cut to the ceiling and a caller
  * that then prefixed anything at all would post messages over it, which Discord rejects outright.
+ *
+ * `more` is a further neutralization of the escaped body, which the peer renderings pass to strip
+ * line-leading attribution glyphs from remote-authored text. It runs here, inside the one seam, so
+ * that whatever it does is measured by the same splitter that packs the result.
  */
-function attributed(seen: string, prefix: string): string[] {
-  const body = mirrorBody(seen);
+function attributed(seen: string, prefix: string, more?: (body: string) => string): string[] {
+  const escaped = mirrorBody(seen);
+  const body = more === undefined ? escaped : more(escaped);
   // Nothing at all to say. Reported as no messages rather than as one empty message, which Discord
   // refuses and which would read as the session having answered with silence.
   if (body === "") return [];
@@ -1438,6 +1675,35 @@ function withoutChips(value: string): string {
   // first pass left inside fences: one already escaped is preceded by its backslash rather than by
   // the start of its line.
   return escaped.replace(/^([ \t]*)>/gm, "$1\\>");
+}
+
+/**
+ * Neutralizes this renderer's own attribution glyphs where they open a line.
+ *
+ * For remote-authored text only. A mirrored reply and an answer carry the residual instead, on the
+ * stated ground that they are Claude's own words, so a line of one reproducing a Claude marker
+ * claims nothing the message does not already say. That ground does not reach here, because the
+ * author and the party named are different: a line reading `📡 Claude → Fable` inside a peer message
+ * says this session sent something it never sent, in the one channel the operator answers permission
+ * prompts in.
+ *
+ * Line-leading only, and everywhere including inside a fence, which is `withoutChips`' own rule for
+ * the quote marker and holds for the same reason: a marker mid-line claims nothing, a marker opening
+ * a line is what draws the surface, and the property least deserving to rest on this file's reading
+ * of where a code block is agreeing with Discord's is the one about who wrote a line.
+ *
+ * A backslash is what goes in front, one for one with the `\>` treatment. Discord defines no escape
+ * for an emoji, so unlike the quote marker's the backslash here is drawn: the operator sees
+ * `\📡 Claude → Fable` where the peer wrote a bare attribution. That visible mark is the cost and it
+ * is an honest one, since it says the glyph arrived in the message text rather than from the broker.
+ *
+ * Run after the escape rather than before it, because the table transform moves cell text onto lines
+ * of its own: text that becomes line-leading there has to meet this rule exactly as text that
+ * arrived that way does. Inserting a backslash creates and destroys no fence delimiter, so the fence
+ * structure the splitter reads afterwards is the structure the escape read.
+ */
+function withoutAttributions(value: string): string {
+  return value.replace(ATTRIBUTION_OPENERS, "$1\\$2");
 }
 
 /**
@@ -1946,8 +2212,8 @@ export function renderBlockedAlert(input: { operatorId: string | null; plan: str
   // the second pass changes nothing; what the order buys is the pre-escape measurement above.
   const plan = inertText(fit(visible(input.plan), MAX_PLAN_CHARS));
   const stopped = "the run is stopped on you; the reason is in this thread";
-  if (plan === "") return `${mention}⛔ **Blocked** ${SEPARATOR} ${stopped}`;
-  return `${mention}⛔ **Blocked** ${SEPARATOR} ${plan} - ${stopped}`;
+  if (plan === "") return `${mention}${BLOCKED_ATTRIBUTION} ${SEPARATOR} ${stopped}`;
+  return `${mention}${BLOCKED_ATTRIBUTION} ${SEPARATOR} ${plan} - ${stopped}`;
 }
 
 /**
