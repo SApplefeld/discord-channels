@@ -560,8 +560,12 @@ unreadable command line as the orphan and kills it with the PID reported.
 `03:52:37` and `03:59:07`, each time as
 `routing: the transcript-read prompt from session 83dfa07b... was dropped, the mirror hook had
 already dispatched the same text to this thread`, with the operator confirming a single copy in the
-thread. The slash command mirrored unchanged and correctly produced no tailer yield at all, the
-console-command refusal working as the security model describes. The recovery itself was then
+thread. The slash command mirrored unchanged and correctly produced no tailer
+yield at all, though the review pass corrected which gate earned that: a slash-command line carries
+no `promptSource` of `typed`, so `typedPromptText` refuses it on its first lock and the
+command-markup test at `broker/tail.ts:1069` is never reached. The absence is real; the
+attribution in the first draft of this chapter was not, and the markup gate still has no control
+proving it can speak. The recovery itself was then
 observed end to end: with the `UserPromptSubmit` hook repointed at a dead port, the console reported
 `connect ECONNREFUSED 127.0.0.1:8799`, the broker never received the post, and the prompt reached
 the thread from the tailer alone.
@@ -597,3 +601,60 @@ render identically so a prompt in the thread says nothing about which path deliv
 count, which the log cannot show.
 
 Next: 4. Finishing
+
+### Interim board 3 - 2026-08-26
+Section 4's first pass ran and did not close the section, so this is a board entry rather than the
+close-out chapter. Five agents ran: QA verification, the adversarial, blind and security lenses over
+`eb7b88f..HEAD`, and docs curation. Nothing is in flight as this is written.
+
+**QA passed.** Lint exit 0. The suite was run twice, both 1505 / 1504 pass / 0 fail / 1 skipped,
+exit 0, matching the closing baseline, with the documented `until`-helper flake group not surfacing
+in either run. Every acceptance criterion the spec states was checked with evidence and met, except
+the three live checks, which that agent correctly reported as unverifiable from a text-only session
+rather than as failures; Chapter 3 carries their evidence.
+
+**The review found four confirmed defects at MAJOR, and they are not documentation defects.** They
+are recorded here rather than fixed in this pass, because each needs a red-first test and none is a
+line edit. The section stays open until they are routed or fixed.
+
+- **The baseline probe spends the mirror claim made by the prompt that armed it.** `allow` starts
+  the probe and `mirror.deliver` runs to `notePrompt` in the same synchronous stretch
+  (`broker/intake.ts:794` and `:816`), so the claim is written before the probe resolves and
+  `forgetPrompts` at `broker/tail.ts:1895` then nulls it. Verified at source. The visible outcome
+  depends on whether the harness writes the transcript line before or after the hook chain returns:
+  one branch is the documented unrecoverable case, the other is the operator's first prompt posted
+  twice. The live run at 22:32 on 2026-08-26 showed a single copy and no drop line, which is the
+  documented branch, so the duplicate branch is unobserved rather than disproven. Every recovery
+  test arms the tailer before the claim is made, so production ordering is untested.
+- **`notePrompt`'s same-digest deferral clear contradicts the guarantee its own comment states.**
+  The comment at `broker/tail.ts:355` argues the clear is safe because a bit over the same text can
+  only belong to the claim being replaced. Two overlapping runs of identical text break that, which
+  is the ordinary case of typing one word twice, and the loss is silent: the first run lands
+  nothing, finds its bit cleared, and reports no `reached the thread by neither path`. Chapter 2
+  ruled the underlying run-identity gap out of scope, which stands; the comment asserting the
+  opposite does not.
+- **The tailer's claim outlives its own successful run.** `interimPrompt` claims and returns on
+  success without releasing, so the claim stands for the whole window and suppresses a later
+  distinct prompt carrying the same text.
+- **The mirror path stamps engagement even when its own consult goes on to suppress the copy**,
+  justified in the comment by a delivery ordering the plan's own load premise breaks.
+
+**One finding lands on this document, and it is the doctrine's absence rule.** Chapter 3 credited
+the slash command's clean result to the console-command refusal. A sweep of this host's transcripts
+found 341 lines carrying closed command markup and none carrying `promptSource: "typed"`, so
+`typedPromptText` refuses on its first lock and the markup test is never reached. The chapter is
+corrected above. The markup gate still has no control proving it can speak, which is the shape the
+doctrine warns about: a check whose acceptance is silence, never run against a state that holds the
+thing.
+
+**Rulings adopted.** The blind lens rated the probe finding MAJOR and reached it independently of
+the adversarial lens, which raised the same mechanism; both are kept as one item. The persisted
+engagement stamp was re-raised and is not re-litigated: it stays routed to the backlog on section
+3's reasoning. The security lens re-derived the three percent figure independently, sweeping 330
+typed turn-opening lines and finding 10 image-bearing, zero second-text-block and zero unknown
+kinds, which confirms the shipped figure rather than disputing it.
+
+**Next action.** Fix the four MAJORs red-first, re-run the gate, then re-review before section 4 can
+close. The docs curation pass returned in the same round and its drift report is read against the
+corrected chapter, not the original.
+
