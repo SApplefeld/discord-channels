@@ -1,6 +1,6 @@
 # Follow a Session Rename: the Thread Title Tracks `/rename`
 
-Status: Draft, awaiting the operator's arming
+Status: In Progress
 Commit Model: Commit-and-Push (the model every sibling plan in this repo ran under; the operator confirms at arming)
 Fable Spend: research and this spec in the Expert session; implementation dispatched to one worker
 Created: 2026-08-26
@@ -72,6 +72,10 @@ changes.
 The status card (`render.ts`, the card body) and the board's `/sessions` route render the same
 `displayName`, so both follow without a second change; the worker confirms rather than assumes this.
 
+## Dispatch Authorization
+
+The operator (Scott Applefeld) authorized this run at the keyboard of the CHANNELS: Expert session on 2026-08-26, for any session holding this plan. The grant covers executing this plan's sections under the executing-work skill; anything the plan does not cover still goes to the operator.
+
 ## Sections of Work
 
 ### Section 1: The tailer reads `custom-title` (Model: sonnet)
@@ -99,11 +103,15 @@ The status card (`render.ts`, the card body) and the board's `/sessions` route r
   covers "a session renaming itself" (or a new one on its pattern) sees `refreshName` paint the new
   title after the dwell and not before.
 
-### Section 3: Live verification (Model: the Expert session, no dispatch)
+### Section 3: Live verification (Model: the worker session itself, one operator action)
 
-Against the running broker: launch a session under one name, `/rename` it, and read the thread
-title change on Discord, timing it against poll interval plus dwell; then `/rename` it twice inside
-a minute and confirm only the settled name is painted. Read `broker.log` for the rename line and for
+Against the running broker, after `install/Repair-Broker.ps1` (elevated) has restarted it on the
+new code: a session is launched under one name and renamed with `/rename`, which is a slash command
+only a person at that session's keyboard can type, so the worker asks the operator over its own
+thread to run the rename in a session of their choosing (the worker's own is fine) and reads the
+result. The worker reads the thread title change on Discord (through `GET /sessions` and
+`broker.log`, or the operator's word for what the phone shows), timing it against poll interval
+plus dwell; then a second rename twice inside a minute confirms only the settled name is painted. Read `broker.log` for the rename line and for
 a dropped-for-budget line, if any. Then end the session and confirm the exited title and the archive
 still land, which is the budget claim this plan most needs to see hold.
 
