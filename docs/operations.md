@@ -621,7 +621,10 @@ transcript text:
 - `tail: session <id>'s transcript-read prompt delivery failed (...)`: the delivery of one prompt
   the tailer read off the transcript threw, and it was dropped without holding up the rest of the
   pass. That prompt is either a message typed at the console mid-turn or the prompt that opened the
-  turn, and the line does not distinguish them. The thread carries no copy of it; the console does.
+  turn, and the line does not distinguish them. This path put no copy in the thread. A mid-turn
+  message reaches it by no other path, so the thread is missing it; a turn-opening prompt may
+  still be there from the mirror hook, which usually posts it first. The console holds the words
+  either way.
 - `tail: session <id>'s question alert was refused (...)`: an open-question alert was not written,
   because the per-thread window dropped it or Discord refused the write. The console still shows
   the question; the thread does not.

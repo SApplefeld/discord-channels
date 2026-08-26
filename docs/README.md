@@ -24,7 +24,11 @@ All of it is built and installable.
 
 ## Plans
 
-No plan is open. Everything delivered is archived below, most recent first.
+Two plans are open in [`plans/`](plans/): the peer-traffic round, which draws a session's
+cross-session messages under their own attribution in both directions and has its live verification
+outstanding, and the mirror-load-tolerance round, which raises the two mirror hooks' timeout to 10
+seconds and teaches the transcript tailer to recover a turn-opening prompt whose hook the CLI
+abandoned. Everything delivered is archived below, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
