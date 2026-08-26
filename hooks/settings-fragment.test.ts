@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_PORT, DEFAULT_QUESTION_HOLD_MS } from "../broker/config.ts";
+import { PROMPT_SETTLE_GRACE_MS } from "../broker/tail.ts";
 
 const HOOKS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FRAGMENT_PATH = path.join(HOOKS_DIR, "settings-fragment.json");
@@ -283,6 +284,23 @@ test("the mirror hooks post content to their own route on their own timeout", ()
       hook.timeout,
       10,
       `${event}'s mirror timeout is 10s, the ceiling of the band that leaves room for a whole reply`,
+    );
+  }
+});
+
+test("the settled-claim grace covers the whole mirror timeout the fragment grants", () => {
+  // A cross-component pin, because the two surfaces are edited by different concerns and neither
+  // mentions the other. The tailer keeps a landed prompt claim alive for the grace so the mirror
+  // copy it raced can still be suppressed when it arrives; the fragment decides how long the
+  // harness will wait for that copy to be posted at all. Raise the fragment's timeout without
+  // raising the grace and a copy still inside its own budget arrives to find the claim discarded,
+  // which is the duplicate prompt the claim exists to prevent, on exactly the loaded host the
+  // raise was made for. The grace is stated in milliseconds and the timeout in seconds.
+  const mirror = httpHooks().filter(({ hook }) => (hook.url ?? "").endsWith("/mirror"));
+  for (const { event, hook } of mirror) {
+    assert.ok(
+      PROMPT_SETTLE_GRACE_MS >= (hook.timeout ?? 0) * 1000,
+      `${event}'s mirror timeout is ${hook.timeout}s, which the ${PROMPT_SETTLE_GRACE_MS}ms settled-claim grace must cover`,
     );
   }
 });

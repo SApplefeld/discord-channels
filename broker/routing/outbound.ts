@@ -1015,13 +1015,17 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // stamp, and a machine-generated prompt clears a standing block again, silently. A false
       // positive withholds the stamp from words a person really typed, and the block they typed to
       // clear stands until their next completed tool call.
-      // Taken here, above this path's own dedup consult, and deliberately still taken when that
-      // consult goes on to suppress this copy. This hook fires as the operator presses return, so
-      // its stamp is the instant they spoke however the words reach the thread, and it cannot be
-      // newer than a block raised by the turn the prompt started: that block comes from the same
-      // turn's `Stop`, which is later by construction. The transcript-read path stamps below its
-      // consult instead, because it reads the line up to a poll interval after it was written and
-      // a stamp there would land past whatever the session did in between.
+      // Taken here, above this path's own dedup consult, and still taken when that consult goes
+      // on to suppress this copy: the stamp records that a person spoke, and a prompt suppressed
+      // as the slower of two copies is the operator speaking all the same. The instant recorded
+      // is this post's handling, not the keystroke: the hook fires as the operator presses
+      // return, but its payload carries no instant of its own, and under the load this broker is
+      // built to tolerate the handling runs late, which is the very case where the tailer's copy
+      // wins and this one is suppressed. So the stamp can be newer than the words it stands for,
+      // and a post handled late enough can land past a block the same turn went on to raise and
+      // clear it, machine-timed, with no person behind the move. The transcript-read path stamps
+      // below its consult and with the line's own instant instead, because its lateness is
+      // structural, a poll interval on every prompt rather than a loaded broker's tail case.
       if (kind === "prompt" && delivery === null && !isTaskNotification(text)) {
         options.registry.engage(located.sessionId);
       }
@@ -1510,7 +1514,17 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // the wire: what follows the operator's message posts fresh below it rather than growing the
       // block above it.
       const run = await deliver(threadId, messages);
-      if (run.error === null) return { status: "sent" };
+      if (run.error === null) {
+        // The claim's remaining life shrinks to the raced copy's grace once the run lands. The
+        // only consult a landed run's claim still answers is the mirror post of this same prompt,
+        // already in flight since the keystroke; in the lost-hook case the recovery exists for, no
+        // consult ever comes, and a claim standing the whole claim window past the landing would
+        // suppress the operator's next retype of these words on the mirror path. The mirror's own
+        // claim never settles, because its consumer is a poll pass that can legitimately run the
+        // whole window late.
+        if (claiming) options.echo?.settlePrompt(sessionId, text, "tailer");
+        return { status: "sent" };
+      }
 
       // The release hands the text back to the mirror path, which is the failure direction this
       // whole pair is built around: a claim standing over a prompt that never landed would silence
@@ -1533,7 +1547,11 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           "transcript-read prompt",
           run.error,
         );
-        if (retry.error === null) return { status: "sent" };
+        if (retry.error === null) {
+          // The retry's reclaimed record settles on the same rule as the first-run success above.
+          options.echo?.settlePrompt(sessionId, text, "tailer");
+          return { status: "sent" };
+        }
         return { status: "failed", error: retry.error };
       }
 

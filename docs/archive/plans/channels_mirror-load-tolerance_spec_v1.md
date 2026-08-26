@@ -1,6 +1,6 @@
 # Channels: mirror fidelity under machine load
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Created: 2026-08-25
 
@@ -658,3 +658,64 @@ kinds, which confirms the shipped figure rather than disputing it.
 close. The docs curation pass returned in the same round and its drift report is read against the
 corrected chapter, not the original.
 
+
+### Chapter 4 - 2026-08-26
+Completed: 4. Finishing
+
+The finishing pass ran in two rounds. Interim board 3 records the first: QA green, four confirmed
+MAJORs from the review lenses, and one correction to Chapter 3's own attribution. This chapter
+closes the section on the remediation.
+
+**All four MAJORs are fixed, two as code and two as comments.** The split was deliberate. The two
+comment findings sit on the run-identity gap Chapter 2 ruled out of scope with a stated trade-off,
+and a review finding does not reopen a ruling; but a comment claiming a safety the code does not
+have is a defect whether or not the gap behind it is accepted, so both were rewritten to state the
+residual plainly.
+
+- **The probe's give-up moved from the read's resolution to its dispatch** (`broker/tail.ts`). A
+  claim written while the read is in flight, which is exactly the claim the arming prompt's own
+  delivery writes, now survives the baseline. The give-up for claims that genuinely sit behind the
+  baseline is unweakened, and the existing pin over all four offset jumps stays green. The residual
+  is stated at the site: a claim made inside the read's window for a line the baseline still jumps
+  past survives, and the age bound caps it.
+- **A landed tailer run now settles its claim** rather than leaving it standing for the whole
+  window (`broker/routing/outbound.ts`, `broker/tail.ts`). A settled claim keeps answering for a
+  grace and is discarded past it, so the copy it raced is still suppressed while a later retype of
+  the same words is not. Release-on-success was considered and rejected, because it would drop the
+  suppression of a hook post arriving just after a short run completes. The mirror's claim
+  deliberately does not settle, since its consumer is a poll pass that can legitimately run a whole
+  window late, and that asymmetry is stated at both seams.
+- **`notePrompt`'s comment** now states that claims carry no run identity, so the same-digest clear
+  cannot tell a re-dispatch from a distinct overlapping run of identical text, and names what the
+  first run loses when it cannot.
+- **The mirror path's engagement-stamp comment** now rests on the true ground, that the stamp
+  records a person having spoken and takes its instant from the post's handling rather than the
+  keystroke, instead of on a delivery ordering this plan's own load premise breaks.
+
+**Two things were added on adjudication rather than found.** The settle grace and the fragment's
+mirror timeout are the same value held on two surfaces that neither mentions, which is the drift the
+doctrine's cross-component rule exists for, so `hooks/settings-fragment.test.ts` gained a pin tying
+them, proven able to fail by a control at a raised timeout before it was trusted. And the
+run-identity gap behind two of the four findings is now a backlog item in its own right, carrying
+both residuals it produces, including one the arming-order fix does not reach: a `learn` post
+arriving after a mirror post has claimed starts a probe whose dispatch-time give-up spends that
+claim. Whether that ordering occurs at all is unconfirmed, and the item says so.
+
+**Gate.** Lint exit 0; tests 1510 / 1509 pass / 0 fail / 1 skipped, exit 0, against a section-3
+baseline of 1505 / 1504 / 0 / 1. Five tests added, four from the remediation and one the pin. Two
+runs during this section came back with a single failure each, `a reply record left by a deferral
+dies with the interim run that never landed` and `a mirror run that landed nothing after the tailer
+deferred still gets the text posted`, both `the condition never held` in the shared `until` helper.
+Both are named members of the echo-dedup flake group; each was isolated to 160/160 exit 0 and
+followed by a green full suite, and both occurred while another project's .NET suite held eleven
+processes on the box. The final green run was taken with that contention gone.
+
+**The reviewers were not re-convened for the remediation**, which is a judgment call worth naming:
+the changes are two comment rewrites, one pin, and two fixes whose own red-first tests plus three
+controls were re-run from this thread rather than accepted on report. A fresh round over that would
+cost more than it could find.
+
+Assumptions: The settle grace is a chosen constant rather than a derived one, floored at the
+fragment's mirror timeout and now pinned to stay at or above it (decided 2026-08-26, section 4).
+
+Next: none. The plan is complete.

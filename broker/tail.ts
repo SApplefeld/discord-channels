@@ -158,6 +158,16 @@ export type EchoMemory = {
    * dispatching it: `by` is the caller's own path, never the path it is asking about.
    */
   notePrompt: (sessionId: string, text: string, by: PromptPath) => void;
+  /**
+   * Marks the caller's own standing claim over this text as landed, shrinking its remaining life
+   * to `PROMPT_SETTLE_GRACE_MS`: past that, the only consult a landed run's claim could still
+   * answer is a retype, never the copy it raced. A claim over other text is left alone, since it
+   * belongs to a later prompt's run. The tailer's success seam calls this; the mirror's does not,
+   * because the mirror claim's consumer is a poll pass that can run the whole claim window late,
+   * and a mirror claim dying with its run would hand the tailer a gap and a duplicate on every
+   * slow pass.
+   */
+  settlePrompt: (sessionId: string, text: string, by: PromptPath) => void;
   /** Records the last reply-tool answer posted for this session, replacing the previous one. */
   noteAnswer: (sessionId: string, text: string) => void;
   /**
@@ -199,12 +209,14 @@ export type EchoMemory = {
    * records and the answer record where they are.
    *
    * Called by the tailer wherever it commits to never reading a stretch of a session's transcript.
-   * There are four places its read position jumps forward over bytes nobody read: the baseline a
-   * resolved probe writes, which is the ordinary way a freshly learned or re-learned session
-   * starts; the same baseline taken inside a pass, the fallback for a probe that never resolved;
-   * a file that shrank below the held offset; and a backlog past `MAX_TAIL_READ_BYTES` skipped to
-   * the file's end. All four call this. A prompt claim made before such a jump is one this path
-   * has now guaranteed it will never answer, and the age bound only caps how long it can suppress:
+   * There are four places its read position jumps forward over bytes nobody read: the baseline
+   * probe, which is the ordinary way a freshly learned or re-learned session starts, and which
+   * calls this at its dispatch rather than at its resolution so the claim the arming prompt's own
+   * delivery writes while the read is in flight survives it; the same baseline taken inside a
+   * pass, the fallback for a probe that never resolved; a file that shrank below the held offset;
+   * and a backlog past `MAX_TAIL_READ_BYTES` skipped to the file's end. All four call this. A
+   * prompt claim made before such a jump is one this path has now guaranteed it will never
+   * answer, and the age bound only caps how long it can suppress:
    * this closes the generator, which matters most under exactly the saturated host where a skip
    * and a timed-out hook are both likely and the next identical prompt is the one the recovery
    * exists for.
@@ -249,6 +261,20 @@ export const ANSWER_LENGTH_ALLOWANCE = 1.1;
  */
 export const DEFAULT_PROMPT_CLAIM_MS = 60_000;
 
+/**
+ * How long a settled prompt claim, one whose run has already landed, keeps answering consults.
+ *
+ * A landed run has one legitimate consult left: the same prompt's copy on the other path, already
+ * in flight when the run landed. For the tailer's claim, the only one that settles, that copy is
+ * the `UserPromptSubmit` post, whose harness-side timeout the hook fragment pins at ten seconds
+ * and whose delivery follows the intake's body read at once, so a copy that has not consulted
+ * this long after the landing is not the raced one. Measured from the landing, which is later
+ * than the keystroke that started the hook's own clock, so the grace covers that whole budget
+ * with room. Past it, a matching consult is the operator retyping the same words, and suppressing
+ * that is the loss the claim window exists to prevent.
+ */
+export const PROMPT_SETTLE_GRACE_MS = 10_000;
+
 export type EchoMemoryOptions = {
   /**
    * How long a prompt claim stands before a consult refuses and discards it. Scaled by the caller
@@ -263,8 +289,11 @@ export function createEchoMemory(options: EchoMemoryOptions = {}): EchoMemory {
   const promptClaimMs = options.promptClaimMs ?? DEFAULT_PROMPT_CLAIM_MS;
   const now = options.now ?? Date.now;
 
-  /** A prompt claim: the digest of the text, and when the run carrying it was dispatched. */
-  type PromptClaim = { digest: string; at: number };
+  /**
+   * A prompt claim: the digest of the text, when the run carrying it was dispatched, and when
+   * that run landed, null while it is still posting.
+   */
+  type PromptClaim = { digest: string; at: number; settledAt: number | null };
 
   type Entry = {
     interim: string | null;
@@ -358,11 +387,28 @@ export function createEchoMemory(options: EchoMemoryOptions = {}): EchoMemory {
       // (intake.ts), so two prompts for one session overlap, and a second one claiming here
       // while the first one's run is still posting would spend a bit the first one is owed. That
       // run then lands nothing, finds no deferral, and never takes the retry that is the only thing
-      // left carrying the operator's words. A bit over this same text is a different matter: it can
-      // only have been set against the claim this call is replacing, and the run behind it is the
-      // one now being re-dispatched.
+      // left carrying the operator's words. The same-digest clear does not share that safety:
+      // claims carry no run identity, so this call cannot tell a re-dispatch of the run the bit
+      // was set against from a distinct overlapping run that happens to carry identical text,
+      // which is the ordinary case of typing the same words twice. In that shape this clear
+      // spends the bit the first run is owed all the same: that run, landing nothing, finds no
+      // deferral, takes no retry, logs the ordinary stopped-early line rather than `reached the
+      // thread by neither path`, and its release spends this call's own claim besides. The
+      // residual stands with the run-identity gap that produces it, which is the structure the
+      // prompt slots share with the reply pair; closing it means tagging every slot with the run
+      // that made it.
       if (held.deferred[ownedSlot(by)] === mark) held.deferred[ownedSlot(by)] = null;
-      held[owned(by)] = { digest: mark, at: now() };
+      held[owned(by)] = { digest: mark, at: now(), settledAt: null };
+    },
+    settlePrompt(sessionId, text, by) {
+      const held = state.get(sessionId);
+      if (held === undefined) return;
+      const claim = held[owned(by)];
+      // The digest guard scopes the settle to the run's own claim: a different digest means a
+      // later prompt claimed over this one mid-run, and that claim's life is its own run's to
+      // bound.
+      if (claim === null || claim.digest !== digest(text)) return;
+      claim.settledAt = now();
     },
     noteAnswer(sessionId, text) {
       entry(sessionId).answer = {
@@ -421,6 +467,18 @@ export function createEchoMemory(options: EchoMemoryOptions = {}): EchoMemory {
       if (elapsed < 0 || elapsed > promptClaimMs) {
         held[slot] = null;
         return false;
+      }
+      // A settled claim is one whose run already landed, so the only consult it still answers is
+      // the copy it raced, and that copy's own clock runs out `PROMPT_SETTLE_GRACE_MS` after the
+      // landing at the latest. Past the grace, a match is the operator's retype with no live
+      // competitor, and the stale record is discarded the way the age bound above discards one,
+      // a backwards clock step included.
+      if (claim.settledAt !== null) {
+        const since = now() - claim.settledAt;
+        if (since < 0 || since > PROMPT_SETTLE_GRACE_MS) {
+          held[slot] = null;
+          return false;
+        }
       }
       if (digest(text) !== claim.digest) return false;
       held.deferred[ownedSlot(other(by))] = claim.digest;
@@ -1859,6 +1917,18 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
    */
   function startProbe(sessionId: string, held: TailEntry): void {
     if (!held.allowed || held.path === null || held.offset !== null || held.probe !== null) return;
+    // The primary give-up, and the first of this module's four offset jumps over unread bytes:
+    // everything already in the file when a session is learned, or re-learned after a restart or a
+    // mirror-off window, sits behind the baseline this probe is about to take and will never be
+    // read, so a prompt claim standing for a line back there is one nothing here can answer. Taken
+    // here at dispatch rather than where the read resolves, because the prompt that arms a session
+    // claims in between: `allow` returns into the intake handler, whose delivery writes the mirror
+    // claim before the probe's read settles, and a give-up at resolution would spend that claim
+    // and post the operator's first prompt twice whenever its transcript line lands ahead of the
+    // baseline. The cost of the earlier instant: a claim made inside the read's own window for a
+    // line the baseline still jumps past survives this give-up and stands until the claim window
+    // expires, which is the age bound's loss to cap rather than this jump's to close.
+    options.echo.forgetPrompts(sessionId);
     const path = held.path;
     const epoch = held.epoch;
     // The entry must still be this one, in this map, at the same epoch it was dispatched under,
@@ -1888,11 +1958,9 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
       .then((probe) => {
         if (probe === null || !stillValid()) return;
         held.offset = probe.size;
-        // The primary baseline, and the first of this module's four offset jumps over unread
-        // bytes: everything already in the file when a session is learned, or re-learned after a
-        // restart or a mirror-off window, is behind this position and will never be read. A prompt
-        // claim standing for a line back there is one nothing here can answer.
-        options.echo.forgetPrompts(sessionId);
+        // The prompt give-up for this jump runs at the dispatch above rather than beside this
+        // write, so a claim made while the read was in flight survives the baseline it lands
+        // beside.
       })
       .catch(() => {
         // Swallowed unread; the poll-time null-offset branch in pollOne is the fallback for a

@@ -43,8 +43,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   box carrying no review agents, came back 1492/1491/0/1 exit 0. "A reply record left by a deferral
   dies with the interim run that never landed" joined on the same day, failing once in a full-suite
   run with the same "the condition never held", then passing 159/159 in each of three isolated runs
-  and green on the next full-suite run at 1505/1504/0/1 exit 0. So the member list tracks whatever
-  the echo-dedup group holds rather than a fixed set of names, and the fix belongs in the helper.
+  and green on the next full-suite run at 1505/1504/0/1 exit 0. It failed a second time, with "a
+  mirror run that landed nothing after the tailer deferred still gets the text posted", across two
+  further full-suite runs taken while another project's .NET suite held eleven processes on the
+  box; each isolated to 160/160 exit 0 and each followed by a green full suite, the last of them
+  1510/1509/0/1 exit 0 with that contention gone. So the member list tracks whatever the
+  echo-dedup group holds rather than a fixed set of names, the trigger is load on the box rather
+  than any one test, and the fix belongs in the helper.
 
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
   from the title-states security review).** `classifyMessage`'s thread branch drops
@@ -220,7 +225,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
      did before, since the recovery excludes command lines by design. Every ordering of the two
      copies was exercised against a clock a test moves; what no test supplies is a real hook the CLI
      actually abandons. The plan is
-     [`plans/channels_mirror-load-tolerance_spec_v1.md`](plans/channels_mirror-load-tolerance_spec_v1.md).
+     [`archive/plans/channels_mirror-load-tolerance_spec_v1.md`](archive/plans/channels_mirror-load-tolerance_spec_v1.md).
 - Confirm what Discord does with a rename on a still-archived thread. Inferred, never established:
   after the archive-revive fix, a session woken by hook traffic alone leaves the broker's archived
   flag cleared while Discord's thread may still be archived. If Discord refuses the rename as a
@@ -252,6 +257,20 @@ and none carries a date of its own. An item added from here on carries `(parked 
   command output, so it is a hardening rather than a defect. The same regex ran on the same lines
   before that round, through `goalCommand`. Worth doing if the transcript read ever accepts a
   larger pass or a less trusted file.
+
+- Tag a prompt claim with the run that made it. The prompt slots in `broker/tail.ts` hold a text
+  digest and two instants and no run identity, which leaves two residuals that share one cause.
+  `notePrompt`'s same-digest deferral clear cannot tell a re-dispatch of the run a bit was set
+  against from a distinct overlapping run carrying identical text, so typing one word twice can
+  spend the bit the first run is owed: that run lands nothing, takes no retry, and logs the
+  ordinary stopped-early line rather than `reached the thread by neither path`. And a `learn` post
+  that arrives after a mirror post has already claimed starts the baseline probe, whose
+  dispatch-time give-up spends that claim, which the arming-order fix does not reach because it
+  bounds the probe `allow` starts rather than the one a late `learn` starts. Both are bounded by
+  the claim window and neither is a regression; closing them means tagging every slot with its run
+  rather than patching either site. Whether the late-`learn` ordering occurs at all is unconfirmed:
+  it turns on which of the two arming posts the fragment emits first on a session's opening prompt,
+  which nobody has measured.
 
 - Clamp `lastEngagementAt` when a snapshot is restored. `broker/registry.ts` bounds the engagement
   stamp forward at the `engage` seam, so a transcript line cannot post-date a session out of its

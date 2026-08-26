@@ -26,6 +26,7 @@ import {
   ANSWER_LENGTH_ALLOWANCE,
   PEER_BODY_UNREADABLE,
   PEER_NAME_FALLBACK,
+  PROMPT_SETTLE_GRACE_MS,
   createEchoMemory,
 } from "../tail.ts";
 import type { EchoMemory, PeerTraffic } from "../tail.ts";
@@ -3251,6 +3252,82 @@ test("a mirrored prompt matching one the tailer already recovered is skipped, an
 
   assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
   assert.deepEqual(posts.map((post) => post.text), renderMirror("prompt", PROMPT));
+});
+
+test("a mirrored prompt arriving after the tailer's run landed and its grace passed still posts", async () => {
+  // The recovery case leaves the tailer's claim with no consult at all: the hook was lost, the run
+  // landed, and nothing ever consumes the record. A claim standing the whole claim window past
+  // that landing would suppress the operator's next retype of the same words on the mirror path,
+  // so a landed run's claim survives only the raced copy's own grace.
+  let clock = 5_000_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory({ now: () => clock });
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 1, "the recovered copy posts");
+
+  clock += PROMPT_SETTLE_GRACE_MS + 1;
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 2, "a mirrored prompt past the grace is the operator's own retype");
+});
+
+test("a mirrored prompt racing the tailer's landed run inside the grace is still suppressed", async () => {
+  // The suppression the claim exists to provide: the hook post of this same prompt can arrive
+  // after the tailer's short run completes, having been in flight since the keystroke, and inside
+  // the grace it is that raced copy rather than a retype.
+  let clock = 5_000_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory({ now: () => clock });
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 1, "the recovered copy posts");
+
+  clock += PROMPT_SETTLE_GRACE_MS;
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1, "the raced copy inside the grace must not double");
+});
+
+test("a landed mirror run keeps its claim the whole window, since the tailer's pass consumes it", async () => {
+  // The settle rule is the tailer's alone. The mirror claim's consumer is a poll pass that can
+  // legitimately run the whole claim window late, so a mirror claim whose life shrank at its own
+  // landing would hand the tailer a gap and a duplicate on every slow pass.
+  let clock = 5_000_000;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory({ now: () => clock });
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", PROMPT, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1, "the mirrored copy posts");
+
+  clock += PROMPT_SETTLE_GRACE_MS + 1;
+  assert.deepEqual(await router.interimPrompt("session-a", PROMPT, "turn-open", null), { status: "sent" });
+  assert.equal(posts.length, 1, "the tailer's slow pass still meets the mirror's claim");
 });
 
 test("an invisible character cannot hide a prompt from the dedup, on either path", async () => {

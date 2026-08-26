@@ -3339,6 +3339,28 @@ test("every offset jump gives up the prompt claims behind it, not just the skip"
   );
 });
 
+test("the mirror claim made by the prompt that arms the session survives the baseline probe", async (t) => {
+  // The intake's own ordering: `allow` starts the baseline probe and the same hook's delivery
+  // writes the mirror claim in the same synchronous stretch, before the probe's read resolves. The
+  // probe's give-up therefore runs at its dispatch, where that claim does not exist yet; a give-up
+  // at resolution would spend it, and whenever the harness writes the prompt's transcript line
+  // after the baseline read, the tailer would then read the line, find no claim, and post the
+  // operator's first prompt a second time.
+  const file = transcriptFile(t);
+  const { tailer, echo } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  // No await between the arming calls and this claim: the probe is still in flight when it lands.
+  echo.notePrompt(SESSION, TYPED, "mirror");
+  await tailer.poll();
+
+  assert.equal(
+    echo.isPromptEcho(SESSION, TYPED, "tailer"),
+    true,
+    "a claim made at or after the probe's dispatch is one the tailer may yet answer",
+  );
+});
+
 test("a chunk that could not be posted is dropped, not retried, and not remembered as posted", async (t) => {
   const file = transcriptFile(t);
   let outcome: ReplyResult = { status: "no-thread" };
