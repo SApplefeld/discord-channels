@@ -34,11 +34,12 @@ import {
   MAX_MODEL_DETAIL_LENGTH,
   MAX_MODEL_NAME_LENGTH,
   fit,
+  inertName,
 } from "./discord/render.ts";
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
-import { withoutInvisible } from "./sanitize.ts";
+import { clean, withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
 import type { Sketch } from "./similarity.ts";
 
@@ -657,6 +658,17 @@ export type TranscriptTailerOptions = {
    * text is never logged: what it feeds is a record the card is rendered from.
    */
   noteGoal?: (sessionId: string, goal: string | null) => void;
+  /**
+   * Records the title a `custom-title` line named, whether it was written by a launch `--name` or
+   * an in-session `/rename`; the registry's `noteTitle`. Unlike the other note seams, this one's
+   * value is not confined to the card: it is composed into `threadName` and painted onto Discord as
+   * the thread's own name, through a `PATCH /channels/{threadId}` the surface issues on its own
+   * schedule. That is why the value is neutralized and bounded at the read, in `customTitle`, and
+   * not left to the render site alone: what arrives here is already the text the thread will draw.
+   * The call itself stays synchronous, and a throw out of it is caught and dropped so the narration
+   * behind it still posts.
+   */
+  noteTitle?: (sessionId: string, title: string) => void;
   echo: EchoMemory;
   log?: (message: string) => void;
   /** Drives the repeat-log rate limiter. Injected so a test moves its window without sleeping. */
@@ -826,11 +838,27 @@ function createRepeatLog(
  * two halves of one exchange, rendered under an attribution of their own, which is what keeps the
  * quoted operator register the operator's alone.
  *
- * The other three feed a session's record rather than the thread: the model that answered a line
- * and the context size its usage adds up to, a structured record naming why a model was forced
- * down, and the goal a `/goal` command set. They reach the operator on the card, which is why they
- * are neutralized at the render site rather than at the read, and the goal reaches nowhere else:
- * `PublicSessionRecord` and `PersistedRecord` both omit it.
+ * The other four feed a session's record rather than a message on the thread: the model that
+ * answered a line and the context size its usage adds up to, a structured record naming why a model
+ * was forced down, the goal a `/goal` command set, and the title a `/rename` (or a launch `--name`)
+ * wrote. The first three reach the operator on the card, which is why they are neutralized at the
+ * render site rather than at the read, and the goal reaches nowhere else: `PublicSessionRecord` and
+ * `PersistedRecord` both omit it.
+ *
+ * The title is the exception on both counts. It is written to Discord, as the thread's own name,
+ * which the surface repaints with a `PATCH /channels/{threadId}` once the composed name settles; so
+ * it is neutralized and bounded here at the read, in `customTitle`, against the same character class
+ * and the same whitespace rule the render site holds a thread name to. What crosses this wire is
+ * therefore already the text the thread will draw, which is what lets the reader's bound be a bound
+ * on what a person actually sees.
+ *
+ * It is Claude Code's own record of the session's name, re-emitted on its `custom-title`
+ * line every time the name is set, whether by `--name` at launch or by an in-session `/rename`. An
+ * unreadable value contributes no item at all, never a `null` title: this kind carries a real string
+ * only, unlike the goal's `null`, which is the operator's own explicit clear. The two are byte-alike
+ * to a consumer wired the goal's way, and one malformed line must not be able to wipe a good title,
+ * so the type itself, not a comment, is what keeps a rename this reader could not parse from reading
+ * as a request to blank it.
  */
 export type TailItem =
   | { kind: "text"; text: string }
@@ -839,7 +867,8 @@ export type TailItem =
   | PeerTraffic
   | { kind: "model"; reading: ModelReading }
   | { kind: "fallback"; fallback: ModelFallback }
-  | { kind: "goal"; goal: string | null };
+  | { kind: "goal"; goal: string | null }
+  | { kind: "title"; title: string };
 
 /**
  * One peer message off the transcript, in either direction: a message another session sent this one
@@ -1167,6 +1196,12 @@ export const PEER_BODY_UNREADABLE = "(a message this broker could not read)";
 /**
  * The most code points a name, a summary, or any other short peer-written label contributes.
  *
+ * One reader outside that description shares the number: `customTitle`, whose value is the session's
+ * own title rather than a peer's label. It is the same order of thing, a short name a person typed
+ * for a surface someone reads, and giving it a constant of its own would be two numbers nobody
+ * would remember to keep in step. What it does not share is the counting below, because it measures
+ * through `fit` rather than through this module's own reading.
+ *
  * Code points rather than UTF-16 units, the unit every other bounded reading in this module counts
  * in, so one emoji in a display name costs one of this budget rather than two. Which makes the
  * bound a reading this module applies rather than a regex quantifier: an attribute pattern counts
@@ -1241,6 +1276,88 @@ function peerName(value: unknown): string | null {
   const written = withoutInvisible(name).trim();
   if (written.toLowerCase().startsWith(PEER_ADDRESS_SCHEME)) return null;
   return [...name].length > MAX_PEER_NAME_LENGTH ? null : name;
+}
+
+/**
+ * Whether every surrogate code unit in a string has its partner, which is what makes the string
+ * encodable as the UTF-8 a JSON request body is sent as.
+ *
+ * Written out rather than called as `String.prototype.isWellFormed`, which exists on the Node this
+ * runs on but is typed only from the `es2024` library: reaching it would mean moving the whole
+ * project's compiler target for one call, which is a larger change than this reading is worth.
+ */
+function isWellFormed(value: string): boolean {
+  for (let at = 0; at < value.length; at += 1) {
+    const unit = value.charCodeAt(at);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(at + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      at += 1;
+    }
+  }
+  return true;
+}
+
+/**
+ * A `custom-title` line's `customTitle` field, normalized and bounded, or null when there is
+ * nothing usable there.
+ *
+ * Deliberately not `peerName`'s refuse-whole answer to an over-bound value: a refused peer name
+ * falls back to a readable placeholder the thread already knows how to draw, while a refused title
+ * would mean the rename this work exists to surface silently never lands. So an over-bound title is
+ * cut through `fit` rather than turned away. The two bounds are the same number and nothing else:
+ * `peerName` counts code points and refuses whole, while `fit` holds the stricter of the code-point
+ * and the UTF-16 count and cuts, so an astral character costs this reader two of the budget where it
+ * costs a peer name one.
+ *
+ * An ill-formed value is refused outright, which is the one place the refuse-whole answer is the
+ * right one. A lone surrogate is in no character class any of the steps below strip: `isInvisible`
+ * covers none of `0xd800` through `0xdfff`, `inertName` spreads by code point and keeps it whole,
+ * `clean` strips only C0 and DEL, and `fit` only declines to create one. It would therefore reach a
+ * `PATCH /channels/{threadId}` body that has to be valid UTF-8, where the rename is refused on every
+ * pass and spends a bucket the exited title and the archive share. Nothing legitimate writes one:
+ * the harness writes this line as a JSON string it built from the name a person typed, so an
+ * ill-formed value is corruption or an append by something else, and dropping it keeps the name the
+ * thread already has rather than painting a replacement character onto it.
+ *
+ * Every bound sits behind every strip, and the order is the whole substance of this function. The
+ * normalization is `inertName`, which is what a thread name is drawn through at the render site:
+ * it strips the invisible class and collapses runs of whitespace to one space. Only then are the
+ * emptiness gate and the cut taken, on that one string. Measuring a bound ahead of a strip spends
+ * it on characters nobody sees, and each of the three ways that goes wrong is a real title lost:
+ * `clean`'s 256-unit cap taken first turns three hundred zero-width characters ahead of a name into
+ * two hundred fifty-six zero-width characters and drops the rename outright; that same cap counts
+ * UTF-16 units, so it can fall between the halves of an astral pair and put a lone surrogate on a
+ * wire that ends in a JSON request body; and a name padded with a hundred and thirty spaces
+ * otherwise stores five characters of name, a hundred and fourteen of padding and an ellipsis,
+ * which the render collapses to `Build …` and the rest of the session's name is gone. Normalizing
+ * first is also what keeps the gate and the cut answering about the same text, so a title that
+ * passes the gate cannot still cut to nothing a reader can see.
+ *
+ * This bound is not the last one the value meets, and it is not meant to be: `threadName` cuts the
+ * composed name again to what is left of the hundred-character thread-name budget after the glyph
+ * and the state suffix, which is under ninety. What this one buys is that the value the record
+ * carries and the value the surface persists are bounded before they are stored, rather than only
+ * on the way out.
+ *
+ * `clean` is kept for the repo-wide rule that a stored display string is cleaned before it is
+ * bounded. Behind `inertName` it changes no value: the control class it strips is a subset of the
+ * invisible class already gone, and its 256-unit cap sits outside the tighter bound taken next.
+ *
+ * What this cannot promise is that the result draws as anything. The invisible class is a class of
+ * characters that render as nothing on every surface, not of every character that happens to draw
+ * blank in some font: the Hangul filler and the Braille blank pattern are ordinary printable
+ * characters and survive, here and at the render site alike. A title made only of those reads as an
+ * empty thread name to a person and as a set title to this reader, which is the shared class's
+ * limit rather than a gap in this gate, and widening the class here would put the two surfaces that
+ * share it out of step.
+ */
+function customTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (!isWellFormed(value)) return null;
+  const written = clean(inertName(value));
+  return written === "" ? null : fit(written, MAX_PEER_NAME_LENGTH);
 }
 
 /**
@@ -1542,7 +1659,7 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
 };
 
 /**
- * What one transcript line contributes, decided by an allowlist and never a denylist. Four line
+ * What one transcript line contributes, decided by an allowlist and never a denylist. Five line
  * shapes yield anything, and all must first not be a sidechain and must name in `sessionId` the
  * session this transcript was learned for.
  *
@@ -1589,6 +1706,14 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * named in it is `/goal`. One command by allowlist, never a sweep: a command's arguments are
  * operator prose, and most of it is nobody's business on a surface that leaves the machine. What is
  * yielded is the goal's own text, or null for the explicit `/goal clear`.
+ *
+ * A `custom-title` line yields a title when its `customTitle` field reads as a usable string once
+ * normalized: Claude Code writes this line both for a launch `--name` and for an in-session
+ * `/rename`, with no way to tell the two apart from the line alone, and either one is the harness's
+ * own record of the session's title. A value that reads as nothing, whether because it is not a
+ * string or because it is empty once cleaned, yields no item at all: unlike the goal, whose `null`
+ * is an explicit clear the operator typed, an unreadable title has no clear to make, and the item
+ * is narrowed to carry only a real string for exactly that reason.
  *
  * A `user` line also yields a prompt when it is the typed prompt that opened a turn, read through
  * `typedPromptText`: the same `prompt` kind the queued attachment below yields, so both reach the
@@ -1713,6 +1838,18 @@ export function lineItems(line: string, sessionId: string): TailItem[] {
         },
       },
     ];
+  }
+  if (record["type"] === "custom-title") {
+    // Claude Code writes this line for both a launch `--name` and an in-session `/rename`, with no
+    // way to tell the two apart from the line alone; that is fine, because either one is the
+    // harness's own record of the session's title and names the thread the same way. The line
+    // carries no timestamp and is re-emitted many times across a session, so this reader answers
+    // only "what does the line say right now" and lets the tailer's forward-only read handle when.
+    // An unreadable value yields nothing at all, `goalCommand`'s own answer to a line it cannot
+    // parse: the consumer's `null` is the operator's explicit clear on the goal seam, and this kind
+    // carries no such clear, so a malformed line must not be able to read as one.
+    const title = customTitle(record["customTitle"]);
+    return title === null ? [] : [{ kind: "title", title }];
   }
   if (record["type"] === "user") {
     // The console-command markup is read only off a line the operator wrote at their own console.
@@ -2192,11 +2329,14 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
     for (const line of consumed.split("\n")) {
       if (line === "") continue;
       for (const item of lineItems(line, sessionId)) {
-        // The two card readings are taken first and synchronously: they post nothing, so there is
-        // no await to re-check an epoch across, and each is held to its own try/catch because a
-        // throw escaping here would abandon every chunk behind it in this batch, whose bytes are
-        // already past the offset and cannot be read again. The log line names the session and the
-        // failure and nothing else, the rule every line in this module follows.
+        // These four branches (model, fallback, goal, title) are taken first and synchronously:
+        // none of them posts anything itself, so there is no await to re-check an epoch across, and
+        // each is held to its own try/catch because a throw escaping here would abandon every chunk
+        // behind it in this batch, whose bytes are already past the offset and cannot be read
+        // again. The title note is the one whose value later reaches Discord, as the thread name a
+        // separate repaint composes; the call made here still only feeds the record it is painted
+        // from. The log line names the session and the failure and nothing else, the rule every
+        // line in this module follows.
         if (item.kind === "model") {
           try {
             options.noteModel?.(sessionId, item.reading);
@@ -2226,6 +2366,17 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
             repeats(
               `session ${sessionId}'s goal could not be recorded`,
               "the goal is dropped; the error detail is withheld, it can carry content",
+            );
+          }
+          continue;
+        }
+        if (item.kind === "title") {
+          try {
+            options.noteTitle?.(sessionId, item.title);
+          } catch {
+            repeats(
+              `session ${sessionId}'s title could not be recorded`,
+              "the title is dropped; the error detail is withheld, it can carry content",
             );
           }
           continue;

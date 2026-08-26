@@ -113,7 +113,13 @@ brief.
   invisible characters caps to 256 of them, strips to nothing, and drops the rename outright, and
   the same UTF-16 cap can split an astral pair and emit a lone surrogate onto the wire. Ordinary
   whitespace is not in the invisible class but the render site collapses it (`render.ts` `visible`),
-  so a name padded with 130 spaces otherwise stores 120 characters and draws as an ellipsis.
+  so a name padded with 130 spaces otherwise stores five characters of name and 114 of padding, and
+  draws as `Build …` with the rest of the session's name gone.
+- An ill-formed value is refused outright, ahead of the normalization: a lone surrogate is in none
+  of the classes the steps above strip, and `fit` only declines to create one, so nothing else
+  stands between it and a `PATCH` body that has to be valid UTF-8. Refusing rather than repairing,
+  because nothing legitimate writes one and keeping the thread's current name beats painting a
+  replacement character onto it.
 - The consumer at `tail.ts:2222` gains a `noteTitle` option on the `noteGoal` pattern, same
   error-withholding wrap. Its doc says plainly that this is the one note seam whose value is written
   to Discord, as the thread name.
@@ -175,8 +181,21 @@ implementer is blocked from.
   and the difference is the point: the goal is withheld from `GET /sessions` and omitted from the
   on-disk snapshot, while the title is written to Discord as the thread name and is persisted in the
   thread binding, so its paragraph says so rather than borrowing the goal's.
-- Record the reader's normalization: `clean` then the label bound, with the emptiness test taken
-  again on the cut result.
+- Record the reader's normalization as built: an ill-formed value refused outright, then
+  `inertName` (the render site's own strip of the invisible class and collapse of whitespace runs),
+  then `clean`, then the label bound through `fit`. `clean` is kept for the repo-wide rule and
+  changes no value in that position.
+- Record two accepted risks that currently live only in code comments, so they sit on the audit
+  record rather than in a source file an auditor is not reading. First, the thread-identity half of
+  the missing origin gate: anything that can append to a session's transcript renames that session's
+  thread to any 120-character string, including another session's exact name, so an operator can be
+  steering a thread they have misidentified. The composed glyph and state suffix stay true, and an
+  approval verdict is already bound to its thread and request id, so what is at risk is steering
+  rather than approval. Second, a title made only of printable-blank characters (the Hangul filler,
+  the Braille blank pattern) passes every gate and draws as an empty thread name; the invisible
+  class is deliberately a class of what renders as nothing everywhere rather than of what draws
+  blank in some font, and widening it here alone would put this reader and the render site out of
+  step.
 
 ## Traps, each with its handling
 
@@ -202,7 +221,13 @@ implementer is blocked from.
   typed at their own console (`tail.ts:1725`), a gate the security model names as load-bearing so
   untrusted content cannot write to the card. A `custom-title` line carries no origin field at all,
   so there is nothing to gate on: a session that can reach `/rename` renames its own thread and
-  spends a slot of the per-thread rename budget the exited title and the archive share. Accepted
+  spends a slot of the per-thread rename budget the exited title and the archive share. Budget is
+  the smaller half. The larger is thread identity: the new name is any 120-character string,
+  another live session's exact name included, so an operator can steer a thread they have
+  misidentified. What bounds it is that the glyph and the state suffix are composed by the broker
+  and stay true, and that an approval verdict is already bound to its own thread and request id
+  (`docs/security-model.md`), so what is reachable is misdirected steering rather than a misrouted
+  approval. Accepted
   rather than fixed, because the line shape offers no discriminator and the value is bounded and
   neutralized on the way out; recorded here and in Section 4's egress paragraph so it is an accepted
   risk on the record rather than an unnoticed one. Whether a model can reach `/rename` at all is
@@ -230,6 +255,19 @@ Renaming the thread from Discord back into the session; changing `--name` or the
 to the surface's dwell or budget.
 
 ## Chapters
+
+### Chapter 1 - 2026-08-26
+Completed: Section 1: The tailer reads `custom-title`
+Implemented By: implementer-sonnet (rounds 1 and 2), escalated to implementer-opus (round 3); the round-3 review's fixes applied in the main session
+Metrics: 3 review rounds; NEEDS_CONTEXT 0; escalations 1 (sonnet to opus, earned on a repeating finding class); consults 0
+Decisions / Surprises: The normalization runs `inertName` first, which is the render site's own `visible`, rather than a second whitespace regex beside it. That was the opus implementer's call and it is the right one: the reader now normalizes through the identical function the thread name is drawn through, so the stored title and the drawn title cannot drift. Its one visible consequence is that a newline is deleted rather than turned into a space (`Real\nName` stores `RealName`), because the newline is in the invisible class; that is the render's own answer and the spec now says so. The implementer also proved, and I confirmed by reading `broker/sanitize.ts:9,19` and `broker/discord/render.ts:894-909`, that `clean` is a genuine no-op in this composition: its control class is a strict subset of the invisible class already stripped, and its 256-UTF-16-unit cap can never be observed behind `fit`'s 120. The call is kept anyway, because Standing Amendment 2 binds and is not the implementer's to relax, and the function's doc says plainly that it changes no value there rather than claiming a guarantee it does not give. Round 3's review then found the class none of the three normalization steps covers: an unpaired surrogate arriving in the input, which `isInvisible` does not reach, `inertName` keeps whole, `clean` ignores and `fit` only declines to create. It is now refused outright ahead of the normalization. `String.prototype.isWellFormed` exists on this Node but is typed only from the `es2024` library, so the check is eight hand-written lines rather than a project-wide compiler-target move for one call.
+Assumptions: `broker/index.ts` wiring belongs to Section 2 (2026-08-26, section 2), carried forward from Interim board 1.
+Review Findings: Round 3 (adversarial, blind and security, all opus at max effort): 0 Critical. 3 Major, all addressed. The ill-formed-input gap (adversarial and security, independently) is fixed with the refusal above plus a three-case test watched red first. The throwing-note test pinned only that the error detail is withheld from the log and not the title itself, which `docs/security-model.md:357` names as a hard invariant; the assertion is added. The blind reviewer's Major, that `noteTitle` has no production consumer, is Section 2's assigned work rather than a Section 1 defect, and the blind lens has no spec by design so it could not know; recorded, not changed. Minors addressed: the literal zero-width character in a fixture replaced with the `ZERO_WIDTH` constant the same changeset introduces (all three reviewers flagged it), an explicit `null` fixture added, and four doc claims corrected that were false as written (the bound is not `peerName`'s measure, the render cuts again below this bound, the whitespace-padding counterfactual draws `Build …` rather than nothing, and `MAX_PEER_NAME_LENGTH`'s own doc said "peer-written" of a constant this reader now shares). Two accepted risks that lived only in code comments, thread-identity spoofing and printable-blank titles, are routed into the Traps section and Section 4 so they sit on the audit record.
+Stamps: adjudicated 1, stamped 0 from the window list (`admin-seat-sandbox-precondition` was read from the recall digest and steered nothing here). Two records outside the list were stamped for fresh application: `node-test-count-lines-are-not-tap` and `probe-scripts-scratchpad-and-controls`.
+Next: Section 2: The registry carries it and the title renders it
+Commit Model: Commit-and-Push
+
+Gate: `npm run lint` exit 0; `npm test` exit 0, 1529 tests, 1528 pass, 0 fail, 1 skipped, zero failure lines. Baseline at `3a887cf` was 1518/1517/0 over 58 test files, so this is +11 tests and no regression. The load-sensitive flake family the round-3 implementer identified is confirmed rather than reported: during the guard-removal probe, `a long reply the Stop mirror is still posting is not posted again by the tailer` went red alongside the intended test, and it touches no `custom-title` line. The mechanism is `broker/tail.test.ts:2700`, where `until` spins a bounded 1,000 `setImmediate` turns rather than waiting on a deadline, so a loaded box starves it; the box carried 46 node processes throughout. Not fixed here, and not this section's to fix.
 
 ### Interim board 1 - 2026-08-26
 

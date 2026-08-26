@@ -270,6 +270,12 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
   const fallbacks: { sessionId: string; fallback: ModelFallback }[] = [];
   /** What the session said it is trying to finish, in transcript order; null is an explicit clear. */
   const goals: { sessionId: string; goal: string | null }[] = [];
+  /**
+   * The titles a custom-title line named, in transcript order. Never null and never empty: a line
+   * this reader cannot read a title out of produces no entry here at all, which is the seam's own
+   * invariant and the reason its type carries no null.
+   */
+  const titles: { sessionId: string; title: string }[] = [];
   const live = new Set<string>([SESSION]);
   const echo = createEchoMemory();
   const tailer = createTranscriptTailer({
@@ -313,6 +319,9 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     noteGoal: (sessionId, goal) => {
       goals.push({ sessionId, goal });
     },
+    noteTitle: (sessionId, title) => {
+      titles.push({ sessionId, title });
+    },
     echo,
     log: (message) => logs.push(message),
     now: () => 1_000,
@@ -330,6 +339,7 @@ function harness(overrides: Partial<TranscriptTailerOptions> = {}) {
     readings,
     fallbacks,
     goals,
+    titles,
     live,
     echo,
   };
@@ -355,11 +365,221 @@ function command(name: string, args: string, sessionId: string = SESSION): strin
   });
 }
 
+/**
+ * A `custom-title` line in the real transcript shape: written both for a launch `--name` and for an
+ * in-session `/rename`, and carrying no timestamp.
+ */
+function customTitleLine(customTitle: unknown, sessionId: string = SESSION): string {
+  return line({ type: "custom-title", customTitle, sessionId });
+}
+
+test("a rename's custom-title line reports the new title, and reaches noteTitle", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, titles } = harness();
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, customTitleLine("CHANNELS: Expert"), "utf8");
+  await tailer.poll();
+
+  assert.deepEqual(titles, [{ sessionId: SESSION, title: "CHANNELS: Expert" }]);
+});
+
+test("a custom-title line for a foreign session yields nothing", () => {
+  assert.deepEqual(
+    lineItems(customTitleLine("SECRET-other-session", OTHER_SESSION).trimEnd(), SESSION),
+    [],
+  );
+});
+
+test("a custom-title exactly at the bound passes through uncut", () => {
+  // The acceptance case the over-long test's sibling (the peer name bound test above) carries and
+  // this one needs beside it: the cut is a property of being past the bound, not of length itself.
+  // Plain ASCII, deliberately not astral: an astral character costs two UTF-16 units for one code
+  // point, so 120 of them would already be past `fit`'s UTF-16 bound and this case would cut, which
+  // is a property of that other test's characters and not of what this one is pinning.
+  const atBound = "A".repeat(MAX_PEER_NAME_LENGTH);
+
+  assert.deepEqual(lineItems(customTitleLine(atBound).trimEnd(), SESSION), [
+    { kind: "title", title: atBound },
+  ]);
+});
+
+test("an over-long custom-title is cut, on the stricter of the code-point and UTF-16 bounds", () => {
+  // Astral-plane characters, the same choice the peer name bound test makes: each one is one code
+  // point and two UTF-16 units, so a title built only of them is the case where `fit`'s two bounds
+  // disagree and the UTF-16 one, not the code-point one, decides the cut. The expected string below
+  // is written out literally rather than produced by calling `fit` here, so this test pins an actual
+  // shape rather than the same expression the reader under test also evaluates.
+  const tooWide = "🛰".repeat(MAX_PEER_NAME_LENGTH + 1);
+  const expected = `${"🛰".repeat(59)}…`;
+
+  const items = lineItems(customTitleLine(tooWide).trimEnd(), SESSION);
+  assert.deepEqual(items, [{ kind: "title", title: expected }]);
+  const title = items[0]!.kind === "title" ? items[0]!.title : "";
+  assert.ok(title.length > 0, "a cut title still reads, never refused whole");
+  assert.ok(
+    [...title].length <= MAX_PEER_NAME_LENGTH,
+    "the code-point count stays inside the bound even where UTF-16 is the tighter constraint",
+  );
+  assert.match(title, /…$/, "a cut title carries the ellipsis mark");
+});
+
+/** A zero-width space, written as an escape: a literal one in a fixture is invisible to review. */
+const ZERO_WIDTH = "\u200b";
+
+test("an unreadable custom-title yields no item at all, never a title of null", () => {
+  // Narrowed deliberately: a `null` title reaching noteTitle would be byte-identical to the goal
+  // seam's explicit clear, and one malformed rename line must not be able to wipe a good title. The
+  // reader's answer to a line it cannot parse is the same as `goalCommand`'s: nothing yielded.
+  const unreadable: [string, unknown][] = [
+    ["not a string", 7],
+    ["an explicit null", null],
+    ["empty", ""],
+    ["whitespace", "   "],
+    ["invisible characters alone", ZERO_WIDTH.repeat(4)],
+    ["the customTitle key is absent entirely", undefined],
+  ];
+
+  for (const [why, customTitle] of unreadable) {
+    assert.deepEqual(lineItems(customTitleLine(customTitle).trimEnd(), SESSION), [], why);
+  }
+});
+
+test("a custom-title that arrives ill-formed is refused rather than passed along", () => {
+  // A lone surrogate is in none of the classes the normalization strips: `isInvisible` covers no
+  // code in the surrogate range, `inertName` spreads by code point and keeps it whole, `clean`
+  // strips only C0 and DEL, and `fit` only declines to create one. So this refusal is the only
+  // thing between an ill-formed title and a PATCH body that has to be valid UTF-8, and the
+  // surrogate test below covers the other half, that the cut never creates one.
+  const illFormed: [string, string][] = [
+    ["a leading high surrogate", "\ud83dReal Name"],
+    ["a trailing low surrogate", "Real Name\udc00"],
+    ["a reversed pair", "\udc00\ud83d"],
+  ];
+
+  for (const [why, written] of illFormed) {
+    assert.deepEqual(lineItems(customTitleLine(written).trimEnd(), SESSION), [], why);
+  }
+});
+
+
+/**
+ * Whether a string carries a surrogate code unit with no partner, the shape a cut taken in UTF-16
+ * units through the middle of an astral character leaves behind. Written out here rather than
+ * inferred from a length, because a lone surrogate is a valid JavaScript string and is caught only
+ * by looking at the code units themselves; what it breaks is a UTF-8 request body downstream.
+ */
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let at = 0; at < value.length; at += 1) {
+    const unit = value.charCodeAt(at);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return true;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(at + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      at += 1;
+    }
+  }
+  return false;
+}
+
+test("invisible padding ahead of a real title does not spend the bound and lose the name", () => {
+  // Every bound must sit behind every strip, or the bound is spent on characters nobody sees. Two
+  // hundred zero-width spaces ahead of a nine-character name is already past the 120 bound counted
+  // raw, so a cut measured before the strip keeps only invisible characters and a trailing
+  // ellipsis: non-empty by length and empty to anyone reading the thread. Three hundred is past
+  // `clean`'s own 256-unit cap as well, so a value cleaned before it is stripped has nothing but
+  // padding left by the time the strip runs, and the rename is dropped outright rather than merely
+  // shortened. Both paddings must leave the same nine characters standing.
+  for (const padding of [200, 300]) {
+    assert.deepEqual(
+      lineItems(customTitleLine(ZERO_WIDTH.repeat(padding) + "Real Name").trimEnd(), SESSION),
+      [{ kind: "title", title: "Real Name" }],
+      `${padding} zero-width characters ahead of the name`,
+    );
+  }
+});
+
+test("invisible padding ahead of astral characters never puts half of one on the wire", () => {
+  // `clean` caps at 256 UTF-16 units, and 241 zero-width characters ahead of eight two-unit
+  // satellites puts that cap exactly between the halves of the eighth one. A cap taken ahead of the
+  // strip therefore leaves a lone high surrogate that survives every later step, and this seam's
+  // value is written into a JSON request body that renames the thread, where a lone surrogate is
+  // not valid UTF-8. Stripping first means the cap is never reached at all.
+  const padded = ZERO_WIDTH.repeat(241) + "🛰".repeat(8);
+
+  const items = lineItems(customTitleLine(padded).trimEnd(), SESSION);
+  assert.deepEqual(items, [{ kind: "title", title: "🛰🛰🛰🛰🛰🛰🛰🛰" }]);
+  const title = items[0]!.kind === "title" ? items[0]!.title : "";
+  assert.ok(!hasUnpairedSurrogate(title), "the title carries no half of an astral character");
+});
+
+test("whitespace padding is collapsed before the title's bound is measured", () => {
+  // Ordinary spaces are not in the invisible class, so nothing strips them, but the render site
+  // collapses a whitespace run to one space before it draws a thread name. A bound measured ahead
+  // of that collapse is spent on padding all the same: a hundred and thirty spaces between two
+  // words stores a hundred and twenty characters that draw as "Build …" and lose the session's real
+  // name. The reader normalizes the way the render does, so what it bounds is what a person sees.
+  const padded = "Build" + " ".repeat(130) + "the release";
+
+  assert.deepEqual(lineItems(customTitleLine(padded).trimEnd(), SESSION), [
+    { kind: "title", title: "Build the release" },
+  ]);
+});
+
+test("a title's line breaks and escape sequences are gone before it is bounded", () => {
+  // A thread name is one line by construction, and an escape sequence has no business on a surface
+  // that carries it into a log line and a Discord request. Both are gone at the read rather than
+  // only at render, and the expected values are written out literally: a line break is removed
+  // rather than turned into a space, which is the same answer the render site's own normalization
+  // gives, so the reader's stored title and the drawn title cannot disagree.
+  const cases: [string, string][] = [
+    ["Real\nName", "RealName"],
+    ["Real\u001b[31mName", "Real[31mName"],
+  ];
+
+  for (const [written, expected] of cases) {
+    assert.deepEqual(
+      lineItems(customTitleLine(written).trimEnd(), SESSION),
+      [{ kind: "title", title: expected }],
+      `the title written as ${JSON.stringify(written)}`,
+    );
+  }
+});
+
+test("a title note that throws costs its own reading and not the narration behind it", async (t) => {
+  const file = transcriptFile(t);
+  const { tailer, posts, logs } = harness({
+    noteTitle: () => {
+      throw new Error("SECRET-title-note-failure");
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, customTitleLine("a new name") + assistantText("still narrates"), "utf8");
+  await tailer.poll();
+
+  assert.deepEqual(posts, ["still narrates"]);
+  assert.equal(logs.length, 1);
+  for (const entry of logs) {
+    assert.doesNotMatch(entry, /SECRET-title-note-failure/, `the log withholds the error detail: ${entry}`);
+    // The title itself is transcript content, which never reaches the log at any level. Pinned
+    // beside the error detail because this seam is the newest one carrying it, and a diagnostic
+    // that named the dropped title would break that invariant with nothing else to catch it.
+    assert.doesNotMatch(entry, /a new name/, `the log withholds the title itself: ${entry}`);
+  }
+});
+
 test("a goal command reports what the session is trying to finish, and only that command", async (t) => {
   // An allowlist of one rather than a sweep of every command: a command's arguments are operator
-  // prose, and what /model or /rename was called with is nobody's business on a surface that leaves
-  // the machine. The goal's own text is admitted because it is what a long quiet stretch on the
-  // thread needs explaining.
+  // prose, and what /model was called with is nobody's business on a surface that leaves the
+  // machine. /rename's argument is the one exception in spirit rather than in this reader: the name
+  // it sets does reach the thread, but by the separate `custom-title` line Claude Code writes for
+  // it, never by this command reader admitting the /rename command line itself. The goal's own text
+  // is admitted because it is what a long quiet stretch on the thread needs explaining.
   const file = transcriptFile(t);
   const { tailer, goals, posts, prompts, logs } = harness();
   tailer.learn(SESSION, file);
@@ -1100,6 +1320,11 @@ test("every other line type posts nothing, including one this build has never se
         },
       }) +
       line({ type: "system", content: "SECRET-system-line", sessionId: SESSION }) +
+      // A custom-title line's marker is not a leak the way the others here are: its whole purpose
+      // is to reach the thread as the title, through the noteTitle the harness wires for every
+      // test here. This test asserts nothing about that seam, and what this line pins is narrower,
+      // that a custom-title line contributes no posted message and no queued prompt, which `posts`
+      // and `prompts` below still check.
       line({ type: "custom-title", customTitle: "SECRET-title", sessionId: SESSION }) +
       // A withdrawn queue entry was never part of the conversation, whatever it carried.
       line({
