@@ -47,7 +47,15 @@ and none carries a date of its own. An item added from here on carries `(parked 
   mirror run that landed nothing after the tailer deferred still gets the text posted", across two
   further full-suite runs taken while another project's .NET suite held eleven processes on the
   box; each isolated to 160/160 exit 0 and each followed by a green full suite, the last of them
-  1510/1509/0/1 exit 0 with that contention gone. So the member list tracks whatever the
+  1510/1509/0/1 exit 0 with that contention gone. On 2026-08-26 three consecutive full-suite runs
+  each went red on a different member of the group, in order "a mirror run that landed nothing
+  after the tailer deferred still gets the text posted", "a long reply the Stop mirror is still
+  posting is not posted again by the tailer", and "a long reply the tailer is still posting is not
+  posted again by the Stop mirror", every one at the same helper line with the same message, while
+  another project's release suite held eleven .NET processes on the box; three isolated runs of the
+  file in between were 160/160 exit 0 each, and the run taken once that contention had drained was
+  green at 1510/1509/0/1 exit 0. A moving member across consecutive runs is the discriminator worth
+  keeping: a regression fails the same test twice. So the member list tracks whatever the
   echo-dedup group holds rather than a fixed set of names, the trigger is load on the box rather
   than any one test, and the fix belongs in the helper.
 
