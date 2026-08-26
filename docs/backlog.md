@@ -334,6 +334,25 @@ and none carries a date of its own. An item added from here on carries `(parked 
   than from a rule, and the growth bound beside it effectively tightens it to about 30 for a terse
   and very tall table. A table with a 45-character column header ships raw and nothing in the suite
   says so. Nothing is lost when it happens, which is why this is a note rather than a defect.
+- **Detect a fleet-wide usage-pause freeze from the tailer's own vantage (parked 2026-08-26, routed
+  from the kit's kaizen pass).** When the harness holds every session behind a weekly-usage banner,
+  every transcript the tailer follows goes quiet simultaneously with no completions: a detectable
+  signature the broker is uniquely positioned to see, since it watches all of them and the harness
+  UI is visible to none of them. One symptom-keyed alert to the operator thread ("fleet appears
+  frozen, check for a usage banner") would have turned the 2026-08-25 twelve-hour silent freeze into
+  a phone ping; that freeze is the evidence, with queued relay messages piling up against sessions
+  that all looked healthy from inside. Symptom-keyed rather than banner-keyed by necessity, so the
+  detector needs a quiet-threshold tuned against normal overnight silence to avoid crying freeze at
+  an idle fleet.
+- **Warn at send time when an operator message is shaped like a slash command (parked 2026-08-26,
+  routed from the kit's kaizen pass).** A slash command typed into the relay thread lands in the
+  session as conversation text; the harness never sees it, and the operator learns it did not fire
+  only when the session says so, a session-turn later. The class is already documented here (channel
+  events are conversation input, not UI commands); what is missing is the signal at the moment of
+  sending, which is the direction the silence hurts. Candidate: the broker detects a leading-slash
+  shape in an outbound operator message and answers the thread immediately with a one-line
+  "commands do not execute remotely" note. Evidence: an operator `/compact` over the relay on
+  2026-08-25 reached the model as text and failed silently.
 
 ## Snapshots
 
