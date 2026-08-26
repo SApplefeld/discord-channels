@@ -26,7 +26,12 @@ All of it is built and installable.
 
 ## Plans
 
-No plan is open in [`plans/`](plans/). Everything delivered is archived below, most recent first.
+One plan is open in [`plans/`](plans/):
+[`plans/channels_follow-session-rename_spec_v1.md`](plans/channels_follow-session-rename_spec_v1.md)
+(Draft, awaiting arming) makes a session's thread title follow an in-session `/rename`, read off
+the transcript's `custom-title` line by the tailer that already follows the file, through the
+rename path and budget the surface already has. Everything delivered is archived below, most
+recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
