@@ -199,17 +199,19 @@ and none carries a date of its own. An item added from here on carries `(parked 
      the thread alone: both paths render the prompt identically, so a prompt in the thread says
      nothing about which path put it there. Run it on a session the tailer has already polled since
      the restart in step 1, and not on a prompt typed before the tailer had a baseline for that
-     session, which sits behind the read position and is not recoverable by design. Type a prompt
-     with the host
+     session, which sits behind the read position and is not recoverable by design. Type a prompt with the host
      quiet and confirm one copy in the thread beside a `routing: the transcript-read prompt from
      session <id> was dropped, the mirror hook had already dispatched the same text to this thread`
      line, which is the healthy race. Then take the mirror's copy away while leaving everything
      else running, and read the same log. Load alone is not that test: the broker answers 202 once
      it has read the body, so a hook the CLI abandons after that point still posts and the mirror
      still wins. What is needed is a `UserPromptSubmit` post the broker never receives while `/hook`
-     posts keep flowing, so the session stays armed and polled; pointing that one hook entry's URL
-     at a dead port in the host's own settings is the candidate, and it is untried, because no
-     mechanism for this was exercised before shipping. Whatever induces it, the session must have
+     posts keep flowing. Repointing that one hook entry's URL at a dead port does it: in
+     `~/.claude/settings.json` the `UserPromptSubmit` entry is the only one, and changing only its
+     port is enough, with no session restart, since Claude Code re-reads the file live. The console
+     then reports `UserPromptSubmit hook error` with `connect ECONNREFUSED` naming the dead port,
+     which is the confirmation the post was never made rather than merely slow. Revert the port
+     afterwards or prompts stop mirroring. Whatever induces it, the session must have
      been armed and polled since the last broker restart, since a restart re-baselines the tailer
      past anything already written. With the mirror's copy gone the prompt should reach the thread
      up to a poll interval late with no drop line at all, which is the recovery carrying it alone;

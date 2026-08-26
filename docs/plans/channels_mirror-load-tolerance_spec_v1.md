@@ -539,3 +539,61 @@ a working stale relay for a stopped one while the orphan goes on holding the por
 One further deployment gap, separate from the above and not a blocker for the broker restart: this
 host's hook fragment still carries the five-second mirror timeout, so the raised timeout the plan
 ships is not deployed here and needs `Install-Host`.
+
+### Chapter 3 - 2026-08-26
+Completed: 3. Live verification and docs
+
+The docs half and the code defect it turned up are recorded in interim board 2 and the correction
+under it; this chapter closes the section on the live half, which ran once the broker was restarted
+onto the shipped build.
+
+**The blocker was misdiagnosed, and the correction is the section's most useful record.** What was
+carried for several turns as a wedged broker needing an elevated kill was a healthy broker answering
+`GET /sessions` in two milliseconds. The probe that produced the wedge reading was `/health`, which
+this broker does not serve at all. What actually held the section was staleness: the running process
+had started roughly twelve hours before section 2's code landed, so the feature under test was not
+in the binary holding the port. `install\Repair-Broker.ps1`, run elevated and alone, cleared it; the
+separate pre-kill was redundant, since the script's own port proof treats a node process with an
+unreadable command line as the orphan and kills it with the PID reported.
+
+**All three live checks passed on the real path.** The healthy race was observed twice, at
+`03:52:37` and `03:59:07`, each time as
+`routing: the transcript-read prompt from session 83dfa07b... was dropped, the mirror hook had
+already dispatched the same text to this thread`, with the operator confirming a single copy in the
+thread. The slash command mirrored unchanged and correctly produced no tailer yield at all, the
+console-command refusal working as the security model describes. The recovery itself was then
+observed end to end: with the `UserPromptSubmit` hook repointed at a dead port, the console reported
+`connect ECONNREFUSED 127.0.0.1:8799`, the broker never received the post, and the prompt reached
+the thread from the tailer alone.
+
+**Two mechanisms had to be ruled out before one worked, and both failures are worth the record.**
+Load does not induce a lost hook: the mirror route answers 202 as soon as it has read the body, so
+a hook the CLI abandons has usually already delivered, which is what three concurrent suite runs
+demonstrated twice. A broker restart is worse than useless, since it re-baselines the tailer past
+everything already written. The settings repoint is the mechanism, it needs no restart because the
+file is re-read live, and `docs/backlog.md`'s step 12 now carries it as performed rather than as a
+candidate, with the `ECONNREFUSED` line named as the confirmation that the post was never made.
+
+**Reading the recovery is reading an absence.** Duplicate suppression only logs when two paths carry
+the same text, so the successful recovery wrote no routing line at all. The line that would have
+signalled failure, `reached the thread by neither path`, appears zero times across the whole run.
+Two further absences were confirmed as correct rather than broken: a mid-turn typed message produces
+no line because it never fires the hook and so has no race to resolve, and a slash command produces
+none because the reader refuses console-command markup.
+
+**Gate.** Lint exit 0; tests 1505 / 1504 pass / 0 fail / 1 skipped, exit 0, identical to the
+section's opening baseline. One deliberately loaded run mid-section returned two failures, `a long
+reply the Stop mirror is still posting is not posted again by the tailer` and `a mirror run that
+landed nothing after the tailer deferred still gets the text posted`, both `the condition never
+held` in the shared `until` helper at `broker/tail.test.ts:2502`. An isolated run of that file
+returned 159/159 exit 0 and the clean full suite returned green, so both are named as members of
+the echo-dedup flake group `docs/backlog.md` already tracks, found under load the section created
+on purpose.
+
+Assumptions: The spec's live checks name no evidence standard, and this section took the broker log
+as the authority over the thread's appearance, on the ground the spec itself states, that both paths
+render identically so a prompt in the thread says nothing about which path delivered it (decided
+2026-08-26, section 3). The operator's visual confirmation was taken as the authority for copy
+count, which the log cannot show.
+
+Next: 4. Finishing
