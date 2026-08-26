@@ -76,28 +76,75 @@ The status card (`render.ts`, the card body) and the board's `/sessions` route r
 
 The operator (Scott Applefeld) authorized this run at the keyboard of the CHANNELS: Expert session on 2026-08-26, for any session holding this plan. The grant covers executing this plan's sections under the executing-work skill; anything the plan does not cover still goes to the operator.
 
+## Standing Brief Amendments
+
+Binding on every section dispatched after the amendment was written, and folded into every dispatch
+brief.
+
+1. A test never asserts against an expression the implementation also evaluates. Assert literal
+   expected values. Where the expectation and the implementation call the same helper with the same
+   arguments, the test pins the constant and nothing about the behaviour, and it stays green through
+   a regression of the helper. (Adopted at Section 1's review round, where the over-long-title test
+   was written this way and could not fail.)
+2. Every untrusted display string is normalized through `clean` (`broker/sanitize.ts:19`) before it
+   is bounded, so no downstream seam has to remember to do it. (Adopted at the same round, where the
+   reader admitted raw control characters into a value a later section publishes on `GET /sessions`.)
+3. Every bound sits behind every strip. A length cap applied before a character class is stripped is
+   spent on characters the reader never sees, which turns a padded value into a dropped one or a
+   truncated one, and `clean`'s own cap counts UTF-16 units, so a cap taken ahead of a strip can also
+   split an astral pair and emit a lone surrogate. Normalize completely, then measure. (Adopted at
+   Section 1's second review round, where `withoutInvisible(clean(value))` did exactly this: proved
+   by running the real functions, 300 invisible characters ahead of a real name dropped the rename
+   entirely, and 241 ahead of eight astral characters emitted a lone high surrogate.)
+
 ## Sections of Work
 
 ### Section 1: The tailer reads `custom-title` (Model: sonnet)
 
-- `TailItem` gains `{ kind: "title"; title: string | null }`.
-- The record reader yields it for a `custom-title` line whose `sessionId` matches, with the value cut
-  at the reader's label bound; an unreadable value yields `null`.
+- `TailItem` gains `{ kind: "title"; title: string }`. `null` never crosses this wire: the sibling
+  seam's `null` means "clear the field" (`registry.ts:821`), so a title that could carry one would
+  let a single malformed line wipe a good title. An unreadable value yields no item at all, which is
+  what `goalCommand` already does by returning `undefined`.
+- The record reader yields it for a `custom-title` line whose `sessionId` matches (the existing gate
+  at `tail.ts:1648` already refuses a foreign one). The value is normalized in this order and the
+  order is load-bearing: strip the invisible class and collapse whitespace runs, then `clean`, then
+  cut at the reader's label bound. Every bound must sit behind every strip. A bound taken first is
+  spent on padding a reader never sees: `clean` caps at 256 UTF-16 units, so a title padded with 300
+  invisible characters caps to 256 of them, strips to nothing, and drops the rename outright, and
+  the same UTF-16 cap can split an astral pair and emit a lone surrogate onto the wire. Ordinary
+  whitespace is not in the invisible class but the render site collapses it (`render.ts` `visible`),
+  so a name padded with 130 spaces otherwise stores 120 characters and draws as an ellipsis.
 - The consumer at `tail.ts:2222` gains a `noteTitle` option on the `noteGoal` pattern, same
-  error-withholding wrap.
+  error-withholding wrap. Its doc says plainly that this is the one note seam whose value is written
+  to Discord, as the thread name.
 - Tests in `broker/tail.test.ts`, cloned from the `goal` kind's: the line yields the item, a foreign
-  `sessionId` yields nothing, an over-long value is cut in code points, a non-string value yields
-  `null`, and the item reaches `noteTitle`.
+  `sessionId` yields nothing, an over-long value is cut in code points and an at-the-bound value
+  passes through uncut, a value padded with invisible characters or whitespace recovers the real name
+  rather than spending the bound on the padding, a value that is nothing but padding yields nothing,
+  a non-string or absent value yields nothing, an embedded newline and an embedded escape are both
+  stripped, and a throwing `noteTitle` costs its own reading and not the narration behind it.
+  Expectations are literal values, never a re-evaluation of the reader's own expression.
 
 ### Section 2: The registry carries it and the title renders it (Model: sonnet)
 
+Files in scope: `broker/registry.ts`, `broker/discord/render.ts`, `broker/discord/surface.ts`,
+`broker/index.ts`, and their tests.
+
 - `SessionRecord` and `SessionView` gain `title: string | null`; a `noteTitle(sessionId, title)`
   entry on the registry sets it, stamping nothing (a rename is not engagement and must not clear a
-  blocked marker, the same exclusion peer prompts take).
+  blocked marker, the same exclusion peer prompts take). It early-returns on an unchanged value the
+  way `noteGoal` does at `registry.ts:824`, because the `custom-title` line is re-emitted on every
+  poll and an unconditional write would drive a record write per pass.
+- `broker/index.ts:933` wires `noteTitle` from the tailer to the registry, beside `noteGoal`. Without
+  it the Section 1 seam is dead code.
 - `displayName` prefers `title` over `name`.
-- Persistence: the binding already carries `name` so a thread outlives its session's record
-  (`surface.ts:149`); the worker checks whether the composed `desiredName` is what persists (in which
-  case nothing changes) or the raw `name` is (in which case `title` rides beside it).
+- Persistence: the binding persists the raw `name` (`surface.ts:205`, `name: entry.lastView.name`)
+  and rebuilds a placeholder view from it on restore (`surface.ts:192`). So `title` rides beside it
+  in `ThreadBinding` and in `placeholder`, or a restart rebuilds a view with no title, composes the
+  launch name, finds it differs from the persisted `renderedName`, and repaints the thread back to
+  the launch name. Note the name collision before writing: `ThreadBinding.title` already exists and
+  means the fully composed thread title (glyph, name, state), so the new field needs a name that
+  cannot be read as that one.
 - Tests: registry sets and reads the field and stamps no engagement; `displayName` prefers the
   title; `threadName` with a title differing from the name composes the title; the surface test that
   covers "a session renaming itself" (or a new one on its pattern) sees `refreshName` paint the new
@@ -114,6 +161,22 @@ result. The worker reads the thread title change on Discord (through `GET /sessi
 plus dwell; then a second rename twice inside a minute confirms only the settled name is painted. Read `broker.log` for the rename line and for
 a dropped-for-budget line, if any. Then end the session and confirm the exited title and the archive
 still land, which is the budget claim this plan most needs to see hold.
+
+### Section 4: The security model names the tenth shape (Model: opus, Locus: inline)
+
+Appended during Section 1's review round, which surfaced the surface: `docs/security-model.md:203`
+states the tailer's extraction allowlist as "nine named shapes" and enumerates them, and this work
+adds a tenth. The doc is the standard an auditor reads the code against, so a stale count there is a
+defect rather than a tidiness item. Inline because it writes under `docs/`, which a dispatched
+implementer is blocked from.
+
+- Add the `custom-title` shape to the enumeration and correct the count.
+- Give the title the egress inventory the `/goal` shape already carries at `:249-250`. The two differ
+  and the difference is the point: the goal is withheld from `GET /sessions` and omitted from the
+  on-disk snapshot, while the title is written to Discord as the thread name and is persisted in the
+  thread binding, so its paragraph says so rather than borrowing the goal's.
+- Record the reader's normalization: `clean` then the label bound, with the emptiness test taken
+  again on the cut result.
 
 ## Traps, each with its handling
 
@@ -135,10 +198,27 @@ still land, which is the budget claim this plan most needs to see hold.
 - **Two sources disagreeing forever.** By design: `title` wins when present, `name` is the launch
   label and stays what the header says. No reconciliation, no clobber.
 
+- **No origin gate on the title, unlike the goal's.** The goal is read only off a line the operator
+  typed at their own console (`tail.ts:1725`), a gate the security model names as load-bearing so
+  untrusted content cannot write to the card. A `custom-title` line carries no origin field at all,
+  so there is nothing to gate on: a session that can reach `/rename` renames its own thread and
+  spends a slot of the per-thread rename budget the exited title and the archive share. Accepted
+  rather than fixed, because the line shape offers no discriminator and the value is bounded and
+  neutralized on the way out; recorded here and in Section 4's egress paragraph so it is an accepted
+  risk on the record rather than an unnoticed one. Whether a model can reach `/rename` at all is
+  unverified from this repo.
+
 ## Acceptance
 
-1. `/rename` in a running session changes its Discord thread title to the new name, keeping the
+1. `/rename` in a **mirrored** session changes its Discord thread title to the new name, keeping the
    glyph and state suffix, within poll interval plus dwell, observed on the real thread.
+
+   A `-NoMirror` session is carved out deliberately, and the carve-out is the correct behaviour
+   rather than a gap to close. The tailer is suppressed for such a session (`broker/intake.ts:1001`),
+   so its transcript is never read and its title never moves off the launch name. That follows from
+   what the flag means: `-NoMirror` says this session's transcript content does not leave the
+   machine, and the custom title is transcript content. A session that wants its thread renamed
+   wants mirroring on.
 2. The header's launch name never overwrites a tailed title (registry test).
 3. A rename stamps no engagement and clears no blocked marker (registry test).
 4. The suite's pass count is unchanged against the baseline recorded at the start of Section 1.
@@ -148,3 +228,57 @@ still land, which is the budget claim this plan most needs to see hold.
 
 Renaming the thread from Discord back into the session; changing `--name` or the wrapper; any change
 to the surface's dwell or budget.
+
+## Chapters
+
+### Interim board 1 - 2026-08-26
+
+Written at the closure-drought floor: two review-round adjudications have passed with no section
+closing, so this entry carries the state a Chapter would, in case a compaction lands here.
+
+**In flight.** Section 1 only. Sections 2, 3 and 4 have not started.
+
+**Section 1 stage.** Built, gate green, failed two review rounds, third implementation round running.
+
+- Round 1 (implementer-sonnet, reviewed by adversarial, blind and security at opus/xhigh): four
+  Majors. The reader computed its emptiness gate and its length cut from two different strings; the
+  item carried a `null` the sibling seam reads as "clear this field"; the seam's doc claimed the
+  value never reaches Discord when the thread title is exactly where it goes; and the over-long test
+  asserted against the reader's own expression, so it could not fail.
+- Round 2 (same implementer, same three reviewers): the fix was half applied. `clean`'s own
+  256-unit cap sat ahead of the invisible strip, so the same class survived at the larger bound.
+  Confirmed by running the real `clean`, `withoutInvisible` and `fit` against the reported inputs
+  rather than by reading: 300 invisible characters ahead of a real name dropped the rename outright,
+  241 ahead of eight astral characters emitted a lone high surrogate, and a name padded with 130
+  ordinary spaces stored 120 characters that render as `Build …`.
+- Round 3 dispatched to implementer-opus. The tier bump is earned rather than reflexive: the two
+  rounds' surviving findings repeat a class (normalization ordering in `customTitle`, and a doc
+  block misstating where the value travels, recurring at a new site), which is the ladder's own
+  test for the implementer missing something rather than the spec generating it.
+
+**Gate baseline.** Captured at `3a887cf` with `npm test`: exit 0, 1518 tests, 1517 pass, 0 fail, 58
+test files. Last full run at the round-2 state, run by this session rather than reported: exit 0,
+1525 tests, 1524 pass, 0 fail, 1 skipped. One flake reported by the round-1 implementer, "a mirror
+run that landed nothing after the tailer deferred still gets the text posted", did not reproduce in
+either of this session's two full runs.
+
+**Rulings adopted since the run opened.**
+
+1. An unreadable title yields no item at all rather than a `null`, over the spec's literal Section 1
+   bullet and in favour of its Design paragraph. The Section 1 text now says so.
+2. A `-NoMirror` session never follows a rename, and that is correct rather than a gap. Acceptance
+   criterion 1 now says "mirrored session".
+3. Three Standing Brief Amendments adopted, all recorded in this doc's own block above.
+4. Section 4 appended, correcting the security model's "nine named shapes". Named to the operator
+   over the relay at the moment it was appended, as Commit-and-Push requires.
+
+**Assumptions declared.** `broker/index.ts` wiring belongs to Section 2 (2026-08-26, section 2): the
+plan named neither section as its owner, and Section 2 is the one that creates the registry entry the
+wiring hands to. Low blast, reversible, so decided rather than asked.
+
+**Next action per section.** Section 1: adjudicate round 3, then a third review round, then close.
+Section 2: dispatch at sonnet once Section 1 closes, since the two share the `broker/index.ts` wiring
+site. Section 3: needs one operator keystroke and a broker restart on the new code. Section 4: inline
+in the main thread, because it writes under `docs/`.
+
+**Commit Model.** Commit-and-Push.
