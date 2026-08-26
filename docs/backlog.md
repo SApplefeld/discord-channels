@@ -14,15 +14,6 @@ promote, retire, or keep call at the next close-out. Every item below this line 
 2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
-- Make a cross-session exchange watchable from one Discord surface (parked 2026-08-25). Claude
-  Code sessions now message each other directly (cross-session messaging: `SendMessage`/`ListAgents`,
-  inbound wrapped as `<cross-session-message>` with sender name and mode). During a live four-session
-  coordination experiment on 2026-08-25 (claude-kit repo), the operator reported doing their best to
-  follow the back-and-forth, which today means tabbing between terminals or threads. Unverified from
-  that session: how the broker's mirror currently renders an inbound peer message or an outbound
-  SendMessage call, so the first step is to read that rendering. The candidate: mark peer traffic
-  distinctly in the thread mirror (counterparty name, direction), and consider a per-exchange view so
-  one surface shows both halves of a conversation its session participated in.
 - Root-cause the intermittent timing failure in `broker/tail.test.ts:2469`, "a long reply the
   tailer is still posting is not posted again by the Stop mirror" (parked 2026-08-21, found while
   baselining an unrelated round). It fails with `AssertionError: the condition never held` from the

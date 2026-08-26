@@ -96,3 +96,18 @@ the live backlog carries active items only.
   cannot date sinking below every one it can. The sort runs behind the per-root cap of 64, at the
   card rather than at the sweep, so it reorders whichever plans the name-ordered listing returned
   and leaves the cap defined against that listing exactly as before.
+
+- **Make a cross-session exchange watchable from one Discord surface.** Retired 2026-08-26 by
+  [`plans/channels_peer-traffic_spec_v1.md`](plans/channels_peer-traffic_spec_v1.md). Peer traffic
+  now renders in both directions under its own `📡` register, unquoted, so the operator's `>>>`
+  block stays theirs alone; the item's first step, reading how the mirror rendered peer traffic
+  today, turned up two defects rather than a gap, an inbound message drawn inside the operator's
+  own quoted register and an outbound one drawn nowhere at all. A peer prompt also no longer
+  stamps engagement, so a message from another session cannot clear a `⛔` a person is owed.
+  Verified on the live thread on 2026-08-26 rather than in the suite alone: three real messages
+  from a peer session, two delivered mid-turn and one to a deliberately idle session, each
+  rendered once under the peer attribution, and this session's own outgoing messages rendered
+  too. The item's second half, a per-exchange view showing both halves of one conversation, was
+  parked deliberately in the plan's Design section and not built: with both directions rendered,
+  a session's own thread already carries every exchange it is party to, and no correlation
+  identifier exists to key a cross-thread view on.

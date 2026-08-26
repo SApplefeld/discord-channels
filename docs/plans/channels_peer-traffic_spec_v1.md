@@ -549,3 +549,65 @@ window also caught `lastHookAt` moving at 05:22:52Z with `lastEngagementAt` stil
 a clean read: close the backlog item with receipts, close section 4, run section 5. On a count of
 two: apply the echo-digest fallback the spec names before closing.
 Commit Model: Commit-and-Push
+
+### Chapter 4 - 2026-08-26
+Completed: 4. Live verification and docs
+Implemented By: main session (the docs half is a `docs/` write, which the routing override keeps
+  inline whatever tier a section carries; the live half cannot be delegated at all, since the
+  instrument is this session's own busy-or-idle state)
+Metrics: review rounds 0; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The section's one real surprise was a proof, not a defect. Interim board 1
+  had settled the busy half of the no-double-post contract by observing that `lastHookAt` did not
+  move across a real mid-turn delivery. That instrument cannot answer the question: `HOOK_EVENTS`
+  at `broker/intake.ts:64` is the liveness vocabulary that stamps the field, and `MIRROR_EVENTS`
+  at `:72` is a separate one whose comment says in as many words that no liveness hook sends
+  `UserPromptSubmit`, while `handleMirror` credits no liveness at all. So the field sits still
+  whether a mirror post fired or not, and the stillness was silence rather than a negative. The
+  claim was withdrawn in Interim board 2 before anything was built on it. What settled the
+  question instead is what the spec named all along, the thread's own copy count, read by the
+  operator: one copy each of three differently-worded live messages. The idle half never depended
+  on the withdrawn instrument, because its evidence is structural: the shipped `lineItems` yields
+  `[]` for the exact transcript line an idle delivery lands on. A second, smaller surprise shaped
+  the run: the receiver's own busyness selects the delivery path, so the idle leg cannot be
+  produced from inside a turn. Two requested replies both arrived mid-turn because a compaction
+  kept this session busy through both; the third had to be timed four minutes out against a
+  deliberately parked session. That is a property of the harness worth remembering rather than a
+  quirk of this run.
+Assumptions: none. The three gaps this section might have declared were all answered by
+  measurement instead: the shipped-build question by the port holder's creation time against the
+  commit log, the stamp question by a two-second sampler across the delivery, and the rendering by
+  the operator's read.
+Review Findings: no reviewer pair ran. The section's changed files are the plan doc, the backlog,
+  and its archive, which is the docs-only-not-a-deliverable case: omitting them empties the diff,
+  so there is nothing for the blind lens to read, and the three operator documents this section
+  owns were written, reviewed and pushed under Interim board 1 a day earlier. The finishing pass
+  in section 5 covers the whole changeset. Recorded here as a decision rather than an omission.
+Stamps: adjudicated 1, stamped 1 (`pretooluse-is-askuserquestion-only`). It bears directly on the
+  withdrawn proof: the hook vocabulary's membership is the whole of that finding, and the record
+  names which events the liveness path admits.
+Gates: lint exit 0, test exit 0, 1510 tests / 1509 pass / 0 fail / 1 skipped, unchanged from the
+  baseline this session opened at, which is what no-regression means for a section that changed no
+  code. Three full-suite runs before the green one each went red on a different member of the
+  echo-dedup flake group, every one at the `until` helper with the same message, while another
+  project's release suite held eleven .NET processes on the box; three isolated runs of
+  `tail.test.ts` in between were 160/160 exit 0 each, and the run taken once that contention
+  drained was green. The moving member is the discriminator, since a regression fails the same
+  test twice, and `docs/backlog.md` now records it as such.
+Live verification, the section's own subject: the broker under test was established as the shipped
+  build rather than assumed, PID 19928 holding port 8787 with a creation time later than every
+  peer-traffic commit. Three real peer messages and several outgoing ones were driven through it.
+  Confirmed on the thread by the operator: each inbound message appears exactly once, under
+  `📡 CHANNEL: Fable → Claude` and never inside the operator's quoted block, on both the
+  mid-turn and the idle delivery paths; outgoing messages appear under their own peer
+  attribution, where before this plan they appeared nowhere. Confirmed by measurement:
+  `lastEngagementAt` sat frozen
+  at 1787721722065 across the idle delivery at 05:26:10.822Z and moved only at this session's
+  first completed tool call afterwards, which is the documented `PostToolUse` residual rather than
+  the peer prompt stamping. The blocked-state leg is covered durably rather than by eyeball, at
+  `broker/routing/outbound.test.ts:3124`, which drives a real `goal-blocked` event through the
+  blocked desk and pins the writer and the reader of the stamp against each other.
+Scope: `docs/backlog.md` and `docs/archive/backlog-2026-Q3.md` beyond the section's named
+  documents, which is the section's own instruction to close the backlog item with receipts, plus
+  the flake receipts the gates above produced.
+Next: 5. Finishing
+Commit Model: Commit-and-Push
