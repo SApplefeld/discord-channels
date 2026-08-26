@@ -488,3 +488,64 @@ line reads the shipped HEAD and readiness is answering, then drive one exchange 
 `CHANNEL: Fable` in both directions and both receiver states and read the thread. Then close the
 backlog item with receipts and run section 5.
 Commit Model: Commit-and-Push
+
+### Interim board 2 - 2026-08-26
+The elevation landed and the orphaned broker is gone. Section 4's live exchange has been driven
+on the shipped build, all three legs, and the section is not closed: one leg's reading is the
+operator's to make, and one claim recorded in Interim board 1 is withdrawn below. Nothing is in
+flight; no dispatch is live.
+
+**The broker under the test is the shipped one, established rather than assumed.** PID 19928 holds
+the listening socket on port 8787 with a creation time of 2026-08-25 18:31:36 local. Every
+peer-traffic commit predates it, the last being `a22adcf` at 07:03 the same day. This is the check
+the previous plan's misdiagnosis existed for: a process that answers is not therefore a process
+running the code under test.
+
+**Both receiver states were produced live, and the shapes match the ground truth.** `CHANNEL: Fable`
+sent three messages on request. The first two arrived while this session was mid-turn, both landing
+as `attachment` lines with `attachment.type: "queued_command"` and `origin.kind: "peer"` carrying
+`origin.name` and an unwrapped `origin.body`. The third was held four minutes by timer against a
+deliberately idle session and landed as a root-level user line carrying `isMeta: true`,
+`promptSource: "system"`, a `promptId`, and a root-level `origin` of the same shape. Outbound, this
+session's own `SendMessage` calls are ordinary assistant `tool_use` blocks as recorded. The
+receiver's own busyness is what selects the path, which is why the idle leg cannot be driven from
+inside a turn and why the session had to be parked to produce it.
+
+**Withdrawn: Interim board 1's busy-half proof of the no-double-post contract.** That entry argued
+that a mid-turn delivery fires no `UserPromptSubmit`, and therefore that the mirror path never sees
+it, on the evidence that `lastHookAt` did not move across a real mid-turn delivery. The instrument
+cannot carry that argument. `HOOK_EVENTS` in `broker/intake.ts:64` is
+`["SessionStart", "PreToolUse", "PostToolUse", "Stop"]`, the liveness vocabulary that stamps
+`lastHookAt` in `broker/registry.ts:677`, and `MIRROR_EVENTS` at `broker/intake.ts:72` is a
+separate vocabulary whose comment says in as many words that no liveness hook sends
+`UserPromptSubmit`. `handleMirror` credits no liveness. So a `UserPromptSubmit` mirror post never
+moves `lastHookAt` whether or not it fired, and its stillness is silence rather than a negative.
+This is the same failure the previous plan recorded twice: a check whose quiet reads exactly like
+a true clean result was trusted without first being made to speak against a state known to hold
+the thing.
+
+The idle half of that contract is unaffected and still stands, because its evidence is structural
+rather than instrumental: the shipped `lineItems` yields `[]` for the exact real transcript line an
+idle delivery lands on, so the tailer is blind to that shape by construction and the mirror's copy
+is the only one.
+
+**What settles the busy half is the thread's own copy count, which is where the spec put it.** If a
+mid-turn delivery does fire the prompt hook, the mirror renders a copy and the tailer renders
+another, so the defect is visible as two posts of one message and nothing else needs measuring.
+The three live messages are on the thread now, differently worded on purpose so that a missing
+copy could never be mistaken for dedup working. The reading is the operator's; the spec's named
+fallback, echo-digest dedup, applies only if the count comes back at two.
+
+**The engagement stamp behaved, measured across the idle delivery.** A sampler polled `/sessions`
+every two seconds through the park. `lastEngagementAt` sat at 1787721722065 (2026-08-26T05:22:02Z)
+from the turn's end through the delivery at 05:26:10.822Z and did not move at the delivery, so the
+peer prompt stamped nothing on the one path that reaches the stamp seam. It moved to 1787721982532
+(05:26:22Z) at this session's first completed tool call after waking, which is the documented
+`PostToolUse` residual behaving exactly as `docs/security-model.md` now describes it. The same
+window also caught `lastHookAt` moving at 05:22:52Z with `lastEngagementAt` still, which is the
+`Stop` exclusion working: a blocked stop proves life without clearing a block.
+
+**Next action.** The operator reads the thread and reports the copy count and the attribution. On
+a clean read: close the backlog item with receipts, close section 4, run section 5. On a count of
+two: apply the echo-digest fallback the spec names before closing.
+Commit Model: Commit-and-Push
