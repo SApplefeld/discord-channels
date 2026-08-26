@@ -50,6 +50,23 @@ and none carries a date of its own. An item added from here on carries `(parked 
   echo-dedup group holds rather than a fixed set of names, the trigger is load on the box rather
   than any one test, and the fix belongs in the helper.
 
+- Teach the runtime-cycle pin to read re-exports (parked 2026-08-26, from the peer-traffic round's
+  finishing review). `import-hygiene.test.ts` guards the `tail` to `outbound` edge by scanning for
+  runtime `import` forms, and its own assertion message promises type-only imports alone. A runtime
+  re-export (`export { x } from "./routing/outbound.ts"`) is a runtime edge that closes the same
+  cycle and passes the pin in silence. The pin is a check whose acceptance is that it finds
+  nothing, so the gap reads exactly like a clean result. Add the re-export forms to the scan, and
+  prove the addition can speak before trusting it.
+
+- A peer display name carrying a double quote reads differently on the two inbound paths (parked
+  2026-08-26, from the peer-traffic round's finishing review). The mid-turn path takes
+  `origin.name` whole, while the idle path's attribute read stops at an embedded quote, so one
+  message can carry two different attributions depending on whether the receiver was busy. The
+  failure is a truncated but still labelled name rather than a forgery, and it may be unreachable:
+  whether the harness escapes quotes inside those attributes is unobserved, and the ground truth
+  is silent on it. Worth a fixture the day a quote-bearing display name is seen live, and not
+  before, since inventing the escaping rule is what the ground-truth discipline exists to prevent.
+
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
   from the title-states security review).** `classifyMessage`'s thread branch drops
   `ChannelNameChange` and delivers everything else, so any other system message type Discord posts

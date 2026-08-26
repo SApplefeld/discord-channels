@@ -34,6 +34,9 @@ import {
 } from "./render.ts";
 import type { AskedOption, AskedQuestion } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
+// The reader's own bound, so the pin that this renderer draws whole what the reader admits is
+// driven by the number the reader enforces rather than by a copy of it.
+import { MAX_PEER_NAME_LENGTH } from "../tail.ts";
 import { MAX_PLAN_CHARS } from "../board/events.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
@@ -2096,6 +2099,51 @@ test("a hostile counterparty name is neutralized on the line that attributes the
     "📡 → **Claude**",
   );
   assert.equal(renderPeerOut("", "hello")[0].split("\n")[0], "📡 **Claude** →");
+});
+
+test("the worst name the reader admits is drawn whole, never cut to half a name", () => {
+  // The rule both modules state: half a display name names a counterparty nobody can look up, so a
+  // name over the bound is refused whole and replaced by a readable fallback. The reader enforces it
+  // by refusing; this renderer must therefore never cut a name the reader let through, or the rule
+  // holds on one side of the seam and is broken on the other, in the one line that says who wrote
+  // what follows.
+  //
+  // Driven from the reader's own exported bound rather than a literal copied from it, so the two
+  // cannot drift apart in silence: raise the reader's bound alone and this goes red.
+  const worst = [
+    // The reader counts code points, so an astral character costs it one and the renderer two.
+    ["astral", "🛰".repeat(MAX_PEER_NAME_LENGTH)],
+    // Every character escaped: the other way one admitted code point becomes two drawn ones.
+    ["markdown", "*".repeat(MAX_PEER_NAME_LENGTH)],
+    // Both at once, which is the shape a hand-written worst case tends to miss.
+    ["mixed", "🛰*".repeat(MAX_PEER_NAME_LENGTH / 2)],
+  ] as const;
+
+  for (const [what, name] of worst) {
+    assert.equal([...name].length, MAX_PEER_NAME_LENGTH, `${what}: the fixture is what the reader admits`);
+    for (const [direction, line] of [
+      ["in", renderPeerIn(name, "hello")[0].split("\n")[0]],
+      ["out", renderPeerOut(name, "hello")[0].split("\n")[0]],
+      ["brief", renderPeerInBrief(name, "hello")[0].split("\n")[0]],
+    ] as const) {
+      assert.ok(!line.includes("…"), `${what} ${direction}: the name was cut: ${line}`);
+      assert.equal(
+        line,
+        direction === "out"
+          ? `📡 **Claude** → ${inertText(name)}`
+          : `📡 ${inertText(name)} → **Claude**`,
+        `${what} ${direction}`,
+      );
+    }
+  }
+
+  // The bound still binds, on the caller the reader is not: these are exported functions that
+  // neutralize whatever they are handed, and an unbounded name would compose a prefix that pushes a
+  // message past the length Discord accepts.
+  assert.ok(
+    renderPeerIn("🛰".repeat(MAX_PEER_NAME_LENGTH * 2), "hello")[0].split("\n")[0].includes("…"),
+    "a name past anything the reader would admit is still cut",
+  );
 });
 
 test("the brief forms are one bounded line, and say the same thing about who sent it", () => {

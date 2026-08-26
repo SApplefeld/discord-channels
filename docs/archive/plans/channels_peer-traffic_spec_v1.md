@@ -1,6 +1,6 @@
 # Channels: peer traffic on the mirror
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push
 Created: 2026-08-25
 
@@ -39,6 +39,10 @@ operator watches a cross-session conversation without tabbing between terminals.
 - [`../archive/plans/channels_mirror-fidelity-repairs_spec_v1.md`](../archive/plans/channels_mirror-fidelity-repairs_spec_v1.md):
   the queued-prompt tailer path and the unforgeable-attribution machinery peer rendering must join,
   not weaken.
+- [`../archive/plans/channels_mirror-load-tolerance_spec_v1.md`](../archive/plans/channels_mirror-load-tolerance_spec_v1.md):
+  built the per-path prompt claim, its release-and-retry-once rule and its settle grace. Both peer
+  prompt seams take that pair, so it is the plan that explains the machinery a reader of those
+  seams meets first.
 
 ## Ground truth: the harness's shapes
 
@@ -610,4 +614,75 @@ Scope: `docs/backlog.md` and `docs/archive/backlog-2026-Q3.md` beyond the sectio
   documents, which is the section's own instruction to close the backlog item with receipts, plus
   the flake receipts the gates above produced.
 Next: 5. Finishing
+Commit Model: Commit-and-Push
+
+### Chapter 5 - 2026-08-26
+Completed: 5. Finishing
+Implemented By: main session, with a dispatched implementer-opus for the fix round and five
+  dispatched gate agents (qa-verifier at opus; security-reviewer and adversarial-reviewer at fable
+  over the whole changeset; the same two again at fable over the fix round; docs-curator at opus)
+Metrics: review rounds 2; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The finishing pass earned its keep, which is the whole argument for running
+  it. Three sections had each passed their own opus review round, and the whole-changeset pass at
+  fable still returned three Majors, one of them a real behavioural defect no section-level lens
+  could see. A prompt the operator genuinely typed that the classification misreads as a peer
+  delivery posted to the thread twice: both peer branches returned above the prompt-echo claim seam,
+  because a real peer message needs no claim (the tailer is blind to the line an idle delivery lands
+  on, and a mid-turn delivery never reaches that seam), and the misread prompt is the one text that
+  takes the peer branch on both paths while still being read by both. It was confirmed red-first
+  before any fix, and the fix carried a worse failure direction than the bug: a claim left standing
+  over a post that never landed silences the other path's copy, and the operator's words then reach
+  the thread nowhere. The implementer also found a race order the brief had missed, the tailer
+  reading first and a merely-slow hook landing behind it, and closed it with a consult on the mirror
+  side; both re-review lenses judged that extension sound and complete.
+  The second Major was a cross-module invariant that was simply false: a comment claimed the
+  renderer's name bound could never cut a name the reader admitted, while the reader counts raw code
+  points and the renderer counts escaped text on the tighter of two measures. The exact fixture the
+  reader's own test celebrates as admitted, a name of 120 astral characters, rendered as 59 and a
+  cut marker. The bound is 240 now, which is exactly tight rather than generous: the escape class
+  is all ASCII and so never astral, which is what keeps the factor at two rather than four.
+  The third Major was the recurrence of this plan's own standing failure class, a document asserting
+  more than the code does. `docs/architecture.md` still credited the busy half of the no-double-post
+  contract to the instrument Interim board 2 had withdrawn a few hours earlier. Withdrawing a claim
+  in the plan doc does not withdraw it from the library, and nothing swept for it.
+Assumptions: none new. The design-time and execution-time entries this effort declared are carried
+  on Chapters 1 through 4 and repeated in the close-out status.
+Review Findings: QA verified every acceptance criterion PASS. Security over the whole changeset:
+  CLEAR, no findings, with all five load-bearing invariants re-verified and the earlier round's
+  ReDoS fix re-measured at 6.7ms against 1MB. Adversarial over the whole changeset:
+  CHANGES_REQUIRED, three Majors and three Minors. All three Majors fixed and re-reviewed by both
+  lenses, returning CLEAR and APPROVED_WITH_CONCERNS. Four Minors folded in: the stale
+  `reached the thread by neither path` subject enumeration, a comment claiming a genuine delivery
+  pays nothing for the claim pair, the undocumented partial-landing trade at the release gate, and a
+  redundant `delivery === null` written at the turn-open stamp so the engagement exclusion reads
+  locally rather than being inferable only from a branch several screens above it. Two Minors routed
+  to `docs/backlog.md` rather than fixed, both agreed proportionate by the reviewer that raised
+  them: the runtime-cycle pin not scanning re-exports, and a quote-bearing display name reading
+  differently on the two inbound paths. Two residuals accepted and recorded rather than fixed: a run
+  that landed part of a split message keeps its claim, which is the rule the ordinary prompt seams
+  already hold and releasing would double-post what landed; and a genuine idle delivery leaves an
+  unsettled claim for the claim window, reachable only by retyping the wrapper character for
+  character inside it.
+Drift: six items, every one `deviation`, none a `mistake`, so none stopped the run. The tailer's
+  peer-delivery failure line was missing from the operator log catalogue; the architecture document
+  described neither the new claim pair nor the peer exclusion in the engagement allowlist; the
+  operations document's account of what does not clear a `⛔` did not name a peer message; the
+  index still called the live verification outstanding; and the peer section opened in the
+  change-narrative register the house rule keeps out of shipped artifacts. Two of the six carry
+  the curator's no-pre-change-read marker and ride as unverified pre-change claims. The curator's
+  own prose took two corrections before it shipped, an orphaned article left where it replaced a
+  sentence, and three lines past the library's wrap.
+Stamps: adjudicated 0, stamped 0. `memq unstamped` over the finishing stretch reported none in
+  either tier; the one record this effort applied was stamped at Chapter 4.
+Gates: baseline entering the pass was lint exit 0, 1510 tests / 1509 pass / 0 fail / 1 skipped,
+  exit 0. Final: lint exit 0, 1518 / 1517 / 0 / 1, exit 0. Plus eight tests, no regression. The
+  echo-dedup flake group fired repeatedly throughout, on five distinct members across the session's
+  full-suite runs, every one at the `until` helper with the same message, while another project's
+  release suite held up to eleven .NET processes on the box. Each was discriminated rather than
+  assumed: isolated runs of `tail.test.ts` returned 160/160 exit 0 every time, and each red was
+  followed by a green full suite. `docs/backlog.md` now records the moving member across consecutive
+  runs as the discriminator it is, since a regression fails the same test twice.
+Live verification: carried by Chapter 4 and not repeated here. It is the half of this effort no
+  suite can reach, and it is the reason the plan is closed rather than merely green.
+Next: none. The plan is complete.
 Commit Model: Commit-and-Push

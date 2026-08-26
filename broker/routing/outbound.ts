@@ -844,6 +844,27 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   }
 
   /**
+   * The prompt-echo claim a peer post carries when the text it draws also reaches this thread by the
+   * other prompt path, which is the misread typed prompt: the operator's own words that the peer
+   * classification reads as a delivery. That text takes the peer branch on both seams while both
+   * seams still read it, so without a claim it posts twice.
+   *
+   * Keyed on the raw pre-render prompt text, never on the drawn body, because that is what the other
+   * path claims and consults: the two seams see the same line and the renderer's extraction of a body
+   * from it is one seam's own work.
+   *
+   * `settle` is the tailer's landing rule, which shrinks its own claim to the raced copy's grace; the
+   * mirror's claim does not settle, because its consumer is a poll pass that can legitimately run the
+   * whole claim window late. Null is the mirror's answer to that.
+   */
+  type PromptClaim = {
+    slot: EchoSlot;
+    text: string;
+    claim: () => void;
+    settle: (() => void) | null;
+  };
+
+  /**
    * Posts one peer message, in either direction, shared by the three paths one arrives on so their
    * rendering, their suppression, and their logging cannot drift apart.
    *
@@ -853,11 +874,17 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
    * empty render, the line carries the direction, the session, and the transport's error class
    * only, the discipline every posting path here holds: a peer message is conversation content, and
    * it never appears in the broker log at any level.
+   *
+   * A `claim` is passed by the two prompt seams, whose text can also be on its way to this thread by
+   * the other prompt path, and by nothing else: the tailer's own two kinds have no second copy
+   * anywhere. It is spent only where a post is actually about to be attempted, which is why it is
+   * taken here rather than at the seam that built it, and released where the run lands nothing.
    */
   async function deliverPeerMessage(
     threadId: string,
     sessionId: string,
     traffic: PeerTraffic,
+    claim: PromptClaim | null = null,
   ): Promise<ReplyResult> {
     if (peerMessages === "off") {
       // The cause and the session, never the text: peer traffic suppressed on purpose reads on
@@ -891,8 +918,53 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       return { status: "failed", error: "the message was empty" };
     }
 
+    // Claimed here, below the two branches that post nothing and as the run is dispatched, on the
+    // prompt paths' own rule. A claim asserts that a run is putting this text on the thread right
+    // now: made over the `off` drop or the empty render above, it would stand over a copy no path
+    // ever posted and silence the other path's, and the operator's message would appear nowhere.
+    // That is strictly worse than the duplicate the claim exists to prevent, and it is why the two
+    // branches above return before this line rather than after it.
+    claim?.claim();
     const run = await deliver(threadId, messages);
-    if (run.error === null) return { status: "sent" };
+    if (run.error === null) {
+      claim?.settle?.();
+      return { status: "sent" };
+    }
+
+    // The release hands the text back to the other prompt path, the discipline the two prompt seams
+    // hold over their own runs: a claim standing over a run that landed nothing would silence the
+    // one copy still able to reach the thread. Its report says the other path had already dropped
+    // its own copy over this claim, in which case nothing else is carrying the text and this run
+    // goes again, once. Reached only where a claim was made, since a run that claimed nothing has
+    // nothing to give up and no other path to give it back to.
+    //
+    // Gated on landing nothing at all, which is the rule the mirrored prompt holds and the trade it
+    // carries: a run that landed some of its messages keeps its claim, so the other path stays
+    // deferred and a split message that stopped partway shows the thread what landed and no more.
+    // Releasing there would post the landed messages a second time, which is why the line is drawn
+    // at nothing rather than at everything, and the stopped-after line above is what says so.
+    if (
+      claim !== null &&
+      run.landed === 0 &&
+      options.echo?.release(sessionId, claim.text, claim.slot) === true
+    ) {
+      const retry = await retryDeferredRun(
+        threadId,
+        sessionId,
+        claim.text,
+        messages,
+        claim.slot,
+        claim.claim,
+        peerSubject(traffic),
+        run.error,
+      );
+      if (retry.error === null) {
+        claim.settle?.();
+        return { status: "sent" };
+      }
+      return { status: "failed", error: retry.error };
+    }
+
     log(
       `routing: the ${peerSubject(traffic)} for session ${sessionId} stopped after ` +
         `${run.landed} of ${messages.length} messages: ${run.error}`,
@@ -1108,10 +1180,43 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // delivery" and "a delivery this broker could not read" are different answers, and collapsing
       // them would hand a peer the switch that puts its own words in that register.
       if (delivery !== null) {
-        return deliverPeerMessage(located.threadId, located.sessionId, {
+        const received: PeerTraffic = {
           kind: "peer-in",
           name: delivery.name,
           body: delivery.body,
+        };
+
+        // The prompt dedup, taken on this branch as well as on the mirror below it, because one text
+        // takes the peer branch on both prompt paths while both still read it: a turn-opening prompt
+        // the operator really typed that this classification reads as a delivery. Without the pair
+        // here that text posts once from this hook and once from the tailer's recovery, and the
+        // operator sees their own message twice under a peer's attribution.
+        //
+        // A genuine idle delivery needs none of it, and pays only what every mirror claim costs.
+        // The tailer is blind to the transcript line one lands on, so nothing ever writes its slot
+        // for that text: the consult reads null, and the claim below answers a consult that never
+        // comes and expires on the claim window. What it does leave is an unsettled claim standing
+        // for that window, which the ordinary claim-window residual covers: text typed in the
+        // window whose digest matches defers to it, and here that means the wrapper retyped
+        // character for character while a real delivery of the same bytes is still claimed.
+        //
+        // The consult reads the tailer's slot, so a match means the tailer dispatched a
+        // transcript-read copy of this text to this thread ahead of this hook. Reported sent on the
+        // mirror's own rule: the text is in front of the operator, it just got there by the other
+        // path. Nothing is recorded on this branch, because it posts nothing.
+        if (options.echo?.isPromptEcho(located.sessionId, text, "mirror") === true) {
+          dropped(
+            `the ${peerSubject(received)} for session ${located.sessionId} was dropped, the tailer ` +
+              `had already dispatched the same text to this thread, read off the transcript`,
+          );
+          return { status: "sent" };
+        }
+
+        return deliverPeerMessage(located.threadId, located.sessionId, received, {
+          slot: "prompt-mirror",
+          text,
+          claim: () => options.echo?.notePrompt(located.sessionId, text, "mirror"),
+          settle: null,
         });
       }
 
@@ -1427,11 +1532,46 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // there: whichever line shape a delivery arrives in, text a peer wrote never renders in the
       // operator's quoted register, and an unreadable delivery renders there least of all.
       if (delivery !== null) {
-        return deliverPeerMessage(threadId, sessionId, {
+        const received: PeerTraffic = {
           kind: "peer-in",
           name: delivery.name,
           body: delivery.body,
-        });
+        };
+
+        // The prompt dedup, in the mirror seam's own position on its own branch and for its reason:
+        // the one text that takes the peer branch on both paths is a turn-opening prompt the
+        // operator typed and this classification misread, and it is carried by both.
+        //
+        // The turn-opening shape alone, the rule the mirror below this holds. A queued mid-turn
+        // message fires no hook, so nothing else is carrying it, and a genuine mid-turn delivery
+        // does not arrive here at all: the tailer reads that shape as its own peer item and hands it
+        // over whole. A consult here for the queued shape could only drop the operator's words
+        // against a claim some earlier prompt of the same text left, and a claim could only swallow
+        // the next one.
+        if (
+          source === "turn-open" &&
+          options.echo?.isPromptEcho(sessionId, text, "tailer") === true
+        ) {
+          dropped(
+            `the ${peerSubject(received)} for session ${sessionId} was dropped, the mirror hook ` +
+              `had already dispatched the same text to this thread`,
+          );
+          return { status: "sent" };
+        }
+
+        return deliverPeerMessage(
+          threadId,
+          sessionId,
+          received,
+          source === "turn-open"
+            ? {
+                slot: "prompt-tailer",
+                text,
+                claim: () => options.echo?.notePrompt(sessionId, text, "tailer"),
+                settle: () => options.echo?.settlePrompt(sessionId, text, "tailer"),
+              }
+            : null,
+        );
       }
 
       const messages = renderMirror("prompt", text);
@@ -1495,7 +1635,12 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // echoed back, or one that renders to nothing, is refused above this line and stamps nothing
       // on this path. It is the intersection of a lost hook with a prompt that was never going to
       // post, and it costs one stamp that the operator's next completed tool call replaces.
-      if (source === "turn-open" && !isTaskNotification(text)) {
+      // `delivery === null` is redundant against the peer branch above, which returns on every one
+      // of its paths, and it is written anyway so the exclusion is readable here rather than only
+      // inferable from control flow several screens up. A peer prompt clearing a block that waits
+      // on a person is the failure this guards, and an edit that reordered the branch would
+      // otherwise re-arm it silently.
+      if (source === "turn-open" && delivery === null && !isTaskNotification(text)) {
         options.registry.engage(sessionId, at ?? undefined);
       }
 

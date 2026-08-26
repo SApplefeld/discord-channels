@@ -320,20 +320,32 @@ const PEER_TOWARD = "→";
  * The most of a counterparty's display name a peer attribution draws, measured on the escaped text
  * in code points and in UTF-16 units alike, since `fit` holds the tighter of the two counts.
  *
- * The transcript reader refuses a name over this bound whole and substitutes a readable fallback,
- * on the reasoning that half a display name names a counterparty nobody can look up. So this is set
- * to the reader's own bound, which makes the two agree by construction: a name that reached here
- * from the reader is never over it, and is therefore never cut to a half-name the reader would have
- * refused. What it is here for is the caller the reader is not, since these are exported functions
- * that neutralize whatever they are handed. The value is not imported from the reader, because the
- * reader imports this module and the edge back would be a cycle.
+ * The transcript reader refuses a name over its own bound whole and substitutes a readable fallback,
+ * on the reasoning that half a display name names a counterparty nobody can look up. This bound is
+ * what keeps that rule true on this side of the seam: a name the reader admitted is drawn whole
+ * here, never cut to the half-name the reader would have refused.
+ *
+ * Twice the reader's 120, because the reader counts code points on the raw name and this counts both
+ * counts on the escaped text, and each of those two differences can double one admitted code point:
+ *
+ * - The escape writes a backslash in front of every `MARKDOWN` character, so one raw code point can
+ *   become two drawn ones, in code points and in UTF-16 units alike.
+ * - An astral character is two UTF-16 units, so one raw code point can cost two of the unit count.
+ *
+ * The two never compound on one character, which is what makes the factor two rather than four:
+ * every character `MARKDOWN` matches is ASCII, so a character that is escaped is one UTF-16 unit
+ * before its backslash and two after, and a character that is astral is never escaped.
+ * `inertText`'s whitespace collapse and trim only ever shorten, so neither adds to the worst case.
+ * The reader's bound is not imported to derive the number, because the reader imports this module
+ * and the edge back would be a cycle; the pin that keeps the two in step is driven from the reader's
+ * exported bound in this module's tests.
  *
  * Bounded at all because the splitter charges the whole prefix against every message's budget and
  * floors the room a hard cut takes at `MIN_HARD_CUT`: an unbounded name would compose a prefix that
  * pushes a message past `MAX_MESSAGE_LENGTH`, which Discord refuses outright. At this value the
- * prefix costs under 140 units against that ceiling, so the floor is never the binding constraint.
+ * prefix costs under 260 units against that ceiling, so the floor is never the binding constraint.
  */
-const MAX_PEER_NAME_DRAWN = 120;
+const MAX_PEER_NAME_DRAWN = 240;
 
 /**
  * The most of a message's text a one-line peer rendering carries, measured on the escaped text in

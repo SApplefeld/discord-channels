@@ -303,9 +303,10 @@ as that stamp is newer than the event. The card follows on the next refresh and 
 window later (`CHANNEL_DISCORD_DWELL_MS`, 60 seconds by default), so a `⛔` title outliving the card
 by a minute is the damper rather than a stuck state. Two things deliberately do not clear it: the
 blocked stop's own turn-end hook, which would otherwise erase the marker it just raised, and an
-`AskUserQuestion` picker opening, which is the session parking on you rather than leaving you. A
-background task finishing and waking the session does not clear it either; the woken turn's first
-tool call does, if the run genuinely resumes.
+`AskUserQuestion` picker opening, which is the session parking on you rather than leaving you. Two
+prompts do not clear it either, both machine-written: a background task finishing and waking the
+session, and a message another Claude session sent this one. In both cases the woken turn's first
+completed tool call clears it, if the run genuinely resumes.
 
 **The ping fires once per block episode, and only while the block is news.** The episode is the
 event, so a run that blocks one plan and carries straight on to the next pings without the `⛔` ever
@@ -625,6 +626,11 @@ transcript text:
   message reaches it by no other path, so the thread is missing it; a turn-opening prompt may
   still be there from the mirror hook, which usually posts it first. The console holds the words
   either way.
+- `tail: session <id>'s peer message delivery failed (...)`: the delivery of one peer message the
+  tailer read off the transcript threw, and it was dropped without holding up the rest of the pass.
+  That message is either one another session sent this one mid-turn or one this session sent, and
+  the line does not distinguish them. Neither reaches the thread by any other path, so the thread is
+  missing it and the console holds the words.
 - `tail: session <id>'s question alert was refused (...)`: an open-question alert was not written,
   because the per-thread window dropped it or Discord refused the write. The console still shows
   the question; the thread does not.
@@ -676,8 +682,8 @@ if that run then lands nothing at all, nothing else is still carrying the text, 
 again once. `routing: the mirrored reply from session <id> landed nothing (...) with the other path
 already deferred to it; its one retry posted N of M messages` is that retry working, and the thread
 has the text. `routing: the <mirrored reply|interim narration|mirrored prompt|transcript-read
-prompt> from session <id> reached the thread by neither path` is the one to act on: the retry
-failed too, the text reached the thread nowhere,
+prompt|inbound peer message> from session <id> reached the thread by neither path` is the one to
+act on: the retry failed too, the text reached the thread nowhere,
 and the console holds its only copy. It is rarer than the duplicate it replaced, since it needs a
 race and a total transport failure rather than a race alone, but it is the expensive direction and a
 repeat of it is a defect rather than noise.
@@ -753,9 +759,13 @@ and another machine writing is not that. A woken session that genuinely resumes 
 first completed tool call, so a run that really restarts still clears its own block.
 
 Peer messages post on the mirror budget rather than the alert tier and ping nobody. An exchange
-between two sessions is worth reading, not worth waking someone for.
+between two sessions is worth reading, not worth waking someone for. Under `full` a message longer
+than **16,384** code points is drawn to that length and says it was cut, the bound a mirrored prompt
+takes, because a peer body is text arriving from outside rather than this session's own words; under
+`brief` each message is one line of at most **200** characters: the send's own summary outbound (its
+message's opening line where the send carried no summary), and the body's opening line inbound.
 
-Four `routing:` lines belong to this path, and each carries the direction and the session and never
+Six `routing:` lines belong to this path, and each carries the direction and the session and never
 the text, because a peer message is conversation content. `routing: the <inbound|outbound> peer
 message for session <id> was dropped, CHANNEL_PEER_MESSAGES is off` is that setting working as set,
 and it is the only evidence of it anywhere. On the inbound direction it ends `; a prompt read as
@@ -768,6 +778,19 @@ peer message for session <id> was dropped, its thread is not open yet` is an exc
 before the session's thread existed. `routing: the <inbound|outbound> peer message for session <id>
 stopped after N of M messages: <error>` is the post itself failing, with the transport's error class
 and no content.
+
+The last two are the dedup working, and they appear only for a prompt the classification misread,
+because a real peer message reaches a thread by one path only. `routing: the inbound peer message
+for session <id> was dropped, the tailer had already dispatched the same text to this thread, read
+off the transcript` is the hook's copy standing down behind the recovery's; `routing: the inbound
+peer message for session <id> was dropped, the mirror hook had already dispatched the same text to
+this thread` is the recovery standing down behind the hook's. Either one means the thread has the
+words once, which is the intent; seeing neither beside a doubled message is the failure.
+
+One vocabulary wrinkle is worth knowing before grepping. The two lines a run that landed nothing
+produces, the retry notice and `reached the thread by neither path`, are written by the helper the
+reply and prompt paths share, and it says `from session <id>` where every line above says `for
+session <id>`. Both spellings name the same session.
 
 ## Tunables
 

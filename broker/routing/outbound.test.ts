@@ -3810,11 +3810,15 @@ test("a prompt line naming no readable instant stamps at read time", async () =>
   assert.deepEqual(spy.engaged, ["session-a"]);
 });
 
-test("a peer delivery and a wake notice reach the thread before a prompt slot ever sees them", async () => {
+test("a wake notice reaches the thread before a prompt slot ever sees it", async () => {
   // The dedup sits after every check that decides what a prompt's text is, so the slot only ever
-  // answers for prompts drawn in the operator's own register. A delivery redrawn under the peer
-  // attribution and a wake compressed to a notice claim nothing, which is what keeps a peer from
-  // silencing an operator prompt that happens to repeat its words.
+  // answers for prompts drawn in the operator's own register or under the peer attribution. A wake
+  // compressed to a notice claims nothing on either path: the notice is not the report's text, so a
+  // claim over it would answer for words the thread never showed.
+  //
+  // The peer branch is the one redrawing that does claim, because one text reaches both prompt paths
+  // and takes that branch on both: the tests from "a typed prompt the classification misreads as a
+  // delivery still nets one copy" onward own that pair.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = fakeWriter();
@@ -3827,20 +3831,18 @@ test("a peer delivery and a wake notice reach the thread before a prompt slot ev
     log: () => {},
   });
 
-  for (const redrawn of [idleDelivery(), WAKE]) {
-    for (const send of [
-      () => router.mirror(TOKEN, "prompt", redrawn, "session-a"),
-      () => router.interimPrompt("session-a", redrawn, "turn-open", null),
-    ]) {
-      const before = posts.length;
-      assert.deepEqual(await send(), { status: "sent" });
-      assert.ok(posts.length > before, "the redrawn message still reaches the thread");
-      assert.equal(
-        promptClaimStanding(echo, "session-a", redrawn),
-        false,
-        "a message drawn outside the operator's register claims no prompt digest",
-      );
-    }
+  for (const send of [
+    () => router.mirror(TOKEN, "prompt", WAKE, "session-a"),
+    () => router.interimPrompt("session-a", WAKE, "turn-open", null),
+  ]) {
+    const before = posts.length;
+    assert.deepEqual(await send(), { status: "sent" });
+    assert.ok(posts.length > before, "the redrawn message still reaches the thread");
+    assert.equal(
+      promptClaimStanding(echo, "session-a", WAKE),
+      false,
+      "a wake notice claims no prompt digest",
+    );
   }
 
   // The channel envelope, which posts nothing at all, claims nothing either.
@@ -3941,4 +3943,264 @@ test("a mirror-only host, where nothing ever writes the tailer's prompt slot, po
   // answering: the same question, with the slot the tailer would have written written by hand.
   echo.notePrompt("session-a", "run it", "tailer");
   assert.equal(echo.isPromptEcho("session-a", "run it", "mirror"), true);
+});
+
+test("a typed prompt the classification misreads as a delivery still nets one copy", async () => {
+  // The false positive's third cost, which the ruling that accepted the other two did not name.
+  // A turn-opening prompt the operator really typed reaches the thread by two paths, and what
+  // holds it to one copy is the prompt-echo claim the two paths make against each other. A peer
+  // delivery needs none of that, because the tailer is blind to the line an idle delivery lands
+  // on, so the peer branches were written above the claim seam. A misread typed prompt is the one
+  // text that takes the peer branch on both paths while still being read by both, so it took the
+  // branch that skips the claim twice and posted twice. The operator earns this by typing a
+  // message that opens with the harness's own wrapper, which is what debugging this system looks
+  // like.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  // The operator types it; the hook carries it first, exactly as the healthy race runs.
+  const typed = idleDelivery();
+  assert.equal((await router.mirror(TOKEN, "prompt", typed, "session-a")).status, "sent");
+  const afterMirror = posts.length;
+  assert.ok(afterMirror > 0, "the mirror path posts the operator's words once");
+
+  // Then the tailer reads the same typed line off the transcript, as it does for every
+  // turn-opening prompt: `typedAtTheConsole` admits it, because it genuinely was typed.
+  await router.interimPrompt("session-a", typed, "turn-open", null);
+  assert.equal(
+    posts.length,
+    afterMirror,
+    `the second path must defer to the first, not post again: ${posts.map((post) => post.text).join("\n---\n")}`,
+  );
+});
+
+test("the misread prompt nets one copy in the other race order too, the tailer's read first", async () => {
+  // The same pair from the other side, which is the case the mirror hook's own consult answers: a
+  // hook the harness ran slow lands behind a poll, so the tailer's recovery is the copy that posted
+  // and this one is the duplicate. Without the consult on the mirror's peer branch the fix would
+  // hold in the healthy order alone and fail in exactly the loaded conditions the recovery exists
+  // for.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  const typed = idleDelivery();
+  assert.equal((await router.interimPrompt("session-a", typed, "turn-open", null)).status, "sent");
+  const afterTailer = posts.length;
+  assert.ok(afterTailer > 0, "the recovered copy posts the operator's words once");
+
+  assert.equal((await router.mirror(TOKEN, "prompt", typed, "session-a")).status, "sent");
+  assert.equal(
+    posts.length,
+    afterTailer,
+    `the late hook must defer, not post again: ${posts.map((post) => post.text).join("\n---\n")}`,
+  );
+});
+
+test("a peer-classified prompt the knob dropped leaves no claim standing, on either path", async () => {
+  // The fail direction that matters more than the duplicate. `off` posts nothing at all, so a claim
+  // made over it would stand for a copy no path ever put on the thread and silence the other path's:
+  // under a setting chosen to hear less from peers, a prompt the operator really typed and this
+  // classification misread would then appear nowhere instead of once.
+  for (const send of ["mirror", "tailer"] as const) {
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const { writer, posts } = fakeWriter();
+    const echo = createEchoMemory();
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      echo,
+      peerMessages: "off",
+      log: () => {},
+    });
+
+    const typed = idleDelivery();
+    const outcome =
+      send === "mirror"
+        ? await router.mirror(TOKEN, "prompt", typed, "session-a")
+        : await router.interimPrompt("session-a", typed, "turn-open", null);
+    assert.equal(outcome.status, "failed", send);
+    assert.equal(posts.length, 0, send);
+    assert.equal(
+      promptClaimStanding(echo, "session-a", typed),
+      false,
+      `${send}: a drop that posted nothing must claim nothing`,
+    );
+  }
+});
+
+test("a delivery carrying nothing visible draws the placeholder, so no seam posts an empty run", async () => {
+  // Why the empty render is not reachable from the two prompt seams, pinned where a change would
+  // make it reachable. The classifier refuses a body carrying nothing visible on the same
+  // `withoutInvisible` reading the renderer strips with, so it hands over the placeholder instead
+  // and the run is never empty. The claim still sits below the empty check in `deliverPeerMessage`,
+  // because that agreement spans two modules: were it ever loosened, a claim above the check would
+  // stand over a run of no messages and silence the other path's copy.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  // A zero-width space is visible to `String.trim`, which leaves it where it is, and to nothing
+  // else. Written as an escape so the fixture is readable in a diff.
+  const hollow = idleDelivery("\u200b");
+  assert.equal((await router.mirror(TOKEN, "prompt", hollow, "session-a")).status, "sent");
+  assert.equal(posts.length, 1, posts.map((post) => post.text).join("\n---\n"));
+  assert.ok(posts[0].text.includes(PEER_BODY_UNREADABLE), posts[0].text);
+  assert.equal(
+    echo.isPromptEcho("session-a", hollow, "tailer"),
+    true,
+    "a run that did post claims its slot, so the other path's copy of the same text defers",
+  );
+});
+
+test("a peer-classified turn-open post whose run landed nothing leaves no claim standing", async () => {
+  // The release, which is the same hole from the other side: a claim standing over a run the
+  // transport refused would silence the copy still able to reach the thread, and a misread typed
+  // prompt would be gone from the thread with nothing anywhere saying so.
+  for (const send of ["mirror", "tailer"] as const) {
+    /** The path that did not make the claim, the only one a standing claim could ever silence. */
+    const other = send === "mirror" ? "tailer" : "mirror";
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
+    const echo = createEchoMemory();
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: writer,
+      echo,
+      log: () => {},
+    });
+
+    const typed = idleDelivery();
+    const outcome =
+      send === "mirror"
+        ? await router.mirror(TOKEN, "prompt", typed, "session-a")
+        : await router.interimPrompt("session-a", typed, "turn-open", null);
+    assert.equal(outcome.status, "failed", send);
+    assert.equal(
+      echo.isPromptEcho("session-a", typed, other),
+      false,
+      `${send}: a run that never landed must not suppress the other path's copy`,
+    );
+  }
+});
+
+test("a peer-classified prompt the other path deferred to goes again once when its run landed nothing", async () => {
+  // The claim's own cost, bounded on this branch exactly as it is bounded on the mirrored prompt:
+  // the other path met the claim mid-run and dropped its copy, so a run that then lands nothing is
+  // the last thing carrying the text. It goes again, once, and the loss gets its own line.
+  for (const send of ["mirror", "tailer"] as const) {
+    const other = send === "mirror" ? "tailer" : "mirror";
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    announce(registry, "session-a");
+    const echo = createEchoMemory();
+    const lines: string[] = [];
+    const posts: string[] = [];
+    const typed = idleDelivery();
+    const messenger: ThreadMessenger = {
+      postToThread: async (input) => {
+        posts.push(input.text);
+        // The other path arriving inside the run: it finds the claim and drops its own copy.
+        if (posts.length === 1) echo.isPromptEcho("session-a", typed, other);
+        return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+      },
+      editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    };
+    const router = routerFor({
+      registry,
+      threadFor: () => THREAD,
+      mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+      echo,
+      log: (message) => lines.push(message),
+    });
+
+    const outcome =
+      send === "mirror"
+        ? await router.mirror(TOKEN, "prompt", typed, "session-a")
+        : await router.interimPrompt("session-a", typed, "turn-open", null);
+    assert.equal(outcome.status, "failed", send);
+    assert.equal(posts.length, 2, `${send}: the run goes again exactly once: ${posts.join("\n")}`);
+    assert.ok(
+      lines.some((line) => line.includes("reached the thread by neither path")),
+      `${send}: ${lines.join("\n")}`,
+    );
+    assert.ok(
+      !lines.join("\n").includes(PEER_BODY),
+      `${send}: peer content leaked into the routing log: ${lines.join("\n")}`,
+    );
+    assert.equal(
+      echo.isPromptEcho("session-a", typed, other),
+      false,
+      `${send}: text on the thread by neither path is claimed by neither path`,
+    );
+  }
+});
+
+test("a genuine mid-turn peer delivery posts whatever the prompt slots hold", async () => {
+  // The control the pair above must not break. A mid-turn delivery reaches the tailer as its own
+  // peer item and the queued prompt seam as `queued`, and neither shape exists twice: no hook fires
+  // for an injected message. So neither consults a slot, where a consult could only drop a peer's
+  // message against a claim some earlier text of the same bytes left behind, and neither claims one,
+  // where a claim could only swallow a later copy nothing is racing.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const echo = createEchoMemory();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    log: () => {},
+  });
+
+  // A claim over the very text arriving, standing on both slots: the state that would suppress this
+  // message if the queued shape consulted anything.
+  const arriving = idleDelivery();
+  echo.notePrompt("session-a", arriving, "mirror");
+  echo.notePrompt("session-a", arriving, "tailer");
+
+  assert.deepEqual(await router.interimPrompt("session-a", arriving, "queued", null), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.peer("session-a", RECEIVED), { status: "sent" });
+  const drawn = renderPeerIn(PEER_NAME, PEER_BODY);
+  assert.deepEqual(
+    posts.map((post) => post.text),
+    [...drawn, ...drawn],
+    "a delivery with no second copy anywhere posts under every claim standing",
+  );
+  assert.equal(
+    promptClaimStanding(echo, "session-a", arriving),
+    true,
+    "and consumes neither claim on its way past",
+  );
 });

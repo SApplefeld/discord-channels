@@ -250,18 +250,14 @@ covers and why it fails in the direction it does.
 
 ## Peer traffic between sessions
 
-Claude Code sessions message each other directly, and the mirror predates that surface. Left
-alone it mishandled peer traffic in both directions: an inbound message delivered to an idle
-session was drawn in the operator's own quoted block carrying the harness's wrapper markup, one
-delivered mid-turn reached the thread nowhere, and an outbound send was invisible because it is an
-ordinary `tool_use` block. A thread therefore showed a session mid-negotiation as if it were
-silent, or showed another session's words as the operator's own.
-
-Peer traffic now renders under a `📡` attribution of its own, in both directions, so one session's
-thread carries every exchange it is party to, chronologically, and an operator watches a
-cross-session conversation without tabbing between terminals. `CHANNEL_PEER_MESSAGES` governs how
-much of each message is drawn (`full`, `brief`, `off`) and governs nothing else: the attribution
-and the engagement-stamp exclusion below hold on every setting.
+Claude Code sessions message each other directly, and one session's thread carries every exchange
+that session is party to, in both directions and in transcript order, so an operator watches a
+cross-session conversation without tabbing between terminals. Peer traffic renders under a `📡`
+attribution of its own rather than in either register the mirror already has, because neither can
+carry it honestly: the `>>>` quoted block means the operator typed something, and `✨ Claude` means
+this session wrote it. `CHANNEL_PEER_MESSAGES` governs how much of each message is drawn (`full`,
+`brief`, `off`) and governs nothing else: the attribution and the engagement-stamp exclusion below
+hold on every setting.
 
 **Three paths, one reading, one rendering.** A message reaches a thread three ways, and the three
 must not disagree about one message. Only one of them rides the prompt seams: a delivery landing
@@ -274,19 +270,38 @@ three render through one mode dispatch, so no path draws whole what another comp
 **Why that cannot double-post.** The idle delivery is a user line, and the tailer does not read
 user lines for peer traffic at all, so the mirror's copy is the only copy. The mid-turn delivery
 fires no prompt hook, on the queued-injection rule the operator's own typed mid-turn message
-follows, so the tailer's copy is the only copy. Both halves are measured rather than assumed: the
-shipped reader yields nothing for a real idle-delivery line, and a real mid-turn arrival moved the
-session's `lastHookAt` not at all across a window in which the session ran no tool of its own.
-Were that ever to change, the fallback is the mechanism already here, the shared echo memory that
-collapses the turn-close duplicate below.
+follows, so the tailer's copy is the only copy. Both halves are established rather than assumed, by
+different kinds of evidence. The idle half is structural: the shipped reader yields nothing at all
+for a real idle-delivery line, so the tailer cannot produce a second copy of one. The busy half is
+observational, because no counter on this surface witnesses whether a prompt hook fired: the
+liveness vocabulary and the mirror vocabulary are separate by construction and no liveness hook
+sends `UserPromptSubmit`, so a mirror post moves no liveness field whether it fired or not. What
+settles it is the thread's own copy count, counted against live traffic worded differently on each
+message so a missing copy cannot be mistaken for a duplicate suppressed. Were either half ever
+to change, the fallback is the mechanism already here, the shared echo memory that collapses the
+turn-close duplicate below.
+
+**One text does reach both prompt seams, and it is not a peer's.** The classification is a prefix
+match on the harness's own wrapper opening, so a prompt the operator really typed that starts with
+that opening is read as a delivery by the mirror hook and again by the tailer's recovery of the same
+transcript line. Both peer seams therefore take the per-path prompt claim an ordinary mirrored
+prompt takes: each consults the other path's slot before it renders and reports a copy that path
+already dispatched as sent, then claims its own slot as its run goes on the wire, releasing the
+claim and retrying once where the run lands nothing at all. The tailer's own two kinds carry no
+claim, having no second copy anywhere. What the pair buys is one copy of a misread prompt rather
+than two under a peer's attribution, and the drop line that names which path stood down is in
+[`operations.md`](operations.md).
 
 **The attribution names a counterparty, which is why it is composed rather than tabled.** The
 existing attributions are fixed literals in a keyed record; a peer line embeds a name, so it is
 built from component constants and the name goes through the full markdown neutralization a card
-title takes, bounded to the same length the reader bounds it to. This session's own side of the
-arrow renders as a bold token a name cannot supply, because every counterparty here is itself a
-Claude session and a peer named `Claude` would otherwise draw an identical header in both
-directions.
+title takes. The renderer's own bound covers whatever the reader admits, so a name that got past
+the reader is drawn whole rather than cut to half a name nobody can look up: the reader refuses a
+name over 120 code points whole, and the renderer bounds at 240 what neutralizing one produced,
+which is the ceiling that escape can grow 120 code points to, every character it touches being
+ASCII that leaves as two. This session's own side of the arrow renders as a bold token a name
+cannot supply, because every counterparty here is itself a Claude session and a peer named `Claude`
+would otherwise draw an identical header in both directions.
 
 A peer message posts through the thread's ordering chain like any other line, so it takes its place
 among the narration around it and ends any narration block being grown there. It spends the mirror
@@ -522,10 +537,15 @@ newer than the session's engagement stamp. Engagement is the registry's record t
 work drove the session, moved on an explicit allowlist rather than on everything but a denied few: a
 `SessionStart`, a `PostToolUse`, and an operator prompt on any of the three prompt paths (the
 hook-carried mirror, the tailer's mid-turn queued yield, and the tailer's turn-opening yield),
-minus the harness's own background-task wake injection,
-which is machine-generated and must not clear a gate that waits on a person. Two credited events
-carry liveness and deliberately do not stamp. `Stop` is the blocked stop itself, whose own hook
-traffic would otherwise clear the marker it raises. `PreToolUse` fires only for `AskUserQuestion`
+minus two prompts that are machine-generated and must not clear a gate that waits on a person: the
+harness's own background-task wake injection, and a peer session's message riding the same prompt
+path. Both exclusions hold at all three stamp sites and under every setting of the knobs that
+govern how those two are drawn, since a knob decides how text reaches the thread and not who wrote
+it.
+
+Two credited events carry liveness and deliberately do not stamp. `Stop` is the blocked stop
+itself, whose own hook traffic would otherwise clear the marker it raises. `PreToolUse` fires only
+for `AskUserQuestion`
 here, so it marks the instant a session parks on a person, and stamping it would clear a standing
 block for the whole life of an open question.
 
