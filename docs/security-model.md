@@ -200,7 +200,7 @@ which is what keeps this advisory rather than enforced.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
-matching one of nine named shapes whole: an assistant line's `text` content block; an attachment
+matching one of ten named shapes whole: an assistant line's `text` content block; an attachment
 whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
 prompt is a non-empty string; an attachment of that same type whose structured origin kind is
 instead `peer`, which yields the message another session sent this one, read from the origin's own
@@ -214,14 +214,15 @@ only as a non-empty string once invisibles are stripped) becomes the open-questi
 assistant line's own model name and the usage figures that sum to a context size; a structured
 model-fallback record, whose subtype is read through an own-property check so a prototype key names
 no cause; a `user` line whose console-command markup names exactly `/goal`, whose argument becomes
-the goal line; and a `user` line whose `promptSource` is `typed` and whose root `origin` kind is
-`human`, carrying no `isMeta` stamped `true`, no closed `<command-name>`/`</command-name>` pair
-anywhere in its text, and text that is not blank once invisibles are stripped, which becomes the
-turn-opening prompt. That
-last shape reads its content through a narrower reader than any other entry here, and the
-narrowing is the gate rather than a convenience: it admits a plain string, or exactly one `text`
-block beside any number of `image` blocks, and refuses everything else, because this is the one
-register-bound yield whose content is read out of a multi-block array, and a second text block
+the goal line; a `custom-title` line, whose `customTitle` field is refused outright if it is
+ill-formed and otherwise stripped, cleaned and cut into the session's own title, and which yields
+no item at all rather than a null when nothing readable survives that; and a `user` line whose
+`promptSource` is `typed` and whose root `origin` kind is `human`, carrying no `isMeta` stamped
+`true`, no closed `<command-name>`/`</command-name>` pair anywhere in its text, and text that is
+not blank once invisibles are stripped, which becomes the turn-opening prompt. That last shape
+reads its content through a narrower reader than any other entry here, and the narrowing is the
+gate rather than a convenience: it admits a plain string, or exactly one `text` block beside any
+number of `image` blocks, and refuses everything else, because this is the one
 attached to a typed line would otherwise be published as the operator's words. An image carries
 no text and
 cannot reach that register. What the reader refuses is a second text block or a block of a kind it
@@ -255,6 +256,92 @@ because the harness records that one under a channel origin rather than a human 
 check is the belt beside that brace: one reading of the harness's injection marker, shared by the
 hook-carried prompt and the extracted one, so the two cannot answer differently about the same
 message.
+
+**The `custom-title` yield is the only transcript reading that becomes a property of a Discord
+object rather than the content of a message.** Claude Code writes that line for a launch `--name`
+and for an in-session `/rename` alike, and its value becomes the session's title, which the thread
+carries as its name: composed into the call that opens the thread when a title is already known at
+that moment, and written with a `PATCH /channels/{threadId}` on every change after. So the goal's
+inventory does not describe it and is not borrowed. Where the goal is withheld from `GET /sessions`
+and omitted from the on-disk snapshot, the title reaches six places: the thread's own name, the
+session card body and the fleet card's session rows, all three by way of `displayName`;
+`GET /sessions`, as a field of the published record; and two files on disk, the registry snapshot
+and the thread binding, the latter so a restart does not spend a rename repainting a thread that
+already says the right thing. The broker log is not among them, and no line puts it there: the
+invariant below, that transcript content reaches the broker log at no level, covers this shape like
+every other.
+
+Two of those storage and publication routes take no field on their own. The published record and the
+persisted record are each declared as the session record minus a named few, which makes a new field
+a compile error until somebody decides about it, and the copy at each seam is then written field by
+field rather than by deleting from a copy, so the field is published or written only where a line
+names it. The title is named at both, deliberately: it is identity rather than intent, a restored
+record should carry the name the operator knows the session by, and the value is already drawn on a
+public thread, so withholding it would protect nothing. The goal is named at neither, for the
+opposite reason. The thread binding forces nothing of the kind: it is a hand-declared shape with a
+validator of its own, so a field reaches it only because somebody wrote one there.
+
+Five things bound the reading. It is read only for the session the transcript was learned for,
+behind the same sidechain and session-id gates every other shape sits behind. It is read only where
+mirroring is on, so a rename made after launch never leaves a `-NoMirror` session's machine; the
+launch name is not covered by that, since it reaches the thread over the hook header rather than
+through the transcript. It is neutralized and bounded at the read rather than at the render, because
+the render is not the only consumer: a value carrying an unpaired surrogate is refused outright,
+since nothing in the strip below reaches the surrogate range and the value ends in a request body
+that must be valid UTF-8, and what survives is run through the same invisible-class strip and
+whitespace collapse the thread name itself is drawn through, then cleaned, then cut on the stricter
+of a code-point and a UTF-16 count of a hundred and twenty, spending one of that budget on a
+trailing ellipsis when it cuts. The clean is there for the repo-wide rule that a stored display
+string is cleaned before it is bounded. Its control-character strip changes nothing in that
+position, those characters being already gone, but its own cap counts UTF-16 units and so can fall
+between the halves of an astral pair, and that is what the well-formedness check after the cut
+answers: it makes the guarantee a property of the composition rather than a fact a caller has to
+hold about how its own bound compares to the clean's. That whole composition is one exported
+function, so the two files the field re-enters from on a restart, both of which anything running as
+this user can rewrite, are guarded by it exactly as the transcript read is. The registry seam
+ignores a value equal to the one it holds, which is what keeps the line's re-emission on every poll
+from marking the record changed on every pass. And the repaint waits out a dwell, so a flurry of
+renames paints only the settled name, except in the two states that skip the dwell by design,
+`needs you` and `exited`, where a title change rides the next pass. That exception is what puts the
+rename budget within reach of the title: in either state a value alternating on each pass is a
+rename attempt on each pass, and the archive refuses to run until the thread carries the composed
+exited name, so a bucket held empty leaves a thread frozen at a stale title and unarchived.
+Discord's own rename bucket is the ceiling underneath all of that: the broker holds no rename-rate
+number of its own and blocks only once a response reports the bucket exhausted, though a single pass
+spends at most ten Discord calls of any kind. The figure of roughly two renames per ten minutes per
+thread is the developer-reported size of an undocumented bucket rather than a number this code
+holds.
+
+Two limits on that reading are accepted rather than closed, and they are stated here so an auditor
+reading this document does not have to reconstruct them from the code that implements them. The line
+carries no origin field, so unlike the `/goal` shape there is nothing to gate the read on: anything
+that can append to a mirrored session's transcript can rename that session's thread, to another live
+session's exact name included. What bounds it is that a permission verdict is already bound to its
+own thread and request id, so what is reachable is an operator steering a thread they have
+misidentified rather than an approval landing on the wrong session. The composed glyph and separator
+are the broker's own and cannot be moved from the transcript. The state suffix is weaker than that
+and is not a bound to lean on, because it is derived from signals the same appender reaches, an
+engagement stamp read off a typed-prompt line among them, which the accepted-risk list below already
+carries. The room a name gets inside the composed title is under ninety characters, not the reader's
+hundred and twenty, because the glyph and the state suffix are spent first. Two things narrow that
+bound rather than removing it. The glyph vocabulary and the separator are ordinary characters a
+title may itself contain, so a title reading as a glyph, a name and a state draws inside the
+broker's own composed one, and a client that truncates a long thread name in a list cuts the
+broker's true suffix off the end while the planted one stays visible. And the field re-enters from
+the two files named above rather than from the transcript alone: those files are in the set that
+must not be writable. For a live mirrored session such a plant is corrected at the next re-emitted
+`custom-title` line, which the harness writes many times across a session; what has no such
+correction is a session whose tailer is never armed, a `-NoMirror` one among them, or one that has
+ended. Nothing clears a title either, at any layer: the reader yields no clear, the registry seam
+only ever replaces, and the surface holds the last title it saw across a view carrying none, so a
+planted value survives a rebuilt record and a restart and goes only when an in-session `/rename` at
+that session's own console replaces it. Second, the invisible class is deliberately a class of what
+renders as nothing on every surface rather than of everything that happens to draw blank in some
+font, so a title made only of printable-blank characters, the Hangul filler and the Braille blank
+pattern among them, passes every gate and draws as an empty-looking name inside the composed title,
+whose glyph and state suffix still render. Widening the class at this reader alone would put it out
+of step with the render site it shares the class with, which is the drift the shared class exists to
+prevent.
 
 **The question alert is the second mention-bearing write, so its volume is bounded the way the
 permission prompt's is, by a window of its own.** It has two triggers, a credited `PreToolUse`
@@ -845,6 +932,25 @@ authenticated account or a non-administrative service account.
   That is the wall a process holding the process token already stands behind, and this is a third
   door through it rather than a capability the door did not already open. Unforgeable is therefore a
   property of the renderer, not a claim about where the words came from.
+- **A session's thread name rests on the same transcript file, and nothing clears it.** The
+  `custom-title` line the thread title follows carries no origin field, so unlike the `/goal` shape
+  there is nothing to gate the read on: anything that can append to a mirrored session's transcript
+  renames that session's thread, to another live session's exact name included, and what is reached
+  is an operator steering a thread they have misidentified rather than an approval landing on the
+  wrong session, since a verdict is bound to its own thread and request id. The title also re-enters
+  from the registry snapshot and the thread binding, both in the set that must not be writable, and
+  no layer offers a clear: the reader yields none, the registry seam only ever replaces, and the
+  surface holds the last title it saw, so a planted value outlives a rebuilt record and a restart
+  and goes only when an in-session `/rename` replaces it. For a live mirrored session the next
+  re-emitted line corrects a planted value; a session whose tailer is never armed has no such
+  correction. The transcript reading section above carries the full account.
+- **A title of printable-blank characters draws as an empty-looking thread name.** The invisible
+  class the title and the render site share is deliberately a class of what renders as nothing
+  everywhere rather than of everything that draws blank in some font, so the Hangul filler and the
+  Braille blank pattern pass every gate. The broker's own glyph and state suffix still render, so
+  the thread is identifiable rather than nameless. Widening the class at the title reader alone
+  would put it out of step with the render site, which is the drift a shared class exists to
+  prevent.
 - **A turn's final reply can arrive labelled as mid-turn.** The Stop mirror and the tailer read the
   same text, and whichever posts first is the one the operator sees. When the tailer wins the race,
   the turn's conclusion carries the `✨ Claude · working` attribution rather than `✨ Claude`. The
