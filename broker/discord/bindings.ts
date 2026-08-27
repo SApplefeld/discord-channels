@@ -7,7 +7,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { clean } from "../sanitize.ts";
+import { MAX_PEER_NAME_LENGTH, boundedTitle, clean, cleanWellFormed } from "../sanitize.ts";
 
 const FORMAT_VERSION = 1;
 
@@ -26,6 +26,14 @@ export type ThreadBinding = {
   name: string | null;
   /** The title the thread carries, so a restart does not spend a rename repainting it. */
   title: string | null;
+  /**
+   * The session's own title, as a `custom-title` transcript line last set it. Carried here for the
+   * same reason `name` is: a restart can outlive the registry record, and rebuilding a placeholder
+   * view with no title would compose the launch name and repaint the thread back to it, spending a
+   * rename to undo a rename the operator asked for. Not called `title`, which already names the
+   * fully composed thread title (glyph, name, state suffix) this field is one input to.
+   */
+  sessionTitle: string | null;
 };
 
 type Snapshot = {
@@ -44,6 +52,17 @@ function optionalString(value: unknown): boolean {
   return value === null || typeof value === "string";
 }
 
+/**
+ * For a field a snapshot on disk may predate: absent is accepted alongside null and a string, and
+ * `cleanBinding` below is what turns absent into null. A strict check here would be a
+ * whole-snapshot rejection, and a bindings file already on disk when `sessionTitle` shipped has no
+ * such key at all: rejecting it would drop every binding on the first restart after deploy and open
+ * a second thread for every live session.
+ */
+function absentOrString(value: unknown): boolean {
+  return value === undefined || optionalString(value);
+}
+
 function isBinding(value: unknown): value is ThreadBinding {
   if (!isRecord(value)) return false;
   return (
@@ -52,20 +71,33 @@ function isBinding(value: unknown): value is ThreadBinding {
     (value.threadId === null || typeof value.threadId === "string") &&
     typeof value.archived === "boolean" &&
     optionalString(value.name) &&
-    optionalString(value.title)
+    optionalString(value.title) &&
+    absentOrString(value.sessionTitle)
   );
 }
 
 // The same normalization the wire applies. These identifiers are interpolated into request paths,
 // and the file is an ordinary one that anything running as this user can rewrite.
 function cleanBinding(binding: ThreadBinding): ThreadBinding {
+  // Widened because a snapshot predating this field carries no value for it, which the validator
+  // above accepts; it lands as null here, the same as an explicit null, so nothing downstream ever
+  // meets an undefined.
+  const sessionTitle: string | null | undefined = binding.sessionTitle;
   return {
     sessionId: clean(binding.sessionId),
     messageId: clean(binding.messageId),
     threadId: binding.threadId === null ? null : clean(binding.threadId),
     archived: binding.archived,
-    name: binding.name === null ? null : clean(binding.name),
+    name: binding.name === null ? null : cleanWellFormed(binding.name),
     title: binding.title === null ? null : clean(binding.title),
+    // Routed through `boundedTitle`, the same composition the transcript reader applies
+    // (`broker/tail.ts`'s `customTitle`), rather than through `clean` alone: this file is one
+    // anything running as this user can rewrite, and a restore that only cleaned would carry an
+    // unnormalized, wrongly-bounded value all the way to the render site and a rename.
+    sessionTitle:
+      sessionTitle === undefined || sessionTitle === null
+        ? null
+        : boundedTitle(sessionTitle, MAX_PEER_NAME_LENGTH),
   };
 }
 

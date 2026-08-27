@@ -38,6 +38,12 @@ export type SessionView = {
    * session running under none. Raw operator prose: the card is what bounds and neutralizes it.
    */
   goal: string | null;
+  /**
+   * The session's own title, as a `custom-title` transcript line last set it (launch `--name` or an
+   * in-session `/rename`), and null for a session neither has touched. `displayName` prefers this
+   * over `name` when it is set.
+   */
+  title: string | null;
   /** True while the session is blocked on a permission verdict. Fed by the permission relay. */
   needsAttention: boolean;
   /**
@@ -77,6 +83,7 @@ export function toView(record: SessionRecord, signals: ViewSignals = {}): Sessio
     downgrade: record.downgrade,
     backgroundTasks: record.backgroundTasks,
     goal: record.goal,
+    title: record.title,
     needsAttention: signals.needsAttention ?? false,
     blocked: signals.blocked ?? false,
     lifecycle: record.state,

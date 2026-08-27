@@ -33,13 +33,13 @@ import {
   MAX_HELD_DESCRIPTION_LENGTH,
   MAX_MODEL_DETAIL_LENGTH,
   MAX_MODEL_NAME_LENGTH,
+  boundedTitle,
   fit,
-  inertName,
 } from "./discord/render.ts";
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
-import { clean, withoutInvisible } from "./sanitize.ts";
+import { MAX_PEER_NAME_LENGTH, withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
 import type { Sketch } from "./similarity.ts";
 
@@ -1194,24 +1194,12 @@ export const PEER_NAME_FALLBACK = "another session";
 export const PEER_BODY_UNREADABLE = "(a message this broker could not read)";
 
 /**
- * The most code points a name, a summary, or any other short peer-written label contributes.
- *
- * One reader outside that description shares the number: `customTitle`, whose value is the session's
- * own title rather than a peer's label. It is the same order of thing, a short name a person typed
- * for a surface someone reads, and giving it a constant of its own would be two numbers nobody
- * would remember to keep in step. What it does not share is the counting below, because it measures
- * through `fit` rather than through this module's own reading.
- *
- * Code points rather than UTF-16 units, the unit every other bounded reading in this module counts
- * in, so one emoji in a display name costs one of this budget rather than two. Which makes the
- * bound a reading this module applies rather than a regex quantifier: an attribute pattern counts
- * units, so the bound is taken after the capture, on the string, exactly as `modelName` takes its
- * own.
- *
- * Exported because it is one bound over both shapes a peer message arrives in, and a pin that the
- * two paths agree about a name has to be able to build a name that is over it.
+ * Re-exported under this module's own name for its callers and tests: the number lives in
+ * `sanitize.ts`, beside the other shared bounds, because the restore paths (`persistence.ts`,
+ * `bindings.ts`) need it too and neither should import the tailer, with everything it in turn
+ * imports, just to reach one constant.
  */
-export const MAX_PEER_NAME_LENGTH = 120;
+export { MAX_PEER_NAME_LENGTH } from "./sanitize.ts";
 
 /** The most characters an outbound message's one-line summary contributes. */
 const MAX_PEER_SUMMARY_LENGTH = 300;
@@ -1279,85 +1267,20 @@ function peerName(value: unknown): string | null {
 }
 
 /**
- * Whether every surrogate code unit in a string has its partner, which is what makes the string
- * encodable as the UTF-8 a JSON request body is sent as.
- *
- * Written out rather than called as `String.prototype.isWellFormed`, which exists on the Node this
- * runs on but is typed only from the `es2024` library: reaching it would mean moving the whole
- * project's compiler target for one call, which is a larger change than this reading is worth.
- */
-function isWellFormed(value: string): boolean {
-  for (let at = 0; at < value.length; at += 1) {
-    const unit = value.charCodeAt(at);
-    if (unit >= 0xdc00 && unit <= 0xdfff) return false;
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const next = value.charCodeAt(at + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      at += 1;
-    }
-  }
-  return true;
-}
-
-/**
  * A `custom-title` line's `customTitle` field, normalized and bounded, or null when there is
- * nothing usable there.
+ * nothing usable there. `boundedTitle` (`broker/discord/render.ts`) is the whole composition and
+ * its rationale; this is the reader's own bound applied to it.
  *
  * Deliberately not `peerName`'s refuse-whole answer to an over-bound value: a refused peer name
  * falls back to a readable placeholder the thread already knows how to draw, while a refused title
  * would mean the rename this work exists to surface silently never lands. So an over-bound title is
- * cut through `fit` rather than turned away. The two bounds are the same number and nothing else:
- * `peerName` counts code points and refuses whole, while `fit` holds the stricter of the code-point
- * and the UTF-16 count and cuts, so an astral character costs this reader two of the budget where it
- * costs a peer name one.
- *
- * An ill-formed value is refused outright, which is the one place the refuse-whole answer is the
- * right one. A lone surrogate is in no character class any of the steps below strip: `isInvisible`
- * covers none of `0xd800` through `0xdfff`, `inertName` spreads by code point and keeps it whole,
- * `clean` strips only C0 and DEL, and `fit` only declines to create one. It would therefore reach a
- * `PATCH /channels/{threadId}` body that has to be valid UTF-8, where the rename is refused on every
- * pass and spends a bucket the exited title and the archive share. Nothing legitimate writes one:
- * the harness writes this line as a JSON string it built from the name a person typed, so an
- * ill-formed value is corruption or an append by something else, and dropping it keeps the name the
- * thread already has rather than painting a replacement character onto it.
- *
- * Every bound sits behind every strip, and the order is the whole substance of this function. The
- * normalization is `inertName`, which is what a thread name is drawn through at the render site:
- * it strips the invisible class and collapses runs of whitespace to one space. Only then are the
- * emptiness gate and the cut taken, on that one string. Measuring a bound ahead of a strip spends
- * it on characters nobody sees, and each of the three ways that goes wrong is a real title lost:
- * `clean`'s 256-unit cap taken first turns three hundred zero-width characters ahead of a name into
- * two hundred fifty-six zero-width characters and drops the rename outright; that same cap counts
- * UTF-16 units, so it can fall between the halves of an astral pair and put a lone surrogate on a
- * wire that ends in a JSON request body; and a name padded with a hundred and thirty spaces
- * otherwise stores five characters of name, a hundred and fourteen of padding and an ellipsis,
- * which the render collapses to `Build …` and the rest of the session's name is gone. Normalizing
- * first is also what keeps the gate and the cut answering about the same text, so a title that
- * passes the gate cannot still cut to nothing a reader can see.
- *
- * This bound is not the last one the value meets, and it is not meant to be: `threadName` cuts the
- * composed name again to what is left of the hundred-character thread-name budget after the glyph
- * and the state suffix, which is under ninety. What this one buys is that the value the record
- * carries and the value the surface persists are bounded before they are stored, rather than only
- * on the way out.
- *
- * `clean` is kept for the repo-wide rule that a stored display string is cleaned before it is
- * bounded. Behind `inertName` it changes no value: the control class it strips is a subset of the
- * invisible class already gone, and its 256-unit cap sits outside the tighter bound taken next.
- *
- * What this cannot promise is that the result draws as anything. The invisible class is a class of
- * characters that render as nothing on every surface, not of every character that happens to draw
- * blank in some font: the Hangul filler and the Braille blank pattern are ordinary printable
- * characters and survive, here and at the render site alike. A title made only of those reads as an
- * empty thread name to a person and as a set title to this reader, which is the shared class's
- * limit rather than a gap in this gate, and widening the class here would put the two surfaces that
- * share it out of step.
+ * cut rather than turned away. The bound is the same number as `peerName`'s and nothing else:
+ * `peerName` counts code points and refuses whole, while `boundedTitle` cuts through `fit`, which
+ * holds the stricter of the code-point and the UTF-16 count, so an astral character costs this
+ * reader two of the budget where it costs a peer name one.
  */
 function customTitle(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  if (!isWellFormed(value)) return null;
-  const written = clean(inertName(value));
-  return written === "" ? null : fit(written, MAX_PEER_NAME_LENGTH);
+  return boundedTitle(value, MAX_PEER_NAME_LENGTH);
 }
 
 /**

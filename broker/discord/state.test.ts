@@ -22,6 +22,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,
@@ -204,6 +205,7 @@ const RECORD: SessionRecord = {
   downgrade: null,
   backgroundTasks: [],
   goal: null,
+  title: null,
 };
 
 test("a view starts without attention or a block until something reports one", () => {
@@ -216,6 +218,11 @@ test("a view starts without attention or a block until something reports one", (
   // The tool line's two halves are surfaced together, so a preview cannot arrive at the card
   // without the tool name it belongs to.
   assert.equal(narrowed.lastToolInput, "npm test");
+});
+
+test("a record's title reaches the view unchanged", () => {
+  const narrowed = toView({ ...RECORD, title: "renamed by /rename" });
+  assert.equal(narrowed.title, "renamed by /rename");
 });
 
 test("the two signals waiting on a person are threaded onto the view independently", () => {

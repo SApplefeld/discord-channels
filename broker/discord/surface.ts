@@ -126,6 +126,16 @@ type ThreadState = {
   retirePasses: number;
   /** The last view seen, which is what a vanished session's final render is built from. */
   lastView: SessionView;
+  /**
+   * The title composed for this session, once it has one. Sticky: set from the restored binding
+   * or from the first live view that carries a non-null title, and held across every later view
+   * whose own title is null, the same guarantee `noteTitle` already gives the registry record (a
+   * title is replaced, never cleared). `lastView.title` mirrors this value rather than carrying a
+   * view's own possibly-null one, so a re-announced session that lost its registry title still
+   * paints and persists the one already established, instead of repainting the thread back to its
+   * launch name and overwriting the only surviving copy with null.
+   */
+  sessionTitle: string | null;
 };
 
 export function createSurface(options: SurfaceOptions): Surface {
@@ -145,11 +155,11 @@ export function createSurface(options: SurfaceOptions): Surface {
   let calls = 0;
 
   /**
-   * What a restored binding knows about its session before the registry hands over a view. The
-   * name is carried in the binding precisely so a thread whose session is already gone can still
-   * be titled with the name the operator knows it by.
+   * What a restored binding knows about its session before the registry hands over a view. Both
+   * the name and the title are carried in the binding precisely so a thread whose session is
+   * already gone can still be titled with the name, or the rename, the operator knows it by.
    */
-  function placeholder(sessionId: string, name: string | null): SessionView {
+  function placeholder(sessionId: string, name: string | null, title: string | null): SessionView {
     return {
       sessionId,
       name,
@@ -165,6 +175,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
+      title,
       needsAttention: false,
       blocked: false,
       lifecycle: "ended",
@@ -189,7 +200,8 @@ export function createSurface(options: SurfaceOptions): Surface {
       abandoned: false,
       refusals: 0,
       retirePasses: 0,
-      lastView: placeholder(binding.sessionId, binding.name),
+      lastView: placeholder(binding.sessionId, binding.name, binding.sessionTitle),
+      sessionTitle: binding.sessionTitle,
     });
   }
 
@@ -203,6 +215,7 @@ export function createSurface(options: SurfaceOptions): Surface {
         threadId: entry.threadId,
         archived: entry.archived,
         name: entry.lastView.name,
+        sessionTitle: entry.sessionTitle,
         title: entry.renderedName,
       });
     }
@@ -420,8 +433,17 @@ export function createSurface(options: SurfaceOptions): Surface {
 
   function entryFor(view: SessionView, state: SurfaceState): ThreadState {
     const now = options.now();
-    const name = threadName(view, state);
-    let entry = threads.get(view.sessionId);
+    const existing = threads.get(view.sessionId);
+    // Sticky, the same guarantee `noteTitle` already gives the registry record it came from: a
+    // title is set or replaced, never cleared. Applied here rather than left to the raw view, so
+    // a session whose registry record was rebuilt with no title of its own (a lost state file, a
+    // fresh SessionStart) still paints and persists the title already established, instead of a
+    // live view's null repainting the thread back to its launch name and overwriting the only
+    // surviving copy of a rename with null.
+    const sessionTitle = view.title ?? existing?.sessionTitle ?? null;
+    const effectiveView: SessionView = view.title === sessionTitle ? view : { ...view, title: sessionTitle };
+    const name = threadName(effectiveView, state);
+    let entry = existing;
     if (entry === undefined) {
       entry = {
         messageId: null,
@@ -439,11 +461,18 @@ export function createSurface(options: SurfaceOptions): Surface {
         abandoned: state === "exited" && view.lifecycle === "ended",
         refusals: 0,
         retirePasses: 0,
-        lastView: view,
+        lastView: effectiveView,
+        sessionTitle,
       };
       threads.set(view.sessionId, entry);
     }
-    entry.lastView = view;
+    entry.lastView = effectiveView;
+    // Persisted the moment it moves, the way every other field the binding carries is. Left to ride
+    // out on some later call, the on-disk binding lags the sticky copy for exactly the cases the
+    // field exists for: a title that composes to the same thread name spends no rename, so nothing
+    // else would write the file, and a restart in that window restores the older value.
+    const titleMoved = entry.sessionTitle !== sessionTitle;
+    entry.sessionTitle = sessionTitle;
     entry.desired = state;
     // The dwell stamp: any change to the composed title restarts it, a title-state transition and
     // a session renaming itself alike, so refreshName's settled check below always measures how
@@ -452,6 +481,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       entry.desiredName = name;
       entry.desiredSince = now;
     }
+    if (titleMoved) bound();
     return entry;
   }
 
@@ -476,14 +506,14 @@ export function createSurface(options: SurfaceOptions): Surface {
     // The card is refreshed whether or not the thread exists yet. A posted message whose thread
     // could not be opened is still on display, and left alone it would sit there frozen at the
     // text it carried the moment it was posted.
-    await refreshCard(view, state, entry);
+    await refreshCard(entry.lastView, state, entry);
     if (entry.threadId === null) {
-      await open(view, state, entry);
+      await open(entry.lastView, state, entry);
       return;
     }
 
-    await refreshName(view, state, entry);
-    if (options.archiveOnEnd && state === "exited") await archive(view, entry);
+    await refreshName(entry.lastView, state, entry);
+    if (options.archiveOnEnd && state === "exited") await archive(entry.lastView, entry);
   }
 
   /**

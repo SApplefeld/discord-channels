@@ -38,6 +38,7 @@ function record(sessionId: string): SessionRecord {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
   };
 }
 
@@ -321,6 +322,89 @@ test("the engagement stamp round-trips a save and a load", () => {
     const onDisk = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(onDisk.sessions[0].lastEngagementAt, 4_242, "the field reaches the bytes on disk");
     assert.equal(loadSessions(file, { log: () => {} })[0].lastEngagementAt, 4_242);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a title survives a restart, unlike the goal: it is the session's own identity", () => {
+  const { file, cleanup } = scratchFile();
+  try {
+    saveSessions(file, [{ ...record("session-a"), title: "Renamed by /rename" }]);
+    const onDisk = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(onDisk.sessions[0].title, "Renamed by /rename", "the field reaches the bytes on disk");
+
+    const loaded = loadSessions(file, { log: () => {} });
+    assert.equal(loaded[0].title, "Renamed by /rename", "and comes back on the next load");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a snapshot written before the title field existed loads with it absent, not undefined", () => {
+  // Every snapshot on disk when this field shipped was written without it, on `lastToolInput`'s own
+  // tolerance: a strict check would empty the whole registry over a field an older build never wrote.
+  const { file, cleanup } = scratchFile();
+  try {
+    const older = record("session-a") as Partial<SessionRecord>;
+    delete older.title;
+    assert.ok(!("title" in older), "the fixture under test must genuinely lack the field");
+    writeFileSync(file, JSON.stringify({ version: 1, sessions: [older] }), "utf8");
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+    assert.deepEqual(logged, [], "an older snapshot is not corruption");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].title, null, "absent lands as null, never as undefined");
+  } finally {
+    cleanup();
+  }
+});
+
+test("an ill-formed restored title loads as null rather than reaching a rename repaired", () => {
+  // The file is one anything running as this user can rewrite, and `clean`'s UTF-16-unit cap can
+  // split an astral pair and manufacture a lone surrogate that was not there. A null falls through
+  // to the launch name; a repaired value would paint a replacement character onto a live thread.
+  const { file, cleanup } = scratchFile();
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, sessions: [{ ...record("session-a"), title: "Real Name\udc00" }] }),
+      "utf8",
+    );
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+    assert.deepEqual(logged, [], "an ill-formed title is not a corrupt snapshot");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].title, null, "the ill-formed value is refused, not repaired");
+    assert.equal(loaded[0].sessionId, "session-a", "the rest of the record is intact");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a well-formed title whose 256-unit clean cap would split an astral pair loads bounded and well-formed, not with a manufactured surrogate", () => {
+  // `clean` alone cuts at 256 UTF-16 units regardless of where a surrogate pair falls, so a
+  // well-formed 275-unit input with ten astral characters starting at unit 255 would load with a
+  // lone high surrogate at the cut. Routed through `boundedTitle`, `fit`'s own code-point-aware cut
+  // to 120 always lands ahead of that defect for this reader's bound (120 is under `clean`'s 256),
+  // so the astral tail is discarded whole rather than split: the correct outcome is a bounded,
+  // well-formed title, not a null.
+  const { file, cleanup } = scratchFile();
+  try {
+    const input = "A".repeat(255) + "\u{1F6F0}".repeat(10);
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, sessions: [{ ...record("session-a"), title: input }] }),
+      "utf8",
+    );
+
+    const logged: string[] = [];
+    const loaded = loadSessions(file, { log: (message) => logged.push(message) });
+    assert.deepEqual(logged, [], "a well-formed title is not a corrupt snapshot");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].title, `${"A".repeat(119)}…`, "the astral tail is cut away, not split");
   } finally {
     cleanup();
   }

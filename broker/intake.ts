@@ -577,7 +577,9 @@ export type HandlerOptions = {
  * What `GET /sessions` publishes. The process token is withheld: it is the join key a hook post is
  * authenticated by, so anything that can read one can forge session traffic. The goal is withheld
  * too: it is operator prose off the transcript, held for one display surface, and a debugging route
- * that anything on this machine can read is not that surface.
+ * that anything on this machine can read is not that surface. The title, unlike the goal, is
+ * published on purpose: it is session identity of the same class as `name`, which this route
+ * already publishes, not operator prose held for one display surface.
  */
 export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal">;
 
@@ -631,6 +633,9 @@ export function redact(record: SessionRecord): PublicSessionRecord {
       agentType: task.agentType,
       since: task.since,
     })),
+    // Published, unlike the goal: session identity of the same class as `name` above, not operator
+    // prose held for one display surface.
+    title: record.title,
   };
 }
 

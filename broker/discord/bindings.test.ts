@@ -17,6 +17,7 @@ const BINDING: ThreadBinding = {
   archived: false,
   name: "neo-intake",
   title: "⚙ neo-intake · working",
+  sessionTitle: "the real title",
 };
 
 test("bindings survive a round trip through the file", () => {
@@ -108,6 +109,85 @@ test("an identifier that is not a snowflake makes the file malformed", () => {
 
     assert.deepEqual(loadBindings(file, { log: (m) => said.push(m) }), []);
     assert.equal(said.length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a binding written before sessionTitle existed loads with it absent, not undefined", () => {
+  // Every bindings file on disk when this field shipped was written without it. Rejecting one would
+  // drop every binding on the first restart after the deploy and open a second thread for every
+  // live session.
+  const directory = scratch();
+  try {
+    const file = path.join(directory, "discord-threads.json");
+    const older: Record<string, unknown> = { ...BINDING };
+    delete older.sessionTitle;
+    assert.ok(!("sessionTitle" in older), "the fixture under test must genuinely lack the field");
+    writeFileSync(file, JSON.stringify({ version: 1, bindings: [older] }), "utf8");
+
+    const said: string[] = [];
+    const loaded = loadBindings(file, { log: (m) => said.push(m) });
+
+    assert.deepEqual(said, [], "an older file is not corruption");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].sessionTitle, null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an ill-formed restored sessionTitle loads as null rather than reaching a rename repaired", () => {
+  // The file is one anything running as this user can rewrite, and `clean`'s UTF-16-unit cap can
+  // split an astral pair and manufacture a lone surrogate that was not there. A null falls through
+  // to `name` at the render site; a repaired value would paint a replacement character onto a live
+  // thread.
+  const directory = scratch();
+  try {
+    const file = path.join(directory, "discord-threads.json");
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, bindings: [{ ...BINDING, sessionTitle: "Real Name\udc00" }] }),
+      "utf8",
+    );
+
+    const said: string[] = [];
+    const loaded = loadBindings(file, { log: (m) => said.push(m) });
+    assert.deepEqual(said, [], "an ill-formed title is not a corrupt file");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].sessionTitle, null, "the ill-formed value is refused, not repaired");
+    assert.equal(loaded[0].sessionId, "session-a", "the rest of the binding is intact");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a well-formed sessionTitle whose 256-unit clean cap would split an astral pair loads bounded and well-formed, not with a manufactured surrogate", () => {
+  // `clean` alone cuts at 256 UTF-16 units regardless of where a surrogate pair falls, so a
+  // well-formed 275-unit input with ten astral characters starting at unit 255 would load with a
+  // lone high surrogate at the cut. Routed through `boundedTitle`, `fit`'s own code-point-aware cut
+  // to 120 always lands ahead of that defect for this reader's bound (120 is under `clean`'s 256),
+  // so the astral tail is discarded whole rather than split: the correct outcome is a bounded,
+  // well-formed title, not a null.
+  const directory = scratch();
+  try {
+    const file = path.join(directory, "discord-threads.json");
+    const input = "A".repeat(255) + "\u{1F6F0}".repeat(10);
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, bindings: [{ ...BINDING, sessionTitle: input }] }),
+      "utf8",
+    );
+
+    const said: string[] = [];
+    const loaded = loadBindings(file, { log: (m) => said.push(m) });
+    assert.deepEqual(said, [], "a well-formed sessionTitle is not a corrupt file");
+    assert.equal(loaded.length, 1);
+    assert.equal(
+      loaded[0].sessionTitle,
+      `${"A".repeat(119)}…`,
+      "the astral tail is cut away, not split",
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -1034,6 +1034,117 @@ test("a goal for a session the registry does not hold unended changes nothing", 
   assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
 });
 
+test("a title is held on the record it names, replaced by the next one, and stamps no engagement", () => {
+  const time = clock();
+  const sessions = registry(time.now);
+  sessions.apply(sessionStart("session-a", "startup"));
+
+  // The clock starts at 1_000_000 (`clock`'s own default, above); a session opening stamps
+  // engagement at the time it announces, so this is the literal a rename must leave untouched.
+  time.advance(5_000);
+  sessions.noteTitle("session-a", "First Title");
+  assert.equal(sessions.list()[0].title, "First Title");
+
+  time.advance(5_000);
+  sessions.noteTitle("session-a", "Renamed Title");
+  assert.equal(sessions.list()[0].title, "Renamed Title", "the newest title is the title");
+
+  // A rename is not a person driving the session, and the same stamp is what the blocked-state
+  // derivation compares a `goal-blocked` event against: moving it here would clear a standing
+  // block for a session that only renamed itself.
+  assert.equal(
+    sessions.list()[0].lastEngagementAt,
+    1_000_000,
+    "the engagement stamp is unmoved by a rename",
+  );
+});
+
+test("the title seam bounds what it stores rather than trusting its caller", () => {
+  const { registry, sessionId } = withSession();
+  // Written as an escape rather than as the character itself, so a reader of this file can see the
+  // fixture is padding.
+  const zeroWidth = "\u200b";
+  const cut = `${"n".repeat(119)}…`;
+
+  // The live caller, the tailer, already normalizes through the same function, so this pins the
+  // seam's own guarantee rather than the tailer's: the field every surface prefers over the launch
+  // name is safe for a thread name because this seam made it so, not because one caller promised.
+  registry.noteTitle(sessionId, "n".repeat(200));
+  assert.equal(
+    registry.list()[0].title,
+    cut,
+    "an over-long title is cut to the shared label bound, and the cut is marked out of the bound",
+  );
+
+  // A lone surrogate reaches a request body that has to be valid UTF-8, and nothing downstream
+  // repairs one. Refused rather than stored, and refused without disturbing the title already held.
+  registry.noteTitle(sessionId, "bad\ud800title");
+  assert.equal(
+    registry.list()[0].title,
+    cut,
+    "an ill-formed title is refused outright and leaves the standing title alone",
+  );
+
+  // Nothing usable left is not a clear: this seam replaces a title and never removes one.
+  registry.noteTitle(sessionId, zeroWidth.repeat(4));
+  assert.equal(
+    registry.list()[0].title,
+    cut,
+    "a title that normalizes away is refused rather than read as a clear",
+  );
+});
+
+test("a title for a session the registry does not hold unended changes nothing", () => {
+  const { registry, sessionId } = withSession();
+  registry.relayClosed(TOKEN, sessionId);
+
+  assert.equal(registry.noteTitle(sessionId, "too late"), null);
+  assert.equal(registry.noteTitle("no-such-session", "nobody's title"), null);
+
+  assert.equal(registry.list()[0].title, null);
+  assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
+});
+
+test("an unchanged title costs no snapshot write, since the transcript line is re-emitted every poll", () => {
+  const { registry, sessionId, writes } = withSession();
+
+  // 2: withSession's own SessionStart writes once, and this first noteTitle writes a second,
+  // since the value is new.
+  registry.noteTitle(sessionId, "Steady Title");
+  assert.equal(writes(), 2, "the changed value does write");
+
+  registry.noteTitle(sessionId, "Steady Title");
+  registry.noteTitle(sessionId, "Steady Title");
+  assert.equal(writes(), 2, "the repeated, unchanged value writes nothing further");
+});
+
+test("the header's launch name never overwrites a tailed title", () => {
+  const { registry, sessionId } = withSession();
+  registry.noteTitle(sessionId, "Set by /rename");
+
+  // The resume path (`start`, the same-session branch): a hook post carrying a launch name still
+  // only ever writes `record.name`.
+  registry.apply(sessionStart(sessionId, "resume", "header-name-on-resume"));
+  assert.equal(registry.list()[0].title, "Set by /rename", "resume's header name spares the title");
+  assert.equal(registry.list()[0].name, "header-name-on-resume");
+
+  // The shared stamping path every other hook event runs through: `intake.sessionName !== null`
+  // still only ever writes `record.name`.
+  registry.apply({
+    event: "PostToolUse",
+    processToken: TOKEN,
+    sessionName: "header-name-on-post",
+    sessionId,
+    source: null,
+    toolName: "Bash",
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+  assert.equal(registry.list()[0].title, "Set by /rename", "the post's header name spares the title");
+  assert.equal(registry.list()[0].name, "header-name-on-post");
+});
+
 /** The refusal record's fields as the reader reduces them, the captured specimen's values. */
 const REFUSAL: ModelFallback = {
   cause: "refusal",

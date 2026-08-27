@@ -19,7 +19,7 @@ import type {
   SessionRecord,
   SessionState,
 } from "./registry.ts";
-import { clean } from "./sanitize.ts";
+import { MAX_PEER_NAME_LENGTH, boundedTitle, clean, cleanWellFormed } from "./sanitize.ts";
 
 const FORMAT_VERSION = 1;
 
@@ -174,7 +174,8 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     optionalNumber(value.endedAt) &&
     absentOrString(value.openingModel) &&
     absentOrString(value.model) &&
-    absentOrNumber(value.contextTokens)
+    absentOrNumber(value.contextTokens) &&
+    absentOrString(value.title)
     // `downgrade` and `backgroundTasks` are deliberately unvalidated here: they are the nested
     // fields, and cleanRecord reduces a malformed one at field level (to null and to the readable
     // entries) rather than letting it reject the snapshot whole.
@@ -197,11 +198,14 @@ function cleanRecord(record: SessionRecord): SessionRecord {
   // marker early, across the one restart that upgrades the file, rather than pinning a blocked
   // state onto a session nobody is waiting on.
   const lastEngagementAt: number | null | undefined = record.lastEngagementAt;
+  // Widened for the same reason: a snapshot written before this field existed carries no value for
+  // it, and it lands as null here rather than as undefined on a record every surface reads.
+  const title: string | null | undefined = record.title;
   return {
     ...record,
     sessionId: clean(record.sessionId),
     processToken: clean(record.processToken),
-    name: record.name === null ? null : clean(record.name),
+    name: record.name === null ? null : cleanWellFormed(record.name),
     host: clean(record.host),
     source: record.source === null ? null : clean(record.source),
     lastTool: record.lastTool === null ? null : clean(record.lastTool),
@@ -221,6 +225,15 @@ function cleanRecord(record: SessionRecord): SessionRecord {
     // worked toward is not observable, so a goal restored from a snapshot would draw as current on
     // a card indefinitely, which reads worse than no goal line at all.
     goal: null,
+    // Restored, unlike the goal: the title is the session's own identity, set by a launch `--name`
+    // or an in-session `/rename`, rather than transient intent, so a restart should draw the name
+    // the operator knows it by.
+    //
+    // Routed through `boundedTitle`, the same composition the transcript reader applies
+    // (`broker/tail.ts`'s `customTitle`), rather than through `clean` alone: this file is one
+    // anything running as this user can rewrite, and a restore that only cleaned would carry an
+    // unnormalized, wrongly-bounded value all the way to `GET /sessions` and a rename.
+    title: title === undefined || title === null ? null : boundedTitle(title, MAX_PEER_NAME_LENGTH),
     // Absent, null, and malformed all land as null: the validator above vouches for every other
     // field of the record, and this one answers for itself.
     downgrade: fallbackOrNull(record.downgrade),
@@ -314,6 +327,7 @@ function persisted(record: SessionRecord): PersistedRecord {
     contextTokens: record.contextTokens,
     downgrade: record.downgrade,
     backgroundTasks: record.backgroundTasks,
+    title: record.title,
   };
 }
 

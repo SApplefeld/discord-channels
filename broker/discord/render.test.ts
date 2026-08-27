@@ -11,6 +11,8 @@ import {
   MAX_TOOL_INPUT_PREVIEW,
   TITLE_GLYPHS,
   appendNarration,
+  boundedTitle,
+  displayName,
   heartbeat,
   inertField,
   inertMessage,
@@ -63,6 +65,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
     ...overrides,
   };
 }
@@ -283,6 +286,61 @@ test("the session ID fallback is neutralized before it is cut", () => {
   const name = threadName(view({ name: null, sessionId: "\u202e0f3c9d21-1111" }), "idle");
 
   assert.equal(name, `${TITLE_GLYPHS.active} session 0f3c9d21 · active`);
+});
+
+test("displayName prefers the title, falls back to the name, then to the session id", () => {
+  assert.equal(
+    displayName(view({ title: "Renamed by /rename", name: "neo-intake" })),
+    "Renamed by /rename",
+    "the title outranks the launch name",
+  );
+  assert.equal(
+    displayName(view({ title: null, name: "neo-intake" })),
+    "neo-intake",
+    "no title falls back to the launch name",
+  );
+  assert.equal(
+    displayName(view({ title: null, name: null })),
+    "session 0f3c9d21",
+    "neither title nor name falls back to the session id",
+  );
+});
+
+test("a title of nothing but invisible characters falls through to the name, not to a blank draw", () => {
+  assert.equal(
+    displayName(view({ title: "\u200b\u202e\u0000", name: "neo-intake" })),
+    "neo-intake",
+    "the title neutralizes to empty and the name is what draws",
+  );
+});
+
+test("threadName composes a differing title, keeping the glyph and the state suffix", () => {
+  const name = threadName(view({ title: "New Name", name: "old-name" }), "working");
+  assert.equal(name, `${TITLE_GLYPHS.active} New Name · active`);
+});
+
+test("boundedTitle at a non-positive limit refuses rather than returning an empty string", () => {
+  // `fit` itself returns "" for no room, and "" is well-formed, so without its own floor this
+  // function would hand back an empty string instead of the null every other refusal here returns.
+  assert.equal(boundedTitle("Renamed by /rename", 0), null);
+  assert.equal(boundedTitle("Renamed by /rename", -5), null);
+});
+
+test("boundedTitle's post-fit recheck fires for a limit at or above clean's own 256-unit cap", () => {
+  // Every current caller passes 120, under clean's 256-unit cap, where `fit`'s own cut always lands
+  // ahead of any defect `clean` could have manufactured. At a limit clean's cap cannot out-run, the
+  // manufactured lone surrogate survives `fit` untouched, and this is the one case that reaches the
+  // recheck's `return null` branch.
+  const input = "A".repeat(255) + "\u{1F6F0}".repeat(10);
+  assert.equal(boundedTitle(input, 256), null);
+});
+
+test("the card's name line follows the same displayName the thread name does", () => {
+  // Both surfaces read one function for what a session is called; this pins that renderCard is
+  // actually one of its callers, not a second name-composing path that happens to agree today.
+  const card = renderCard(view({ title: "Renamed by /rename", name: "neo-intake" }), "working", NOW);
+  assert.ok(card.includes("Renamed by /rename"), card);
+  assert.ok(!card.includes("neo-intake"), card);
 });
 
 test("untrusted text in the card is inert", () => {
@@ -669,6 +727,7 @@ test("the tool line carries what the tool was called with, from the record throu
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
   };
 
   assert.equal(toolValue(renderCard(toView(record), "working", NOW)), "Bash · npm test");
@@ -797,6 +856,7 @@ test("neither the view nor the card can carry the process token", () => {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
   };
 
   const narrowed = toView(record);

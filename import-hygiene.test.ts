@@ -97,6 +97,69 @@ test("the tailer answers the routing layer's runtime import with no runtime impo
   );
 });
 
+test("the two restore paths reach the title normalization without importing the render layer", () => {
+  // `persistence.ts` reads the registry snapshot and `discord/bindings.ts` reads the thread
+  // bindings, and both re-admit a session title from a file anything running as this user can
+  // rewrite. They need the whole `boundedTitle` composition to do it, and taking that from
+  // `discord/render.ts` would put a module that itself imports `registry.ts` and `board/events.ts`
+  // on the load path a state file is read through: one edge from `render.ts` back to either of
+  // these files closes a cycle that type-checks clean and throws only at the first restore, taking
+  // every binding with it. The composition lives in `sanitize.ts`, which imports nothing, so the
+  // direction is closed rather than merely unused today.
+  const persistence = readFileSync("broker/persistence.ts", "utf8");
+  const bindings = readFileSync("broker/discord/bindings.ts", "utf8");
+
+  // The control. If the composition moved back into the render layer, or these files stopped
+  // needing it, the assertion below would be a check nobody could fail.
+  for (const [name, source] of [
+    ["broker/persistence.ts", persistence],
+    ["broker/discord/bindings.ts", bindings],
+  ] as const) {
+    assert.ok(
+      /boundedTitle/.test(code(source)),
+      `${name} is expected to normalize a restored title through boundedTitle; if that ended, this ` +
+        "pin has no subject and should be reconsidered rather than left passing",
+    );
+  }
+
+  for (const [name, source] of [
+    ["broker/persistence.ts", persistence],
+    ["broker/discord/bindings.ts", bindings],
+  ] as const) {
+    assert.deepEqual(
+      runtimeImports(source).filter((specifier) => /render\.ts$/.test(specifier)),
+      [],
+      `${name} must not import the render layer at run time: it is read on the state-file and ` +
+        "bindings load path, and the render layer reaches the registry and the board events from there",
+    );
+  }
+});
+
+test("the normalization module is a leaf, so every layer may reach it", () => {
+  // `sanitize.ts` is imported by the storage layer, the renderer and the registry alike, and the
+  // registry is itself imported by the renderer. That fan-in is safe only while this module sits at
+  // the bottom of the graph: one runtime import out of it, into any module that can reach back,
+  // closes a cycle that type-checks clean and throws at the first call rather than at import. The
+  // module says as much in its own header; this is what makes the claim enforced rather than
+  // asserted.
+  const sanitize = readFileSync("broker/sanitize.ts", "utf8");
+
+  // The control. If nothing reached this module any more, the assertion below would be a check
+  // nobody could fail.
+  assert.ok(
+    runtimeImports(readFileSync("broker/registry.ts", "utf8")).includes("./sanitize.ts"),
+    "the registry is expected to import the normalization module at run time; if that ended, this " +
+      "pin has no subject and should be reconsidered rather than left passing",
+  );
+
+  assert.deepEqual(
+    runtimeImports(sanitize),
+    [],
+    "broker/sanitize.ts must import nothing at run time: every layer reaches it, so an import out " +
+      "of it is the one edge that can close a cycle through the registry or the renderer",
+  );
+});
+
 test("the scan actually reaches this repo's sources", () => {
   // Without this, a glob that silently matched nothing would make the check above vacuously pass.
   assert.ok(SOURCES.includes("import-hygiene.test.ts"), `scanned files: ${SOURCES.join(", ")}`);

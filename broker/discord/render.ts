@@ -5,7 +5,10 @@
 // at the render site, rather than at intake: intake owns storage safety (bounded, no control
 // characters) and the renderer owns display safety. Suppressing pings is the transport's half of
 // the same job, via `allowed_mentions`.
-import { isInvisible, sliceCodePoints, withoutInvisible } from "../sanitize.ts";
+import { fit, sliceCodePoints, visible, withoutInvisible } from "../sanitize.ts";
+// Re-exported for the callers that already read these from the render site. The implementations
+// live in `../sanitize.ts` so the storage layer can reach them without importing this module.
+export { boundedTitle, fit } from "../sanitize.ts";
 import { MAX_PLAN_CHARS } from "../board/events.ts";
 import { modelRank } from "../registry.ts";
 import type { BackgroundTask, ModelFallback } from "../registry.ts";
@@ -88,21 +91,6 @@ export const MAX_CARD_LENGTH = 1_900;
 // `<t:...:R>` renders as a live relative timestamp, which would spoof the heartbeat this card
 // exists to carry, and `<@id>`, `<#id>`, and `<:name:id>` render as a mention or an emoji.
 const MARKDOWN = /[\\`*_~|<>#[\]()]/g;
-
-/**
- * Strips the invisible reordering characters and collapses runs of whitespace to one space.
- *
- * For a title or a card field, which are single-line by construction. The class itself is shared
- * with the path that carries text to the model, so the two cannot come to disagree about which
- * characters are allowed to be invisible.
- */
-function visible(value: string): string {
-  return [...value]
-    .filter((character) => !isInvisible(character.codePointAt(0) ?? 0))
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 /**
  * Untrusted text for the body of a message: visible, and with markdown escaped so it renders as
@@ -825,7 +813,10 @@ export function renderQuestionNotice(input: {
 }
 
 /**
- * The label a session is known by. A session launched without the wrapper carries no name.
+ * The label a session is known by, which is the session's own title when a `custom-title`
+ * transcript line has set one (a launch `--name` or an in-session `/rename`), the launch name the
+ * hook header carries when it has not, and a stub built from the session ID when neither exists.
+ * A session launched without the wrapper carries no name.
  *
  * Exported because every surface that names a session has to name it the same way: the thread
  * title, the session's own card, and the fleet card's session rows all read this one fallback, so
@@ -836,6 +827,17 @@ export function renderQuestionNotice(input: {
  * has to put it through `inertText` or `inertField` first, or a session names itself in bold.
  */
 export function displayName(view: SessionView): string {
+  // The title, from a `custom-title` transcript line, outranks the launch name: it is what an
+  // in-session `/rename` set, and the launch name is only ever what the wrapper set at start. Each
+  // source is neutralized before the emptiness check, so a title that is nothing but the invisible
+  // class falls through to the name rather than drawing as a blank thread. A title made only of
+  // printable-blank characters (the Hangul filler, the Braille blank pattern) is not caught by
+  // this: neither `isInvisible` nor the whitespace collapse reaches them, so such a title survives
+  // and draws as an empty-looking name. Accepted rather than fixed, on `docs/security-model.md`'s
+  // own record: the invisible class is deliberately shared with the render site and the model-input
+  // path, and widening it here alone would put the two out of step.
+  const titled = view.title === null ? "" : inertName(view.title);
+  if (titled !== "") return titled;
   const named = view.name === null ? "" : inertName(view.name);
   // The session ID is a payload field from the same untrusted process as the name, so the fallback
   // is neutralized before it is cut rather than after: a slice of raw text can end mid-override.
@@ -878,36 +880,6 @@ export function threadName(view: SessionView, state: SurfaceState): string {
   const suffix = ` ${SEPARATOR} ${title}`;
   const room = MAX_THREAD_NAME_LENGTH - prefix.length - suffix.length;
   return `${prefix}${fit(displayName(view), room)}${suffix}`;
-}
-
-/**
- * Truncates to a length in code points, never in UTF-16 units: cutting an astral-plane character
- * in half leaves a lone surrogate, which is not valid UTF-8 for the request body. The cut is marked
- * with an ellipsis paid for out of the limit, so what comes back is inside the bound and says it is
- * not the whole text.
- *
- * Exported because one cut is made before any renderer sees the text: the reader bounds an option's
- * description at intake, and a text arriving here already cut has nothing left to tell this function
- * it was. One implementation of the mark rather than a second beside the intake site, so the two
- * cuts cannot come to disagree about what a shortened string looks like.
- */
-export function fit(value: string, limit: number): string {
-  // No room is no text: the cut marker is a character of its own, and drawn where nothing fits it
-  // would put the line it sits in a character past the bound that was measured for it.
-  if (limit <= 0) return "";
-
-  const characters = [...value];
-  if (characters.length <= limit && value.length <= limit) return value;
-
-  // Cut on code points, then keep dropping them until the UTF-16 length fits too. Which of the
-  // two Discord counts is not worth guessing at: holding both bounds is correct either way.
-  let kept = [...sliceCodePoints(value, Math.max(limit - 1, 0))];
-  let fitted = `${kept.join("")}…`;
-  while (fitted.length > limit && kept.length > 0) {
-    kept = kept.slice(0, -1);
-    fitted = `${kept.join("")}…`;
-  }
-  return fitted;
 }
 
 /**

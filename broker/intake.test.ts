@@ -1255,6 +1255,25 @@ test("GET /sessions never publishes a process token", async () => {
   assert.equal((listed.body as { sessions: { sessionId: string }[] }).sessions[0].sessionId, "session-a");
 });
 
+test("GET /sessions publishes the title", async () => {
+  const { registry, handle } = harness();
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("SessionStart"),
+      body: JSON.stringify({ session_id: "session-a", source: "startup" }),
+    }),
+  );
+  registry.noteTitle("session-a", "Renamed Session");
+
+  const listed = await call(handle, fakeRequest("127.0.0.1", { method: "GET", url: "/sessions" }));
+
+  assert.equal(
+    (listed.body as { sessions: { title: string | null }[] }).sessions[0].title,
+    "Renamed Session",
+  );
+});
+
 /** A GET with an arbitrary Host header, which fetch refuses to send. */
 function rawGet(
   port: number,

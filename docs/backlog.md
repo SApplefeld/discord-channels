@@ -371,6 +371,18 @@ and none carries a date of its own. An item added from here on carries `(parked 
   "commands do not execute remotely" note. Evidence: an operator `/compact` over the relay on
   2026-08-25 reached the model as text and failed silently.
 
+- Decide whether the display fields restored from the two on-disk files should carry a
+  well-formedness guard, and apply or refuse it as one call (parked 2026-08-26, found by two
+  reviewers independently during the follow-a-rename plan's Section 2). `broker/persistence.ts` and
+  `broker/discord/bindings.ts` both restore untrusted display strings from files anything running as
+  this user can rewrite. The session name and the session title now pass a guard that refuses a
+  value `clean`'s UTF-16 cap left ill-formed; `host`, `source`, `lastTool`, `lastToolInput`,
+  `openingModel`, `model` and the composed thread name do not, and `lastTool` and `lastToolInput`
+  reach the Discord card body exactly as the name reaches the thread name. The inconsistency is the
+  finding rather than a demonstrated defect: either the guard's rationale extends to all of them or
+  it does not justify guarding the name alone. Left out of that section deliberately, because the
+  fields are pre-existing surface serving a different goal than following a rename.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

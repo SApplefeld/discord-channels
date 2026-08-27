@@ -9,6 +9,10 @@
  * Lifecycle as the broker can observe it. The working / needs-you / idle / exited vocabulary the
  * thread names use is a rendering concern and lives with the Discord surfaces.
  */
+// The only module this one imports, and it imports nothing itself, which is what keeps the
+// renderer free to import this file. `import-hygiene.test.ts` pins that leaf property.
+import { MAX_PEER_NAME_LENGTH, boundedTitle } from "./sanitize.ts";
+
 export type SessionState = "live" | "stale" | "ended";
 
 /**
@@ -242,6 +246,14 @@ export type SessionRecord = {
    * say when it stopped being true.
    */
   goal: string | null;
+  /**
+   * The session's own title, as a `custom-title` transcript line last set it: written at launch by
+   * `--name` and again by any in-session `/rename`, and null for a session neither has touched.
+   * Distinct from `name`, which is the launch label the hook header carries on every post and never
+   * moves again; this field is sourced only from the transcript, so a header arriving after a
+   * rename cannot clobber it. `displayName` prefers this over `name` when it is set.
+   */
+  title: string | null;
 };
 
 export type HookEvent = "SessionStart" | "PreToolUse" | "PostToolUse" | "Stop";
@@ -367,6 +379,19 @@ export type Registry = {
    * transcript, so it lives where the card can read it and nowhere else.
    */
   noteGoal: (sessionId: string, goal: string | null) => SessionRecord | null;
+  /**
+   * Records the title a `custom-title` transcript line named, whether written by a launch `--name`
+   * or an in-session `/rename`. Returns the record it wrote, and null when nothing unended holds
+   * that ID, the same refusal `noteGoal` gives a line arriving after a session ended.
+   *
+   * Stamps no engagement: a rename is not a person driving the session, and it must not clear a
+   * blocked marker, the same exclusion peer prompts take. Early-returns on an unchanged value,
+   * because the `custom-title` line is re-emitted on every transcript poll; an unconditional write
+   * would mark every poll a change and spend a snapshot write on a value that did not move. The
+   * rename budget is a separate concern, protected downstream by the surface's own dwell and by
+   * Discord's rate bucket, neither of which this early return has any part in.
+   */
+  noteTitle: (sessionId: string, title: string) => SessionRecord | null;
   /**
    * Held changes whose attach window has closed, released plain and exactly once. Polled on the
    * tailer's own cadence, because the hold exists for a record the tailer reads: a change whose
@@ -575,6 +600,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
+      title: null,
     };
     sessions.set(sessionId, record);
     // A fresh record starts fresh announcement bookkeeping: a held change or a changed flag from
@@ -829,6 +855,27 @@ export function createRegistry(options: RegistryOptions): Registry {
     return record;
   }
 
+  function noteTitle(sessionId: string, title: string): SessionRecord | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    // Bounded at this seam rather than taken on trust from the caller. The tailer already runs the
+    // value through the same function, so nothing on the live path changes; what this buys is that
+    // a record title is safe for a thread name by this seam own construction rather than by a
+    // promise one caller keeps, and every surface that names a session prefers this field over the
+    // launch name. A value with nothing usable left is refused rather than stored: this seam
+    // replaces a title and never clears one.
+    const bounded = boundedTitle(title, MAX_PEER_NAME_LENGTH);
+    if (bounded === null) return record;
+    if (record.title === bounded) return record;
+    record.title = bounded;
+    // Unlike the goal, the title is persisted (`persistence.ts`'s `PersistedRecord` carries it): it
+    // is the session's own identity rather than its transient intent, so a restart should restore
+    // the name the operator knows it by. Mutated only on the changed path above, which keeps a
+    // re-emitted, unchanged `custom-title` line from writing the snapshot on every poll.
+    mutated();
+    return record;
+  }
+
   function dueModelChanges(): ModelChange[] {
     const at = now();
     const due: ModelChange[] = [];
@@ -929,6 +976,7 @@ export function createRegistry(options: RegistryOptions): Registry {
     noteModel,
     noteFallback,
     noteGoal,
+    noteTitle,
     dueModelChanges,
     sweep,
     list,

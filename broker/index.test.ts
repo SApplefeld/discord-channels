@@ -3,7 +3,15 @@
 // console, because a scheduled task (S7) has no console to catch either one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
@@ -225,6 +233,92 @@ test("the tailer polls only when both mirror switches are on", async (t) => {
     false,
     "with CHANNEL_MIRROR off, interim mirroring is off with it",
   );
+});
+
+test("a custom-title line reaches the published record, wiring the tailer to the registry", async (t) => {
+  // The one line that keeps the transcript reader from being dead code: startBroker hands the
+  // tailer a noteTitle option that calls the registry entry of the same name. Both halves carry
+  // their own cover and the join carries none, which is the writer-and-reader pair a
+  // cross-component pin exists for: delete the wiring and every other test in this repo stays
+  // green while a rename never reaches a thread again. Driven end to end rather than through a
+  // stub, because a stub is what already covers each half.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-title-wiring-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  // Created empty on purpose. The tailer reads forward from the baseline it attached at, so a
+  // line already in the file when it attaches sits behind that baseline and is never read.
+  // Named for the session: the broker refuses to learn a transcript path whose filename is not
+  // the session's own id.
+  const transcript = path.join(dir, "session-title-wiring.jsonl");
+  writeFileSync(transcript, "");
+
+  const broker = await startBroker(
+    config({
+      stateFile: path.join(dir, "state.json"),
+      logFile: path.join(dir, "broker.log"),
+      interimPollMs: 250,
+    }),
+  );
+  try {
+    const announced = await fetch(`http://127.0.0.1:${broker.port}/hook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-channel-hook-event": "SessionStart",
+        "x-channel-process-token": "5f0c2e4a-0000-4000-8000-000000000002",
+      },
+      body: JSON.stringify({
+        session_id: "session-title-wiring",
+        source: "startup",
+        transcript_path: transcript,
+      }),
+    });
+    assert.equal(announced.status, 200);
+
+    // The tailer fails closed, so the learned path is read only once a mirror-on verdict lands.
+    await fetch(`http://127.0.0.1:${broker.port}/mirror`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-channel-hook-event": "UserPromptSubmit",
+        "x-channel-process-token": "5f0c2e4a-0000-4000-8000-000000000002",
+      },
+      body: JSON.stringify({ session_id: "session-title-wiring", prompt: "start of a turn" }),
+    });
+
+    // Re-emitted rather than written once, which is what Claude Code itself does: the tailer reads
+    // forward from the baseline it attached at, so a single line racing the attach can land behind
+    // it and never be read. A real session carries many copies of this line for that same reason.
+    const line = `${JSON.stringify({
+      type: "custom-title",
+      customTitle: "Renamed Through The Tailer",
+      sessionId: "session-title-wiring",
+    })}
+`;
+
+    const deadline = Date.now() + 20_000;
+    let published: string | null | undefined;
+    for (;;) {
+      appendFileSync(transcript, line);
+      const listed = await fetch(`http://127.0.0.1:${broker.port}/sessions`);
+      const { sessions } = (await listed.json()) as {
+        sessions: Array<{ sessionId: string; title: string | null }>;
+      };
+      published = sessions.find((session) => session.sessionId === "session-title-wiring")?.title;
+      if (published === "Renamed Through The Tailer") break;
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    assert.equal(
+      published,
+      "Renamed Through The Tailer",
+      "the title read off the transcript must reach the record every surface renders from; a null " +
+        "here is the tailer-to-registry wiring gone",
+    );
+  } finally {
+    await broker.stop();
+  }
 });
 
 test("a PreToolUse question post rides the /hook route end to end, and its text stays out of the log", async (t) => {
@@ -495,6 +589,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
   };
   const halted: SessionRecord = {
     ...record,

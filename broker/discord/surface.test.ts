@@ -110,6 +110,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,
@@ -237,6 +238,30 @@ test("a rename the budget refuses is dropped, and the next state still renders",
     names(calls),
     ["⚙ neo-migrate · active", "⚠ neo-migrate · exited"],
     "the dropped rename never lands after the state moved on",
+  );
+});
+
+test("an in-session /rename is a title change: the surface paints it after the dwell, not before", async () => {
+  // `title` outranks `name` in the composed thread name, so a session's own rename is
+  // indistinguishable to the surface from any other title-state change: `refreshName` still
+  // damps it with the dwell and spends it out of the same per-thread budget.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  assert.deepEqual(names(calls), []);
+
+  const renamed = view({ title: "Renamed by /rename" });
+  await surface.tick([renamed]);
+  assert.deepEqual(names(calls), [], "a title that just changed has not settled");
+
+  time.advance(DWELL_MS);
+  await surface.tick([renamed]);
+  assert.deepEqual(
+    names(calls),
+    ["⚙ Renamed by /rename · active"],
+    "the settled title is painted once the dwell has passed",
   );
 });
 
@@ -453,6 +478,7 @@ test("a startup pass archives a restored thread whose session already exited, ex
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],
@@ -483,6 +509,7 @@ test("a restored thread whose record is still retained as ended is archived too"
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],
@@ -659,6 +686,7 @@ test("a restored binding reattaches instead of opening a second thread", async (
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],
@@ -707,6 +735,7 @@ test("a binding is reported for persistence as it is created and dropped", async
         threadId: null,
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: null,
       },
     ]),
@@ -721,12 +750,44 @@ test("a binding is reported for persistence as it is created and dropped", async
         threadId: "thread-1",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · active",
       },
     ]),
     "and the title it carries is recorded with it",
   );
   assert.equal(seen.at(-1), "[]", "and the binding is dropped when the session is retired");
+});
+
+test("a session's live title reaches the persisted binding, not the launch name", async () => {
+  // `bindings()` composes `sessionTitle` from `entry.lastView.title`. A regression that hardcoded
+  // it to null, or read `entry.lastView.name` instead, would keep every other assertion in this
+  // file green, since they all exercise views whose title is null: this is the one that would
+  // catch it.
+  const time = clock();
+  const calls = recorder();
+  const seen: string[] = [];
+  const surface = surfaceWith(time, calls, {
+    onBind: (bindings) => seen.push(JSON.stringify(bindings)),
+  });
+
+  await surface.tick([view({ title: "Renamed Session" })]);
+
+  assert.equal(
+    seen[0],
+    JSON.stringify([
+      {
+        sessionId: "session-a",
+        messageId: "message-1",
+        threadId: null,
+        archived: false,
+        name: "neo-intake",
+        sessionTitle: "Renamed Session",
+        title: null,
+      },
+    ]),
+    "the live view's title, not its launch name, is what the binding carries",
+  );
 });
 
 test("a session that vanishes from the registry is driven to exited before it is forgotten", async () => {
@@ -929,6 +990,7 @@ test("a restored binding whose message is gone and whose session exited is not r
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],
@@ -1056,6 +1118,7 @@ test("a restored binding keeps the session name and the title the thread carries
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚠ neo-intake · exited",
       },
     ],
@@ -1079,6 +1142,7 @@ test("a restored binding whose session is gone is titled with the name, not the 
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],
@@ -1087,6 +1151,32 @@ test("a restored binding whose session is gone is titled with the name, not the 
   await surface.tick([]);
 
   assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
+});
+
+test("a restored binding whose session is gone composes its own title, not the launch name", async () => {
+  // Without `sessionTitle` riding beside `name` in the binding, a restart rebuilds a placeholder
+  // view with no title, composes the launch name, finds it differs from the persisted
+  // `renderedName`, and spends a rename repainting the thread back to a name the operator moved
+  // away from.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, {
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        sessionTitle: "Renamed by /rename",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+  });
+
+  await surface.tick([]);
+
+  assert.deepEqual(names(calls), ["⚠ Renamed by /rename · exited"]);
 });
 
 test("a thread carrying the previous title format is renamed once and then left alone", async () => {
@@ -1103,6 +1193,7 @@ test("a thread carrying the previous title format is renamed once and then left 
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],
@@ -1125,6 +1216,48 @@ test("a thread carrying the previous title format is renamed once and then left 
   assert.deepEqual(names(calls), ["⚙ neo-intake · active"], "one rename, and no more");
 });
 
+test("a live view whose title is null does not repaint a restored thread back to the launch name, and the persisted binding keeps the restored title", async () => {
+  // The concrete path this guards against: the registry state file is lost or rejected while
+  // discord-threads.json survives, the live session re-announces via SessionStart with no title
+  // of its own, and a view carrying `title: null` reaches this surface for a thread that already
+  // carries a rename. Without the sticky title, that view would compose the launch name, spend a
+  // rename repainting the thread away from what the operator set, and the next persisted binding
+  // would carry `sessionTitle: null`, destroying the only surviving copy.
+  const time = clock();
+  const calls = recorder();
+  const seen: string[] = [];
+  const surface = surfaceWith(time, calls, {
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: false,
+        name: "neo-intake",
+        sessionTitle: "Renamed Session",
+        title: "⚙ neo-intake · working",
+      },
+    ],
+    onBind: (bindings) => seen.push(JSON.stringify(bindings)),
+  });
+
+  await surface.tick([view({ title: null, lastHookAt: time.now() })]);
+  assert.deepEqual(names(calls), [], "the dwell has to pass before any rename");
+
+  time.advance(DWELL_MS);
+  await surface.tick([view({ title: null, lastHookAt: time.now() })]);
+
+  assert.deepEqual(
+    names(calls),
+    ["⚙ Renamed Session · active"],
+    "the composed name is built from the restored title, not repainted back to the launch name",
+  );
+  assert.ok(
+    seen.some((entry) => entry.includes('"sessionTitle":"Renamed Session"')),
+    "the persisted binding still carries the restored title, not null",
+  );
+});
+
 test("the pin list reads the cards of the sessions that are running, and only after a pass", async () => {
   // What the channel's pin list is driven from. A binding restored from the previous run carries no
   // state until a pass has derived one, and a session the registry has dropped is driven to exited
@@ -1139,6 +1272,7 @@ test("the pin list reads the cards of the sessions that are running, and only af
         threadId: "thread-9",
         archived: false,
         name: "neo-intake",
+        sessionTitle: null,
         title: "⚙ neo-intake · working",
       },
     ],

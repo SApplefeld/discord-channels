@@ -933,6 +933,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       noteGoal: (sessionId, goal) => {
         registry.noteGoal(sessionId, goal);
       },
+      // The thread title, for the surface's own rename pass to read off the next view. Nothing is
+      // posted here directly: the value reaches Discord through `refreshName`, on its own dwell and
+      // budget.
+      noteTitle: (sessionId, title) => {
+        registry.noteTitle(sessionId, title);
+      },
       echo,
       log: note,
       // The pass watchdog's threshold, scaled here because the tailer does not know the poll
@@ -1053,6 +1059,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // The sweep that turns a silent session stale lives here instead.
   const sweep = setInterval(() => {
     for (const record of registry.sweep()) {
+      // The launch name only, never the title. The title is transcript content, and
+      // `docs/security-model.md` holds that transcript content reaches the broker log at no level;
+      // the name arrives on the hook header instead, so naming it here keeps that invariant whole.
       const message = `broker: session ${record.sessionId} (${record.name ?? "unnamed"}) is stale`;
       console.log(message);
       logger.info(message);

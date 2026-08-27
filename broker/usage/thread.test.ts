@@ -137,6 +137,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    title: null,
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,

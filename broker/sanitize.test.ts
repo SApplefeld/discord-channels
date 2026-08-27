@@ -6,7 +6,7 @@
 // file as binary, and a test nobody can read a diff of is a test nobody reviews.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isInvisible, withoutInvisible } from "./sanitize.ts";
+import { isInvisible, isWellFormed, withoutInvisible } from "./sanitize.ts";
 
 const hidden = (code: number): string => String.fromCodePoint(code);
 
@@ -61,4 +61,12 @@ test("line structure survives the strip", () => {
   // The newline is in the C0 range. One pass over the whole string would join a multi-line message
   // into a single line, which changes what the text says.
   assert.equal(withoutInvisible("one\r\ntwo\rthree\nfour"), "one\ntwo\nthree\nfour");
+});
+
+test("isWellFormed refuses a lone surrogate in any position, and passes an ordinary astral pair", () => {
+  assert.equal(isWellFormed("ordinary text"), true);
+  assert.equal(isWellFormed(`with ${hidden(0x1f6f0)} an astral character`), true, "a real pair stands");
+  assert.equal(isWellFormed("\ud83dReal Name"), false, "a leading high surrogate with no partner");
+  assert.equal(isWellFormed("Real Name\udc00"), false, "a trailing low surrogate with no partner");
+  assert.equal(isWellFormed("\udc00\ud83d"), false, "a reversed pair is still unpaired");
 });
