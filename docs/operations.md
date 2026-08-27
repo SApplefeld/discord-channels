@@ -80,6 +80,10 @@ has to survive truncation.
 ⚠ asr-docs · exited
 ```
 
+The name between the glyph and the state is the name the session currently goes by: what an
+in-session `/rename` last set, or the name it launched under while nothing has. "Renaming a session"
+below covers how one reaches the thread and how long it takes.
+
 A title carries four states. `active` means the session is up, whether it is mid-turn or sitting
 quiet. `exited` means the session ended, or that it went silent past the presumed-dead horizon.
 `needs you`, the ⏹ glyph, means that session has a permission prompt open and is parked until you
@@ -144,6 +148,32 @@ afterward. A session that was only presumed dead and then comes back is picked u
 sides: posting revives the thread on Discord, and the broker drops the archived flag the moment that
 session stops reading exited, so its card and its title resume being maintained and it is archived
 again at its real exit.
+
+## Renaming a session
+
+`/rename` at a session's own console moves that session's thread title, and it is the only thing that
+does. The broker reads the name off the session's transcript, prefers it over the name the session
+launched under, and repaints the thread with the glyph and the state suffix intact. Nothing has to be
+done in Discord, and renaming the thread from the Discord client is not a way to do it: the name you
+type there reaches no session, and the broker does not read a thread's name back, so it stands until
+the broker's own composed name next changes and overwrites it.
+
+Expect it within about **80 seconds** on the defaults, which is one transcript poll
+(`CHANNEL_INTERIM_POLL_MS`, 20 seconds) plus one dwell (`CHANNEL_DISCORD_DWELL_MS`, 60 seconds).
+Renaming twice inside that window spends one rename rather than two, because the dwell restarts on
+each change and only the settled name is painted. A session already reading `needs you` or `exited`
+skips the dwell and repaints on the next pass.
+
+Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never follows
+a rename, because its transcript is never read at all, and that is the flag working as intended rather
+than a fault: `-NoMirror` says this session's transcript content does not leave the machine, and the
+name is transcript content. Its thread keeps the launch name for the session's life. And nothing
+clears a title once set: a later `/rename` replaces it, but there is no path back to the launch name
+short of starting a session under it.
+
+The launch name is still what a session with no `/rename` is called, and it is still what the thread
+falls back to when a rename yields nothing readable. A session launched without the wrapper, carrying
+neither, draws as `session ` plus the first eight characters of its session ID.
 
 ## What a session is trying to finish
 

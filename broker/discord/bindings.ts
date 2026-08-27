@@ -121,8 +121,11 @@ export function loadBindings(file: string, options: LoadOptions = {}): ThreadBin
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (error) {
-    log(`broker: the thread bindings at ${file} are not valid JSON, starting with none: ${String(error)}`);
+  } catch {
+    // The parse error is deliberately unread. Its message embeds an excerpt of the offending
+    // text, and this file now persists a session title, which is transcript content that reaches
+    // the broker log at no level. The tailer discards its own parse errors for the same reason.
+    log(`broker: the thread bindings at ${file} are not valid JSON, starting with none`);
     return [];
   }
 

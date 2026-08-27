@@ -11,7 +11,6 @@ import {
   MAX_TOOL_INPUT_PREVIEW,
   TITLE_GLYPHS,
   appendNarration,
-  boundedTitle,
   displayName,
   heartbeat,
   inertField,
@@ -317,22 +316,6 @@ test("a title of nothing but invisible characters falls through to the name, not
 test("threadName composes a differing title, keeping the glyph and the state suffix", () => {
   const name = threadName(view({ title: "New Name", name: "old-name" }), "working");
   assert.equal(name, `${TITLE_GLYPHS.active} New Name · active`);
-});
-
-test("boundedTitle at a non-positive limit refuses rather than returning an empty string", () => {
-  // `fit` itself returns "" for no room, and "" is well-formed, so without its own floor this
-  // function would hand back an empty string instead of the null every other refusal here returns.
-  assert.equal(boundedTitle("Renamed by /rename", 0), null);
-  assert.equal(boundedTitle("Renamed by /rename", -5), null);
-});
-
-test("boundedTitle's post-fit recheck fires for a limit at or above clean's own 256-unit cap", () => {
-  // Every current caller passes 120, under clean's 256-unit cap, where `fit`'s own cut always lands
-  // ahead of any defect `clean` could have manufactured. At a limit clean's cap cannot out-run, the
-  // manufactured lone surrogate survives `fit` untouched, and this is the one case that reaches the
-  // recheck's `return null` branch.
-  const input = "A".repeat(255) + "\u{1F6F0}".repeat(10);
-  assert.equal(boundedTitle(input, 256), null);
 });
 
 test("the card's name line follows the same displayName the thread name does", () => {

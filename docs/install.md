@@ -211,7 +211,9 @@ Enter-ClaudeSession -Name 'neo-warden'
 The name is yours to choose, appears in the thread title, and may repeat across sessions: thread
 identity is the session ID, not the name. It is restricted to printable ASCII, because the name
 travels as an HTTP header and a non-ASCII one would fail in a way that silently prevents the session
-from ever being announced.
+from ever being announced. It is a starting name rather than a fixed one: `/rename` inside the
+session moves the thread title afterwards, on any session that is mirrored, which
+[`operations.md`](operations.md) covers under "Renaming a session".
 
 The wrapper refuses to launch rather than launching a session that cannot be watched. It throws when
 the hook script or the relay is missing, when the installed `SessionStart` hook in your user settings

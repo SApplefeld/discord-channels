@@ -101,12 +101,12 @@ listener.
    timestamp, the timestamp of the last engagement (the narrower stamp the blocked desk below reads,
    moved by a `SessionStart`, a completed tool call, or an operator prompt, and by nothing else),
    the model and context figures the tailer reads off the transcript, the completion goal
-   it reads the same way, and the roster of in-flight subagents and background commands a `Stop`
-   payload carries. Every credited post also teaches the transcript tailer where that session's
-   transcript file lives, without adding the path to the record itself. A `SessionStart` with
-   `source: "clear"` supersedes the prior record for that token rather than mutating it. `GET
-   /sessions` publishes the registry for debugging, with the process token and the goal withheld
-   field by field and the transcript path never on the record to begin with.
+   and the session's own title it reads the same way, and the roster of in-flight subagents and
+   background commands a `Stop` payload carries. Every credited post also teaches the transcript
+   tailer where that session's transcript file lives, without adding the path to the record itself.
+   A `SessionStart` with `source: "clear"` supersedes the prior record for that token rather than
+   mutating it. `GET /sessions` publishes the registry for debugging, with the process token and the
+   goal withheld field by field and the transcript path never on the record to begin with.
 2. **Conversation, session to broker.** `POST /mirror` is the one content-bearing route, dedicated
    rather than folded into `/hook` so the larger ceiling and the log-suppression rule hold in one
    place. It takes a `UserPromptSubmit` or `Stop` payload under the same three identity headers plus
@@ -146,7 +146,9 @@ as current. The goal is never written at all, since only the card reads it and n
 the context size is written and dropped on load, so a woken card carries the model without a figure
 beside it until the next transcript line reports one. The roster is the deliberate exception,
 restored with its first-sighting stamps, because the harness replaces it wholesale at the session's
-next `Stop` and dropping it would read a mid-fan-out restart as an idle session.
+next `Stop` and dropping it would read a mid-fan-out restart as an idle session. The session's title
+is written and restored, on the opposite reasoning to the goal's: it is identity rather than intent,
+and a restart that dropped it would repaint a renamed thread back to its launch name.
 
 ## Mid-turn narration
 
@@ -424,6 +426,43 @@ notice into the thread that an app cannot delete, and a title spent on a moving 
 column of them down the thread. Blocked earns a title because it is the halted-on-the-operator class
 the title exists for. The rename damper keys on the composed title rather than on the state, which is
 what holds a session renaming itself to one rename.
+
+## The name a session goes by
+
+A session carries two names, kept apart on purpose, and the thread title draws whichever of them is
+current. The launch `name` is what the wrapper set with `-Name` and what the `X-Channel-Session-Name`
+header carries on every hook post for the process's whole life, so it can never follow an in-session
+`/rename`. The `title` is Claude Code's own record of the session's name, read off the `custom-title`
+transcript line that both a launch `--name` and a `/rename` write. `displayName`
+(`broker/discord/render.ts`) prefers the title, falls back to the launch name, and falls back again to
+a stub built from the first eight characters of the session ID, and it is the one reading behind the
+thread name, the session card's heading, and the fleet card's session rows, so no two surfaces can
+call one session different things.
+
+Two fields rather than a precedence rule inside one is what makes the ordering irrelevant. The header
+arrives on every post and writes only `name`; the transcript writes only `title`; neither can clobber
+the other, so a rename read at 10:00 is not undone by the hook post at 10:00:01. `broker/tail.ts`
+reads the line, `boundedTitle` (`broker/sanitize.ts`) normalizes it, and `registry.noteTitle` stores
+it, early-returning on a value equal to the one it holds because the harness re-emits that line on
+every poll and an unconditional write would spend a snapshot write per pass.
+
+The repaint is the rename path that already existed. The surface composes the thread name from the
+view each refresh tick (5 seconds), and paints it once the composed name has held for the dwell
+(`CHANNEL_DISCORD_DWELL_MS`, 60 seconds), so a rename lands within one poll interval plus one dwell,
+about **80 seconds** at the defaults, and a flurry of renames paints only the settled name at the cost
+of one slot from a per-thread bucket holding about two renames in ten minutes. The two states that
+skip the dwell by design, `needs you` and `exited`, carry a title change onto the next pass with them. The title also rides
+the thread binding on disk as `sessionTitle`, and the surface holds the last one it saw across a view
+that carries none, so a restart or a rebuilt registry record neither repaints the thread back to the
+launch name nor loses the only surviving copy of the rename.
+
+The normalization lives in `broker/sanitize.ts` rather than beside the renderer that draws it, because
+the storage layer reads it too. `broker/persistence.ts` and `broker/discord/bindings.ts` re-admit the
+title from files on disk, and taking the composition from `broker/discord/render.ts` would put a
+2,400-line display module, and its own imports of the registry and the board's event reader, on the
+load path a state file is read through, one edge short of a cycle that type-checks clean and throws at
+the first restore. `sanitize.ts` imports nothing at run time, and `import-hygiene.test.ts` pins both
+that leaf property and the direction, each with a control so the pin cannot pass for want of a subject.
 
 ## The fleet board card
 

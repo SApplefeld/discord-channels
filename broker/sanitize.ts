@@ -32,8 +32,8 @@ export const MAX_FIELD_LENGTH = 256;
  * the restore paths need the whole composition, not just the number, and taking it from the render
  * module would put that module and its own imports on the load path a state file is read through.
  * Every one of them needs nothing but this file, so the storage layer reaches no display module at
- * all, which `import-hygiene.test.ts` pins. `discord/render.ts` re-exports `fit` and `boundedTitle`
- * for the callers that already read them from there.
+ * all, which `import-hygiene.test.ts` pins. `discord/render.ts` re-exports `fit`
+ * for the callers that already read it from there.
  */
 export const MAX_PEER_NAME_LENGTH = 120;
 

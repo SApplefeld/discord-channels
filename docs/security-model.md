@@ -222,9 +222,9 @@ no item at all rather than a null when nothing readable survives that; and a `us
 not blank once invisibles are stripped, which becomes the turn-opening prompt. That last shape
 reads its content through a narrower reader than any other entry here, and the narrowing is the
 gate rather than a convenience: it admits a plain string, or exactly one `text` block beside any
-number of `image` blocks, and refuses everything else, because this is the one
-attached to a typed line would otherwise be published as the operator's words. An image carries
-no text and
+number of `image` blocks, and refuses everything else, because this is the one register-bound
+yield whose content is read out of a multi-block array, and a second text block attached to a
+typed line would otherwise be published as the operator's words. An image carries no text and
 cannot reach that register. What the reader refuses is a second text block or a block of a kind it
 does not know. Neither shape appears in a sweep of this host's own transcripts, where the
 image-bearing shape the reader admits accounts for about three percent of typed prompts; that
@@ -298,7 +298,10 @@ between the halves of an astral pair, and that is what the well-formedness check
 answers: it makes the guarantee a property of the composition rather than a fact a caller has to
 hold about how its own bound compares to the clean's. That whole composition is one exported
 function, so the two files the field re-enters from on a restart, both of which anything running as
-this user can rewrite, are guarded by it exactly as the transcript read is. The registry seam
+this user can rewrite, are guarded by it exactly as the transcript read is, and so is the registry
+seam that stores it, which re-applies the composition rather than trusting the caller's. It lives in
+`broker/sanitize.ts`, a module that imports nothing at run time, which is what lets the storage layer
+reach it without pulling the display layer onto the load path a state file is read through. The registry seam
 ignores a value equal to the one it holds, which is what keeps the line's re-emission on every poll
 from marking the record changed on every pass. And the repaint waits out a dwell, so a flurry of
 renames paints only the settled name, except in the two states that skip the dwell by design,
@@ -739,6 +742,12 @@ and both apply it:
   than held to the reply key the way a relay request is.
 - **The log file.** Untrusted fields pass through the same neutralization before they land, so a
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
+
+The session title read off a `custom-title` line is the one string held to more than that at its
+read, and the reason is that a render site is not its only consumer: it is stored, published, and
+painted onto a Discord object rather than into a message, so it is stripped and bounded where it is
+read as well as escaped where it is drawn. The transcript section above carries that composition. The
+rule is unchanged for every other field, the launch name included.
 
 **Conversation text is neutralized on a narrower rule than a name is.** A mirrored prompt, a
 mid-turn typed message, a mirrored reply, a mid-turn narration chunk, a `reply` tool call, and a

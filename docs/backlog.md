@@ -383,6 +383,25 @@ and none carries a date of its own. An item added from here on carries `(parked 
   it does not justify guarding the name alone. Left out of that section deliberately, because the
   fields are pre-existing surface serving a different goal than following a rename.
 
+- Watch a renamed session end, and confirm the exited title and the archive both land (parked
+  2026-08-27, Acceptance item 5 of the follow-a-rename plan, the one item that run could not
+  observe). It needs a mirrored session carrying a `/rename` title to actually exit while someone is
+  watching the thread, which did not happen inside that run. The finishing adversarial round read
+  every path and reports it holds: `archive()` gates on the same `threadName` composition the exited
+  rename writes, the title cannot move after exit because `noteTitle` refuses ended records, and
+  `boundedTitle` is idempotent on its own output so a restart recomposes the same name. That is a
+  code reading rather than the observation, so the item stays open until someone sees it.
+
+- Decide whether a renamed session evicted by the `maxSessions` cap should still get its thread
+  archived (parked 2026-08-27, found by the follow-a-rename plan's finishing adversarial round,
+  medium confidence). A record leaving the registry by the cap rather than by the 24-hour retention
+  falls to `retire()`, which caps at five passes seconds apart. If the per-thread rename bucket is
+  empty across those five, the thread is left unarchived, or frozen at a pre-exit title where the
+  exited rename never landed. The pass cap and the budget gate both predate the title work, which
+  only adds one more consumer of the shared bucket, so this is pre-existing machinery worth a
+  deliberate call rather than a defect that effort introduced. The plan's Traps section states the
+  cost as "a late archive, not a wrong one", which is true everywhere except here.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

@@ -6,7 +6,7 @@
 // file as binary, and a test nobody can read a diff of is a test nobody reviews.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isInvisible, isWellFormed, withoutInvisible } from "./sanitize.ts";
+import { boundedTitle, isInvisible, isWellFormed, withoutInvisible } from "./sanitize.ts";
 
 const hidden = (code: number): string => String.fromCodePoint(code);
 
@@ -69,4 +69,20 @@ test("isWellFormed refuses a lone surrogate in any position, and passes an ordin
   assert.equal(isWellFormed("\ud83dReal Name"), false, "a leading high surrogate with no partner");
   assert.equal(isWellFormed("Real Name\udc00"), false, "a trailing low surrogate with no partner");
   assert.equal(isWellFormed("\udc00\ud83d"), false, "a reversed pair is still unpaired");
+});
+
+test("boundedTitle at a non-positive limit refuses rather than returning an empty string", () => {
+  // `fit` itself returns "" for no room, and "" is well-formed, so without its own floor this
+  // function would hand back an empty string instead of the null every other refusal here returns.
+  assert.equal(boundedTitle("Renamed by /rename", 0), null);
+  assert.equal(boundedTitle("Renamed by /rename", -5), null);
+});
+
+test("boundedTitle's post-fit recheck fires for a limit at or above clean's own 256-unit cap", () => {
+  // Every current caller passes 120, under clean's 256-unit cap, where `fit`'s own cut always lands
+  // ahead of any defect `clean` could have manufactured. At a limit clean's cap cannot out-run, the
+  // manufactured lone surrogate survives `fit` untouched, and this is the one case that reaches the
+  // recheck's `return null` branch.
+  const input = "A".repeat(255) + hidden(0x1f6f0).repeat(10);
+  assert.equal(boundedTitle(input, 256), null);
 });

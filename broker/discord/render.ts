@@ -6,9 +6,9 @@
 // characters) and the renderer owns display safety. Suppressing pings is the transport's half of
 // the same job, via `allowed_mentions`.
 import { fit, sliceCodePoints, visible, withoutInvisible } from "../sanitize.ts";
-// Re-exported for the callers that already read these from the render site. The implementations
-// live in `../sanitize.ts` so the storage layer can reach them without importing this module.
-export { boundedTitle, fit } from "../sanitize.ts";
+// Re-exported for the callers that already read `fit` from the render site. The implementation
+// lives in `../sanitize.ts` so the storage layer can reach it without importing this module.
+export { fit } from "../sanitize.ts";
 import { MAX_PLAN_CHARS } from "../board/events.ts";
 import { modelRank } from "../registry.ts";
 import type { BackgroundTask, ModelFallback } from "../registry.ts";

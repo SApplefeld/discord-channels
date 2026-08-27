@@ -760,10 +760,10 @@ test("a binding is reported for persistence as it is created and dropped", async
 });
 
 test("a session's live title reaches the persisted binding, not the launch name", async () => {
-  // `bindings()` composes `sessionTitle` from `entry.lastView.title`. A regression that hardcoded
-  // it to null, or read `entry.lastView.name` instead, would keep every other assertion in this
-  // file green, since they all exercise views whose title is null: this is the one that would
-  // catch it.
+  // `bindings()` composes `sessionTitle` from `entry.sessionTitle`, the surface's own sticky copy
+  // of the view's title. A regression that hardcoded it to null, or read the launch name instead,
+  // would keep every other assertion in this file green, since they all exercise views whose title
+  // is null: this is the one that would catch it.
   const time = clock();
   const calls = recorder();
   const seen: string[] = [];

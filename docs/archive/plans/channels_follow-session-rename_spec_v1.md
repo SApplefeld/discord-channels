@@ -1,6 +1,6 @@
 # Follow a Session Rename: the Thread Title Tracks `/rename`
 
-Status: In Progress
+Status: Complete
 Commit Model: Commit-and-Push (the model every sibling plan in this repo ran under; the operator confirms at arming)
 Fable Spend: research and this spec in the Expert session; implementation dispatched to one worker
 Created: 2026-08-26
@@ -316,6 +316,14 @@ implementer is blocked from.
 Renaming the thread from Discord back into the session; changing `--name` or the wrapper; any change
 to the surface's dwell or budget.
 
+## Related plans
+
+`docs/archive/plans/channels_title-states-and-rename-cleaner_spec_v1.md` set the title state
+vocabulary and the rename damper this plan paints through, and established that Discord refuses an
+app deleting its own rename notice, which is the cost this plan's budget reasoning rests on.
+`docs/archive/plans/channels_mirror-load-tolerance_spec_v1.md` established the tailer's
+forward-only baseline, which this plan's Traps section reasons about and Chapter 2 confirmed.
+
 ## Chapters
 
 ### Chapter 1 - 2026-08-26
@@ -427,3 +435,34 @@ Gate: the same run Chapter 2 records, this section having changed one documentat
 code: `npm run lint` exit 0; `npm test` exit 0, 1557 tests, 1556 pass, 0 fail, 1 skipped over 58
 test files. The code half of this section s work is the revert Chapter 2 describes, which that run
 covers.
+
+### Chapter 4 - 2026-08-27
+Completed: Section 3: Live verification
+Implemented By: main session, inline; the section is an observation rather than a build, and its two inputs are keystrokes no session can supply
+Metrics: 0 review rounds (nothing was written); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The section ran as written and passed. The operator restarted the broker with `install/Repair-Broker.ps1` elevated and typed `/rename` twice in this session, and the thread title followed both times, confirmed by the operator watching the real thread on Discord and independently by the registry, the binding and the painted name here. Three things are worth the next reader's time. First, the restart is confirmed rather than assumed, and the probe is reusable: before it, no record on `GET /sessions` carried a `title` key, and after it every record did, because `title` is declared `string | null` and initialized at construction, and `JSON.stringify` serializes `null` while dropping `undefined`. Key absent means the old binary, key present and null means the new one. Second, the first rename is not the number to quote: it took roughly 60 to 110 seconds because the broker had just restarted and the tailer was attaching from scratch. The second is the steady-state reading, under 71 seconds from the transcript write to the painted thread name, inside the design bound of one 20-second poll plus one 60-second dwell. Third, `broker.log` carried no rename line at all across the whole exercise, which per this section's own inverted read is the success signal: the surface logs a rename only when it is dropped for budget or when the call fails.
+Assumptions: none.
+Review Findings: none; no code or document changed in this section.
+Stamps: `admin-seat-request-inbox` (operator tier), applied while deciding whether the elevated restart could be routed to the Admin seat rather than to the operator.
+Next: the whole-effort finishing pass
+Commit Model: Commit-and-Push
+
+Gate: no code changed, so the gate is the run Chapter 5 records.
+
+Not observed, and carried forward rather than claimed: Acceptance item 5, that the exited title and the archive still land after a renamed session ends. It needs a mirrored session with a title on it to actually end, which did not happen inside this run. The finishing adversarial round read every path and reports it holds in code, which is recorded in Chapter 5 with its reasoning; that is a code reading and not the observation, so the item rides into `docs/backlog.md` as an operator check rather than being marked done here.
+
+### Chapter 5 - 2026-08-27
+Completed: the whole-effort finishing pass, and the plan
+Implemented By: main session, with three dispatched rounds: security and adversarial over the whole changeset, then documentation curation
+Metrics: 2 review rounds run in parallel (security and adversarial, both at fable, both over the whole changeset against base `4ee4dba`) plus one docs-curation pass; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: The base ref for the whole-changeset reads is `4ee4dba7bdf659a9e99cb98ba9c1deab015ccf45`, the parent of Section 1's commit, derived by walking the plan doc's own history for the first commit that added a Chapter. Cross-checking the changeset against the plan's scope lines surfaced only expected entries: `broker/usage/card.test.ts` and `broker/usage/thread.test.ts` each gained one line, `title: null`, in a `SessionView` fixture, which is the compile error the new field forces and is exactly the guarantee Chapter 3 records. The security round returned CLEAR and the adversarial round APPROVED_WITH_CONCERNS. The one finding that mattered was mine to own: Section 4's reflow of the ten-shapes allowlist paragraph in `docs/security-model.md` had silently dropped the phrase that carries the whole rationale for the typed-prompt gate, leaving a sentence that ran "because this is the one / attached to a typed line would otherwise be published as the operator's words". That is a defect in the file an auditor reads the code against, and it was introduced by this effort. Restored and verified byte-identical to the base text. The surprise worth recording is the shape of the error rather than the error: a reflow is a whole-paragraph rewrite, and a dropped line inside one leaves valid-looking prose that no test and no count can see.
+Assumptions: none.
+Review Findings: 1 Major, 5 Minor across the two rounds. The Major is the mangled security-model sentence above, fixed by restoring the dropped phrase. Minors fixed: `broker/tail.ts`'s `customTitle` doc still pointed at `broker/discord/render.ts` as `boundedTitle`'s home after Section 2 moved it, which is Standing Amendment 4's own class and its fourth instance; `broker/tail.ts` reached `boundedTitle` through the render module's re-export while importing two other symbols from `broker/sanitize.ts` directly in the same file, so `boundedTitle` was dropped from that re-export, `tail.ts` now takes it from the leaf, and its two tests moved from `render.test.ts` to `sanitize.test.ts`, which had no coverage of the function at all; a comment in `surface.test.ts` named `entry.lastView.title` where the code reads `entry.sessionTitle`; and `broker/persistence.ts` and `broker/discord/bindings.ts` logged their `JSON.parse` failures as `String(error)`, whose message embeds an excerpt of the offending file, which is a latent erosion of the bolded no-transcript-content-in-the-log invariant now that both files persist a title. Both now discard the parse error and say why, as the tailer already does. One Minor was recorded rather than fixed: a renamed session evicted by the `maxSessions` cap while the per-thread rename bucket is empty can exhaust the five retire passes and leave its thread unarchived or frozen at a pre-exit title. The machinery predates this effort and the title feature only adds one more consumer of the shared bucket, so it is a backlog item rather than a fix here. The finishing adversarial round also answered Acceptance item 5 from the code: within a pass, `reconcile` hands `refreshName` and `archive` the same view and `archive` composes its gate through the same `threadName`, so the string a successful exited rename writes to `renderedName` is the one `archive` compares; the title cannot move after exit because `noteTitle` refuses ended records; and across a restart `boundedTitle` is idempotent on its own output, so the recomposed name equals the persisted one. That is a reading, not the observation, and the observation stays on the backlog.
+Drift adjudications: three items, all `deviation`, none stopping the run, all documented as-built. (1) The spec has `render.ts` re-exporting both `fit` and `boundedTitle`; as built it re-exports `fit` alone, which this pass narrowed further after the adversarial finding above. (2) The spec names `inertName` as the reader's first normalization step; as built `boundedTitle` calls `visible` directly and `inertName` is a render-site composition applied additionally, so the same characters are stripped and only the function name differed. (3) `docs/security-model.md` stated "Neutralization happens at the render site, not at intake" without exception, and the title now deliberately normalizes at the read, at both restore paths and at the registry seam; the rule now carries that one carve-out and stands for every other field. Two cross-reference gaps the curator flagged are closed by a Related plans line in this doc.
+Stamps: `memq unstamped --since 14h` listed one, `admin-seat-request-inbox`, stamped and recorded in Chapter 4. The decay stamp is six days old, so no decay pass was due.
+Next: none; the plan is Complete and archived.
+Commit Model: Commit-and-Push
+
+Gate: `npx tsc --noEmit` exit 0. `node --test` exit 0, 1557 tests, 1556 pass, 0 fail, 1 skipped, 25.4s, run after every finishing fix. Chapter 1's recorded baseline is 1529 tests, 1528 pass, 0 fail, 1 skipped, so the effort adds 28 tests and regresses nothing. The two `boundedTitle` tests moved between files rather than being added, which is why the count is unchanged from Chapter 2's run.
+
+Tree-state bracket: `git status --porcelain` was empty before the security and adversarial dispatches and empty when they returned, so neither round wrote to the tree.

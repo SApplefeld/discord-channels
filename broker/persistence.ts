@@ -265,8 +265,11 @@ export function loadSessions(file: string, options: LoadOptions = {}): SessionRe
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (error) {
-    log(`broker: the registry state at ${file} is not valid JSON, starting empty: ${String(error)}`);
+  } catch {
+    // The parse error is deliberately unread. Its message embeds an excerpt of the offending
+    // text, and this file now persists a session title, which is transcript content that reaches
+    // the broker log at no level. The tailer discards its own parse errors for the same reason.
+    log(`broker: the registry state at ${file} is not valid JSON, starting empty`);
     return [];
   }
 

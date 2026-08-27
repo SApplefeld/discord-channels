@@ -33,13 +33,12 @@ import {
   MAX_HELD_DESCRIPTION_LENGTH,
   MAX_MODEL_DETAIL_LENGTH,
   MAX_MODEL_NAME_LENGTH,
-  boundedTitle,
   fit,
 } from "./discord/render.ts";
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
-import { MAX_PEER_NAME_LENGTH, withoutInvisible } from "./sanitize.ts";
+import { MAX_PEER_NAME_LENGTH, boundedTitle, withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
 import type { Sketch } from "./similarity.ts";
 
@@ -1268,7 +1267,7 @@ function peerName(value: unknown): string | null {
 
 /**
  * A `custom-title` line's `customTitle` field, normalized and bounded, or null when there is
- * nothing usable there. `boundedTitle` (`broker/discord/render.ts`) is the whole composition and
+ * nothing usable there. `boundedTitle` (`broker/sanitize.ts`) is the whole composition and
  * its rationale; this is the reader's own bound applied to it.
  *
  * Deliberately not `peerName`'s refuse-whole answer to an over-bound value: a refused peer name
