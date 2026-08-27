@@ -253,6 +253,26 @@ and none carries a date of its own. An item added from here on carries `(parked 
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without
   the thread being louder than the terminal. Wanted only if the one-line notice proves too thin.
+- Peer-chatter rendering in threads: subtext, not spoilers (parked 2026-08-27; operator-approved
+  and slotted as the first post-reboot effort, in parallel with claude-kit's coordination spec).
+  Session-to-session relays currently render at full size in the same voice as operator-facing
+  lines, so the operator re-checks headers every few lines to know the audience, which from a
+  phone is the dominant reading cost of a busy thread. The approved design: normal text for
+  operator-facing lines; Discord's `-#` subtext (small grey type, scannable without a tap, one
+  prefix per line) for session-to-session chatter, each block led by a bold one-line header naming
+  sender and receiver so the routing stays readable at full size; spoilers reserved for oversized
+  bodies nobody scans anyway. The rendering check is settled (2026-08-27, operator's phone client,
+  a broker-posted three-form sample in this machine's relay thread): subtext renders small and
+  grey with the bold header at full size, confirmed; `>` blockquote does not render on
+  relay-posted messages at all (literal `>` characters at full size), which removes it as an
+  option on this surface; spoilers render but occupy the same space as plain text and stay open
+  once tapped, confirming them as worst-of-both for scannable chatter. The one alternative still
+  standing is bot-authored embeds (colored sidebar cards), the strongest separation but a bigger
+  broker change, not needed unless subtext proves insufficient in practice. This item owns the
+  rendering-of-chatter surface; the spoiler-collapsed task-reports item above should take its
+  rendering from whatever this decides, and the volume-of-chatter half (audience labels on relays,
+  delta-only capped operator reports) lives in claude-kit's coordination spec under its 2026-08-27
+  slate, so the two compose rather than overlap.
 - Remove the retired `mcp__channel-relay__reply` rule from `~/.claude/settings.json` on NEO and on
   ASR: both were provisioned while the fragment still shipped it, and `Install-Host.ps1` never
   removes a rule already there. SCOTT's copy is already done.
