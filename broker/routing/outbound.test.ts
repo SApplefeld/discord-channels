@@ -1319,6 +1319,42 @@ const UNREADABLE_DELIVERY =
   `<cross-session-message from="${PEER_PIPE}" from-name="${PEER_NAME}" from-mode="bypass">\n` +
   "the close tag the harness writes never arrives";
 
+/**
+ * Every line of a peer post that would reach the operator at reading size: past the attribution the
+ * renderer opened the post with, carrying something, and neither marked as subtext nor sitting
+ * inside the spoiler an oversized body is drawn behind.
+ *
+ * The contract is the register, and the register is not the marker. The oversized form marks no line
+ * of the body at all: it conceals the body behind a spoiler and draws one marked teaser above it, so
+ * a pin written as "every line carries the marker" is false of that form and stays green only for as
+ * long as every fixture it runs on happens to sit under the size the form starts at. Read this way
+ * the pin says what the contract says, and an oversized fixture is a fixture it can hold.
+ *
+ * A line touching a delimiter counts as concealed along with the region it opens or closes, which is
+ * the conservative reading and the correct one here: a peer's own `||` is escaped before it is drawn,
+ * so a delimiter reaching a drawn line was written by the renderer.
+ *
+ * That premise is what makes the conservative direction safe rather than quiet, so it is checked
+ * rather than assumed, and it is checked elsewhere: `render.test.ts`'s "a body dense with pipes
+ * cannot close a spoiler early, and the pairs stay the renderer's own" draws a body of nothing but
+ * peer-written pipe pairs and pins that none of them reaches the thread as a delimiter. Were that to
+ * stop holding, this reading would count a peer-opened region as concealed and report no lines at
+ * reading size on precisely the break it exists to catch, which is why the two live as one claim
+ * pinned once rather than as two oracles reading the same structure two ways.
+ */
+function atReadingSize(text: string): string[] {
+  const [, ...body] = text.split("\n");
+  const drawn: string[] = [];
+  let concealed = false;
+  for (const line of body) {
+    const delimiters = (line.match(/\|\|/g) ?? []).length;
+    const touches = concealed || delimiters > 0;
+    if (delimiters % 2 === 1) concealed = !concealed;
+    if (!touches && line.trim() !== "" && !line.startsWith("-# ")) drawn.push(line);
+  }
+  return drawn;
+}
+
 /** The outbound half, as the tailer reads one off a `SendMessage` call. */
 const SENT = {
   kind: "peer-out",
@@ -1357,16 +1393,27 @@ test("a peer message is drawn under its own attribution, never in the operator's
     assert.ok(!post.text.includes("cross-session-message"), post.text);
     assert.ok(!post.text.includes("Another Claude session sent a message"), post.text);
     // The chatter register, pinned where the delivery paths converge rather than only at the
-    // renderer: every line of the body reaches the thread as subtext, so a peer's text is never
-    // drawn at the size the operator's own is. The attribution line is the deliberate exception.
-    for (const line of post.text.split("\n").slice(1)) {
-      assert.ok(
-        line.trim() === "" || line.startsWith("-# "),
-        `a peer line reached the thread at reading size: ${line}`,
-      );
-    }
+    // renderer: no line of the body reaches the thread at the size the operator's own text is drawn
+    // at. The attribution line is the deliberate exception.
+    assert.deepEqual(atReadingSize(post.text), [], post.text);
     // The mirror budget and nothing louder: a peer exchange is worth reading, not worth a ping.
     assert.ok(!post.text.includes("<@"), `a peer post carried a mention: ${post.text}`);
+  }
+
+  // And the same on a body past the size the register switches forms at, which is the half a fixture
+  // under the threshold cannot reach: the oversized form marks no body line, so a pin that read the
+  // marker rather than the register would be answering about a form these paths never handed it.
+  const { writer: bulkWriter, posts: bulk } = fakeWriter();
+  const bulkRouter = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: bulkWriter });
+  assert.deepEqual(
+    await bulkRouter.mirror(TOKEN, "prompt", idleDelivery("b".repeat(4_000)), "session-a"),
+    { status: "sent" },
+  );
+
+  assert.ok(bulk.length >= 1, `${bulk.length} post(s)`);
+  for (const post of bulk) {
+    assert.ok(post.text.includes("||"), `the oversized form was not exercised: ${post.text}`);
+    assert.deepEqual(atReadingSize(post.text), [], post.text);
   }
 });
 
@@ -1445,12 +1492,7 @@ test("the peer knob governs volume on every path, in both directions, and never 
     // semantics do not cover: `brief` composes the marker by hand in a different function from the
     // one the whole rendering uses, so it is the mode a register change is most likely to miss.
     for (const post of posts) {
-      for (const line of post.text.split("\n").slice(1)) {
-        assert.ok(
-          line.trim() === "" || line.startsWith("-# "),
-          `${mode}: a peer line reached the thread at reading size: ${line}`,
-        );
-      }
+      assert.deepEqual(atReadingSize(post.text), [], `${mode}: ${post.text}`);
     }
     if (mode === "off") {
       // Two lines rather than four: the drop log aggregates a repeat of one line for one session,

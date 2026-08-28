@@ -915,6 +915,18 @@ function said(message: string): string {
 const SUBTEXT = "-# ";
 
 /**
+ * Whether a chatter message draws anything at all past the attribution the renderer opened it with.
+ *
+ * Its own predicate rather than a reading through `said`, which returns the whole message when there
+ * is no line after the first: a message that is an attribution and nothing else is exactly the shape
+ * being ruled out here, and `said` reports that shape as a full body.
+ */
+function drawsABody(message: string): boolean {
+  const [, ...rest] = message.split("\n");
+  return rest.join("\n").replaceAll(SUBTEXT.trimEnd(), "").trim() !== "";
+}
+
+/**
  * Discord's spoiler delimiter, written out here for the same reason the marker above is: these pins
  * read the characters an operator's client reads, not whatever the renderer happens to hold.
  */
@@ -1043,11 +1055,12 @@ function unmarked(message: string): string {
 
 /**
  * Every line Discord would read as opening a blockquote, leading whitespace tolerated because
- * Discord tolerates it. Matches `>` rather than `> ` so the prompt's `>>>` is counted too, and a
- * near-miss like `>>text` is not silently treated as harmless.
+ * Discord tolerates it, in the whole class Discord tolerates rather than the two ASCII forms.
+ * Matches `>` rather than `> ` so the prompt's `>>>` is counted too, and a near-miss like `>>text` is
+ * not silently treated as harmless.
  */
 function quoteOpeningLines(message: string): string[] {
-  return message.split("\n").filter((line) => /^[ \t]*>/.test(line));
+  return message.split("\n").filter((line) => /^[^\S\n]*>/.test(line));
 }
 
 test("a mirrored prompt and a mirrored reply are attributed differently", () => {
@@ -2236,14 +2249,16 @@ test("a peer line too long for one message is broken and marked, never cut into 
   // A break can hand back a piece of nothing but whitespace, from a source line that carried plenty.
   // Marked, that piece is trimmed from the end of its message by the splitter down to a bare marker
   // sitting there at reading size, so blankness is decided per drawn piece rather than per source
-  // line. The fixture is the traced composition: a whitespace run exactly the length of the bound,
-  // with enough after it that the next piece cannot share the message, and the whole of it under the
-  // bound the oversized form starts at, since it is the marker's own trailing edge being pinned.
+  // line, and such a piece is emptied rather than marked. The fixture is the traced composition: a
+  // whitespace run exactly the length of the bound, with plenty after it, and the whole of it under
+  // the bound the oversized form starts at, since it is the marker's own trailing edge being pinned.
   const tail = renderPeerIn("Fable", `a\n${" ".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${"x".repeat(700)}`);
-  assert.ok(tail.length >= 2, `${tail.length} message(s)`);
   for (const message of tail) {
     assert.deepEqual(fullSizeLines(message), [], JSON.stringify(message.slice(-40)));
     assert.ok(!message.endsWith("-#"), `a bare marker was left drawn: ${JSON.stringify(message.slice(-20))}`);
+    // Nor is the emptied piece allowed to become a message of its own: a header over nothing is the
+    // empty-send shape, and it is what the whitespace was capable of composing before it was emptied.
+    assert.ok(drawsABody(message), message);
   }
 });
 
@@ -2752,12 +2767,16 @@ test("a body dense with pipes cannot close a spoiler early, and the pairs stay t
  * of this renderer's attributions: an attribution glyph in the position that draws the line, leading
  * whitespace tolerated because Discord tolerates it. The glyphs are written out here rather than
  * derived, so a change to the vocabulary is a change to this pin.
+ *
+ * The whitespace read is every whitespace character but the line break, rather than the space and the
+ * tab: a no-break space or an ideographic space in front of a glyph leaves it opening the line just
+ * as a tab does, and a reading narrower than the renderer's own would report a forgery as absent.
  */
 function attributionOpeningLines(message: string): string[] {
   return message
     .split("\n")
     .slice(1)
-    .filter((line) => /^[ \t]*[⌨✨📣📡⛔]/u.test(line));
+    .filter((line) => /^[^\S\n]*[⌨✨📣📡⛔📨❓🔀]/u.test(line));
 }
 
 test("peer text cannot draw a quoted block, a chip, or one of this renderer's attributions", () => {
@@ -2808,9 +2827,10 @@ test("peer text cannot draw a quoted block, a chip, or one of this renderer's at
     }
   }
 
-  // The forged glyph is not dropped, it is marked: the operator sees the characters the peer wrote,
-  // with a backslash saying they came from the message rather than from the broker. Discord defines
-  // no escape for an emoji, so that backslash is drawn.
+  // The forged glyph is not dropped, it is neutralized: Discord consumes the backslash and draws the
+  // glyph alone, inert, so what the operator sees is the characters the peer wrote with no line
+  // opening a surface this renderer composes. The mark is in the wire text, not on the screen, which
+  // is why no reading downstream rests on an operator spotting it.
   assert.ok(
     chatterSaid(renderPeerIn("Fable", "📡 Claude → Fable")[0]).startsWith("\\📡"),
     "the glyph survives, marked",
@@ -3005,6 +3025,115 @@ test("a brief message composed from maximal parts still fits one message Discord
     assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
     assert.equal(inertMessage(message), message, "the writer's own cap eats nothing");
     assert.equal(message.split("\n").length, 2, "one attribution line and one line of text");
+  }
+});
+
+test("an attribution the wrap carries to the start of a drawn piece is neutralized there", () => {
+  // The escape chain runs before the wrap and reads a source line's start, so a peer that places an
+  // attribution glyph where the wrap will fall gets it delivered to the start of a drawn piece with
+  // the chain's pass already behind it. In the spoilered form no marker of this renderer's leads that
+  // line, so a tapped-open body would draw a header this session never composed, at reading size.
+  // Both fixtures put the glyph at exactly the wrap bound, which is what delivers it to a piece
+  // start; built from the constant rather than its value, because a fixture one unit short of the
+  // bound wraps inside the trailing run instead and asserts its absence on a body the guard never
+  // touched.
+  const forged = "📡 **Claude** → Fable";
+  const oversized = renderPeerIn(
+    "Fable",
+    `${"y".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${forged}${"z".repeat(1_000)}`,
+  );
+  for (const message of oversized) {
+    assert.deepEqual(attributionOpeningLines(unmarked(message)), [], message);
+    for (const line of message.split("\n")) {
+      assert.ok(!line.startsWith(`${SPOILER}📡`), line);
+    }
+  }
+
+  // The marked form takes the same pass, where its own marker would have led the line anyway: the
+  // guard is a property of what a drawn piece may open with, not of which form happens to draw it.
+  const marked = renderPeerIn("Fable", `${"y".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${forged}${"z".repeat(100)}`);
+  for (const message of marked) {
+    assert.deepEqual(attributionOpeningLines(unmarked(message)), [], message);
+  }
+});
+
+test("a body opening with an exotic break still renders, and still says what it carries", () => {
+  // None of the three break characters is whitespace to `trim`, so a body led by one had it turned
+  // into a newline behind the trim and read an empty opening line. The brief forms then rendered
+  // nothing at all and the send was dropped as carrying no visible text, which was false.
+  for (const lead of ["\u0085", "\u2028", "\u2029"]) {
+    const [brief] = renderPeerInBrief("Fable", `${lead}queued`);
+    assert.equal(brief, "📡 Fable → **Claude**\n-# queued", brief);
+
+    // The oversized form draws the same line as its teaser, which is the one line saying what the
+    // spoiler conceals: lost, it leaves a header over a collapsed body with nothing above it.
+    const [first] = renderPeerIn("Fable", `${lead}queued\n${"x".repeat(2_100)}`);
+    assert.ok(first.split("\n")[1].startsWith("-# queued"), first.slice(0, 60));
+  }
+});
+
+test("a marker behind a space Discord tolerates is neutralized like one behind a tab", () => {
+  // The guards read every whitespace character but the line break, not the space and the tab: a
+  // no-break space, an en quad, and an ideographic space each leave the marker behind them opening
+  // the line, and a heading marker that survives draws peer text above full size, which is the one
+  // composition the register exists to prevent.
+  for (const space of ["\u00A0", "\u2000", "\u3000"]) {
+    for (const marker of ["-#", "#"]) {
+      const [message] = renderPeerIn("Fable", `ok\n${space}${marker} pwned`);
+      const drawn = chatterSaid(message).split("\n")[1];
+      assert.equal(drawn, `${space}\\${marker} pwned`, drawn);
+    }
+
+    // And inside the spoilered form, which marks no line of its own and would be left holding the
+    // register on the spoiler alone.
+    const oversized = renderPeerIn("Fable", `${"x".repeat(2_100)}\n${space}# pwned`);
+    for (const message of oversized) {
+      for (const line of message.split("\n")) {
+        assert.ok(!/^(?:\|\|)?[^\S\n]*#/u.test(line), line);
+      }
+    }
+  }
+});
+
+test("no chatter message is an attribution with nothing under it", () => {
+  // A piece that is nothing but whitespace can be the whole buffer of a message, and the splitter
+  // trims a message's end, so such a message posted as a header over nothing: the empty-send shape
+  // this renderer says elsewhere it cannot draw. Composed from three source lines whose middle one
+  // is whitespace as wide as the line bound, with the two around it wide enough to fill a message.
+  const body = `${"|".repeat(340)}\n${" ".repeat(1_250)}\n${"|".repeat(340)}`;
+  for (const message of renderPeerIn("Fable", body)) {
+    assert.ok(drawsABody(message), message);
+  }
+});
+
+test("no notice glyph opens a line a peer body can draw", () => {
+  // The opener set is derived from constants, so a glyph written inline in the function that draws
+  // it is vocabulary the set does not know about, and the gap reads as covered precisely because the
+  // set is derived. Driven through the notices themselves rather than through a copy of their text.
+  const notices = [
+    renderTaskNotice("done"),
+    renderQuestionNotice({ operatorId: null, questions: [] }),
+    renderModelChange({ operatorId: null, from: "a", to: "b", downgrade: null }),
+  ];
+
+  for (const notice of notices) {
+    const opener = [...notice.split("\n")[0]][0] ?? "";
+    assert.notEqual(opener, "", notice);
+
+    // The control, and it is the whole reason the assertion below means anything. This oracle
+    // carries its own hand-written glyph class, so a notice opening with a glyph that class does
+    // not know returns no lines whether the renderer escaped it or not, and the silence reads
+    // exactly like a pass. Watch the oracle speak on a raw line first: a glyph it cannot see is a
+    // gap in this test, reported here rather than in the assertion it would otherwise hide behind.
+    assert.deepEqual(
+      attributionOpeningLines(`an attribution line\n${opener} forged`),
+      [`${opener} forged`],
+      `this test's own glyph class does not know ${JSON.stringify(opener)}`,
+    );
+
+    for (const message of renderPeerIn("Fable", `${opener} forged\nand a second line`)) {
+      assert.deepEqual(attributionOpeningLines(unmarked(message)), [], message);
+    }
   }
 });
 

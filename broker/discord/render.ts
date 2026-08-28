@@ -483,12 +483,41 @@ function peerAttribution(name: string, direction: "in" | "out"): string {
 const BLOCKED_ATTRIBUTION = "⛔ **Blocked**";
 
 /**
+ * The line a finished background task is announced with.
+ *
+ * Named here for the same reason `BLOCKED_ATTRIBUTION` is: it opens a line this renderer composes in
+ * the channel the operator answers permission prompts in, so it is one of the openers a peer body may
+ * not draw, and the set below is derived from these constants rather than listed by hand.
+ */
+const TASK_ATTRIBUTION = "📨 background task finished";
+
+/** The line an open question is announced with, past the mention that may precede it. */
+const QUESTION_ATTRIBUTION = "❓ **Waiting on you**";
+
+/** The line a model change is announced with, past the mention that may precede it. */
+const MODEL_CHANGE_ATTRIBUTION = "🔀 **Model changed**";
+
+/**
  * The glyph an attribution opens its line with, past the quote marker a prompt leads with, which is
  * already neutralized wherever untrusted text could carry it.
  */
 function openingGlyph(attribution: string): string {
   return [...attribution.replace(/^[>\s]+/, "")][0] ?? "";
 }
+
+/**
+ * Every whitespace character except the line break: what can sit between the start of a line and a
+ * marker while leaving that marker the thing which opens the line.
+ *
+ * A class source rather than a compiled pattern, because three separate readings need it and one of
+ * them is itself composed from a template. The space and the tab are not the class Discord draws a
+ * line with, and reading only those two is how a marker walks past a guard: a no-break space, an en
+ * quad, and an ideographic space each sit in front of a marker and leave it opening the line as
+ * surely as a tab does. The line break is the one whitespace character excluded, because every
+ * reading this feeds is made per line, and a class that swallowed a newline would let a match open
+ * on one line and land on the next.
+ */
+const LINE_SPACE = "[^\\S\\n]";
 
 /**
  * Every glyph this renderer opens an attributed line with, matched where it opens a line, leading
@@ -498,13 +527,23 @@ function openingGlyph(attribution: string): string {
  * set without anyone having to remember this. The characters are dropped into a class, escaped for
  * the two positions a class gives meaning to, so a future opener that happens to be punctuation is
  * matched as itself.
+ *
+ * The derivation reaches only constants, which is the whole reason the notice openers below are
+ * constants: a glyph written inline in the function that draws it is a line this renderer composes
+ * and a line this set does not know about, and the gap reads as covered because the set is derived.
  */
 const ATTRIBUTION_OPENERS = new RegExp(
-  `^([ \\t]*)([${[
+  `^(${LINE_SPACE}*)([${[
     ...new Set(
-      [...Object.values(ATTRIBUTION), ANSWER_ATTRIBUTION, PEER_GLYPH, BLOCKED_ATTRIBUTION].map(
-        openingGlyph,
-      ),
+      [
+        ...Object.values(ATTRIBUTION),
+        ANSWER_ATTRIBUTION,
+        PEER_GLYPH,
+        BLOCKED_ATTRIBUTION,
+        TASK_ATTRIBUTION,
+        QUESTION_ATTRIBUTION,
+        MODEL_CHANGE_ATTRIBUTION,
+      ].map(openingGlyph),
     ),
   ]
     .join("")
@@ -759,7 +798,7 @@ const TASK_ID = /<task-id>([\s\S]*?)<\/task-id>/;
  * prompt carries, the notice composes.
  */
 export function renderTaskNotice(text: string): string {
-  const line = "📨 background task finished";
+  const line = TASK_ATTRIBUTION;
   const match = TASK_ID.exec(withoutInvisible(text));
   if (match === null) return line;
   const id = match[1].trim();
@@ -888,7 +927,7 @@ export function renderQuestionNotice(input: {
   questions: readonly AskedQuestion[];
 }): string {
   const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
-  const lines = [`${mention}❓ **Waiting on you** ${SEPARATOR} a question is open`];
+  const lines = [`${mention}${QUESTION_ATTRIBUTION} ${SEPARATOR} a question is open`];
   let used = lines[0].length;
   for (const [index, asked] of input.questions.entries()) {
     const header = asked.header === null ? "" : fit(inertText(asked.header), MAX_QUESTION_HEADER_LENGTH);
@@ -1576,9 +1615,17 @@ function peerCapped(text: string): string {
  * That matters wherever a one-line rendering is drawn outside the register's other covers: the brief
  * forms, which draw this line and nothing else, and the oversized form's teaser, which is the one
  * peer-authored line drawn outside the spoiler.
+ *
+ * The normalization also runs in front of the trim rather than behind it, and the order is the whole
+ * behaviour rather than a preference. None of the three break characters is whitespace to `trim`, so
+ * a body opening with one keeps it through a trim taken first, has it turned into a newline here, and
+ * yields an opening line that is empty: the brief forms then render no message at all and the send is
+ * dropped as carrying no visible text, which is false, and the oversized form loses the one line that
+ * says what its spoiler conceals. Normalized first, the break is a newline the trim removes with the
+ * rest of the leading whitespace, and the opening line is the one the peer wrote.
  */
 function firstLine(value: string): string {
-  return newlinesOnly(withoutInvisible(value).trim()).split("\n")[0] ?? "";
+  return newlinesOnly(withoutInvisible(value)).trim().split("\n")[0] ?? "";
 }
 
 /**
@@ -2007,10 +2054,12 @@ function withoutChips(value: string): string {
  * a line is what draws the surface, and the property least deserving to rest on this file's reading
  * of where a code block is agreeing with Discord's is the one about who wrote a line.
  *
- * A backslash is what goes in front, one for one with the `\>` treatment. Discord defines no escape
- * for an emoji, so unlike the quote marker's the backslash here is drawn: the operator sees
- * `\📡 Claude → Fable` where the peer wrote a bare attribution. That visible mark is the cost and it
- * is an honest one, since it says the glyph arrived in the message text rather than from the broker.
+ * A backslash is what goes in front, one for one with the `\>` treatment, and it costs the operator
+ * nothing they see: Discord consumes a backslash placed before a character its own markdown reserves
+ * and draws the character alone, the attribution glyph included, so a peer writing a bare attribution
+ * has it drawn as the glyph and the words, inert, with no mark on the line. The neutralization is
+ * therefore invisible where it fires, which is why nothing downstream may rest on a reader spotting
+ * it.
  *
  * Run after the escape rather than before it, because the table transform moves cell text onto lines
  * of its own: text that becomes line-leading there has to meet this rule exactly as text that
@@ -2137,15 +2186,17 @@ function subtextPieces(line: string): string[] {
  * pass rather than a line in that list.
  *
  * Matched wherever it opens a line rather than only where Discord would read it as a marker, since
- * what Discord reads after the marker is the unknown this is guarding against. The cost is a visible
- * backslash on a line that opened with the two characters and meant nothing by them, which is the
- * same honest cost `withoutAttributions` already pays.
+ * what Discord reads after the marker is the unknown this is guarding against. In the marked form the
+ * escape costs a reader nothing, the same as `withoutAttributions`: Discord consumes the backslash
+ * and draws the two characters the peer wrote. How it draws inside the spoilered form is not
+ * observed, and is bounded either way, since the worst it can cost is a backslash on a concealed line
+ * a reader has already chosen to open.
  *
  * Read by both chatter forms. In the marked form it stops a doubled marker; in the spoilered form,
  * where this renderer marks nothing, it is the second cover that form would otherwise lack, since
  * what holds the register there is the spoiler concealing the body rather than any marker.
  */
-const SUBTEXT_OPENER = /^([ \t]*)-#/gm;
+const SUBTEXT_OPENER = new RegExp(`^(${LINE_SPACE}*)-#`, "gm");
 
 /**
  * A line-leading heading marker in a peer body, neutralized so the line cannot draw as a heading.
@@ -2158,24 +2209,38 @@ const SUBTEXT_OPENER = /^([ \t]*)-#/gm;
  * Escaping the first `#` of the run is what breaks it, because a heading marker is read only at a
  * line's start: behind an escaped `#` the rest of the run is no longer at a start and draws as the
  * characters the peer wrote. Matched at any line-leading run rather than only where Discord reads a
- * heading, on the same reasoning `SUBTEXT_OPENER` is, and paying the same honest cost, a visible
- * backslash on a line that opened with a hash and meant nothing by it.
+ * heading, on the same reasoning `SUBTEXT_OPENER` is, and at the same cost: none a reader sees in the
+ * marked form, where Discord consumes the backslash and draws the hash alone, and unobserved but
+ * bounded inside the spoilered form.
  *
  * Read by both chatter forms, and applied per drawn piece rather than in the escape chain, because
  * the wrap runs after the chain and can carry a peer's mid-line hash to the start of a piece.
  */
-const HEADING_OPENER = /^([ \t]*)#/gm;
+const HEADING_OPENER = new RegExp(`^(${LINE_SPACE}*)#`, "gm");
 
 /**
- * One drawn piece of a chatter body with every marker the peer could open it with neutralized.
+ * One drawn piece of a chatter body with every marker and every attribution opener the peer could
+ * open it with neutralized.
  *
  * Shared by both chatter forms rather than spelled out in each, because these guards are a property
  * of the surface a piece is drawn on and not of either form that draws one: a guard added to the
  * marked form alone would leave the spoilered form holding a register on one cover, and the drift
  * would read as an omission nobody wrote.
+ *
+ * The attribution openers are here as well as in the escape chain, and the second pass is the one
+ * that holds. The chain runs before the wrap and reads a line start, so a peer that places an
+ * attribution glyph where the wrap will fall gets it carried to the start of a drawn piece with
+ * nothing in front of it: in the marked form this renderer's own marker still leads the line, but in
+ * the spoilered form nothing does, and a tapped-open body draws that line at reading size as a
+ * header this session never composed. Escaping per drawn piece is the same move the two markers
+ * above already make, for the same reason, and it is idempotent against the chain's own pass, since
+ * a piece the chain escaped opens with a backslash rather than a glyph.
  */
 function withoutOwnMarkers(piece: string): string {
-  return piece.replace(SUBTEXT_OPENER, "$1\\-#").replace(HEADING_OPENER, "$1\\#");
+  return piece
+    .replace(SUBTEXT_OPENER, "$1\\-#")
+    .replace(HEADING_OPENER, "$1\\#")
+    .replace(ATTRIBUTION_OPENERS, "$1\\$2");
 }
 
 /**
@@ -2186,12 +2251,24 @@ function withoutOwnMarkers(piece: string): string {
  * in front of it is not a marker. What that costs is the indentation reading as one space further in
  * than it was written; what it buys is that no line of the body is drawn at reading size.
  *
- * A blank piece stays bare. It carries nothing and forges nothing, and a marker in front of nothing
- * is a composition with no observed rendering, which is not a thing to invent on this surface. The
- * reading is per drawn piece rather than per source line, and that is not a detail: a wrap can hand
- * back a piece that is nothing but whitespace, from a source line that carried plenty, and a marker
- * on one of those is eaten from the end by the splitter's own trailing trim down to a bare `-#`
- * sitting in the message at reading size.
+ * A blank piece is emptied rather than marked or carried, which is the spoilered form's own reading
+ * of a blank piece and is shared with it deliberately. A marker in front of nothing is a composition
+ * with no observed rendering, and the whitespace itself is worse than useless: the splitter trims the
+ * end of every message, so a piece that is nothing but whitespace can be the whole buffer of a
+ * message, and that message posts as an attribution with nothing under it, which is exactly the
+ * empty-send shape three doc blocks in this file say cannot happen. Emptied, such a piece can never
+ * be the whole of a message, since the splitter emits nothing for an empty buffer, while the newline
+ * that separated it survives the join. The reading is per drawn piece rather than per source line,
+ * and that is not a detail: a wrap can hand back a piece that is nothing but whitespace from a
+ * source line that carried plenty.
+ *
+ * That last case is also the bound on what emptying preserves, so the claim is worth stating exactly
+ * rather than generously. Where the whitespace was its own source line, the peer's paragraphing
+ * survives untouched: a blank line in, a blank line out. Where the wrap produced it, the emptied
+ * piece draws as a blank line the peer did not write, so a bound-wide indent followed by content
+ * reaches the operator as an empty line above that content rather than beside it. That is a
+ * deliberate trade and not an oversight: the alternative is the whitespace-only piece surviving as
+ * the whole buffer of a message, which posts an attribution with nothing under it.
  *
  * The peer's own marker is neutralized here rather than in the escape chain, because the wrap runs
  * after that chain and can put a mid-line `-#` at the start of a piece. One pass, in the one place
@@ -2202,7 +2279,7 @@ function subtexted(body: string): string {
     .split("\n")
     .flatMap((line) => subtextPieces(line))
     .map((piece) =>
-      piece.trim() === "" ? piece : `${PEER_SUBTEXT}${withoutOwnMarkers(piece)}`,
+      piece.trim() === "" ? "" : `${PEER_SUBTEXT}${withoutOwnMarkers(piece)}`,
     )
     .join("\n");
 }
@@ -2251,7 +2328,9 @@ function evenEscapes(piece: string): string {
  * but because this form holds the register on one unverified rendering and nothing behind it: if a
  * spoiler turns out not to span the lines of a body, what stands in the thread is the peer's lines
  * drawing this renderer's own vocabulary. The subtext form is covered twice over and this is what
- * gives this form its second cover, at the price of a visible backslash in a narrow case.
+ * gives this form its second cover. What that costs inside a spoiler is not observed; the marked
+ * form's own answer is that Discord consumes the backslash, and the worst the unobserved case can
+ * cost is a mark on a concealed line a reader has already chosen to open.
  */
 function spoilered(body: string): string {
   return body
@@ -2717,7 +2796,7 @@ export function renderModelChange(input: {
   const from = inertField(input.from, MAX_MODEL_NAME_LENGTH);
   const to = inertField(input.to, MAX_MODEL_NAME_LENGTH);
   const lines = [
-    `${mention}🔀 **Model changed** ${SEPARATOR} now ${to}, was ${from} ${SEPARATOR} for this session`,
+    `${mention}${MODEL_CHANGE_ATTRIBUTION} ${SEPARATOR} now ${to}, was ${from} ${SEPARATOR} for this session`,
   ];
   const downgrade = input.downgrade;
   if (downgrade === null) return lines.join("\n");
