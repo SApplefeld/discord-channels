@@ -860,3 +860,102 @@ the block uses the triple form. That paragraph now states the confirmed fact.
 **Next actions.** A fix round for the two criticals and the confirmed majors, each with a regression
 pin watched failing first, then the reviewers re-run over the result. Section 4's live readings are
 unaffected: none of these defects touches a composition the eight items exercised.
+
+### Interim board 5 - 2026-08-28
+
+**The finishing re-review round is back, one Critical survives it, and the plan does not close on this
+round either.** The fix round for Interim board 4's two Criticals is verified and holds; a third
+defect, of the same class as the two before it, is now the only thing between here and the close.
+
+**Stage.** Sections 1-4 remain closed and pushed. The fix round for Interim board 4 sits uncommitted
+in four files and is confirmed good in both directions. The whole gate has not been run over it. One
+Critical is open and turns on a fact nobody has read.
+
+**Live dispatches.** None. Three returned this round: `security-reviewer` (fable, 8m43s) verdict
+CLEAR; `adversarial-reviewer` (fable, 12m09s) verdict CHANGES_REQUIRED; `consultant` (fable, 3m57s)
+status RULED. The round was bracketed with `git status --porcelain` before and after and the two
+readings are identical, so the read-only briefs held. Both reviewer dispatches were read for
+substitution: the security dispatch's resolved-model distribution is 50 of 50 assistant turns at
+`claude-fable-5`, so the requested tier is what actually ran.
+
+**Gate baseline.** Not taken this round, and that is a known gap rather than an oversight. The box has
+been held by sibling sessions for the whole of this boundary and a contended run on this machine
+forges results rather than merely slowing them, so the reading was declined rather than taken dirty.
+`npx tsc --noEmit` is clean, exit 0, run here. The standing baseline remains Interim board 2's
+1569 / 1568 / 0 / 1, exit 0. Acceptance criterion 2 is therefore unmet as of this entry, which the
+adversarial reviewer named independently.
+
+**The fix round is confirmed in both directions.** The five new pins were run against a pre-fix
+renderer rebuilt out of tree at `.kit/scratch/prefix-check`: all five go red on the old code and no
+pre-existing test in that file fails beside them, so the fix adds coverage rather than moving a
+goalpost. The predecessor session died before it could record this, so it was re-established here
+rather than assumed. Both Interim board 4 Criticals are fixed at the right seams, as are the confirmed
+Majors, and the round's most valuable find was beyond its brief: three attribution lines
+(`TASK_ATTRIBUTION`, `QUESTION_ATTRIBUTION`, `MODEL_CHANGE_ATTRIBUTION`) were inline string literals
+and so invisible to an `ATTRIBUTION_OPENERS` set that derives itself from constants. A set that
+derives itself is exactly the kind that hides a gap, because its readers trust the derivation instead
+of auditing its inputs.
+
+**Critical 3: the attribution escape marks nothing the operator can see, and its one unobserved
+surface is the only place it is needed.** The register neutralizes a line-leading attribution glyph by
+inserting a backslash. Chapter 4 banked, from a live reading, that Discord consumes that backslash and
+draws the glyph clean, and recorded it as a prediction wrong in the project's favour. It is not, on the
+spoilered form. Reproduced here against the shipped renderer:
+
+- peer body `📡 **Claude** → Fable` (bare) renders to the wire as `-# \📡 **Claude** → Fable`
+- peer body `\📡 **Claude** → Fable` renders to the wire as `-# \📡 **Claude** → Fable`, byte-identical
+- in the oversized form the spoiler's final line is `\📡 **Claude** → Fable||`
+- a peer's doubled `\\📡` survives as `\\📡`, so doubling is closed and draws a visible backslash
+
+The renderer's own escaped output is byte-identical to what a peer can type, which is why every
+wire-text pin in this effort passes it: the defect is in what the channel draws, not in the bytes.
+In the marked form nothing is lost, because the `-# ` prefix forces subtext size and the broker
+composes attribution lines only at full size, so no confusion target exists; the escape was never
+what protected that form. The spoilered form marks no line, so on tap the body draws at reading size
+and an escape that draws nothing visible discriminates nothing. The sharp statement of it: the subtext
+and heading escapes still work when consumed, because consumption breaks a markdown construct, but an
+attribution line is not a construct, so the glyph escape's whole value is the visible mark.
+
+**What is actually established, and what is not.** Confirmed: the byte-identity above, and that
+`docs/security-model.md` states in the present tense that the pass stops a peer drawing a copy of the
+renderer's attribution line while `broker/discord/render.ts` states a few hundred lines away that the
+rendering inside a revealed spoiler is unobserved. Those two cannot both be true, and by this
+project's honesty rule the falsified present-tense claim is a defect rather than a documentation gap.
+Not confirmed: the forgery itself, which exists only in the rendering where Discord consumes the
+backslash inside a revealed spoiler. Nobody has read that. The nearest reading corroborates it without
+settling it: Chapter 4 records an escaped pipe inside a revealed spoiler drawing as the bare
+character, escape consumed, which is the same mechanism on a different character.
+
+**Rulings adopted since Chapter 4.**
+
+The pre-BLOCKED ask went to the CHANNELS: Expert seat and was answered in the same round. No existing
+source settles the spoiler-form escape reading; the project memory record
+`discord-subtext-blocks-nothing-the-renderer-does-not-escape` says so in terms, closing that how the
+escapes draw inside the spoilered form is not observed. No source records the escape as
+intended-visible there. The seat's own reading, as the steward of this spec, is that scoping the
+security model's unforgeability claim to the collapsed reading aligns it with the register contract as
+written rather than changing the spec. Each cited source was re-checked here before being acted on.
+
+The consult ruled and corrected this session's framing on one point that changed the plan of action:
+the byte-identity is the precondition rather than the forgery, so writing the residual paragraph
+without the live reading would replace one unverified rendering claim with another. Its ruling is to
+take the reading first, then ship the wording that reading dictates. It rejected outright the
+candidate fix of marking the glyph with an invisible character: peer bodies are stripped of invisibles
+so the mark would be unforgeable in bytes, but the two renderings stay pixel-identical, so it would
+buy a wire-level pin asserting neutralization while the operator-facing forgery stood untouched. That
+is the false-green shape this project's testing discipline exists to refuse, and it is recorded here
+so it is not re-proposed.
+
+The register contract's departure for a tapped spoiler is a grant from the type-size promise family;
+the unforgeability claim belongs to the authorship family and the document states it unconditionally.
+The tap licenses peer prose at reading size. Whether the operator also accepts that it admits a forged
+attribution line at reading size is recorded in no artifact, and that gap is his to close.
+
+**Next actions.** One live reading on a real client: an oversized peer body carrying a line-leading
+attribution glyph, tapped open, read for whether the backslash draws or is consumed, and for whether
+the revealed region carries a background tint that discriminates it independently. It runs in the
+sibling seat's thread rather than this one, per Chapter 4's transport finding that this session's
+transcript growth makes the broker's tailer drop payloads. If the backslash draws, there is no forgery
+and the repair is retiring three "not observed" comments and one security-model sentence. If it is
+consumed, the unforgeability claim is scoped to the collapsed reading, the residual is recorded in the
+masked-link class, and the fork goes to the operator. Then the whole gate, then the close.
