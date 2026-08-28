@@ -757,3 +757,106 @@ dropped rather than wrapped or truncated mid-sentence.
 **Next actions.** Brief mode is removed from broker.env and the pre-item-5 file is restored, so one
 elevated broker restart is all that stands between here and the item 6 re-confirmation, which is the
 last reading Section 4 needs. Then Section 4 closes and the whole-effort finishing pass runs.
+
+### Chapter 4 - 2026-08-28
+Completed: Section 4: Live verification
+
+**All eight payloads are read on a real Discord client and all eight pass.** The readings were taken
+first-hand through the Discord web client rather than relayed as screenshots, which is what let the
+check follow its own evidence rather than only the questions framed in advance.
+
+Items 1, 2, 3, 4, 5, 7 and 8 passed on their first reading and are recorded item by item in Interim
+board 3. Item 6 failed, was fixed, and now passes in both directions on the fixed broker: a peer
+line opening with a subtext marker and lines opening with first- and second-level heading markers
+all draw small and grey, as literal characters, with no heading anywhere and no visible backslash.
+The fix is a line-leading heading escape routed through a shared per-piece helper so the two chatter
+forms cannot drift apart.
+
+**Two recorded answers that were open questions.** Inline code inside a subtext line renders as code
+chips rather than degrading to literal backticks, and the chips are small, so the register holds
+either way and the recorded answer is that it renders. Discord consumes a marker escape rather than
+drawing it, for the attribution glyph, the subtext hyphen and the heading hash alike, so the guards
+this plan added cost no visible backslash on any surface it checked. The plan had predicted a
+visible backslash as the honest cost of blocking forged headers; that prediction was wrong in the
+project's favour and is corrected wherever it appeared.
+
+**Decisions and surprises.**
+
+The register contract's departure for a tapped spoiler is load-bearing rather than decorative. A
+revealed spoiler body draws at full size, so the contract holds only because the collapsed reading
+is the one it speaks about. Reading item 4 without tapping would have recorded a pass on a strictly
+weaker question than the one the security model rested on.
+
+The security model's unobserved-composition list is now empty. An escaped pipe inside a spoiler
+draws as an ordinary pipe character, opening neither a nested spoiler nor a table row, which was the
+last composition the register rested on unread. The one rule that document still names as
+unobserved is Discord's behaviour on a doubled subtext marker, a different question left as written.
+
+The operator half of the register comparison needed no operator action. Operator-typed lines already
+in the thread draw a real quote bar at full size under the console label, while a peer's own quote
+markers draw as literal characters with no bar, so the operator's voice is visually distinct from
+anything a peer can compose.
+
+**A transport finding this section surfaced, outside its own scope.** The broker's transcript tailer
+skips to a session's current end whenever that session's transcript outgrows one pass, and anything
+sitting in the skipped window is never relayed. It fired eight times against this session, whose
+transcript grows unusually fast because browser screenshots ride in it, and it silently dropped two
+peer payloads. The inbound leg of the item 6 reading was taken in the sibling seat's thread instead,
+where the same renderer draws the same message without this session's transcript in the path. This
+is a transport property rather than a rendering one and it is recorded to memory; it is not a defect
+this plan fixes, and nothing in the peer-chatter register depends on it.
+
+**Local state altered and restored.** `broker.env` carried `CHANNEL_PEER_MESSAGES=brief` for the
+item 5 reading and is restored from its pre-item-5 copy. The spare copies beside it are removed.
+
+Next: Section 4 was the last section. The whole-effort finishing pass follows.
+
+### Interim board 4 - 2026-08-28
+
+**The finishing review round found two critical defects, and the plan does not close on this round.**
+Four fresh-context agents ran over the whole changeset (base `fc7be96`): QA verification, adversarial
+review, blind diff-only review, and security review. Every finding below was re-confirmed here by
+driving the shipped renderer, rather than accepted from a report.
+
+**Critical 1: a peer can forge this renderer's own attribution line.** `withoutAttributions` runs in
+`chattered`'s escape chain, which executes before the line wrap, and it matches line-leading only. A
+peer that places an attribution glyph mid-line at the wrap boundary gets it carried to the start of a
+drawn piece with no escape. In the spoilered form there is no subtext marker in front of it, so on a
+tapped-open body it draws at reading size and reads as a genuine header. Reproduced on a single-line
+2,220 code point body: the drawn line is the spoiler opener followed immediately by the peer's own
+`glyph **Claude** -> Fable`. This falsifies the unforgeability claim the security model states in the
+present tense, so it is a defect by this project's own honesty rule rather than a documentation gap.
+The adversarial and security reviewers found it independently, which is worth recording: it is the
+exact argument this effort used to move the subtext and heading guards into a per-drawn-piece helper,
+applied to every marker except this one.
+
+**Critical 2: one character makes a peer message disappear.** In `firstLine`, `newlinesOnly` runs
+inside the trim rather than in front of it, so a body opening with U+0085 has that break converted to
+a newline the trim can no longer remove and the first line reads empty. In brief mode the render
+returns no messages at all and the delivery is dropped with a log line saying it carried no visible
+text, which is false. Reproduced directly: the same body renders one message without the leading
+character and none with it. The oversized form loses its teaser the same way, leaving a header over a
+collapsed spoiler with nothing saying what it conceals.
+
+**Also confirmed, and carried into the fix round.** The heading and subtext guards this effort added
+tolerate only space and tab before the marker, so a non-ASCII space slips past them, which is the
+same narrow-whitespace-class shape Section 2 already fixed once. The marked form can post a message
+that is an attribution and nothing else, which three doc blocks say cannot happen. Several comments
+and one security model paragraph still carry the visible-backslash prediction the live check
+falsified. Two path-level pins assert a marker on every body line, an invariant the oversized form
+deliberately violates and which holds only because both fixtures sit under the threshold.
+
+**What the round did not shake.** The register contract itself held under both reviewers' fuzzing: no
+unmarked non-blank line outside a spoiler, no message over the length cap, no ping reachable, the
+splitter's hard cut unreachable on both chatter paths, and the operator-attributed quoted block
+uncomposable from a peer body. QA reported the build clean and the suite at 1569/1568/0/1, exit 0,
+matching the expected count with no new failures.
+
+**One QA finding is already repaired.** The security model still stated the operator quoted block's
+discriminator as unread. It is read: the block opens with a triple quote marker, which draws a real
+quote bar at reading size, while a plain single marker draws as the character itself, which is why
+the block uses the triple form. That paragraph now states the confirmed fact.
+
+**Next actions.** A fix round for the two criticals and the confirmed majors, each with a regression
+pin watched failing first, then the reviewers re-run over the result. Section 4's live readings are
+unaffected: none of these defects touches a composition the eight items exercised.

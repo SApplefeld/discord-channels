@@ -438,14 +438,13 @@ mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it i
 line opening a Claude-authored message, claiming nothing the message does not already claim. The
 operator-attributed quoted block is the one attribution content cannot draw: no text passing through
 the renderer can compose it, whichever path that text arrived on. That statement is about the
-characters, and it carries an unverified precondition about how they draw: a live reading recorded
-in the backlog found that a plain `>` does not render as a quote bar on relay-posted messages at
-all, arriving as literal `>` characters, and if `>>> ` behaves the same way then this block is a
-literal string rather than a visually distinct one and the discriminator is weaker than the
-paragraph reads. What content still cannot do is compose those characters, since the renderer
-escapes the line-leading marker in both regions. The open half is whether Discord un-escapes what
-the renderer wrote, which no check here has read; it is item 8 of the peer-chatter rendering plan's
-live check. What the renderer cannot establish
+characters, and how they draw is read on a real client: the `>>> ` this block opens with draws a
+quote bar at reading size, so the block is visually distinct and not a literal string only. A plain
+`>` does not draw one on a relay-posted message, arriving as the character itself, which is why the
+block opens with the triple marker rather than the single one. Content cannot compose those
+characters either, since the renderer escapes the line-leading marker in both regions, and a peer's
+own `>` and `>>> ` draw as the characters written with no bar at all. The discriminator is therefore
+both unforgeable and visible. What the renderer cannot establish
 is who authored the words handed to it, and on the queued-prompt path the broker awards the operator
 attribution to a line it read off a file, so what holds there is that the attribution belongs to
 whatever wrote that line into the transcript. The accepted-risk list below carries what that rests
@@ -801,8 +800,11 @@ heading, which is peer text not merely at full size but above it. The renderer t
 first character of any line-leading heading marker run in a chatter body, in both chatter forms and
 per drawn piece rather than per source line, since the line wrap can carry a mid-line marker to the
 start of a piece. Escaping the first character is what breaks the construct, because a heading marker
-is read only at a line's start. The cost is a visible backslash on a line that opened with a hash and
-meant nothing by it, the same honest cost the attribution and subtext-marker passes already pay. The
+is read only at a line's start. In the marked form the escape costs nothing a reader sees, since
+Discord consumes a backslash before a character its own markdown reserves and draws the character
+alone, which is what the attribution and subtext-marker passes cost there too. How the same escape
+draws inside the spoilered form is not observed, and it is bounded either way: the worst it can cost
+is a backslash on a concealed line a reader has already chosen to open. The
 collapsed form's own unknowns, listed below, carry a different fallback: the open form at every size.
 
 Two departures from the promise are named rather than incidental.
