@@ -959,3 +959,115 @@ transcript growth makes the broker's tailer drop payloads. If the backslash draw
 and the repair is retiring three "not observed" comments and one security-model sentence. If it is
 consumed, the unforgeability claim is scoped to the collapsed reading, the residual is recorded in the
 masked-link class, and the fork goes to the operator. Then the whole gate, then the close.
+
+### Interim board 6 - 2026-08-28
+
+**The re-review round's findings are all addressed, the whole gate is queued rather than run, and the
+plan stops here on an operator dependency.** Every defect Interim board 5 left open is closed except
+Critical 3, which cannot be closed from this seat at all: it turns on a rendering nobody has read, and
+the surface that would read it is gone.
+
+**Stage.** Sections 1-4 remain closed and pushed. The fix round now sits uncommitted in four files
+with the adversarial reviewer's surviving Major fixed and all five Minors adjudicated. The whole gate
+is owed and is the last item; it is queued behind a sibling session rather than blocked.
+
+**Live dispatches.** None, and none this round. The work here was inline: it was adjudication and
+repair of an existing round's findings, not new implementation.
+
+**Gate baseline.** The targeted lane is green on the final state, run here: `render.test.ts` 178/178
+exit 0, `outbound.test.ts` 145/145 exit 0, `npx tsc --noEmit` clean exit 0. The whole gate is not run.
+The standing baseline remains Interim board 2's 1569 / 1568 / 0 / 1, exit 0, and acceptance criterion
+2 stays unmet until a whole-gate reading is taken against it. This is a queue rather than a refusal:
+the box is held by a sibling session, this machine's coordinator seat has recorded the slot and the
+expected shape, and the run is one command once the slot lands.
+
+**The surviving Major is fixed, and the fix was earned in both directions.** The marked-form half of
+"an attribution the wrap carries to the start of a drawn piece is neutralized there" asserted an
+absence on a body the guard never touched. Confirmed by reading, not by argument: on the shipped
+fixture the renderer emitted zero escaped glyphs, so the assertion passed because nothing had happened
+rather than because the guard had held. The glyph sat at unit 1,100 of a 1,221-unit body while the
+wrap falls at 1,200, so the cut landed inside the trailing run and the glyph was never delivered to a
+piece start. Both halves of the test now build their fixture from `MAX_PEER_SUBTEXT_LINE_LENGTH`
+rather than from its value, which is the root fix rather than the symptom: a literal is silently one
+unit short again the moment the bound is retuned, which is exactly how this went vacuous. Watched
+failing first against an out-of-tree renderer with the attribution guard removed, and the marked half
+was isolated and watched failing on its own, because the oversized half was already non-vacuous and
+would otherwise have supplied the red.
+
+**Five Minors adjudicated, three fixed, one accepted with its reasoning recorded, one fixed as an
+overclaim.**
+
+The two fixtures this effort added carried raw invisible characters in source (U+0085, U+2028, U+2029;
+U+00A0, U+2000, U+3000) and now spell them as `\u` escapes. A raw invisible in source survives only as
+long as nothing normalizes it, and a fixture whose character an editor silently rewrites stops testing
+the thing it is named for while still passing. The pre-existing U+2026 and U+200B occurrences
+elsewhere in both files are outside this changeset and were left alone.
+
+The glyph-class Minor was the round's second instance of one class and so took the recurrence rule's
+generator fix rather than a patch. `attributionOpeningLines` carries its own hand-written glyph class,
+and the test driving the three notice renderers asserted only an absence through it, so a notice
+opening with a glyph that class does not know would return no lines whether the renderer escaped it or
+not, and the silence would read exactly like a pass. That is the same shape as the defect this round
+already found once, where three attribution lines written as inline literals were invisible to a set
+that derives itself from constants. The test now runs the oracle against a raw line first and requires
+it to speak, so a glyph the class cannot see is reported as a gap in the test rather than hidden
+behind the assertion it would otherwise have made vacuous. Its name was narrowed in the same edit:
+it claimed every line this renderer opens with a glyph and covers the three notices, not the card
+glyphs, which are not attribution openers in the implementation either.
+
+`atReadingSize`'s raw `||` parity reading is accepted rather than rewritten. Its conservative
+direction treats any delimiter-bearing line as concealed, which is safe only because a peer's own
+pipes are escaped before they are drawn, and that premise is pinned independently in `render.test.ts`
+by "a body dense with pipes cannot close a spoiler early, and the pairs stay the renderer's own". That
+is one claim pinned once rather than two oracles reading the same structure two ways, which is the
+arrangement this plan's Design warns against. The doc block now names the pin, so the reasoning is
+checkable from the helper rather than resting on an assertion about the pipeline made locally.
+
+`subtexted`'s doc block claimed that emptying a whitespace-only drawn piece leaves the peer's
+paragraphing unchanged. Probed rather than argued, and the claim is false in exactly the case the
+same block sets up two sentences earlier: where the wrap produced the piece, a source line of
+bound-wide indent followed by content reaches the operator as an empty line above that content, so the
+peer wrote two lines and the renderer drew three. The block now states the bound exactly and records
+the trade, which is deliberate: the alternative is the whitespace-only piece surviving as the whole
+buffer of a message and posting an attribution with nothing under it.
+
+**Critical 3 is unchanged and is now the blocker, because the instrument that would settle it is
+gone.** The reading it needs is a real Discord client: one oversized peer body carrying a line-leading
+attribution glyph, tapped open, read for whether the backslash draws or is consumed. Section 4 took
+its eight readings by driving the Discord web client directly from this session. That route is
+unavailable now. The extension's connected-browsers listing returns empty, and only embedded
+`msedgewebview2` processes are running with no browsing surface among them. The listing is the
+authoritative reading here rather than a process-name match, which is the correction Interim board 3
+recorded against this session's own earlier mistake. So the reading is an operator dependency, which
+is the completion contract's external-dependency shape and goes up rather than being ruled on.
+
+The pre-BLOCKED route is already discharged for this Critical and is not re-run: Interim board 5
+records the expert ask answered in the same round and the consult ruled, and the consult's ruling is
+what makes the reading the next action rather than the wording. Nothing since has changed the
+question.
+
+**A reported claim carried for the gate reading, marked as reported because it is not checkable from
+here.** This machine's coordinator seat reports that AI-OS: Worker's contended run failed a
+fixed-delay race that reported `Expected: 1, Actual: 0` in 767ms. If that holds, a contended red need
+not be slow: it can be fast and wear an ordinary assertion failure's costume. That is another repo's
+test on another session's surface and is unverifiable from this seat, so it is recorded as reported
+rather than banked. It bears on this plan only as a caution when the whole gate is finally read: an
+unexpected red is not to be cleared on the grounds that it failed too quickly to be contention.
+
+**Memory banked.** One project-tier record written this boundary,
+`a-guard-on-what-a-channel-draws-cannot-be-tested-in-code`: a test suite sees only what the code
+emits, never what the channel draws, so a guard whose whole value is a visible mark has no in-code
+oracle and needs a live reading as its gate. It carries the classifier that makes it actionable, that
+an escape breaking a markdown construct still works when the channel consumes the backslash while one
+whose only effect is a visible character does not, and it names the invisible-marker false-green fix
+so it is refused rather than re-proposed. Written one level more general than this incident on
+purpose: the lesson is about the class of guard, not about the attribution glyph.
+
+**Next actions.** The whole gate on the box slot when this machine's coordinator grants it, read
+against the 1569 / 1568 / 0 / 1 baseline and against the wall clock, since 41 to 50 seconds is this
+box uncontended and 88 seconds is this box under load. Then the operator's reading of Critical 3, and
+the wording that reading dictates: if the backslash draws, three "not observed" comments and one
+security-model sentence retire; if it is consumed, the unforgeability claim is scoped to the collapsed
+reading and the residual is recorded in the masked-link class. Then the close. The fix round stays
+uncommitted until the gate runs over it, and a copy of the diff is kept in gitignored scratch so a
+crash costs the worktree rather than the work.
