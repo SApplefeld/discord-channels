@@ -1,6 +1,6 @@
 # Peer-Chatter Rendering: Subtext for Session-to-Session Traffic
 
-Status: In Progress (armed 2026-08-27; see Dispatch Authorization)
+Status: Complete (armed 2026-08-27, closed 2026-08-28; see Dispatch Authorization)
 Commit Model: Commit-and-Push (the model every sibling plan in this repo ran under; the operator
 confirms at arming)
 Fable Spend: research and this spec in the Expert session; implementation dispatched
@@ -1071,3 +1071,99 @@ security-model sentence retire; if it is consumed, the unforgeability claim is s
 reading and the residual is recorded in the masked-link class. Then the close. The fix round stays
 uncommitted until the gate runs over it, and a copy of the diff is kept in gitignored scratch so a
 crash costs the worktree rather than the work.
+
+### Chapter 5 - 2026-08-28
+Completed: the whole-effort finishing pass
+Implemented By: main session, with three fresh-context reviewers and one consult across two finishing
+rounds (recorded in Interim boards 4 and 5) and the repair round in Interim board 6
+Metrics: review rounds 2; NEEDS_CONTEXT 0; escalations 0; consults 1
+Decisions / Surprises: the finishing pass took three rounds rather than one, and each round's
+Criticals were the same class arriving at a new site: a claim about what Discord draws, resting on a
+reading nobody had taken. The last of them did not close by engineering and was not meant to. The
+operator settled it by deciding to close on the desktop readings, and supplied in the same breath the
+fact that had been missing all along, that he had watched the same payloads on his phone and could
+see no rendering difference between the two surfaces.
+
+That decision resolves acceptance criterion 4, which had quietly gone unmet and which nobody had
+noticed until this boundary. The criterion names the operator's phone, and the record shows the phone
+set was item 1, item 4 in its collapsed state, and item 6's failure, while items 2, 3, 5, 7, 8 and
+item 4's tapped reading were taken by this session in the Discord web client. Chapter 4 says all
+eight were read and says the readings were taken through the web client; both statements are true and
+the criterion fell between them when the section changed instrument mid-run. That is the transferable
+finding: when a live check switches instrument, the acceptance line is the artifact most likely to be
+left behind, because it was written before anyone knew which instrument would be used. The criterion
+is met on the operator's own testimony rather than by re-reading, and it is recorded that way rather
+than as though it had been satisfied at the time.
+
+Critical 3 closes as an accepted residual rather than a fix, and the distinction is written into both
+the code and the security model. The attribution escape inserts a backslash Discord consumes, so it
+draws nothing a reader can see. In the collapsed reading that costs nothing, because every drawn body
+line carries the subtext marker and type size is what discriminates a peer's line from a
+broker-composed attribution. Inside a spoiler a tap has revealed, no line is marked, the body draws at
+reading size, and a consumed escape discriminates nothing. So the register's authorship promise is
+now stated as a promise about the collapsed reading, and the residual, a peer composing a line shaped
+like this renderer's attribution inside a body the operator has opened, is recorded beside the masked
+link in `docs/security-model.md`, bounded by the tap and by what such a line cannot draw: no mention
+pill, no timestamp chip, no quote bar, and no permission grant.
+
+What is deliberately not claimed is that anyone read it. The glyph inside a revealed spoiler is
+unread on both surfaces. What is read there is the same mechanism on a different character, an
+escaped pipe drawing as the bare character with the backslash consumed, and the document says the
+glyph case is inferred from that rather than observed. A later reading finding the backslash visible
+inside a revealed spoiler would widen the promise rather than break it, which is the property that
+makes the scoped wording safe to ship ahead of the reading.
+
+The consult's ruling was adopted in full and one candidate fix stays refused on its record: marking
+the glyph with an invisible character would be unforgeable in bytes, because peer bodies are stripped
+of invisibles, and would leave the two renderings pixel-identical. It buys a wire-level pin asserting
+neutralization while the operator-facing question stands untouched, which is the false-green shape
+this project's testing discipline exists to refuse.
+Assumptions: none beyond the spec. The one judgment made without the operator is the wording of the
+scoped claim itself, which he authorized by directing the close on the desktop readings.
+Review Findings: across the two finishing rounds, three Criticals and their confirmed Majors were
+addressed and re-verified here rather than accepted from a report. This boundary closed the last
+surviving Major and all five Minors. The Major was a test asserting an absence on a body its guard
+never touched: its glyph sat a hundred units short of the wrap bound, so the cut fell inside the
+trailing run and the renderer emitted zero escaped glyphs, which was measured rather than argued.
+Both halves of that test now build their fixture from `MAX_PEER_SUBTEXT_LINE_LENGTH` rather than its
+value, which is the fix that survives a retune, and it was watched failing against an out-of-tree
+renderer with the guard removed, the marked half isolated so the oversized half could not supply the
+red. Of the Minors, the glyph-class one took the recurrence rule's generator fix: the pin over the
+notice glyphs asserted only an absence through an oracle carrying its own hand-written glyph class,
+so a glyph that class did not know would have read as a pass whether the renderer escaped it or not,
+and it now runs the oracle against a raw line and requires it to speak before trusting its silence.
+Two fixtures carrying raw invisible characters now spell them as escapes. One Minor was accepted
+rather than rewritten, `atReadingSize`'s conservative pipe reading, with the pin its premise rests on
+named in the doc block so the claim is checkable where it is made. One was an overclaiming doc block,
+probed rather than argued and found false in exactly the case the same block sets up two sentences
+earlier.
+Stamps: adjudicated 7, stamped 1. The sweep over the boundary's window surfaced one project-tier and
+six operator-tier records read but not applied. The one stamped is
+`discord-subtext-blocks-nothing-the-renderer-does-not-escape`, which is the record that closed the
+expert ask by stating in terms that how the escapes draw inside the spoilered form is not observed,
+and so steered the whole disposition of Critical 3. The six operator-tier hits are skipped with
+reason: four belong to another project's Roslyn and build work and never touched this, one names a
+bot contributor identity nothing here used, and one concerns a model override, where this boundary
+dispatched nothing. One project-tier memory was written rather than only read,
+`a-guard-on-what-a-channel-draws-cannot-be-tested-in-code`, banking the class rather than the
+incident: a test suite sees only what the code emits and never what the channel draws, so a guard
+whose whole value is a visible mark has no in-code oracle and needs a live reading as its gate, with
+the classifier that separates an escape breaking a markdown construct from one whose only effect is
+a visible character, and with the invisible-marker false green named so it is refused rather than
+re-proposed.
+Gate: whole gate 1574 tests / 1573 pass / 0 fail / 1 skip, exit 0 read from the run's own marker
+file, 53.6s, bracketed 08:02:10Z to 08:03:05Z, against Interim board 2's baseline of 1569 / 1568 /
+0 / 1, exit 0. Delta is +5 tests, all green, with no failing name on either side, so the comparison
+is by name and not by count alone. The +5 is the fix round's five pins, written before this session
+and never before run inside a whole gate. The one skip is test 238, the POSIX-only token-file guard
+the test emits on Windows, the same skip every gate in this plan has carried. `npx tsc --noEmit`
+clean. Contention row: no foreign engine-class load, three foreign in-process agents, poll-verified
+for the engine class only, and that is a coordinator reading rather than one taken here. The wall
+clock is reported as lightly loaded rather than clean: this box's uncontended band is 41 to 50
+seconds across three runs, and 53.6 sits above it, which is the honest reading of a number that never
+approached the 88-second contention signal. The close edits after that run are a doc block in
+`broker/discord/render.ts` and prose in `docs/security-model.md`; the render change is comment-only,
+verified by a diff carrying no non-comment line, so the executable code the whole gate ran over is
+the code that ships, and the targeted lane was re-run over it at 178/178 exit 0 with `tsc` clean.
+Next: none. Every section is closed and the effort is complete.
+Commit Model: Commit-and-Push

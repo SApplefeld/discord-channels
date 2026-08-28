@@ -3,10 +3,8 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-[`channels_peer-chatter-rendering_spec_v1.md`](channels_peer-chatter-rendering_spec_v1.md), which
-draws session-to-session chatter in a register of its own so a thread stays scannable from a phone.
-Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest first in
-[`../README.md`](../README.md).
+No plan is open. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
+first in [`../README.md`](../README.md).
 
 ## Rules
 

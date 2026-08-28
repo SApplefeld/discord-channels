@@ -2067,9 +2067,17 @@ function withoutChips(value: string): string {
  * structure the splitter reads afterwards is the structure the escape read.
  *
  * Chatter runs this in the same position, behind the escape and in front of the marking, though it
- * draws no tables and its subtext marker means no peer character opens a line by the time the message
- * is posted. It is kept there as the second cover the whole rendering's unforgeability was resting on
- * before the marker existed: the register is not left standing on one pass.
+ * draws no tables. It is kept there as the second cover the whole rendering's unforgeability was
+ * resting on before the marker existed: the register is not left standing on one pass.
+ *
+ * What that second cover is worth splits by form, because this pass is invisible where it fires. The
+ * marked form's subtext marker means no peer character opens a line by the time the message is
+ * posted, so type size discriminates and this pass stands behind it. The spoilered form marks no
+ * line, so here this pass is the only cover, and a cover the client consumes is not one a reader can
+ * see: a peer body can compose a line shaped like an attribution and have it drawn at reading size
+ * once a tap reveals the body. That is an accepted residual bounded by the tap, recorded in
+ * `docs/security-model.md` beside the masked link rather than closed here, since no escape available
+ * on this surface closes it.
  */
 function withoutAttributions(value: string): string {
   return value.replace(ATTRIBUTION_OPENERS, "$1\\$2");

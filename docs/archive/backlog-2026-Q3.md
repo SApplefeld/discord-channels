@@ -111,3 +111,32 @@ the live backlog carries active items only.
   parked deliberately in the plan's Design section and not built: with both directions rendered,
   a session's own thread already carries every exchange it is party to, and no correlation
   identifier exists to key a cross-thread view on.
+
+## Completed 2026-08-28
+
+- Peer-chatter rendering in threads: subtext, not spoilers (parked 2026-08-27; operator-approved
+  and slotted as the first post-reboot effort, in parallel with claude-kit's coordination spec).
+  Delivered: the register shipped in `669cb8f` and the collapsed form in `d0cba9c`, and this item
+  is retired at that plan's close-out. Session-to-session relays used to render at full size in
+  the same voice as operator-facing lines, so the operator re-checked headers every few lines to
+  know the audience, which from a phone was the dominant reading cost of a busy thread. The approved design: normal text for
+  operator-facing lines; Discord's `-#` subtext (small grey type, scannable without a tap, one
+  prefix per line) for session-to-session chatter, each block led by a bold one-line header naming
+  sender and receiver so the routing stays readable at full size; spoilers reserved for oversized
+  bodies nobody scans anyway. The rendering check is settled (2026-08-27, operator's phone client,
+  a broker-posted three-form sample in this machine's relay thread): subtext renders small and
+  grey with the bold header at full size, confirmed; `>` blockquote does not render on
+  relay-posted messages at all (literal `>` characters at full size), which removes it as an
+  option on this surface; spoilers render but occupy the same space as plain text and stay open
+  once tapped, confirming them as worst-of-both for scannable chatter. The one alternative still
+  standing is bot-authored embeds (colored sidebar cards), the strongest separation but a bigger
+  broker change, not needed unless subtext proves insufficient in practice. This item owns the
+  rendering-of-chatter surface; the spoiler-collapsed task-reports item above should take its
+  rendering from whatever this decides, and the volume-of-chatter half (audience labels on relays,
+  delta-only capped operator reports) lives in claude-kit's coordination spec under its 2026-08-27
+  slate, so the two compose rather than overlap.
+  Retired at the plan's close-out. The plan is archived at
+  [`plans/channels_peer-chatter-rendering_spec_v1.md`](plans/channels_peer-chatter-rendering_spec_v1.md),
+  whose Chapters carry the delivered design, the eight live readings, and the one accepted
+  residual: inside a spoiler a tap has revealed, a peer body can compose a line shaped like the
+  renderer's own attribution, because the escape that would mark it is one the client consumes.

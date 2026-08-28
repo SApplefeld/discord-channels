@@ -783,10 +783,31 @@ own outbound peer line says this session sent something it did not send, in the 
 permission prompts are answered in. So an attribution glyph opening a line inside a peer body is
 escaped as well, on the same reasoning as the quote marker, and the opener set is derived from the
 renderer's own attributions rather than hand-listed, so a later attribution joins it without
-anyone remembering to. An emoji has no markdown escape, so the backslash renders visibly there;
-that is the accepted cost of the pass and it is stated at the constant. That is what stops any of them from drawing a
-mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one channel
-the operator answers permission prompts in.
+anyone remembering to, on the one condition the derivation can see: the opener has to be a named
+constant, since a glyph written inline in the function that draws its line is vocabulary the set
+does not know about and the gap reads as covered precisely because the set is derived. Discord
+consumes the backslash and draws the glyph alone, so the pass costs a reader nothing they see, which
+is why no reading downstream rests on an operator spotting a mark. The escape is applied per drawn
+piece as well as in the escape chain, because the chain runs ahead of the line wrap and reads a
+source line's start: a glyph placed where the wrap will fall would otherwise arrive at the start of
+a drawn piece with the chain's pass already behind it. That is what stops any of them from drawing a
+mention pill or a timestamp chip, in the one channel the operator answers permission prompts in.
+
+What the same pass buys against a forged attribution line is narrower, and the two chatter forms
+differ because a consumed escape leaves the line to be discriminated by something else. In the
+collapsed reading every drawn body line carries the subtext marker, so type size is what separates a
+peer's line from a broker-composed attribution and the escape stands behind that rather than in
+front of it. Inside a spoiler a tap has revealed, no line is marked and the body draws at reading
+size, so an escape the client consumes leaves nothing to tell a peer-composed attribution line from
+this renderer's own. The authorship promise is therefore a promise about the collapsed reading: at a
+scroll, an attribution line is the broker's. A revealed body is the operator reading peer prose at
+reading size, and a line inside it shaped like an attribution may be the peer's.
+
+That the client consumes the escape inside a revealed spoiler is inferred rather than read: the same
+behaviour is read there on the escaped pipe, which draws as the bare character, and the glyph is not
+read in that state. The inference is what the paragraph above is scoped against, so a later reading
+finding the backslash visible inside a revealed spoiler would widen the promise rather than break
+it.
 
 **The chatter register is a promise about type size, and it is the only one of its kind here.**
 Every other rule in this section bounds what content can *draw*; this one bounds how large a peer's
@@ -816,9 +837,10 @@ it reveals the body at reading size: the tap is the operator choosing to read, a
 protects is the un-tapped scroll.
 
 The other two passes exist to hold that promise, and each closes a way a peer could escape the type
-size. Fence delimiters are neutralized, because a fence is a multi-line construct whose lines cannot
-each carry the per-line subtext marker and remain a fence, so a live delimiter would draw the lines
-between the delimiters at full size outside the register. Every pipe is neutralized, because two
+size. Backtick fence delimiters are neutralized, because a fence is a multi-line construct whose
+lines cannot each carry the per-line subtext marker and remain a fence, so a live delimiter would
+draw the lines between the delimiters at full size outside the register. The tilde form is left live
+and drawn as the characters written, because Discord opens no code block on it. Every pipe is neutralized, because two
 live pipes are Discord's spoiler delimiter: unneutralized, a peer could hide its own words behind a
 tap in a body small enough to be drawn openly, which inverts what the register buys, and in the
 collapsed form it could close the renderer's own pair early and put the remainder of its message on
@@ -870,12 +892,24 @@ operator takes rather than an approval the thread can extract. Nothing here is a
 which is answered by a component or by a typed reply and never by a link.
 
 That paragraph describes the five surfaces taking the narrower escape and nothing further. A peer
-body leaves a smaller set live, because the register's own two passes reach into it: the fence
-delimiter and the spoiler pair are both neutralized there, so of the four constructs named above
-only emphasis, the heading marker and the masked link are left unneutralized in a peer body drawn
-whole, and the masked link is the only one of those two carrying the security consequence. Neither
+body leaves a smaller set live, because the register's own passes reach into it: the backtick fence
+delimiter, the spoiler pair and the line-leading heading marker are all neutralized there, so of the
+four constructs named above only emphasis and the masked link are left unneutralized in a peer body
+drawn whole, and the masked link is the only one of the two carrying the security consequence. Neither
 reaches the one-line renderings, the `brief` mode's line and the collapsed form's teaser alike: both
 compose through the full markdown escape, whose class already covers them.
+
+The revealed spoiler carries a second accepted risk of the same family, and it is the masked link's
+neighbour rather than a separate class: a peer body can compose a line shaped like this renderer's
+own attribution, and inside a tapped-open spoiler that line draws at reading size with nothing
+marking it as the peer's. The bound on it is the tap. The line cannot exist in the collapsed reading,
+where every drawn line is marked, so it reaches nobody who has not chosen to open the body, and
+opening a body is an act the operator takes rather than one the thread can extract. What it can claim
+is also bounded: it draws no mention pill, no timestamp chip and no quote bar, so it can impersonate
+this broker's voice inside a body the operator opened and cannot impersonate the operator's own, and
+nothing inside a spoiler is a permission grant, which is answered by a component or a typed reply.
+The residual is accepted on that bound rather than closed, because the escape that would close it is
+one the client consumes.
 
 The heading marker is not in that set, and the reason is worth stating where a reader would look for
 it. It was left live on the reasoning that the subtext marker this renderer prefixes puts a peer's
@@ -897,8 +931,10 @@ one destination and whose target is another; it is bounded by exactly what bound
 conversation text generally, since a link draws no mention pill, no chip, no quote bar and no copy
 of the attribution, and following one is an act the operator takes rather than an approval the
 thread can extract. The readable-notice text is the other. Neither is a widening of what content
-can do, and the attribution and the quoted block stay unforgeable against a peer body by the pass
-described above. What this author cannot reach, unlike the five surfaces beside it, is the spoiler
+can do. The quoted block stays unforgeable against a peer body by the pass described above, and the
+attribution stays unforgeable in the collapsed reading, which is the scope the register section
+states and the scope this sentence takes with it: inside a revealed spoiler a peer body can compose
+a line shaped like the attribution, and that residual is recorded there rather than counted here. What this author cannot reach, unlike the five surfaces beside it, is the spoiler
 and the fence: the register neutralizes both in a peer body, so the weakest-credentialed author
 here is also the one whose text draws the least. A link it posts is drawn in the register's own
 small grey type, or behind the collapsed form's spoiler, rather than at reading size.
