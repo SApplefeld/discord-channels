@@ -268,9 +268,14 @@ once it exists.
 
 ### Section 4: Live verification (Model: the worker session itself, plus operator phone time)
 
-SCOTT is this machine's hostname, the host whose broker serves the operator's relay threads; the
-deployed checkout is `D:\sapplefeld-channels`, distinct from this development tree. Restart the
-broker onto the built code with `install\Repair-Broker.ps1 -Pull` from an elevated prompt
+SCOTT is this machine's hostname, the host whose broker serves the operator's relay threads. This
+machine has one checkout, `D:\discord-channels`, and the live broker serves it: the scheduled task
+`SapplefeldChannelsBroker` launches `D:\discord-channels\install\Start-Broker.ps1`, and
+`install/Repair-Broker.ps1` defaults its repo root to the checkout the script itself lives in, so
+development tree and served tree are the same tree. `sapplefeld-channels` survives only as the
+product name, carried by the plugin marketplace and by the state root `%LOCALAPPDATA%\sapplefeld-channels`
+(`broker/config.ts:435`). Restart the broker onto the built code by running
+`.\install\Repair-Broker.ps1 -Pull` from the checkout root in an elevated prompt
 (`docs/operations.md` owns the procedure; the broker has no health route, so liveness is
 `GET /sessions`). Then the worker composes and drives the eight payloads below itself, a real
 cross-session exchange in each direction (`SendMessage` from a sibling session covers inbound;
@@ -564,3 +569,71 @@ because this section changed no code. Run rather than assumed, since a prose sec
 touched a fixture would look exactly like one that did not.
 Next: Section 4: Live verification
 Commit Model: Commit-and-Push
+
+### Interim board 1 - 2026-08-28
+
+Section 4 is open and blocked on the operator; Sections 1-3 are closed and pushed
+(`669cb8f`, `d0cba9c`, `830f3cf`).
+
+**Stage.** Everything Section 4 can do without the operator is done. What remains needs two things
+only he supplies: an elevated prompt for the broker restart, and his eyes on the phone for eight
+readings. Both sit in the completion contract's blocker set as an external dependency.
+
+**Live dispatches.** None. The pre-BLOCKED ask went to the CHANNELS: Expert seat and was answered
+in the same turn; no subagent is in flight.
+
+**Gate baseline.** 1568 tests / 1567 pass / 0 fail / 1 skipped, exit 0, 49.5s, run in this session
+after the doc repairs below. Identical to Chapter 3's close on every count, as expected: this
+boundary changed documentation and a gitignored scratch probe, no code.
+
+**Rulings adopted since Chapter 3.**
+
+The spec's own premise for this section was false and is repaired. Section 4 said the deployed
+checkout is `D:\sapplefeld-channels`, distinct from the development tree. No such directory exists.
+This machine has one checkout, `D:\discord-channels`, and the live broker serves it: the scheduled
+task `SapplefeldChannelsBroker` launches `D:\discord-channels\install\Start-Broker.ps1`, and
+`install/Repair-Broker.ps1:28` defaults its repo root to the checkout the script itself lives in.
+`sapplefeld-channels` survives only as the product name, carried by the plugin marketplace and by
+the state root `%LOCALAPPDATA%\sapplefeld-channels` (`broker/config.ts:435`). The CHANNELS: Expert
+seat, asked, confirmed the checkout was renamed rather than split, and named the sentence as its own
+unsourced inference rather than a fact from any source; its three cited pieces of evidence were
+re-verified here before being acted on, and all three hold: the old harness project directory
+`~/.claude/projects/D--sapplefeld-channels` carries no transcript after 2026-08-17, the path entered
+`docs/operations.md` in `f88ad47` on 2026-08-07 when it was still true, and the state root reads as
+the expert said. The repair landed in two places, the spec's own sentence and `docs/operations.md`,
+whose lines 31-32 handed the operator that same non-existent path in the one procedure this section
+tells him to run.
+
+`docs/operations.md` also now records that the repair runs from an elevated prompt and why. The
+scheduled task starts the broker in session 0, where an ordinary desktop session cannot open the
+process even to read its command line: confirmed here, `Invoke-CimMethod GetOwner` on the live
+broker returns access-denied and its `ExecutablePath` reads empty from this session. That is the
+same unreadable orphan the script's kill step identifies by port. `install/Repair-Broker.ps1` does
+not test for elevation before it runs, so an unelevated attempt is not refused up front.
+
+**The eight payloads are composed and pre-verified.** `.kit/scratch/section4-probe.mjs` drives the
+real chatter renderers over all eight and prints exactly what the broker would post;
+`--emit` writes the bodies to `.kit/scratch/section4-payloads.json` for the live run to replay
+verbatim. Both are gitignored scratch, not deliverables. The probe caught a payload defect worth
+recording: the first draft of item 1 was 3,273 code points, past `MAX_PEER_SUBTEXT_LENGTH`, so it
+rendered as the spoiler form and would have read item 4 a second time while reporting itself as the
+multi-message subtext case. The window that item needs is narrow, since the body must stay under
+2,000 code points while exceeding the splitter's 1,900-unit per-message budget, and the per-line
+`-# ` prefix is the only budget it can spend without spending code points: the payload is therefore
+many short lines rather than few long ones, and now renders as three subtext messages. The probe
+asserts each payload's expected form and message count so a later edit cannot silently drift one
+item into another's case.
+
+Two readings the probe settled in advance, so the operator is not asked to adjudicate them on the
+phone. The trailing-backslash evening from Section 2 is visibly working: item 4's body ends
+`ends-with-backslash\` with the run evened before the closing pair. And in the oversized form the
+opening line is drawn twice, once as the teaser outside the spoiler and again as the body's own
+first line inside it, which is the composition the design specifies rather than a defect, since the
+teaser is a preview and the spoiler holds the complete body.
+
+**Next action, Section 4.** The operator runs `.\install\Repair-Broker.ps1 -Pull` from
+`D:\discord-channels` in an elevated prompt, confirms `GET /sessions` answers, and reads the thread
+on his phone while this session drives the payloads. The live broker (PID 1160) started
+2026-08-27 20:20, before Section 1 landed at 22:47, so it is serving pre-register code and the
+restart is not optional. Item 5 needs `CHANNEL_PEER_MESSAGES=brief` in `broker.env` and its own
+restart, so it runs last and the setting is restored after.

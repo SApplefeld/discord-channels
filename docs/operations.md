@@ -28,9 +28,17 @@ curl.exe -s http://127.0.0.1:8787/sessions
 One command kills, verifies, and restarts:
 
 ```powershell
-D:\sapplefeld-channels\install\Repair-Broker.ps1        # health pass + restart
-D:\sapplefeld-channels\install\Repair-Broker.ps1 -Pull  # update the checkout first (ff-only)
+.\install\Repair-Broker.ps1        # health pass + restart
+.\install\Repair-Broker.ps1 -Pull  # update the checkout first (ff-only)
 ```
+
+Run it from the checkout root, in an elevated prompt. The paths are written relative because the
+checkout directory is a per-host choice: `sapplefeld-channels` is the product name, carried by the
+plugin marketplace and by the state root under `%LOCALAPPDATA%`, and it is not a path this command
+can assume. Elevation is what lets the kill step reach its target: the scheduled task starts the
+broker in session 0, and an ordinary desktop session cannot open that process even to read its
+command line, which is exactly the unreadable orphan the kill step identifies by port instead. The
+script does not test for elevation before it runs.
 
 It stops the scheduled task, kills every process it can prove is this checkout's broker (the
 node name plus the broker entry path in the command line, or a node-named process holding the
