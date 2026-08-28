@@ -439,6 +439,25 @@ and none carries a date of its own. An item added from here on carries `(parked 
   belongs at the shared strip rather than at one consumer, and moving it there changes every
   surface at once, which is its own change with its own gate.
 
+- Make the chip escape count the backslash run already in front of the character (parked
+  2026-08-27, found by the peer-chatter rendering plan's Section 2 implementer, confirmed here by
+  driving the renderer). `withoutChips` (`broker/discord/render.ts`) inserts `\<` and `\>` without
+  counting the backslashes already there, so author-written `\<@123456789\>` comes out as
+  `\<@123456789\>`: each escaping backslash is itself escaped, drawing as a literal backslash and
+  leaving the angle bracket live. Confirmed at the string level by driving the real renderer, input
+  `\<@123456789\>` against output `\<@123456789\>`, with a plain `<@999>` correctly yielding
+  `\<@999\>`. What is NOT established is that a chip then forms: every Discord chip construct
+  (`<@id>`, `<#id>`, `<:name:id>`, `<t:...>`) needs its closing `>` immediately after the payload,
+  and the same bypass leaves a literal backslash sitting in that position, so the traced shape
+  renders as visible punctuation rather than as a mention. Treat the confirmed defect as a
+  non-idempotent escape that emits stray backslashes on author-escaped input, and the chip risk as
+  unproven pending a shape that survives with its `>` adjacent. It reaches every surface
+  `withoutChips` serves, which is the mirror, the answer and the narration as well as chatter, so
+  it is an operator-facing rendering change and not a chatter one. Deliberately not fixed inside
+  the chatter effort for that reason: the section's reviewers were briefed on the chatter register,
+  and a shared-escape change wants its own gate. The fix shape already exists in the tree,
+  `withoutPipes` counting its run and evening it up.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

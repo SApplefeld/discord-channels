@@ -349,12 +349,22 @@ const MAX_PEER_NAME_DRAWN = 240;
  * Exported so the promise is pinned where it is made. A bound this size raised to a paragraph's
  * worth would leave the brief mode drawing what the whole mode draws, with nothing but the number
  * saying otherwise.
+ *
+ * Read by the oversized whole-mode form too, through `peerLine`, since its teaser is the same one
+ * bounded line drawn above a spoiler. So this number is charged against every message of that form's
+ * budget as a reserve on the first one, and raising it narrows the room a wrapped line has by the
+ * same amount, exactly as `MAX_PEER_NAME_DRAWN` does.
  */
 export const MAX_PEER_BRIEF_LENGTH = 200;
 
 /**
- * What every drawn line of a peer body opens with: Discord's subtext marker, which renders its line
- * in small grey type.
+ * What a drawn line of a peer body opens with: Discord's subtext marker, which renders its line in
+ * small grey type.
+ *
+ * Two places draw it. Every line of a body small enough to be drawn as subtext carries one, and so
+ * does the one teaser line the oversized form draws above its spoiler. A spoilered body carries it
+ * on no line of its own, which is the register holding rather than lapsing: what a collapsed spoiler
+ * shows is nothing at all, so there is no drawn line there to mark.
  *
  * The register the whole chatter rendering rests on. Session-to-session traffic is machine text the
  * operator scans rather than reads, and drawn at reading size it is indistinguishable from a line
@@ -372,7 +382,8 @@ export const MAX_PEER_BRIEF_LENGTH = 200;
  * and is drawn full size on the attribution line of every message, which is the deliberate exception
  * rather than a gap: the name is the routing information the header exists to carry, and it goes
  * through `inertField` and `MAX_PEER_NAME_DRAWN` before it is drawn. A claim any wider than this one
- * is false on line one of every chatter message.
+ * is false on line one of every chatter message. A spoilered body sits inside the same promise: it
+ * draws nothing until it is tapped, and the tap is the operator choosing to read.
  */
 const PEER_SUBTEXT = "-# ";
 
@@ -394,8 +405,48 @@ const PEER_SUBTEXT = "-# ";
  * unreachable for chatter. That cut is what the headroom is bought against: it opens the next message
  * with the tail of a line and no marker in front of it, which is peer text at full size. Past about
  * 1,600 the cut comes back into reach, so the tuning room is downward.
+ *
+ * The oversized form wraps to this same bound and buys the same headroom out of a different budget:
+ * it spends no marker and instead charges the spoiler pair, plus the teaser line on the first
+ * message, which is at most 209 units all told and leaves 1,434. The conclusion is the one
+ * above, so a body drawn behind a spoiler cannot reach the hard cut either.
  */
 export const MAX_PEER_SUBTEXT_LINE_LENGTH = 1_200;
+
+/**
+ * The most of a chatter body drawn as subtext before the whole body moves behind a spoiler instead,
+ * in code points, measured on the capped body before any escape.
+ *
+ * Measured where `peerCapped` measures and in the same currency, deliberately: those are the two
+ * bounds a peer body meets in front of the escapes, and a threshold measured behind them would move
+ * with how much markdown the peer happened to write rather than with how much they said. A body of
+ * ordinary prose and a body of the same prose full of angle brackets are the same size to a reader,
+ * and the question this bound asks is a reader's question.
+ *
+ * The question it asks is whether anyone will scan the body at all. Below the bound a message is
+ * something an operator reads down the side of a thread in small grey type; above it, it is a wall
+ * nobody scans, and drawing it as subtext costs the whole scroll for nothing. So the oversized form
+ * collapses it behind a spoiler and leaves one bounded teaser line drawn, which is the part of a
+ * long message worth reading in a scroll.
+ *
+ * A tunable, and the knob a one-word adjustment reaches. Raising it draws more long bodies out in
+ * the open; lowering it collapses more of them. Neither direction touches the register, because both
+ * forms hold the collapsed reading: nothing here is a correctness bound the way the line bound above
+ * is.
+ */
+export const MAX_PEER_SUBTEXT_LENGTH = 2_000;
+
+/**
+ * Discord's spoiler delimiter, which the oversized form composes around a body so a scroll shows the
+ * teaser and a tap shows the rest.
+ *
+ * Renderer-composed vocabulary, exactly as the attribution and the subtext marker are, and therefore
+ * a delimiter a peer body may not draw: `withoutPipes` neutralizes every pipe in a chatter body so
+ * the only pair Discord can read in a posted message is the pair this file put there. Two units each
+ * side, charged against the message budget by the splitter rather than taken out of the slack under
+ * Discord's own ceiling.
+ */
+const PEER_SPOILER = "||";
 
 /**
  * What a peer message opens with, composed here and by nothing else, on every message of a split
@@ -514,9 +565,12 @@ const MAX_FENCE_INFO_LENGTH = Math.floor(MAX_MESSAGE_LENGTH / 100);
 /**
  * The fewest code points a hard cut takes, whatever the per-message overhead works out to.
  *
- * Unreachable as the numbers stand, since the overhead is the attribution plus two fence lines
- * against a ceiling of `MAX_MESSAGE_LENGTH`. It is here because the failure it forecloses is not
- * proportionate: an overhead that swallowed the ceiling would emit a message per code point, which
+ * Unreachable as the numbers stand. The overhead is the attribution, at most 257 units; the fence
+ * lines a split block re-opens and closes, at most 27; and the oversized chatter form's teaser and
+ * spoiler pair, at most 209. That is 493 with all three charged at once, which no message can
+ * actually be, since chatter carries no live fence: against a ceiling of `MAX_MESSAGE_LENGTH` it
+ * leaves a cut of about 1,400. It is here because the failure it forecloses is not proportionate: an
+ * overhead that swallowed the ceiling would emit a message per code point, which
  * renders nothing and spends the event loop and the write budget doing it.
  */
 const MIN_HARD_CUT = Math.floor(MAX_MESSAGE_LENGTH / 8);
@@ -1458,7 +1512,9 @@ export function renderAnswer(text: string): string[] {
  * them believed it had removed.
  *
  * Drawn as subtext, every line of it, which is what says at a glance that the message was addressed
- * to this session rather than to the operator reading the thread.
+ * to this session rather than to the operator reading the thread. Past `MAX_PEER_SUBTEXT_LENGTH` it
+ * is drawn behind a spoiler under one subtext teaser instead, on the reasoning that a body that long
+ * is not scanned in a scroll whatever type it is set in.
  *
  * Capped where a mirrored paste is capped, and shortened with the same visible marker. A reply is
  * uncapped because it is Claude's own text, written to be read by the operator it is posted to; a
@@ -1507,9 +1563,22 @@ function peerCapped(text: string): string {
     : seen;
 }
 
-/** The opening line of a body, which is what a one-line rendering of it carries. */
+/**
+ * The opening line of a body, which is what a one-line rendering of it carries.
+ *
+ * The line breaks are normalized before the split, so this reads a line the way the client that will
+ * draw it reads one. Three break characters end a line for Discord without ending one for this file:
+ * none is in the invisible class, so the strip above passes them through, and none is whitespace to
+ * the escape's own collapse, so nothing downstream folds them away either. Read without the
+ * normalization, "the opening line" is the opening several lines, and every one of them past the
+ * first is drawn with no marker in front of it.
+ *
+ * That matters wherever a one-line rendering is drawn outside the register's other covers: the brief
+ * forms, which draw this line and nothing else, and the oversized form's teaser, which is the one
+ * peer-authored line drawn outside the spoiler.
+ */
 function firstLine(value: string): string {
-  return withoutInvisible(value).trim().split("\n")[0] ?? "";
+  return newlinesOnly(withoutInvisible(value).trim()).split("\n")[0] ?? "";
 }
 
 /**
@@ -1524,6 +1593,15 @@ function firstLine(value: string): string {
  * The attribution glyphs are neutralized on top of it, because a brief line is drawn directly under
  * the attribution and therefore opens a line of its own: this is the same forgery the whole
  * rendering blocks, one line long.
+ *
+ * Read by the brief forms and by the whole rendering's oversized form, whose teaser is this line
+ * under the same marker. One composition for both, deliberately: what a peer message looks like
+ * reduced to one line is one question, and two answers to it could come to differ in what they
+ * neutralize while both looking right.
+ *
+ * One drawn line is the contract, not a figure of speech, and `firstLine` is what holds it: the
+ * whitespace collapse inside the escape folds every break this file's line model knows about, and
+ * the three it does not are normalized to newlines before the opening line is taken.
  */
 function peerLine(value: string): string {
   return withoutAttributions(inertField(firstLine(value), MAX_PEER_BRIEF_LENGTH));
@@ -1621,7 +1699,8 @@ function attributed(seen: string, prefix: string): string[] {
 }
 
 /**
- * A peer body, neutralized and drawn as the subtext-marked messages it takes to carry it whole.
+ * A peer body, neutralized and drawn as the messages it takes to carry it whole: marked as subtext
+ * line by line, or, past `MAX_PEER_SUBTEXT_LENGTH`, collapsed behind a spoiler under one teaser.
  *
  * `attributed`'s counterpart for chatter, and composed from the same pieces rather than from a second
  * escape or a second splitter of its own: where a fence is stays one reading in this file, since two
@@ -1639,27 +1718,48 @@ function attributed(seen: string, prefix: string): string[] {
  *   the answer has to be the same for all of them.
  * - The table transform is left out altogether. What it draws is a fenced block, and a fence is a
  *   multi-line construct whose lines cannot each open with a subtext marker and remain a fence. What
- *   that costs is that a coordination message's table arrives as its own raw Markdown inside subtext,
- *   pipes and all: nothing in this pipeline escapes a pipe, so a peer can compose a spoiler inside a
- *   subtext line. Neutralizing the pipe belongs with the oversized spoiler form, which is where a
- *   pipe first becomes a delimiter this renderer is composing against, and it is not done here.
+ *   that costs is that a coordination message's table arrives as its own raw Markdown, its pipes
+ *   escaped by the pass below rather than read as columns.
  * - Fence delimiters are neutralized next, before the chip escape rather than after it. Run the
  *   other way round, `withoutChips` would exempt the inside of a fence this then unfences, leaving
  *   live chip syntax in what has become ordinary markdown.
+ * - The pipes are neutralized, which the mirror's own pipeline does not do: two live ones are a
+ *   spoiler, so a peer that keeps them can hide its own words behind a tap, and in the oversized form
+ *   the pair is this renderer's own delimiter. Every body, whatever its size, for the reasons in
+ *   `withoutPipes`.
  * - The line-leading attribution glyphs are neutralized behind the chip escape as they always were,
  *   as depth behind the marker rather than as the thing holding the register up: a marked line's
  *   glyph is no longer line-leading, and the register is not left resting on one pass.
  * - The lines are broken to fit, the peer's own subtext markers are neutralized, and the drawn ones
  *   are marked, all of which is `subtexted`, and only then split.
+ *
+ * Past `MAX_PEER_SUBTEXT_LENGTH` the last step is the one that changes: `spoilered` breaks the same
+ * lines to the same bound and marks none of them, and the splitter draws each message's body inside
+ * one spoiler pair with the header, and on the first message the teaser, outside it. The pair is
+ * per message because a spoiler does not span messages, and it is charged against that message's
+ * budget by the splitter rather than taken out of the 100 units `MAX_MESSAGE_LENGTH` holds back
+ * from Discord's own ceiling, which is what keeps the ceiling's slack unspent.
  */
 function chattered(seen: string, prefix: string): string[] {
-  const escaped = withoutAttributions(withoutChips(withoutFences(newlinesOnly(seen))));
+  const escaped = withoutAttributions(withoutChips(withoutPipes(withoutFences(newlinesOnly(seen)))));
   // Nothing at all to say, answered exactly as `attributed` answers it and for the same reasons: an
   // attribution with nothing under it would say a peer sent silence, and Discord refuses an empty
   // message anyway. Asked before the marking, so the answer is about the body rather than about the
   // markers this would otherwise have put on it.
   if (escaped === "") return [];
-  return split(subtexted(escaped), prefix);
+  // Measured on the body as it arrived rather than on the escaped copy, which is where `peerCapped`
+  // measures and in the currency it measures in: how much a peer said is a reader's question, and a
+  // threshold taken behind the escapes would move with how much markdown they happened to write.
+  if ([...seen].length <= MAX_PEER_SUBTEXT_LENGTH) return split(subtexted(escaped), prefix);
+  // The teaser is the brief form's own line, from the same function, so the one-line rendering of a
+  // peer message is one composition in this file rather than two that could come to differ. A body
+  // whose opening line neutralizes to nothing draws no teaser at all rather than a bare marker.
+  const teaser = peerLine(seen);
+  const opener = teaser === "" ? "" : `${PEER_SUBTEXT}${teaser}\n`;
+  return split(spoilered(escaped), prefix, (index) => ({
+    lead: `${index === 0 ? opener : ""}${PEER_SPOILER}`,
+    tail: PEER_SPOILER,
+  }));
 }
 
 /**
@@ -1807,6 +1907,63 @@ function withoutFences(value: string): string {
 }
 
 /**
+ * One escape pair, or one bare pipe: the two things a left-to-right reading of a body has to tell
+ * apart, since whether the escape written in front of a pipe is itself live is decided by what the
+ * peer wrote before it.
+ *
+ * Written as this alternation rather than as a run of backslashes followed by a pipe, which is the
+ * same reading and the same result: the alternation consumes the text once, where the run form asks
+ * the engine to try every length of run at every backslash and give the run back when no pipe
+ * follows. On a body of backslashes at the paste cap that is the difference between a scan and a
+ * hundred million steps of backtracking on the broker's one event loop, driven by text a peer sends.
+ */
+const PIPE = /\\[\s\S]|\|/g;
+
+/**
+ * Backslash-escapes every pipe in a chatter body.
+ *
+ * For chatter alone, and for every chatter body rather than the oversized one alone. A live pair of
+ * pipes is a spoiler, so a peer that keeps them can hide its own words behind a tap, which inverts
+ * what the register buys: a scroll is supposed to show the operator everything a peer said without
+ * asking them to tap anything. And in the oversized form the pair is this renderer's own delimiter,
+ * so a live pair in the body could close the spoiler early and put the rest of the message on the
+ * screen at full size. One pass covers both, because a body's size is not something the escape
+ * should have an opinion about.
+ *
+ * Not an invented rule: `MARKDOWN` already carries the pipe and `inertText` already escapes it, so
+ * the brief forms have neutralized pipes since they were written and this brings the whole rendering
+ * into line with them. What it costs is that a table a peer wrote arrives with a backslash in front
+ * of every pipe in the source, which Discord draws as the pipe that was typed.
+ *
+ * Chatter-only, and deliberately not folded into `withoutChips`: that pass is shared with `mirrorBody`
+ * and the operator-facing surfaces, where the table transform reads pipes as structure and escaping
+ * them would change what an operator is shown.
+ *
+ * Like the chip escape, this only ever inserts backslashes in front of a character, so it can
+ * neither create nor destroy a fence delimiter and the fence structure the splitter reads afterwards
+ * is the structure the escape read.
+ *
+ * What it promises is exact and is what the composed spoiler pair rests on: no pipe leaving here is
+ * one Discord reads as a delimiter. A backslash the peer wrote in front of a pipe would otherwise
+ * consume the one this inserts and hand the pipe back live, so that backslash is itself escaped
+ * before the pipe behind it is. That is not a corner: a body ending in such a pipe sits directly
+ * against the closing delimiter this renderer appends, and the pair Discord would read there is one
+ * pipe of the peer's and one of the broker's.
+ *
+ * Nothing the peer wrote is dropped either way. An escape pair the peer wrote in front of anything
+ * else is passed through as it stands, so the reading of what is escaped downstream of here is the
+ * reading the text arrived with.
+ */
+function withoutPipes(value: string): string {
+  return value.replace(PIPE, (token) => {
+    if (token === "|") return "\\|";
+    // The peer's own backslash in front of a pipe: escaped itself, so it consumes nothing, and the
+    // pipe behind it takes an escape of its own.
+    return token === "\\|" ? "\\\\\\|" : token;
+  });
+}
+
+/**
  * Neutralizes the chip and quote syntax outside fenced code blocks, leaves the inside of one as it
  * was written, and neutralizes a line-leading quote marker everywhere.
  *
@@ -1937,6 +2094,11 @@ function cutSafely(rest: string, head: string): string {
  * strand a backslash from what it escapes or halve a run of backticks than one there can. A line
  * already inside the bound is returned untouched rather than run through the cut: `cutSafely` only
  * ever shortens, and a line ending in a backslash would come back a piece shorter for no reason.
+ *
+ * Both chatter forms wrap here, `subtexted` and `spoilered` alike, and one bound serves both: the
+ * oversized form's spoiler pair and first-message teaser cost at most 209 units, which leaves a piece
+ * this long more than 1,400 units of room against the message ceiling once the widest attribution is
+ * charged too. The hard cut is out of reach on either path, which is what the wrap is for.
  */
 function subtextPieces(line: string): string[] {
   const pieces: string[] = [];
@@ -1978,6 +2140,10 @@ function subtextPieces(line: string): string[] {
  * what Discord reads after the marker is the unknown this is guarding against. The cost is a visible
  * backslash on a line that opened with the two characters and meant nothing by them, which is the
  * same honest cost `withoutAttributions` already pays.
+ *
+ * Read by both chatter forms. In the marked form it stops a doubled marker; in the spoilered form,
+ * where this renderer marks nothing, it is the second cover that form would otherwise lack, since
+ * what holds the register there is one rendering this plan has not yet seen a client draw.
  */
 const SUBTEXT_OPENER = /^([ \t]*)-#/gm;
 
@@ -2011,6 +2177,75 @@ function subtexted(body: string): string {
 }
 
 /**
+ * A trailing run of backslashes made even, counting whatever whitespace follows it as nothing.
+ *
+ * The closing spoiler delimiter is appended after the text of a message, so a body ending in an odd
+ * number of backslashes would escape the first pipe of that delimiter and leave the pair the message
+ * opened with unclosed. What an unclosed pair renders as is not something this file knows, and the
+ * possibility it renders as the characters themselves is the whole body drawn at full size, which is
+ * the one outcome the register exists to prevent. One more backslash makes the run a run of escaped
+ * backslashes, which draws as the backslashes the peer wrote and consumes nothing after it.
+ *
+ * The whitespace is looked past because the splitter trims the end of every message it emits, so a
+ * backslash sitting behind trailing whitespace becomes the last character of the message it is in.
+ * Looked past in the class the trim actually reads, which is `\s`: `trimEnd` takes the whole Unicode
+ * whitespace set, the no-break space and the ideographic space among them, and a guard that counted
+ * only the space and the tab would leave the run odd, watch the trim eat the whitespace it had
+ * stopped at, and hand the closing delimiter a bare backslash. JavaScript's `\s` is precisely that
+ * set, which is what makes the two readings one reading.
+ */
+function evenEscapes(piece: string): string {
+  return piece.replace(/\\+(?=\s*$)/, (run) => (run.length % 2 === 0 ? run : `${run}\\`));
+}
+
+/**
+ * An escaped chatter body made ready to sit inside a spoiler: every line too long for a message
+ * broken until it fits, and nothing left that could eat the delimiter that closes it.
+ *
+ * `subtexted`'s counterpart for the oversized form, sharing the wrap with it, and differing in the
+ * one thing the form is: no line is marked. That skip is deliberate rather than an omission. What
+ * the register protects is the collapsed reading, and a collapsed spoiler draws nothing at all; a
+ * tapped-open spoiler is the operator having chosen to read the body, and reading is what reading
+ * size is for. `-#` inside `||` is also a composition with no observed rendering, and inventing one
+ * is not a thing to do on this surface.
+ *
+ * A whitespace-only piece is emptied rather than carried, which is `subtexted`'s own reading of a
+ * blank piece one step further: the splitter trims the end of a message, so a message whose whole
+ * buffer was whitespace would post as an attribution followed by an empty `||||`, a composition with
+ * no observed rendering standing where a body should be. Emptied, such a piece can never be the
+ * whole of a message, since the splitter emits nothing for an empty buffer.
+ *
+ * The peer's own subtext marker is neutralized here as it is in the marked form, though no line here
+ * carries one of this renderer's. Not because a marker inside a spoiler forges anything on its own,
+ * but because this form holds the register on one unverified rendering and nothing behind it: if a
+ * spoiler turns out not to span the lines of a body, what stands in the thread is the peer's lines
+ * drawing this renderer's own vocabulary. The subtext form is covered twice over and this is what
+ * gives this form its second cover, at the price of a visible backslash in a narrow case.
+ */
+function spoilered(body: string): string {
+  return body
+    .split("\n")
+    .flatMap((line) => subtextPieces(line))
+    .map((piece) =>
+      piece.trim() === "" ? "" : evenEscapes(piece.replace(SUBTEXT_OPENER, "$1\\-#")),
+    )
+    .join("\n");
+}
+
+/**
+ * What one message of a split body carries around its text beyond the prefix: an opening string
+ * drawn in front of the body and a closing one after it.
+ *
+ * Per message index rather than per run, because the first message of an oversized chatter body
+ * carries a teaser line the rest do not, and a reserve big enough for that teaser charged against
+ * every message would spend `MAX_PEER_BRIEF_LENGTH` of each later message's budget on nothing.
+ */
+type Decoration = { lead: string; tail: string };
+
+/** What every message carries when its caller asks for no decoration: the splitter as it always was. */
+const UNDECORATED: Decoration = { lead: "", tail: "" };
+
+/**
  * Packs a body into messages, each one prefixed and each one within `MAX_MESSAGE_LENGTH`.
  *
  * Paragraphs first, then lines, then a hard cut, because where a message ends is where the reader's
@@ -2018,12 +2253,28 @@ function subtexted(body: string): string {
  * A code fence open across a break is closed and re-opened, so both halves render as code rather
  * than the second half rendering as prose with its indentation collapsed.
  *
- * The one splitter for both registers. Chatter arrives here already marked and already broken to
- * lines that fit, so the hard cut below is unreachable on that path and the fence machinery has
- * nothing to see; per-line markers are ordinary body characters here and are budgeted as such,
- * which is why the register needed no change to this function.
+ * The one splitter for both registers. Chatter arrives here already broken to lines that fit, so the
+ * hard cut below is unreachable on that path and the fence machinery has nothing to see; the subtext
+ * form's per-line markers are ordinary body characters here and are budgeted as such.
+ *
+ * What the oversized chatter form does need is `decorate`, which hands back what a message carries
+ * around its body beyond the prefix, per message index: the spoiler pair, and the teaser line the
+ * first message alone draws. It is charged inside `overhead`, so every fit test measures the message
+ * as it would be sent rather than a shorter one that is then decorated past the ceiling, and it is
+ * asked per index because a reserve big enough for the teaser charged against every message would
+ * spend the teaser's whole bound on each later one. `messages.length` is the index of the message
+ * being built, which is what makes the two readings the same reading. The default decorates nothing,
+ * so a caller that does not pass one gets the messages this function has always emitted.
+ *
+ * `tail` is appended after the trailing trim rather than before it, because the trim exists to make
+ * a message match what the transport will post and a delimiter trimmed away from its own body is a
+ * spoiler that never closes.
  */
-function split(body: string, prefix: string): string[] {
+function split(
+  body: string,
+  prefix: string,
+  decorate: (index: number) => Decoration = () => UNDECORATED,
+): string[] {
   const messages: string[] = [];
   // The fence open where the current message started, and the one open where its text currently
   // ends. The first decides whether this message must re-open a fence, the second whether it must
@@ -2033,21 +2284,32 @@ function split(body: string, prefix: string): string[] {
   let open: string | null = null;
   let buffer = "";
 
-  const overhead = (start: string | null, end: string | null): number =>
-    prefix.length +
-    (start === null ? 0 : FENCE.length + start.length + 1) +
-    (end === null ? 0 : 1 + FENCE.length);
+  const overhead = (start: string | null, end: string | null): number => {
+    // The decoration of the message being built, which is the one `flush` will draw: the count and
+    // the draw read `messages.length` at the same point, so no message is measured as one shape and
+    // posted as another.
+    const { lead, tail } = decorate(messages.length);
+    return (
+      prefix.length +
+      lead.length +
+      tail.length +
+      (start === null ? 0 : FENCE.length + start.length + 1) +
+      (end === null ? 0 : 1 + FENCE.length)
+    );
+  };
 
   const flush = (): void => {
     if (buffer === "") return;
+    const { lead, tail } = decorate(messages.length);
     const opening = openedAt === null ? "" : `${FENCE}${openedAt}\n`;
     // An unterminated fence is closed here too, on the last message: the alternative leaves the
     // thread's final mirrored message holding a fence open over whatever is posted after it.
     const closing = open === null ? "" : `\n${FENCE}`;
     // Trailing whitespace goes because the writer trims before it posts, and a message that came
     // back from the transport different from the one that was measured is a message whose length
-    // was measured against the wrong string.
-    messages.push(`${prefix}${opening}${buffer}${closing}`.trimEnd());
+    // was measured against the wrong string. The decoration's tail lands after that trim, so the
+    // trim never runs between a body and the delimiter that closes it.
+    messages.push(`${prefix}${lead}${opening}${buffer}${closing}`.trimEnd() + tail);
     openedAt = open;
     buffer = "";
   };

@@ -7,6 +7,7 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_MIRRORED_PROMPT_LENGTH,
   MAX_PEER_BRIEF_LENGTH,
+  MAX_PEER_SUBTEXT_LENGTH,
   MAX_PEER_SUBTEXT_LINE_LENGTH,
   MAX_THREAD_NAME_LENGTH,
   MAX_TOOL_INPUT_PREVIEW,
@@ -914,11 +915,92 @@ function said(message: string): string {
 const SUBTEXT = "-# ";
 
 /**
- * The body of a chatter message with the subtext marker taken off every line that carries one, which
- * is what the peer actually wrote once the register is set aside.
+ * Discord's spoiler delimiter, written out here for the same reason the marker above is: these pins
+ * read the characters an operator's client reads, not whatever the renderer happens to hold.
+ */
+const SPOILER = "||";
+
+/**
+ * A message with every escaped character replaced by whitespace of the same width, the way Discord's
+ * own reading takes it out of play: a backslash consumes the character after it, whatever that
+ * character is, and a backslash the peer had already escaped consumes nothing.
+ *
+ * The instrument every reading of a spoiler below is built on, and it has to be, because a search
+ * over the posted characters and a search over what Discord reads differ exactly where the hazard
+ * is. A pipe the peer wrote sits behind a live backslash and is not a delimiter; a pipe behind a
+ * backslash the peer had already made literal is one. Worse for a pin than either: a *closing*
+ * delimiter whose first pipe has been eaten by a stray backslash is still two pipe characters in the
+ * posted text, so an oracle reading raw characters finds a well-formed pair on exactly the message
+ * whose spoiler never closes, strips the body it thinks is hidden, and reports the register intact.
+ *
+ * Substituted rather than deleted, and substituted one for one, so positions in the result are
+ * positions in the message and an inert pipe cannot come up against a live one and read as a pair
+ * that was never there.
+ */
+function asParsed(message: string): string {
+  let parsed = "";
+  for (let index = 0; index < message.length; index += 1) {
+    if (message[index] === "\\" && index + 1 < message.length) {
+      parsed += "  ";
+      index += 1;
+      continue;
+    }
+    parsed += message[index];
+  }
+  return parsed;
+}
+
+/** The length of every run of pipes Discord would read in a message, escaped ones set aside. */
+function pipeRuns(message: string): number[] {
+  return [...asParsed(message).matchAll(/\|+/g)].map((match) => match[0].length);
+}
+
+/** How many spoiler delimiters Discord would read in a message. */
+function drawnDelimiters(message: string): number {
+  return pipeRuns(message).reduce((total, run) => total + Math.floor(run / 2), 0);
+}
+
+/**
+ * Where a chatter message's spoiler opens and closes, or `null` when it carries none that Discord
+ * would read as a pair.
+ *
+ * Read through `asParsed`, whose result is the same length as the message, so the two delimiters are
+ * found the way Discord finds them and the positions still index the message itself. A message whose
+ * closing delimiter was eaten therefore reports no spoiler at all rather than a spoiler running to
+ * the end, which is what makes the register pins below able to see a break.
+ */
+function spoilerAt(message: string): { opens: number; closes: number } | null {
+  const parsed = asParsed(message);
+  const opens = parsed.indexOf(SPOILER);
+  const closes = parsed.lastIndexOf(SPOILER);
+  return opens === -1 || closes === opens ? null : { opens, closes };
+}
+
+/**
+ * A chatter message as a scroll shows it with nothing tapped: the spoilered region taken out
+ * altogether, since a collapsed spoiler draws none of it.
+ */
+function collapsed(message: string): string {
+  const pair = spoilerAt(message);
+  return pair === null
+    ? message
+    : `${message.slice(0, pair.opens)}${message.slice(pair.closes + SPOILER.length)}`;
+}
+
+/**
+ * The body of a chatter message with the register taken off, which is what the peer actually wrote
+ * once the rendering is set aside.
+ *
+ * The register is the subtext marker on a body drawn small, and the spoiler pair on a body drawn
+ * behind a tap. In the second form the teaser sits in front of the opening delimiter and is dropped
+ * with it: it is a second drawing of the body's opening line rather than a part of the body, so
+ * counting it would double that line in any reading that puts the messages back together.
  */
 function chatterSaid(message: string): string {
-  return said(message)
+  const body = said(message);
+  const pair = spoilerAt(body);
+  if (pair !== null) return body.slice(pair.opens + SPOILER.length, pair.closes);
+  return body
     .split("\n")
     .map((line) => (line.startsWith(SUBTEXT) ? line.slice(SUBTEXT.length) : line))
     .join("\n");
@@ -926,16 +1008,19 @@ function chatterSaid(message: string): string {
 
 /**
  * Every line of a message that would draw peer body text at reading size: past the attribution the
- * renderer opened the message with, carrying something, and not marked as subtext.
+ * renderer opened the message with, outside any spoiler, carrying something, and not marked as
+ * subtext.
  *
  * The register contract as one function, at the width the contract is actually made at. Line 0 is
  * dropped rather than checked because it is the attribution, which is drawn at reading size on
  * purpose and carries one peer-chosen field, the counterparty's display name, bounded and escaped.
- * So empty as an assertion means no peer-authored character of the body renders at full size, which
- * is what the chatter rendering exists for, and it says nothing about the header.
+ * A spoilered region is dropped because the contract is made about the collapsed reading and a
+ * collapsed spoiler shows nothing; what a tap reveals is the operator having chosen to read. So
+ * empty as an assertion means no peer-authored character of the body renders at full size in a
+ * scroll, which is what the chatter rendering exists for, and it says nothing about the header.
  */
 function fullSizeLines(message: string): string[] {
-  return message
+  return collapsed(message)
     .split("\n")
     .slice(1)
     .filter((line) => line.trim() !== "" && !line.startsWith(SUBTEXT));
@@ -2104,9 +2189,13 @@ test("every line of a peer body is drawn in the subtext register, under a full-s
 
   // The header is the one line drawn at reading size, unchanged, and it opens every message of a
   // body that takes several: a message scrolled to on a phone carries its own attribution or none.
-  const paragraphs = Array.from({ length: 40 }, (_, index) => `Paragraph ${index}. ${"detail ".repeat(24)}`.trim());
+  // Held under the bound the oversized form starts at, so what is pinned here is the subtext form
+  // over several messages: the marker is what carries the register across a boundary there, where
+  // past the bound the spoiler pair carries it instead.
+  const paragraphs = Array.from({ length: 60 }, (_, index) => `Paragraph ${index}. ${"detail ".repeat(2)}`.trim());
   const paced = renderPeerIn("Fable", paragraphs.join("\n\n"));
-  assert.ok(paced.length >= 4, `${paced.length} message(s)`);
+  assert.ok([...paragraphs.join("\n\n")].length <= MAX_PEER_SUBTEXT_LENGTH, "the fixture is under the bound");
+  assert.ok(paced.length >= 2, `${paced.length} message(s)`);
   for (const message of paced) {
     assert.equal(message.split("\n")[0], "📡 Fable → **Claude**", message.slice(0, 80));
     assert.deepEqual(fullSizeLines(message), [], message.slice(0, 200));
@@ -2118,10 +2207,15 @@ test("a peer line too long for one message is broken and marked, never cut into 
   // message the splitter cuts it and opens the next message with the tail, which carries no marker
   // and so renders peer text at reading size. Driven at the worst attribution the renderer will
   // compose, since that prefix is charged against every message's budget beside the line itself.
-  const line = "x".repeat(MAX_MESSAGE_LENGTH * 4);
+  //
+  // One line at the bound the oversized form starts at, which is longer than a message and therefore
+  // the shape this pin is about, and small enough that what it pins is the subtext form: past that
+  // bound the same line is drawn behind a spoiler, and the wrap is pinned there in its own test.
+  const line = "x".repeat(MAX_PEER_SUBTEXT_LENGTH);
   const messages = renderPeerIn("n".repeat(5_000), line);
 
-  assert.ok(messages.length >= 4, `${messages.length} message(s)`);
+  assert.ok(line.length > MAX_MESSAGE_LENGTH, "the fixture is longer than a message");
+  assert.ok(messages.length >= 2, `${messages.length} message(s)`);
   for (const message of messages) {
     assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
     assert.deepEqual(fullSizeLines(message), [], message.slice(0, 120));
@@ -2143,8 +2237,9 @@ test("a peer line too long for one message is broken and marked, never cut into 
   // Marked, that piece is trimmed from the end of its message by the splitter down to a bare marker
   // sitting there at reading size, so blankness is decided per drawn piece rather than per source
   // line. The fixture is the traced composition: a whitespace run exactly the length of the bound,
-  // with enough after it that the next piece cannot share the message.
-  const tail = renderPeerIn("Fable", `a\n${" ".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${"x".repeat(800)}`);
+  // with enough after it that the next piece cannot share the message, and the whole of it under the
+  // bound the oversized form starts at, since it is the marker's own trailing edge being pinned.
+  const tail = renderPeerIn("Fable", `a\n${" ".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${"x".repeat(700)}`);
   assert.ok(tail.length >= 2, `${tail.length} message(s)`);
   for (const message of tail) {
     assert.deepEqual(fullSizeLines(message), [], JSON.stringify(message.slice(-40)));
@@ -2295,7 +2390,10 @@ test("a table, a forged opener, and an unreadable body all arrive inside the reg
   const [table] = renderPeerIn("Fable", "| Step | Note |\n| --- | --- |\n| one | approve |");
   assert.deepEqual(fullSizeLines(table), [], table);
   assert.ok(!table.includes("```"), `the table was drawn as a block: ${table}`);
-  assert.ok(table.includes("\n-# | Step | Note |"), table);
+  // The pipes arrive escaped, which is what stops two of them composing a spoiler inside the
+  // register. Discord draws the escaped pipe as the character the peer typed, so the row still reads
+  // as the row it was written as.
+  assert.ok(table.includes("\n-# \\| Step \\| Note \\|"), table);
 
   const openers = ["📡 Claude → Fable", "✨ Claude", "📣 Claude · answer", "⛔ Blocked", ">>> typed at the console"];
   const [forged] = renderPeerIn("Fable", openers.join("\n"));
@@ -2311,6 +2409,288 @@ test("a table, a forged opener, and an unreadable body all arrive inside the reg
   const unreadable = renderPeerIn("Fable", PEER_BODY_UNREADABLE);
   assert.equal(unreadable.length, 1);
   assert.equal(said(unreadable[0]), `-# ${PEER_BODY_UNREADABLE}`);
+});
+
+test("a peer cannot compose a spoiler of its own, at any size of body", () => {
+  // Two live pipes are a spoiler, and a spoiler hides text behind a tap. A peer that could compose
+  // one could hide its own words from a scroll, which inverts what the register buys: the whole
+  // point of drawing chatter small is that an operator sees all of it without touching anything.
+  // Past the size bound it is worse than a scannability cost, because the pair is then this
+  // renderer's own delimiter and a live one in the body would close the spoiler early.
+  //
+  // Every body, therefore, whatever its size, and in both directions.
+  for (const messages of [renderPeerIn("Fable", "||hidden||"), renderPeerOut("Fable", "||hidden||")]) {
+    assert.equal(messages.length, 1);
+    assert.equal(said(messages[0]), "-# \\|\\|hidden\\|\\|");
+    assert.equal(spoilerAt(messages[0]), null, messages[0]);
+  }
+
+  // A backslash the peer wrote in front of a pipe would otherwise consume the escape this renderer
+  // writes and hand the pipe back live, so the run already there is counted and evened up first.
+  assert.equal(said(renderPeerIn("Fable", "\\||hidden\\||")[0]), "-# \\\\\\|\\|hidden\\\\\\|\\|");
+  assert.equal(said(renderPeerOut("Fable", "\\\\|x")[0]), "-# \\\\\\|x");
+
+  // A table's pipes are escaped with the rest, which is what the chatter pipeline trades for not
+  // running the table transform: the row arrives as the characters it was written with.
+  assert.equal(said(renderPeerIn("Fable", "a | b | c")[0]), "-# a \\| b \\| c");
+
+  // The brief forms have neutralized pipes since they were written, through the card-title escape,
+  // which is why this is a widening of an existing rule rather than an invented one.
+  assert.equal(said(renderPeerInBrief("Fable", "||hidden||")[0]), "-# \\|\\|hidden\\|\\|");
+  assert.equal(said(renderPeerOutBrief("Fable", "||hidden||", "x")[0]), "-# \\|\\|hidden\\|\\|");
+});
+
+test("a body at the subtext bound is drawn small, and one code point past it goes behind a spoiler", () => {
+  // The bound is where a body stops being something an operator scans down the side of a thread and
+  // becomes a wall nobody reads, and the two forms answer that with different typography. It is
+  // measured in code points on the body as it arrived, which is where the paste cap is measured and
+  // in the same currency: how much a peer said is a reader's question, and a bound taken behind the
+  // escapes would move with how much markdown they happened to write.
+  for (const direction of ["in", "out"] as const) {
+    const draw = (body: string) =>
+      direction === "in" ? renderPeerIn("Fable", body) : renderPeerOut("Fable", body);
+
+    const at = draw("z".repeat(MAX_PEER_SUBTEXT_LENGTH));
+    for (const message of at) {
+      assert.equal(spoilerAt(message), null, `${direction}: at the bound, drawn behind a spoiler`);
+      assert.deepEqual(fullSizeLines(message), [], message.slice(0, 80));
+    }
+
+    const past = draw("z".repeat(MAX_PEER_SUBTEXT_LENGTH + 1));
+    for (const message of past) {
+      assert.notEqual(spoilerAt(message), null, `${direction}: past the bound, drawn as subtext`);
+    }
+    assert.equal(past[0].split("\n")[1].slice(0, 3), "-# ", "the teaser is the one marked line");
+
+    // Measured in front of the escapes: a body of pipes at the bound doubles in length when every
+    // one of them is escaped, and it is still a body at the bound.
+    for (const message of draw("|".repeat(MAX_PEER_SUBTEXT_LENGTH))) {
+      assert.equal(spoilerAt(message), null, `${direction}: the bound was measured after the escape`);
+    }
+  }
+});
+
+test("an oversized peer body draws one teaser and puts the rest behind a spoiler, per message", () => {
+  // The oversized form. The header stays full size on every message, one teaser line is drawn small
+  // so a scroll still says what the message is about, and the body itself is collapsed: nobody scans
+  // a wall of text in a thread, and drawing it small only spends the scroll on it.
+  const opening = "Blast radius: answers only, nothing touching your tree.";
+  const body = [opening, ...Array.from({ length: 40 }, (_, index) => `Point ${index}. ${"detail ".repeat(6)}`.trim())].join(
+    "\n\n",
+  );
+  assert.ok([...body].length > MAX_PEER_SUBTEXT_LENGTH, `${[...body].length} code points`);
+
+  for (const [direction, messages, header] of [
+    ["in", renderPeerIn("Fable", body), "📡 Fable → **Claude**"],
+    ["out", renderPeerOut("Fable", body), "📡 **Claude** → Fable"],
+  ] as const) {
+    assert.ok(messages.length >= 2, `${direction}: ${messages.length} message(s)`);
+
+    for (const [index, message] of messages.entries()) {
+      const where = `${direction} message ${index}`;
+      assert.equal(message.split("\n")[0], header, where);
+      // Discord refuses a message past its own ceiling, and the pair is charged against this
+      // renderer's budget rather than taken out of the room that ceiling leaves.
+      assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${where}: ${message.length} characters`);
+
+      // Each message's body sits wholly inside one pair: a spoiler does not span messages, so an
+      // opening delimiter with no closing one in the same message is a body drawn in the open.
+      // Asserted on the delimiters Discord would read rather than on the pipes that were posted: a
+      // closing delimiter whose first pipe has been eaten by a stray backslash is still two pipe
+      // characters at the end of the message, so a reading over the characters passes on exactly the
+      // message whose spoiler never closes.
+      assert.notEqual(spoilerAt(message), null, `${where}: no spoiler`);
+      assert.equal(drawnDelimiters(message), 2, `${where}: ${JSON.stringify(message.slice(-14))}`);
+      assert.equal(message.slice(-2), "||", `${where}: the pair does not close the message`);
+
+      // Nothing outside the pair but the header, and on the first message the teaser.
+      assert.deepEqual(
+        collapsed(message).split("\n").slice(1).filter((line) => line !== ""),
+        index === 0 ? [`-# ${opening}`] : [],
+        `${where}: something is drawn outside the spoiler`,
+      );
+      assert.deepEqual(fullSizeLines(message), [], where);
+
+      // And no line inside the spoiler is marked. The skip is deliberate rather than an omission:
+      // what the register protects is the collapsed reading, a collapsed spoiler draws nothing, and
+      // a tap is the operator having chosen to read the body at reading size.
+      for (const line of chatterSaid(message).split("\n")) {
+        assert.ok(!line.startsWith(SUBTEXT), `${where}: a marked line inside the spoiler: ${line}`);
+      }
+    }
+
+    // The teaser is a second drawing of the body's opening line rather than a part of the body, so
+    // the body itself still arrives whole: every break falls between paragraphs, and putting the
+    // separator back reproduces what the peer sent.
+    assert.equal(messages.map(chatterSaid).join("\n\n"), body, direction);
+  }
+
+  // The teaser is bounded where the brief form's one line is bounded, and says when it was cut: it
+  // is the same composition, from the same function, so the one-line rendering of a peer message is
+  // one answer in this renderer rather than two that could come to differ.
+  const [long] = renderPeerIn("Fable", `${"opening ".repeat(80)}\n\n${"tail ".repeat(400)}`);
+  const teaser = long.split("\n")[1];
+  assert.ok(teaser.startsWith(SUBTEXT), teaser);
+  assert.ok(teaser.length - SUBTEXT.length <= MAX_PEER_BRIEF_LENGTH, `${teaser.length} characters`);
+  assert.ok(teaser.endsWith("…"), teaser);
+
+  // The wrap runs on this form too, so the splitter's hard cut stays out of reach: one line longer
+  // than a message, drawn at the worst attribution this renderer composes, still leaves every piece
+  // inside a message and inside its own pair.
+  const wrapped = renderPeerIn("n".repeat(5_000), "x".repeat(MAX_MESSAGE_LENGTH * 4));
+  assert.ok(wrapped.length >= 4, `${wrapped.length} message(s)`);
+  for (const message of wrapped) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+    assert.equal(drawnDelimiters(message), 2, JSON.stringify(message.slice(-14)));
+    assert.deepEqual(fullSizeLines(message), [], message.slice(0, 120));
+  }
+  assert.equal(wrapped.map(chatterSaid).join("").replaceAll("\n", ""), "x".repeat(MAX_MESSAGE_LENGTH * 4));
+
+  // An over-cap body is cut and says so inside the spoiler, exactly as it does inside the subtext
+  // form: the cap runs in front of this form's threshold and neither answer changes the other.
+  const cut = renderPeerIn("Fable", "w".repeat(MAX_MIRRORED_PROMPT_LENGTH + 1));
+  assert.ok(cut.map(chatterSaid).join("").includes("(long paste shortened in mirror)"), "the cut is visible");
+  assert.equal(drawnDelimiters(cut[cut.length - 1]), 2, JSON.stringify(cut[cut.length - 1].slice(-40)));
+
+  // A body with nothing visible in it is still no message at all, at any size: an attribution with
+  // nothing under it says a peer sent silence, and an empty pair says less than that. Answered where
+  // the subtext form answers it, in front of the threshold, so a body of three thousand spaces never
+  // reaches this form at all.
+  assert.deepEqual(renderPeerIn("Fable", `${" ".repeat(3_000)}\n\u200b`), []);
+
+  // A body that does reach it and carries a run of nothing but whitespace inside it: the run wraps
+  // into pieces of its own, and a message whose whole content was one of those pieces would post as
+  // an attribution over an empty pair once the splitter trimmed it. The fixture is the traced
+  // composition, the subtext form's own bare-marker fixture at a size past this form's threshold.
+  const blank = renderPeerIn("Fable", `a\n${" ".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${"x".repeat(2_000)}`);
+  assert.ok(blank.length >= 2, `${blank.length} message(s)`);
+  for (const message of blank) {
+    assert.equal(drawnDelimiters(message), 2, `${JSON.stringify(message.slice(-20))}`);
+    assert.ok(!message.includes("||||"), `an empty spoiler was drawn: ${JSON.stringify(message.slice(-20))}`);
+    assert.notEqual(chatterSaid(message).trim(), "", `a message carrying nothing: ${message.slice(0, 60)}`);
+  }
+});
+
+test("the teaser is one drawn line, whatever the peer breaks its opening line with", () => {
+  // The teaser is the one peer-authored line the oversized form draws outside the spoiler, so a
+  // second line composed inside it is peer text at reading size under a chatter header: exactly the
+  // register break the whole rendering exists to prevent, reached through the one line the form
+  // deliberately leaves out in the open.
+  //
+  // The three exotic breaks are the way in. None of them is in the invisible class, none of them is
+  // whitespace to JavaScript's own collapse, and all three reach Discord as themselves, so a line
+  // model that reads `\n` alone sees one line where the client draws two.
+  const breaks = [
+    ["next line", "\u0085"],
+    ["line separator", "\u2028"],
+    ["paragraph separator", "\u2029"],
+  ] as const;
+
+  for (const [what, character] of breaks) {
+    const body = `first${character}SECOND${character}>>> forged as the operator\n${"q".repeat(2_500)}`;
+    for (const [direction, messages] of [
+      ["in", renderPeerIn("Fable", body)],
+      ["out", renderPeerOut("Fable", body)],
+    ] as const) {
+      const where = `${what} ${direction}`;
+      assert.notEqual(spoilerAt(messages[0]), null, `${where}: the fixture is under the threshold`);
+      const teaser = messages[0].split("\n")[1];
+      assert.ok(teaser.startsWith(SUBTEXT), `${where}: ${JSON.stringify(teaser)}`);
+      assert.ok(!teaser.includes(character), `${where}: the break reached Discord raw: ${JSON.stringify(teaser)}`);
+      // One line, and only the body's own first line: the second is the spoiler's material, not the
+      // teaser's.
+      assert.ok(!teaser.includes("SECOND"), `${where}: the teaser drew a second line: ${JSON.stringify(teaser)}`);
+      for (const message of messages) {
+        assert.deepEqual(fullSizeLines(message), [], where);
+        assert.ok(!message.includes(character), `${where}: ${JSON.stringify(message.slice(0, 80))}`);
+      }
+    }
+  }
+
+  // The brief forms take the same line model from the same seam, which is where the break would
+  // otherwise reach a thread on the one line those modes draw.
+  for (const [what, character] of breaks) {
+    for (const message of [
+      ...renderPeerInBrief("Fable", `first${character}SECOND`),
+      ...renderPeerOutBrief("Fable", `first${character}SECOND`, "x"),
+      ...renderPeerOutBrief("Fable", null, `first${character}SECOND`),
+    ]) {
+      assert.equal(message.split("\n").length, 2, `${what}: ${JSON.stringify(message)}`);
+      assert.ok(!message.includes(character), `${what}: ${JSON.stringify(message)}`);
+      assert.ok(!said(message).includes("SECOND"), `${what}: ${JSON.stringify(message)}`);
+      assert.deepEqual(fullSizeLines(message), [], `${what}: ${JSON.stringify(message)}`);
+    }
+  }
+});
+
+test("a body dense with pipes cannot close a spoiler early, and the pairs stay the renderer's own", () => {
+  // The composition this form has to survive: a body that is nothing but the delimiter it is about
+  // to be wrapped in, at a size that takes several messages, with the peer's own backslashes thrown
+  // in where they would consume the escape.
+  const dense = `${"|".repeat(1_500)}\n${"\\|".repeat(600)}\n${"||text||".repeat(200)}`;
+  assert.ok([...dense].length > MAX_PEER_SUBTEXT_LENGTH, `${[...dense].length} code points`);
+
+  for (const [direction, messages] of [
+    ["in", renderPeerIn("Fable", dense)],
+    ["out", renderPeerOut("Fable", dense)],
+  ] as const) {
+    assert.ok(messages.length >= 2, `${direction}: ${messages.length} message(s)`);
+    for (const [index, message] of messages.entries()) {
+      const where = `${direction} message ${index}`;
+      // Exactly the pair this renderer composed, and it is balanced: one opening delimiter and one
+      // closing one, with nothing in between that Discord would read as either.
+      assert.equal(drawnDelimiters(message), 2, `${where}: ${JSON.stringify(message.slice(0, 60))}`);
+      assert.equal(message.slice(-2), "||", `${where}: ${JSON.stringify(message.slice(-20))}`);
+      // Two runs of exactly two, and nothing else: a peer pipe reaching Discord live would either
+      // add a run of its own or lengthen one of these into a pair plus a stray, and a stray pipe
+      // beside the closing delimiter is body text left outside the spoiler.
+      assert.deepEqual(pipeRuns(message), [2, 2], `${where}: ${JSON.stringify(message.slice(-20))}`);
+      assert.deepEqual(fullSizeLines(message), [], where);
+    }
+  }
+
+  // The same body under the bound draws no delimiter at all, so nothing there can be closed early
+  // either.
+  for (const message of renderPeerIn("Fable", "||text||".repeat(100))) {
+    assert.equal(drawnDelimiters(message), 0, message.slice(0, 60));
+  }
+
+  // A message ending in a backslash is the other half of the hazard: the closing delimiter is
+  // appended after the body and after the splitter's own trailing trim, so an odd run left sitting
+  // there escapes the delimiter's first pipe and that message's pair never closes.
+  //
+  // Built at a boundary between messages rather than at the end of the body, which is the only place
+  // it can be built: the body's own end is trimmed by `peerCapped` before the pipeline ever sees it,
+  // so a fixture ending in a backslash and whitespace arrives byte-identical to one ending in the
+  // backslash alone and pins nothing.
+  //
+  // And built from the whitespace the trim actually recognizes. `trimEnd` reads the whole Unicode
+  // whitespace class, so a guard that counted only the space and the tab would leave the run odd on
+  // a no-break space, the trim would eat the space, and the delimiter would land on the backslash.
+  const boundary = (trailing: string) => `${"y".repeat(1_800)}\\${trailing}\n\n${"z".repeat(1_800)}`;
+  const trailings = [
+    ["nothing", ""],
+    ["a space", " "],
+    ["a tab", "\t"],
+    ["a no-break space", "\u00a0"],
+    ["an en quad", "\u2000"],
+    ["a narrow no-break space", "\u202f"],
+    ["an ideographic space", "\u3000"],
+  ] as const;
+
+  for (const [what, trailing] of trailings) {
+    for (const [direction, messages] of [
+      ["in", renderPeerIn("Fable", boundary(trailing))],
+      ["out", renderPeerOut("Fable", boundary(trailing))],
+    ] as const) {
+      assert.ok(messages.length >= 2, `${direction} ${what}: ${messages.length} message(s)`);
+      for (const [index, message] of messages.entries()) {
+        const where = `${direction} ${what} message ${index}`;
+        assert.equal(drawnDelimiters(message), 2, `${where}: ${JSON.stringify(message.slice(-14))}`);
+        assert.deepEqual(fullSizeLines(message), [], `${where}: ${JSON.stringify(message.slice(-14))}`);
+      }
+    }
+  }
 });
 
 /**

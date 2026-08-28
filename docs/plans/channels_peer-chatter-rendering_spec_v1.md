@@ -118,10 +118,9 @@ happen). Order, with each step's reason:
    line out of the register.
 3. `withoutChips` on the result: with no fences left, the chip and quote escapes apply uniformly.
    `withTablesBlocked` is deliberately skipped: it draws fences, and a coordination message's table
-   arriving as its own raw Markdown in subtext is the acceptable cost. Nothing in this pipeline
-   escapes a pipe, so a peer can compose a spoiler inside a subtext line; that is a scannability
-   cost rather than a register break, since a spoiler hides text rather than drawing it at full
-   size, and neutralizing the pipe belongs to Section 2.
+   arriving as its own raw Markdown in subtext is the acceptable cost. Its pipes are escaped by the
+   pipe pass rather than read as columns, so a peer cannot compose a spoiler of its own at any body
+   size, and in the oversized form the pair is this renderer's own delimiter.
 4. `withoutAttributions`: defense in depth behind the prefix, kept so the register does not rest on
    a single pass.
 5. Wrap long lines: any line longer than `MAX_PEER_SUBTEXT_LINE_LENGTH` (new constant, recommended
@@ -149,12 +148,14 @@ one-word adjustment reaches later. The oversized form renders as:
   on the first message. Peer etiquette on this machine (the kit's peer-sessions skill: every
   message opens by naming its blast radius) makes the first line the one worth keeping scannable;
   where a sender ignores the etiquette the teaser is just the opening line, which costs nothing.
-- The body inside a spoiler: pipeline steps 1-4 as above, then `|` characters additionally
-  neutralized (already in `MARKDOWN`'s escape repertoire) so a peer writing `||` cannot close the
-  spoiler early and surface full-size text; then wrapped and split so that each posted message's
-  body sits wholly inside one `||...||` pair with the header (and teaser) outside it. Spoilers do
-  not span messages, so the pair is per message and its four units are counted in that message's
-  budget.
+- The body inside a spoiler: pipeline steps 1-4 as above, the pipe neutralization among them, so a
+  peer writing `||` cannot close the spoiler early and surface full-size text; then wrapped and
+  split so that each posted message's body sits wholly inside one `||...||` pair with the header
+  (and teaser) outside it. Spoilers do not span messages, so the pair is per message and its four
+  units are counted in that message's budget. A body's trailing backslash run is evened before the
+  closing delimiter is appended, because an odd run escapes the pair's first pipe and leaves the
+  spoiler open; the evening reads the same whitespace class the splitter's own trailing trim reads,
+  since a guard and a trim that disagree about where a message ends is exactly how the pair breaks.
 - Step 6 (the `-# ` prefix) is deliberately skipped inside the spoiler, and Section 2 pins that as
   intended rather than leaving it readable as an omission. Two reasons: the register contract's
   collapsed reading is what the invariant protects, and a tapped-open spoiler is the operator
@@ -235,6 +236,20 @@ prefixed and bounded; the spoiler's content carries no `-# ` prefix, pinned as t
 the Design names rather than left readable as an omission; every message's spoiler pair closes within that message; a body dense with
 `|` characters cannot close a spoiler early (pin the escape, and pin that the assembled message
 carries balanced renderer-composed delimiters).
+
+Three guards this section carries that the paragraphs above do not name, all three found at review
+and all three properties of the form rather than additions to it. The trailing-backslash evening
+reads the splitter's own trailing-trim whitespace class rather than a narrower one, because the two
+readings decide the same boundary and a peer's backslash followed by a no-break space otherwise
+escapes the closing pair's first pipe and leaves the whole body drawn at full size. The teaser is
+composed from a line model shared with the brief forms, normalized before the split, because a body
+whose first line carries U+0085 would otherwise draw a second unmarked line outside the spoiler.
+And the peer's own `-#` is neutralized inside the spoiler as well as outside it, so the form holds
+its register on two covers rather than on one unverified rendering.
+
+The register pins read a posted message the way Discord parses it rather than by searching for raw
+`||`. A positional search finds a pair on a message whose closing delimiter is escaped, strips the
+body, and reports green on exactly the break the pins exist to catch.
 
 ### Section 3: The register vocabulary lands in the docs (Model: opus, Locus: inline, meaning run
 in the executing session itself rather than dispatched to a subagent)
@@ -403,4 +418,71 @@ hardware and none is comparable to any figure this repo recorded before the rebu
 on this box tonight ran 41 to 87 seconds across three runs at different contention, which measures
 the box's load more than the tree.
 Next: Section 2: The oversized spoiler form
+Commit Model: Commit-and-Push
+
+### Chapter 2 - 2026-08-27
+Completed: Section 2: The oversized spoiler form
+Implemented By: implementer-opus (one dispatch, resumed once for the review-fix round; no tier escalation)
+Metrics: review rounds 1; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: `MAX_PEER_SUBTEXT_LENGTH` ships at 2,000 code points, measured pre-escape at
+`peerCapped`'s own seam, and is the knob a one-word adjustment reaches; unlike the line bound it is a
+reading-comfort choice rather than a correctness one, since both forms hold the collapsed reading.
+The budget went through the splitter rather than beside it: `split` gained an optional per-message
+`decorate(index)` returning a lead and a tail, charged inside its existing `overhead` closure and
+drawn by `flush` from the same `messages.length` reading, so the count and the draw cannot disagree.
+Index-aware rather than uniform because the teaser rides only the first message, and a reserve wide
+enough for it charged against every message would spend `MAX_PEER_BRIEF_LENGTH` of each later
+message's budget on nothing. `attributed` passes no decoration, so every pre-existing caller's output
+is byte-identical. The widening the plan took on at Section 1's close turned out to be a
+consistency fix rather than a new rule: `MARKDOWN` already carries the pipe and `inertText` already
+escapes it, so both brief forms have neutralized pipes since they were written and only the whole
+mode skipped it. One performance defect was fixed in passing: the first pipe pass was a run form
+that backtracked quadratically over a long backslash run carrying no pipe, which is peer-controlled
+input on the broker's event loop, measured at 327ms against a 16,384-backslash body; the shipped
+token scan measures 0ms on the same input. The scan's equivalence to the run form was the one claim
+the implementer flagged as most likely wrong, so it was settled here by a differential test over
+300,000 randomized backslash/pipe/newline strings: zero mismatches, with a sanity control asserting
+both sides escape a bare pipe read before the count.
+Assumptions: none beyond the spec.
+Review Findings: adversarial, blind and security reviewers, all at opus/max, all read-only (round
+bracketed with `git status --porcelain` before and after; identical, so the read-only briefs held).
+All three independently found the same Critical from three directions, and it was reproduced here on
+the real renderer before any fix: `evenEscapes` evened a trailing backslash run against `[ \t]*$`
+while the splitter trims with `trimEnd()`, whose class is the whole Unicode space set, so a peer
+body ending a message with a backslash and a no-break space escaped the first pipe of the broker's
+own closing delimiter and left that message's spoiler open, drawing the whole body at full size.
+A second Critical, also reproduced here: the teaser was composed from the raw body and so bypassed
+`newlinesOnly`, letting U+0085 survive into the one peer-authored line the form draws outside the
+spoiler. Fixed at the shared seam in `firstLine`, which closed the same latent hole in both brief
+forms. Three Majors addressed, and the sharpest was in the tests rather than the code: the register
+oracle located the spoiler by raw `||` search, so on a message whose closing delimiter Discord would
+read as escaped it still found a pair, stripped the body, and reported green on precisely the break
+it exists to catch. Rebuilt on the escape-aware reading and shown red against the broken guard
+first. The fixture meant to cover the trailing-whitespace branch was vacuous, `peerCapped`'s own
+trim having flattened it into a copy of its neighbour, which is why the hole survived; it was
+rebuilt at an interior message boundary over seven trailing-whitespace shapes. Five Minors
+addressed, including two doc-block figures that did not reconstruct. One finding routed out of the
+plan to `docs/backlog.md`: `withoutChips` inserts its escape without counting the backslash run
+already in front of the character, so author-escaped input comes back double-escaped. The item's
+first wording claimed this hands a live chip back, and the adversarial reviewer's low-confidence
+Minor challenged it; re-checking showed the reviewer right, since every Discord chip construct needs
+its closing bracket adjacent and the same bypass puts a literal backslash there, so the item was
+rewritten to claim only the non-idempotent escape and to mark the chip risk unproven.
+Stamps: adjudicated 3, stamped 10. The three the sweep surfaced were peer-session reads over this
+window and none steered the work, so all three were skipped; the ten stamped are the records that
+did steer it, nine operator tier and one project tier. Two memories were written rather than only
+read: `task-output-artifact-can-be-empty-for-a-live-agent` (project), because a dispatch's `.output`
+transcript stayed 0 bytes for this section's whole implementer run while a sibling dispatch's was
+847KB, so the never-started reading returned the wedge shape twice on a healthy agent and only the
+worktree showed it working; and `quoted-heredoc-collapses-backslashes` (operator), because a quoted
+heredoc through the Bash tool halved the doubled backslashes in a probe's regexes, which returned
+138,000 mismatches out of 200,000 that were entirely the probe's own corruption and read exactly
+like a real finding.
+Gate: baseline at `669cb8f` with a clean tree, 1563 tests / 1562 pass / 0 fail / 1 skip, exit 0,
+49.9s. Close gate, read here rather than taken from the implementer's report, 1568 / 1567 / 0 / 1,
+exit 0, 42.7s, `tsc --noEmit` clean. Delta is +5 tests, all green, no new failing name. The one skip
+is test 238, the POSIX-only token-file guard the test emits on Windows, the same skip both earlier
+gates carried. The intermediate gate over the pre-fix work read 1567 / 1566 / 0 / 1 at 87.8s while
+three reviewers held the box, which measures the contention rather than the tree.
+Next: Section 3: The register vocabulary lands in the docs
 Commit Model: Commit-and-Push
