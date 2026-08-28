@@ -1356,6 +1356,15 @@ test("a peer message is drawn under its own attribution, never in the operator's
     assert.ok(!post.text.startsWith(">>>"), `drawn in the operator's register: ${post.text}`);
     assert.ok(!post.text.includes("cross-session-message"), post.text);
     assert.ok(!post.text.includes("Another Claude session sent a message"), post.text);
+    // The chatter register, pinned where the delivery paths converge rather than only at the
+    // renderer: every line of the body reaches the thread as subtext, so a peer's text is never
+    // drawn at the size the operator's own is. The attribution line is the deliberate exception.
+    for (const line of post.text.split("\n").slice(1)) {
+      assert.ok(
+        line.trim() === "" || line.startsWith("-# "),
+        `a peer line reached the thread at reading size: ${line}`,
+      );
+    }
     // The mirror budget and nothing louder: a peer exchange is worth reading, not worth a ping.
     assert.ok(!post.text.includes("<@"), `a peer post carried a mention: ${post.text}`);
   }
@@ -1432,6 +1441,17 @@ test("the peer knob governs volume on every path, in both directions, and never 
       [...drawnIn, ...drawnIn, ...drawnIn, ...drawnOut],
       mode,
     );
+    // The register holds at every volume setting, which is the half of this test the knob's own
+    // semantics do not cover: `brief` composes the marker by hand in a different function from the
+    // one the whole rendering uses, so it is the mode a register change is most likely to miss.
+    for (const post of posts) {
+      for (const line of post.text.split("\n").slice(1)) {
+        assert.ok(
+          line.trim() === "" || line.startsWith("-# "),
+          `${mode}: a peer line reached the thread at reading size: ${line}`,
+        );
+      }
+    }
     if (mode === "off") {
       // Two lines rather than four: the drop log aggregates a repeat of one line for one session,
       // and the two directions are two lines. Neither carries the message.

@@ -103,6 +103,11 @@ export function withoutInvisible(value: string): string {
 /**
  * Truncates to a length in code points, never in UTF-16 units. Cutting an astral-plane character in
  * half leaves a lone surrogate, which is not valid UTF-8 for a request body or a JSON-RPC frame.
+ *
+ * Every place a length is cut rather than refused comes through here, and the renderer's two
+ * in-line cuts are among them: the splitter's hard cut, and the chatter wrap that keeps that cut out
+ * of reach. Both budget in UTF-16 units and both land the cut here, on a code point, which is the
+ * only pairing that both fits a bound and encodes.
  */
 export function sliceCodePoints(value: string, limit: number): string {
   const characters = [...value];

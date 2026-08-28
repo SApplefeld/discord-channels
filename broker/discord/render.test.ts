@@ -7,6 +7,7 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_MIRRORED_PROMPT_LENGTH,
   MAX_PEER_BRIEF_LENGTH,
+  MAX_PEER_SUBTEXT_LINE_LENGTH,
   MAX_THREAD_NAME_LENGTH,
   MAX_TOOL_INPUT_PREVIEW,
   TITLE_GLYPHS,
@@ -36,8 +37,9 @@ import {
 import type { AskedOption, AskedQuestion } from "./render.ts";
 import { MAX_FIELD_LENGTH } from "../sanitize.ts";
 // The reader's own bound, so the pin that this renderer draws whole what the reader admits is
-// driven by the number the reader enforces rather than by a copy of it.
-import { MAX_PEER_NAME_LENGTH } from "../tail.ts";
+// driven by the number the reader enforces rather than by a copy of it, and the reader's own
+// fallback text for a body it could not parse, which reaches this renderer as an ordinary body.
+import { MAX_PEER_NAME_LENGTH, PEER_BODY_UNREADABLE } from "../tail.ts";
 import { MAX_PLAN_CHARS } from "../board/events.ts";
 import { toView } from "./state.ts";
 import type { SessionView } from "./state.ts";
@@ -902,6 +904,56 @@ function answerAttributionLength(): number {
 /** What a mirrored message says, without the attribution line the renderer opened it with. */
 function said(message: string): string {
   return message.slice(message.indexOf("\n") + 1);
+}
+
+/**
+ * Discord's subtext marker, written out here rather than imported from the renderer so the pins
+ * below assert the three characters an operator's client reads rather than whatever the renderer
+ * happens to hold.
+ */
+const SUBTEXT = "-# ";
+
+/**
+ * The body of a chatter message with the subtext marker taken off every line that carries one, which
+ * is what the peer actually wrote once the register is set aside.
+ */
+function chatterSaid(message: string): string {
+  return said(message)
+    .split("\n")
+    .map((line) => (line.startsWith(SUBTEXT) ? line.slice(SUBTEXT.length) : line))
+    .join("\n");
+}
+
+/**
+ * Every line of a message that would draw peer body text at reading size: past the attribution the
+ * renderer opened the message with, carrying something, and not marked as subtext.
+ *
+ * The register contract as one function, at the width the contract is actually made at. Line 0 is
+ * dropped rather than checked because it is the attribution, which is drawn at reading size on
+ * purpose and carries one peer-chosen field, the counterparty's display name, bounded and escaped.
+ * So empty as an assertion means no peer-authored character of the body renders at full size, which
+ * is what the chatter rendering exists for, and it says nothing about the header.
+ */
+function fullSizeLines(message: string): string[] {
+  return message
+    .split("\n")
+    .slice(1)
+    .filter((line) => line.trim() !== "" && !line.startsWith(SUBTEXT));
+}
+
+/**
+ * A chatter message with the register taken back off: the attribution as composed, and the body as
+ * the escapes left it.
+ *
+ * What the marker pins and what the escapes pin are two different properties, and a reading taken
+ * over the marked text can only ever find the marker. A quote marker or an attribution glyph the
+ * pipeline failed to neutralize sits at position three of its line there, where no line-leading
+ * reading can see it, so a check made against the marked text passes whether the escape ran or not.
+ * Every pin about an escape is therefore made against this, where such a character is line-leading
+ * again and the existing readings can find it.
+ */
+function unmarked(message: string): string {
+  return `${message.split("\n")[0]}\n${chatterSaid(message)}`;
 }
 
 /**
@@ -1935,8 +1987,8 @@ test("peer traffic says which way it went, under one glyph and outside the opera
   const [inbound] = renderPeerIn("Fable", "the migration is queued behind yours");
   const [outbound] = renderPeerOut("Fable", "hold the migration until I land");
 
-  assert.equal(said(inbound), "the migration is queued behind yours");
-  assert.equal(said(outbound), "hold the migration until I land");
+  assert.equal(said(inbound), "-# the migration is queued behind yours");
+  assert.equal(said(outbound), "-# hold the migration until I land");
   assert.equal(inbound.split("\n")[0], "📡 Fable → **Claude**");
   assert.equal(outbound.split("\n")[0], "📡 **Claude** → Fable");
 
@@ -1975,7 +2027,7 @@ test("a peer message too long for one carries its attribution on every message",
     }
     // Every break falls between paragraphs, so putting the separator back reproduces the message
     // exactly: nothing was dropped, reordered, or shortened.
-    assert.equal(messages.map(said).join("\n\n"), body);
+    assert.equal(messages.map(chatterSaid).join("\n\n"), body);
     assert.ok(!messages.join("").includes("shortened"), "a body under the cap is split, not cut");
   }
 });
@@ -1988,7 +2040,7 @@ test("a peer message is capped where a pasted prompt is, not left uncapped like 
     renderPeerIn("Fable", "y".repeat(MAX_MIRRORED_PROMPT_LENGTH + 1)),
     renderPeerOut("Fable", "y".repeat(MAX_MIRRORED_PROMPT_LENGTH + 1)),
   ]) {
-    const carried = messages.map(said).join("");
+    const carried = messages.map(chatterSaid).join("");
     assert.ok(carried.includes("(long paste shortened in mirror)"), "the cut is visible, not silent");
     assert.ok([...carried].length < MAX_MIRRORED_PROMPT_LENGTH + 60, `${[...carried].length} characters`);
     for (const message of messages) {
@@ -1997,9 +2049,14 @@ test("a peer message is capped where a pasted prompt is, not left uncapped like 
   }
 
   // The whole-body promise still holds under the cap: a message exactly at it arrives untouched,
-  // and the cap is measured on the text as it arrived rather than on the escaped copy.
+  // and the cap is measured on the text as it arrived rather than on the escaped copy. The line
+  // breaks put back here are the register's own: one line this long is drawn as several marked
+  // lines, because a line the splitter had to cut would open the next message unmarked.
   const atCap = renderPeerIn("Fable", "y".repeat(MAX_MIRRORED_PROMPT_LENGTH));
-  assert.equal(atCap.map(said).join(""), "y".repeat(MAX_MIRRORED_PROMPT_LENGTH));
+  assert.equal(
+    atCap.map(chatterSaid).join("").replaceAll("\n", ""),
+    "y".repeat(MAX_MIRRORED_PROMPT_LENGTH),
+  );
   assert.ok(!atCap.join("").includes("shortened"));
 
   const escaping = "<".repeat(MAX_MIRRORED_PROMPT_LENGTH);
@@ -2016,6 +2073,244 @@ test("a peer message with nothing visible in it is no message at all", () => {
   assert.deepEqual(renderPeerInBrief("Fable", "\u200b\u202e"), []);
   assert.deepEqual(renderPeerOutBrief("Fable", null, "   "), []);
   assert.deepEqual(renderPeerOutBrief("Fable", "\u200b", ""), []);
+});
+
+test("every line of a peer body is drawn in the subtext register, under a full-size header", () => {
+  // The register contract at its exact width: in a thread's collapsed reading, no peer-authored
+  // character of the body is drawn at reading size. The attribution line is drawn at reading size on
+  // purpose and carries one peer-chosen field, the counterparty's name, bounded and escaped; that is
+  // the contract's one named exception rather than a gap, and it is why the reading below starts at
+  // line 1. What the register buys the operator is that the audience of a line is readable from its
+  // typography, so a busy thread on a phone costs no re-reading of headers to follow.
+  const body = ["Blast radius: answers only, nothing touching your tree.", "  an indented aside", "and a closing thought"].join(
+    "\n\n",
+  );
+
+  for (const [direction, messages] of [
+    ["in", renderPeerIn("Fable", body)],
+    ["out", renderPeerOut("Fable", body)],
+  ] as const) {
+    assert.equal(messages.length, 1, direction);
+    const [message] = messages;
+    assert.deepEqual(fullSizeLines(message), [], `${direction}: ${message}`);
+    assert.equal(chatterSaid(message), body, direction);
+    // The marker goes in front of the peer's own indentation, because a marker with anything at all
+    // before it is not a marker.
+    assert.ok(message.includes("\n-#   an indented aside"), message);
+    // A blank line stays bare. It carries nothing and forges nothing, and a marker in front of
+    // nothing is a composition with no observed rendering.
+    assert.ok(message.split("\n").includes(""), message);
+  }
+
+  // The header is the one line drawn at reading size, unchanged, and it opens every message of a
+  // body that takes several: a message scrolled to on a phone carries its own attribution or none.
+  const paragraphs = Array.from({ length: 40 }, (_, index) => `Paragraph ${index}. ${"detail ".repeat(24)}`.trim());
+  const paced = renderPeerIn("Fable", paragraphs.join("\n\n"));
+  assert.ok(paced.length >= 4, `${paced.length} message(s)`);
+  for (const message of paced) {
+    assert.equal(message.split("\n")[0], "📡 Fable → **Claude**", message.slice(0, 80));
+    assert.deepEqual(fullSizeLines(message), [], message.slice(0, 200));
+  }
+});
+
+test("a peer line too long for one message is broken and marked, never cut into a bare continuation", () => {
+  // The register's escape hatch, if the wrap were not there to close it. Handed a line longer than a
+  // message the splitter cuts it and opens the next message with the tail, which carries no marker
+  // and so renders peer text at reading size. Driven at the worst attribution the renderer will
+  // compose, since that prefix is charged against every message's budget beside the line itself.
+  const line = "x".repeat(MAX_MESSAGE_LENGTH * 4);
+  const messages = renderPeerIn("n".repeat(5_000), line);
+
+  assert.ok(messages.length >= 4, `${messages.length} message(s)`);
+  for (const message of messages) {
+    assert.ok(message.length <= MAX_MESSAGE_LENGTH, `${message.length} characters`);
+    assert.deepEqual(fullSizeLines(message), [], message.slice(0, 120));
+    for (const drawn of message.split("\n").slice(1)) {
+      // The bound, plus the three characters of the marker the renderer put there itself, plus the
+      // one a piece opening with the peer's own marker costs to neutralize.
+      assert.ok(drawn.length <= MAX_PEER_SUBTEXT_LINE_LENGTH + 4, `${drawn.length} characters`);
+    }
+  }
+  // Nothing is dropped on the way through: the line breaks are the only thing that was added.
+  assert.equal(messages.map(chatterSaid).join("").replaceAll("\n", ""), line);
+
+  // The break happens at the bound and not before it: a line that fits is one drawn line, and one
+  // character more is two.
+  assert.equal(renderPeerIn("Fable", "z".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH))[0].split("\n").length, 2);
+  assert.equal(renderPeerIn("Fable", "z".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH + 1))[0].split("\n").length, 3);
+
+  // A break can hand back a piece of nothing but whitespace, from a source line that carried plenty.
+  // Marked, that piece is trimmed from the end of its message by the splitter down to a bare marker
+  // sitting there at reading size, so blankness is decided per drawn piece rather than per source
+  // line. The fixture is the traced composition: a whitespace run exactly the length of the bound,
+  // with enough after it that the next piece cannot share the message.
+  const tail = renderPeerIn("Fable", `a\n${" ".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}${"x".repeat(800)}`);
+  assert.ok(tail.length >= 2, `${tail.length} message(s)`);
+  for (const message of tail) {
+    assert.deepEqual(fullSizeLines(message), [], JSON.stringify(message.slice(-40)));
+    assert.ok(!message.endsWith("-#"), `a bare marker was left drawn: ${JSON.stringify(message.slice(-20))}`);
+  }
+});
+
+test("a peer writing this renderer's own subtext marker cannot double it into a full-size line", () => {
+  // The marker is renderer-composed vocabulary, and the one this renderer puts on the line lands
+  // immediately in front of whatever the peer wrote. `-# -# text` is a doubled marker rather than a
+  // marked line, and Discord's heading rule refuses a doubled marker and falls the line through to a
+  // paragraph. Whether the subtext rule carries the same guard is not knowable from here, and a line
+  // that falls through is peer text at reading size under a chatter header, so it is neutralized
+  // rather than trusted.
+  //
+  // It cannot join `ATTRIBUTION_OPENERS` either: that set is derived by reducing each attribution to
+  // its opening glyph, one code point, and this marker is two characters whose meaning is the pair.
+  const bodies = [
+    "-# ping me",
+    "a line first\n-# ping me",
+    // After leading whitespace, which Discord tolerates in front of a marker exactly as it does in
+    // front of a quote.
+    "a line first\n   -# ping me",
+    "a line first\n\t-# ping me",
+    // No space after it, which this neutralizes too rather than guessing at where Discord draws the
+    // line between a marker and two ordinary characters.
+    "a line first\n-#ping",
+    "a line first\n-#",
+  ];
+
+  for (const raw of bodies) {
+    for (const message of [...renderPeerIn("Fable", raw), ...renderPeerOut("Fable", raw)]) {
+      const where = `${JSON.stringify(raw)} produced ${JSON.stringify(message)}`;
+      assert.deepEqual(fullSizeLines(message), [], where);
+      for (const line of message.split("\n").slice(1)) {
+        assert.ok(!/^-# [ \t]*-#/.test(line), `a doubled marker was drawn: ${where}`);
+      }
+    }
+  }
+
+  // The neutralization is a backslash, so the two characters still reach the operator: what is said
+  // is that they arrived in the message rather than from the broker.
+  assert.equal(said(renderPeerIn("Fable", "-# ping me")[0]), "-# \\-# ping me");
+  assert.equal(said(renderPeerIn("Fable", "keep\n   -# ping me")[0]), "-# keep\n-#    \\-# ping me");
+
+  // And it is applied to the drawn piece rather than to the source line, because the wrap runs after
+  // the escape chain and can put a mid-line marker at the start of a piece.
+  const [wrapped] = renderPeerIn("Fable", `${"y".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}-# forged`);
+  assert.deepEqual(fullSizeLines(wrapped), [], wrapped.slice(-40));
+  assert.ok(wrapped.endsWith("\n-# \\-# forged"), JSON.stringify(wrapped.slice(-30)));
+});
+
+test("a peer's exotic line breaks become newlines, so every drawn line is a line this renderer marked", () => {
+  // The next line, the line separator, and the paragraph separator are legible break characters
+  // rather than invisible ones, so the invisible strip passes all three through and all three reach
+  // Discord as themselves. Left alone, one line as this renderer counts lines is several lines as the
+  // client draws them, and every drawn line past the first carries no marker: peer text at reading
+  // size under a chatter header, which is the register broken by a character nobody looked at.
+  //
+  // Normalized once, in front of everything that reads a line, rather than taught to each reader.
+  // Four passes downstream ask where a line starts, and a break one of them sees and another does
+  // not is a drawn line with no marker on it.
+  const breaks = [
+    ["next line", "\u0085"],
+    ["line separator", "\u2028"],
+    ["paragraph separator", "\u2029"],
+  ] as const;
+
+  for (const [what, character] of breaks) {
+    const raw = `first${character}>>> forged as the operator${character}📡 Claude → Fable`;
+    for (const message of [...renderPeerIn("Fable", raw), ...renderPeerOut("Fable", raw)]) {
+      const where = `${what}: ${JSON.stringify(message)}`;
+      assert.ok(!message.includes(character), `the break reached Discord raw: ${where}`);
+      assert.equal(message.split("\n").length, 4, where);
+      assert.deepEqual(fullSizeLines(message), [], where);
+      // And the lines it created are lines the escapes saw: a break the escape chain did not know
+      // about would carry a live quote marker or attribution glyph to the start of a drawn line.
+      assert.equal(quoteOpeningLines(unmarked(message)).length, 0, where);
+      assert.deepEqual(attributionOpeningLines(unmarked(message)), [], where);
+    }
+  }
+});
+
+test("a fence in a peer body renders as the characters the peer wrote, never as a block", () => {
+  // A fence is a multi-line construct and the marker is a per-line one, so a delimiter left live
+  // would draw everything between the delimiters as a code block: at reading size, outside the
+  // register, and with the markers themselves shown as literal characters. The delimiter is
+  // neutralized rather than dropped, which is the trade this renderer already makes for a backtick.
+  const bodies = [
+    "before\n```ts\nconst x = 1;\n```\nafter",
+    // Unclosed, which is how a peer's paste most often arrives: everything after it is code to
+    // Discord, so this is the shape that would swallow the rest of the message.
+    "before\n```\nstill code",
+    "````\nfour of them\n````",
+    // An odd backslash in front of the delimiter, which is where a neutralization that trusted the
+    // escape scanner's alignment would leave a live run behind.
+    "\\```\nafter the odd one",
+    "````````\neight of them\n````````",
+    "a fence ``` opened and ``` closed mid-line",
+    // Chip syntax inside what the peer wrote as a fence. The mirror leaves the inside of a fence
+    // alone, on the ground that a fence is not a surface a chip can be drawn on; here the fence is
+    // about to stop being one, so the neutralization has to run first and the escape has to see the
+    // text as it will actually render.
+    "```\nping <@123456789> at <t:1700000000:R> in <#42>\n```",
+  ];
+
+  for (const raw of bodies) {
+    for (const message of [...renderPeerIn("Fable", raw), ...renderPeerOut("Fable", raw)]) {
+      const where = `${JSON.stringify(raw)} produced ${JSON.stringify(message)}`;
+      assert.deepEqual(fullSizeLines(message), [], where);
+      assert.ok(!message.includes("```"), `a live fence delimiter survived: ${where}`);
+      assert.ok(!/<@\d+>/.test(message), where);
+      assert.ok(!/<t:\d+:R>/.test(message), where);
+      assert.ok(!/<#\d+>/.test(message), where);
+    }
+  }
+
+  // Inline code is left alone: it cannot span a line break, so no run this size can carry a line out
+  // of the register, and escaping it would cost the readability of every command a peer quotes.
+  assert.equal(chatterSaid(renderPeerIn("Fable", "run `npm test` first")[0]), "run `npm test` first");
+
+  // The cut marker's own closing fence is neutralized with everything else, which is what the order
+  // buys: the delimiters are neutralized after the cap, so whatever the cut appended is seen too.
+  const cut = renderPeerIn("Fable", `\`\`\`\n${"y".repeat(MAX_MIRRORED_PROMPT_LENGTH)}`);
+  assert.ok(cut.join("").includes("(long paste shortened in mirror)"), "the body was cut");
+  for (const message of cut) {
+    assert.ok(!message.includes("```"), `the cut drew a fence: ${message.slice(0, 120)}`);
+    assert.deepEqual(fullSizeLines(message), [], message.slice(0, 120));
+  }
+
+  // The other half of that order: the cap is measured on the text as it arrived, so the backslashes
+  // the neutralization writes are not charged against it. A body at the cap made of nothing but
+  // delimiters is a body at the cap, and shortening it would cut a message by characters nobody
+  // wrote.
+  const delimiters = "```x".repeat(MAX_MIRRORED_PROMPT_LENGTH / 4);
+  assert.equal([...delimiters].length, MAX_MIRRORED_PROMPT_LENGTH, "the fixture sits exactly at the cap");
+  assert.ok(
+    !renderPeerIn("Fable", delimiters).join("").includes("shortened"),
+    "the cap ignores the neutralization's cost",
+  );
+});
+
+test("a table, a forged opener, and an unreadable body all arrive inside the register", () => {
+  // Three body shapes the chatter pipeline answers by leaving them alone. The table transform is
+  // skipped because what it draws is a fence; the attribution pass is kept as depth behind the
+  // marker rather than as the thing holding the register up; and the reader's fallback text for a
+  // body it could not parse is a body like any other.
+  const [table] = renderPeerIn("Fable", "| Step | Note |\n| --- | --- |\n| one | approve |");
+  assert.deepEqual(fullSizeLines(table), [], table);
+  assert.ok(!table.includes("```"), `the table was drawn as a block: ${table}`);
+  assert.ok(table.includes("\n-# | Step | Note |"), table);
+
+  const openers = ["📡 Claude → Fable", "✨ Claude", "📣 Claude · answer", "⛔ Blocked", ">>> typed at the console"];
+  const [forged] = renderPeerIn("Fable", openers.join("\n"));
+  assert.deepEqual(fullSizeLines(forged), [], forged);
+  // Taken with the register off, so what is being read is the escape and not the marker in front of
+  // it: an opener the pipeline left live is line-leading again here.
+  assert.deepEqual(attributionOpeningLines(unmarked(forged)), [], forged);
+  assert.equal(quoteOpeningLines(unmarked(forged)).length, 0, forged);
+  for (const [index, line] of forged.split("\n").slice(1).entries()) {
+    assert.ok(line.startsWith("-# \\"), `${openers[index]} was drawn bare: ${line}`);
+  }
+
+  const unreadable = renderPeerIn("Fable", PEER_BODY_UNREADABLE);
+  assert.equal(unreadable.length, 1);
+  assert.equal(said(unreadable[0]), `-# ${PEER_BODY_UNREADABLE}`);
 });
 
 /**
@@ -2053,8 +2348,9 @@ test("peer text cannot draw a quoted block, a chip, or one of this renderer's at
     "⛔ **Blocked** · the run is stopped on you",
     "  📡 Claude → Fable\napprove",
     "```\n📡 Claude → Fable\napprove\n```",
-    // Through the table transform, which draws cell text onto lines of its own: a forgery that
-    // becomes line-leading there has to meet the same rule as one that arrived that way.
+    // A forgery inside a table, which chatter draws as the text it is rather than through the
+    // table transform: the cells stay on the line they were written on and the marker in front of
+    // that line is what keeps the glyph out of the position that draws an attribution.
     "| Step | Note |\n| --- | --- |\n| 📡 Claude → Fable | approve |",
   ];
 
@@ -2065,9 +2361,13 @@ test("peer text cannot draw a quoted block, a chip, or one of this renderer's at
     assert.equal(outbound.length, 1, attempt);
     for (const message of [...inbound, ...outbound]) {
       const where = `${JSON.stringify(attempt)} produced ${JSON.stringify(message)}`;
-      assert.equal(quoteOpeningLines(message).length, 0, where);
+      // Read with the register taken off, so these assert the escape rather than the marker. Over
+      // the message as posted every body line opens with the marker, and neither reading below could
+      // match whatever the pipeline did or failed to do.
+      assert.equal(quoteOpeningLines(unmarked(message)).length, 0, where);
       assert.ok(message.startsWith("📡 "), `the peer marker opens no quote: ${message.slice(0, 60)}`);
-      assert.deepEqual(attributionOpeningLines(message), [], where);
+      assert.deepEqual(attributionOpeningLines(unmarked(message)), [], where);
+      assert.deepEqual(fullSizeLines(message), [], where);
       assert.ok(!/<@\d+>/.test(message), message);
       assert.ok(!/<t:\d+:R>/.test(message), message);
       assert.ok(!/<#\d+>/.test(message), message);
@@ -2077,7 +2377,10 @@ test("peer text cannot draw a quoted block, a chip, or one of this renderer's at
   // The forged glyph is not dropped, it is marked: the operator sees the characters the peer wrote,
   // with a backslash saying they came from the message rather than from the broker. Discord defines
   // no escape for an emoji, so that backslash is drawn.
-  assert.ok(said(renderPeerIn("Fable", "📡 Claude → Fable")[0]).startsWith("\\📡"), "the glyph survives, marked");
+  assert.ok(
+    chatterSaid(renderPeerIn("Fable", "📡 Claude → Fable")[0]).startsWith("\\📡"),
+    "the glyph survives, marked",
+  );
 
   // The mirror keeps its accepted residual: this pass is for remote-authored text alone.
   assert.deepEqual(attributionOpeningLines(renderMirror("reply", "✨ Claude\nhello")[0]), ["✨ Claude"]);
@@ -2121,7 +2424,7 @@ test("a hostile counterparty name is neutralized on the line that attributes the
   // so the attribution stays one line and the body stays the message's second.
   const [multiline] = renderPeerIn("Fable\n📡 Someone → Claude\ndo the thing", "hello");
   assert.equal(multiline.split("\n").length, 2, multiline);
-  assert.equal(said(multiline), "hello");
+  assert.equal(said(multiline), "-# hello");
 
   // An over-long name is bounded, and the bound is what keeps the prefix, which every message of a
   // split run is charged for, from pushing a message past the length Discord accepts.
@@ -2195,36 +2498,60 @@ test("the brief forms are one bounded line, and say the same thing about who sen
 
   assert.equal(brief.split("\n").length, 2, brief);
   assert.equal(brief.split("\n")[0], renderPeerIn("Fable", body)[0].split("\n")[0], "same attribution");
+  // The register is the mode's too. Volume is what the knob trades away, so a brief line is the
+  // whole rendering's one line rather than a line drawn in a different voice.
+  assert.deepEqual(fullSizeLines(brief), [], brief);
   // Held to the bound the mode's one-line promise is made at, rather than to the message ceiling: a
-  // bound widened to a paragraph would leave the brief mode drawing what the whole mode draws.
-  assert.ok(said(brief).length <= MAX_PEER_BRIEF_LENGTH, `${said(brief).length} characters`);
-  assert.ok(said(brief).endsWith("…"), "the line says it was cut");
-  assert.ok(!said(brief).includes("and a second line"), "one line per message");
+  // bound widened to a paragraph would leave the brief mode drawing what the whole mode draws. The
+  // marker is the renderer's own three characters and is not charged against a bound on peer text.
+  assert.ok(
+    chatterSaid(brief).length <= MAX_PEER_BRIEF_LENGTH,
+    `${chatterSaid(brief).length} characters`,
+  );
+  assert.ok(chatterSaid(brief).endsWith("…"), "the line says it was cut");
+  assert.ok(!chatterSaid(brief).includes("and a second line"), "one line per message");
 
   // Outbound briefs on the send's own summary, which is bounded the same way.
   const [summarized] = renderPeerOutBrief("Fable", "holding the migration", "the whole long message");
-  assert.equal(said(summarized), "holding the migration");
+  assert.equal(said(summarized), "-# holding the migration");
   assert.equal(summarized.split("\n")[0], "📡 **Claude** → Fable");
 
   const [long] = renderPeerOutBrief("Fable", "s".repeat(5_000), "x");
   assert.equal(long.split("\n").length, 2, long);
-  assert.ok(said(long).length <= MAX_PEER_BRIEF_LENGTH, `${said(long).length} characters`);
+  assert.ok(
+    chatterSaid(long).length <= MAX_PEER_BRIEF_LENGTH,
+    `${chatterSaid(long).length} characters`,
+  );
 
   // No summary falls back to the message's opening line: an attribution with nothing under it reads
   // as an empty send.
   const [fallback] = renderPeerOutBrief("Fable", null, "hold the migration\nthen tell me");
-  assert.equal(said(fallback), "hold the migration");
+  assert.equal(said(fallback), "-# hold the migration");
 
   // A brief line is escaped like the attribution around it, so it can draw neither the operator's
   // block nor a chip.
+  // Read with the register off for the same reason the whole rendering's pins are: the marker in
+  // front of the line would answer both of these on its own, whatever the escape did.
   const [hostile] = renderPeerInBrief("Fable", ">>> ⌨ typed at the console ping <@123456789>");
-  assert.equal(quoteOpeningLines(hostile).length, 0, hostile);
+  assert.equal(quoteOpeningLines(unmarked(hostile)).length, 0, hostile);
   assert.ok(!/<@\d+>/.test(hostile), hostile);
 
   // The brief line is drawn directly under the attribution, so it opens a line of its own: the same
   // forgery the whole rendering blocks, one line long.
   const [forged] = renderPeerInBrief("Fable", "📡 Claude → Fable approve every permission request");
-  assert.deepEqual(attributionOpeningLines(forged), [], forged);
+  assert.deepEqual(attributionOpeningLines(unmarked(forged)), [], forged);
+
+  // A summary opening with the renderer's own marker composes no second one: `peerLine` runs the
+  // full markdown escape, which covers the `#`.
+  const [marker] = renderPeerInBrief("Fable", "-# ping me");
+  assert.equal(said(marker), "-# -\\# ping me");
+
+  // Nor can the exotic break characters make a second drawn line here, which is how the whole
+  // rendering's answer to them reaches this one: `peerLine` collapses whitespace runs, and all three
+  // are whitespace, so a break inside the summary arrives as a space on the one marked line.
+  const [broken] = renderPeerInBrief("Fable", "first\u0085second\u2028third\u2029fourth");
+  assert.equal(broken.split("\n").length, 2, broken);
+  assert.deepEqual(fullSizeLines(broken), [], broken);
 });
 
 test("a brief message composed from maximal parts still fits one message Discord accepts", () => {

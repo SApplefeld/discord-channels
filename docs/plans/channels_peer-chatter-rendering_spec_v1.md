@@ -118,7 +118,10 @@ happen). Order, with each step's reason:
    line out of the register.
 3. `withoutChips` on the result: with no fences left, the chip and quote escapes apply uniformly.
    `withTablesBlocked` is deliberately skipped: it draws fences, and a coordination message's table
-   arriving as raw escaped pipes in subtext is the acceptable cost.
+   arriving as its own raw Markdown in subtext is the acceptable cost. Nothing in this pipeline
+   escapes a pipe, so a peer can compose a spoiler inside a subtext line; that is a scannability
+   cost rather than a register break, since a spoiler hides text rather than drawing it at full
+   size, and neutralizing the pipe belongs to Section 2.
 4. `withoutAttributions`: defense in depth behind the prefix, kept so the register does not rest on
    a single pass.
 5. Wrap long lines: any line longer than `MAX_PEER_SUBTEXT_LINE_LENGTH` (new constant, recommended
@@ -207,14 +210,26 @@ a single line long enough that the old path would have hard-cut it, a body carry
 carrying a table, a body opening lines with attribution glyphs, and the unreadable body; the header
 opens every message; brief mode emits one message of header plus one prefixed line; a body with an
 unclosed fence yields no bare fence line anywhere in the output. `broker/routing/outbound.test.ts`:
-update the assertions that pin the old rendered shapes. Baseline the suite before the section per
+update the assertions that pin the old rendered shapes. `broker/sanitize.ts`: the doc block on
+`sliceCodePoints` only, naming the wrap as a new reader per standing amendment 4.
+
+Two guards this section carries that the pipeline steps above do not name, both found at review and
+both properties of the register rather than additions to it. The marker neutralizes itself: a peer's
+own line-leading `-#` is escaped, applied per drawn piece rather than in the escape chain, because
+the wrap runs after the chain and can carry a peer's mid-line `-#` to the start of a piece. And the
+chatter body normalizes U+0085, U+2028 and U+2029 to `\n` before any line is read, so the escapes,
+the marking and the splitter share one line model.
+
+Baseline the suite before the section per
 testing discipline, and read the echo-dedup group's flake note in `docs/backlog.md` before calling
 any red there a regression.
 
 ### Section 2: The oversized spoiler form (Model: opus)
 
 The threshold constant, the pipe neutralization, the teaser line, the per-message spoiler wrapping
-with its budget accounting. Tests: the threshold boundary both directions (at the bound, subtext;
+with its budget accounting. The pipe neutralization covers every chatter body rather than the
+oversized form alone: under-threshold bodies otherwise keep live pipes permanently, which lets a
+peer hide its own text behind a spoiler tap and inverts the scannability the register buys. Tests: the threshold boundary both directions (at the bound, subtext;
 past it, spoilered); no peer-authored text outside a spoiler beyond the teaser; the teaser is
 prefixed and bounded; the spoiler's content carries no `-# ` prefix, pinned as the deliberate skip
 the Design names rather than left readable as an omission; every message's spoiler pair closes within that message; a body dense with
@@ -325,4 +340,67 @@ item failing reopens its section.
 
 ## Chapters
 
-None yet. The first chapter lands when the first section ships.
+### Chapter 1 - 2026-08-27
+Completed: Section 1: The subtext register
+Implemented By: implementer-opus (one dispatch, resumed once for the review-fix round; no tier escalation)
+Metrics: review rounds 1; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: `MAX_PEER_SUBTEXT_LINE_LENGTH` ships at 1,200 UTF-16 units measured on the
+escaped text, and `PEER_SUBTEXT` is `-# `; those are the two named knobs a later one-word adjustment
+reaches. The bound costs throughput on purpose: a marked line is 1,203 units against a per-message
+body budget of roughly 1,643 to 1,878, so the splitter fits one wrapped line per message and a
+16,384-unit single-line body now posts about 14 messages where the old hard-cut path posted about
+10. That is the price of the hard cut being unreachable, which is what the register rests on. Two
+guards were added at review that the Design's seven steps do not name, both recorded into Section 1
+above: the marker neutralizes a peer's own line-leading `-#`, applied per drawn piece rather than in
+the escape chain because the wrap runs after the chain and can carry a mid-line `-#` to the start of
+a piece; and the chatter body normalizes U+0085, U+2028 and U+2029 to `\n` before any line is read,
+because JavaScript's multiline `^` treats U+2028 and U+2029 as terminators but not U+0085, so the
+escapes and the marking disagreed about where a line starts before Discord was ever consulted.
+Section 1's `Files in scope` grew by `broker/sanitize.ts` (one doc block, no logic) and the Design's
+step 3 was corrected: it claimed a table arrives as "raw escaped pipes", and nothing in the pipeline
+escapes a pipe. Section 2's scope was widened in the same edit, from neutralizing pipes for the
+oversized form to neutralizing them for every chatter body, because under-threshold bodies would
+otherwise keep live pipes permanently and let a peer hide its own text behind a spoiler tap.
+Machine, not code: the suite's four `credentials`/`config` token-file failures were environmental,
+root-caused here to `TEMP=D:\Temp` carrying inherited `Authenticated Users:(I)(M)` and
+`BUILTIN\Users:(I)(RX)`, which made the guard at `broker/discord/credentials.ts:244` correctly
+refuse a world-readable token file while the tests asserted the opposite. The guard was right
+throughout and the machine was what changed. The operator repaired it by breaking inheritance on
+that directory and granting three principals in one pass, and the repair is subtractive by nature:
+adding correct permissions to a directory whose entries are all inherited changes nothing while
+reporting success. Confirmed on this session's own surface by re-reading `icacls D:\Temp` and by the
+isolated 21-test run going 20/0; the clock times for the repair are SCOTT-CLAUDE: Coordinator's
+report and are not cited here as fact.
+Assumptions: none beyond the spec.
+Review Findings: adversarial, blind and security reviewers, all at opus/max, all read-only (round
+bracketed with `git status --porcelain` before and after; identical, so the read-only briefs held).
+One Critical addressed: the register did not neutralize its own `-# ` marker, so a peer line opening
+with `-#` drew as `-# -# ...` and, if Discord's subtext rule carries the doubled-marker guard its
+heading rule does, would have rendered peer text at full size under a chatter header. Three Majors
+addressed: a whitespace-only wrap piece could leave a bare `-#` after the splitter's `trimEnd`
+(found independently by two reviewers with a traced repro); a shipped comment claimed pipes were
+escaped when nothing escapes them; and the three exotic line breaks above. Eight Minors addressed,
+including two test assertions that had become vacuous, where deleting `withoutAttributions` from the
+chatter path left them green. Each fix was watched failing first against an out-of-tree copy of
+`broker/`. One judgment call left as-is with the doc corrected rather than the code changed:
+`shortened`'s fence-closing suffix reaches the operator escaped on an over-cap body cut inside a
+fence, which is cosmetic and provably cannot reach the register; reversal is a boolean through
+`shortened`. One finding routed out of the plan to `docs/backlog.md`: `withoutInvisible` leaves
+U+0085, U+2028 and U+2029 raw on every surface, not just chatter, and sizing that needs a scout
+rather than a blind extension of this section.
+Stamps: adjudicated 3, stamped 3 (`node-test-count-lines-are-not-tap`,
+`a-contended-suite-run-forges-results-not-just-deaths`, `ask-the-coordinator-not-the-process-list`,
+all operator tier). `memq unstamped --since 6h` then returned zero in both swept tiers, so the
+stretch is accounted for and no hand walk was owed.
+Gate: baseline at `d50f18c` with a clean tree, 1557 tests / 1551 pass / 5 fail / 1 skip, exit 1,
+87.1s. Close gate, 1563 / 1562 / 0 / 1, exit 0, 41.1s, started 02:44:31Z. Delta is +6 tests, all
+green, no new failing name. The baseline's five failures are each accounted for: four were the TEMP
+ACL fault the operator repaired, and the fifth was the known `until`-helper echo-dedup flake, which
+`broker/tail.test.ts` alone answered at 171/171 exit 0 in 1.3s and which did not recur across three
+consecutive full runs. The one skip is test 238, a POSIX-only guard the test emits on Windows, and
+it is the same skip the baseline carried. Every wall clock here was measured tonight on this
+hardware and none is comparable to any figure this repo recorded before the rebuild; whole-gate cost
+on this box tonight ran 41 to 87 seconds across three runs at different contention, which measures
+the box's load more than the tree.
+Next: Section 2: The oversized spoiler form
+Commit Model: Commit-and-Push

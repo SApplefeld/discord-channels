@@ -332,6 +332,9 @@ const PEER_TOWARD = "→";
  * floors the room a hard cut takes at `MIN_HARD_CUT`: an unbounded name would compose a prefix that
  * pushes a message past `MAX_MESSAGE_LENGTH`, which Discord refuses outright. At this value the
  * prefix costs under 260 units against that ceiling, so the floor is never the binding constraint.
+ *
+ * That 260 is spent a second time by `MAX_PEER_SUBTEXT_LINE_LENGTH`, which sets the chatter line
+ * bound in the room this bound leaves. Raising this one narrows that headroom by the same amount.
  */
 const MAX_PEER_NAME_DRAWN = 240;
 
@@ -348,6 +351,51 @@ const MAX_PEER_NAME_DRAWN = 240;
  * saying otherwise.
  */
 export const MAX_PEER_BRIEF_LENGTH = 200;
+
+/**
+ * What every drawn line of a peer body opens with: Discord's subtext marker, which renders its line
+ * in small grey type.
+ *
+ * The register the whole chatter rendering rests on. Session-to-session traffic is machine text the
+ * operator scans rather than reads, and drawn at reading size it is indistinguishable from a line
+ * addressed to them, so the audience of a line has to be re-read off its header every few lines.
+ * Small grey type answers that question from the typography, which is what a phone scroll can use.
+ *
+ * Per line rather than per message, because that is Discord's own rule for the marker, and it is why
+ * chatter has a body assembly of its own: nothing else this renderer draws needs a prefix inside the
+ * body. The trailing space is part of the marker as Discord reads it, and the marker sits at absolute
+ * line start, in front of whatever indentation the peer wrote, since anything at all before it stops
+ * it being a marker.
+ *
+ * What the register promises, stated at its exact width: no peer-authored character of a **body**
+ * reaches a thread's collapsed reading at full size. The counterparty's display name is peer-chosen
+ * and is drawn full size on the attribution line of every message, which is the deliberate exception
+ * rather than a gap: the name is the routing information the header exists to carry, and it goes
+ * through `inertField` and `MAX_PEER_NAME_DRAWN` before it is drawn. A claim any wider than this one
+ * is false on line one of every chatter message.
+ */
+const PEER_SUBTEXT = "-# ";
+
+/**
+ * The most of one chatter line drawn before the line is broken in two, in UTF-16 units, measured on
+ * the escaped text.
+ *
+ * Measured behind the escapes rather than in front of them, where the paste cap above is measured in
+ * front of its own: this bound exists to keep the splitter's hard cut out of reach, and what the
+ * splitter budgets is the escaped text it is handed, so a bound measured before the escape would let
+ * a line dense with `<` reach it at twice the length this promised. The break lands on a code point
+ * boundary, so no astral character is halved across two lines.
+ *
+ * The number itself is a reading comfort and the headroom under it is the correctness. A chatter
+ * message is charged the attribution prefix, which `MAX_PEER_NAME_DRAWN` holds under 260 units, plus
+ * the three units of the subtext marker, plus the one unit a piece opening with the peer's own marker
+ * costs to neutralize, plus one wrapped line; at this value that is about 1,464 against
+ * `MAX_MESSAGE_LENGTH`, so a wrapped line always fits a message whole and the splitter's hard cut is
+ * unreachable for chatter. That cut is what the headroom is bought against: it opens the next message
+ * with the tail of a line and no marker in front of it, which is peer text at full size. Past about
+ * 1,600 the cut comes back into reach, so the tuning room is downward.
+ */
+export const MAX_PEER_SUBTEXT_LINE_LENGTH = 1_200;
 
 /**
  * What a peer message opens with, composed here and by nothing else, on every message of a split
@@ -1004,12 +1052,12 @@ const TABLE_SEPARATOR = " | ";
  * The room one fenced table has, in UTF-16 units.
  *
  * A message carries an attribution line beside the block, and the widest of the fixed ones is what
- * this reserves. What that buys is the common case: a table under this bound is drawn as one block
- * in one message under any of them. It is not a guarantee of fitting every surface, because a peer
- * attribution carries a counterparty's name and is therefore as wide as `MAX_PEER_NAME_DRAWN` lets
- * it be. Nothing rests on the difference: the splitter measures the real prefix before it places any
- * chunk, so a block that does not fit beside a wide attribution is split across messages, each one
- * re-opening the fence, rather than posted over the ceiling.
+ * this reserves. Every attribution a drawn table can appear under is one of those fixed lines: the
+ * transform runs only on mirrored and answered text, since chatter skips it outright rather than put
+ * fence lines inside a per-line register. So the bound is measured against the whole set of prefixes
+ * that can reach it. Nothing rests on it being exact anyway: the splitter measures the real prefix
+ * before it places any chunk, so a block that does not fit beside its attribution is split across
+ * messages, each one re-opening the fence, rather than posted over the ceiling.
  *
  * A table over the bound is left as the Markdown the model wrote rather than cut: a block cut
  * mid-row reads as a complete table that says something different from what was written, where raw
@@ -1401,12 +1449,16 @@ export function renderAnswer(text: string): string[] {
  * A message another session sent this one, rendered as the ordered messages it takes to carry it
  * whole.
  *
- * The same machinery a mirrored reply goes through, because it is the same class of text landing in
- * the same thread: written by a model, untrusted, and posted into the one channel the operator
- * answers permission prompts in. So the escape is the mirror's own, the splitter is the mirror's
- * own, and the attribution rides every message rather than the first: a second escape or a second
- * splitter of the same shape would be two readings of where a code fence is, and a disagreement
- * between them is the chip or the forged attribution one of them believed it had removed.
+ * Neutralized as a mirrored reply is, because it is the same class of text landing in the same
+ * thread: written by a model, untrusted, and posted into the one channel the operator answers
+ * permission prompts in. The escape's pieces are the mirror's own and the splitter is the mirror's
+ * own, assembled for this register by `chattered`, and the attribution rides every message rather
+ * than the first: a second escape or a second splitter of the same shape would be two readings of
+ * where a code fence is, and a disagreement between them is the chip or the forged attribution one of
+ * them believed it had removed.
+ *
+ * Drawn as subtext, every line of it, which is what says at a glance that the message was addressed
+ * to this session rather than to the operator reading the thread.
  *
  * Capped where a mirrored paste is capped, and shortened with the same visible marker. A reply is
  * uncapped because it is Claude's own text, written to be read by the operator it is posted to; a
@@ -1420,7 +1472,7 @@ export function renderAnswer(text: string): string[] {
  * would say a peer sent silence.
  */
 export function renderPeerIn(name: string, body: string): string[] {
-  return attributed(peerCapped(body), peerAttribution(name, "in"), withoutAttributions);
+  return chattered(peerCapped(body), peerAttribution(name, "in"));
 }
 
 /**
@@ -1432,12 +1484,12 @@ export function renderPeerIn(name: string, body: string): string[] {
  * send's summary is the brief form's material, and the address, the hop chain, and the message id
  * render nowhere, none of them being anything an operator can act on from a thread.
  *
- * The same cap and the same escape as the inbound half. What this session sent is model-composed
- * text quoting whatever it was working with, and the thread is one surface: a rule that held on one
- * direction and not the other would be a hole the size of one `SendMessage` call.
+ * The same cap, the same escape, and the same register as the inbound half. What this session sent is
+ * model-composed text quoting whatever it was working with, and the thread is one surface: a rule
+ * that held on one direction and not the other would be a hole the size of one `SendMessage` call.
  */
 export function renderPeerOut(to: string, message: string): string[] {
-  return attributed(peerCapped(message), peerAttribution(to, "out"), withoutAttributions);
+  return chattered(peerCapped(message), peerAttribution(to, "out"));
 }
 
 /**
@@ -1481,13 +1533,14 @@ function peerLine(value: string): string {
  * One inbound peer message as a single line: the attribution, and the body's opening line bounded.
  *
  * The volume the `brief` mode trades away is the body; the attribution is the same one the whole
- * rendering opens with, because the knob governs how much of a peer message reaches the thread and
- * never who it is attributed to. A body with nothing visible in it is no message, exactly as the
- * whole rendering answers it.
+ * rendering opens with, and the one line under it carries the same subtext marker every line of the
+ * whole rendering carries, because the knob governs how much of a peer message reaches the thread and
+ * never who it is attributed to or what register it is drawn in. A body with nothing visible in it is
+ * no message, exactly as the whole rendering answers it.
  */
 export function renderPeerInBrief(name: string, body: string): string[] {
   const line = peerLine(body);
-  return line === "" ? [] : [`${peerAttribution(name, "in")}${line}`];
+  return line === "" ? [] : [`${peerAttribution(name, "in")}${PEER_SUBTEXT}${line}`];
 }
 
 /**
@@ -1496,10 +1549,16 @@ export function renderPeerInBrief(name: string, body: string): string[] {
  * A summary carrying nothing visible falls back to the message's own opening line. The summary is
  * optional on the sending tool, and an attribution line with nothing under it would read as this
  * session having sent an empty message.
+ *
+ * The one line takes the subtext marker, exactly as the inbound brief form's does and as every line
+ * of the whole rendering does: the volume knob decides how much of a message is drawn, never what
+ * register it is drawn in. The marker composed here needs no neutralization pass behind it, unlike
+ * the whole rendering's: `peerLine` puts the text through `inertField`, whose escape covers `#`, so a
+ * summary opening with the two characters arrives as `-\#` and can compose no second marker.
  */
 export function renderPeerOutBrief(to: string, summary: string | null, message: string): string[] {
   const line = peerLine(summary ?? "") || peerLine(message);
-  return line === "" ? [] : [`${peerAttribution(to, "out")}${line}`];
+  return line === "" ? [] : [`${peerAttribution(to, "out")}${PEER_SUBTEXT}${line}`];
 }
 
 /**
@@ -1550,17 +1609,57 @@ export function appendNarration(existing: string, text: string): string | null {
  * attribution are one function rather than two: a splitter that cut to the ceiling and a caller
  * that then prefixed anything at all would post messages over it, which Discord rejects outright.
  *
- * `more` is a further neutralization of the escaped body, which the peer renderings pass to strip
- * line-leading attribution glyphs from remote-authored text. It runs here, inside the one seam, so
- * that whatever it does is measured by the same splitter that packs the result.
+ * For Claude's own text, which is the mirror and the answer. Peer chatter is drawn in a register of
+ * its own and assembled by `chattered` below, which composes the same pieces in a different order.
  */
-function attributed(seen: string, prefix: string, more?: (body: string) => string): string[] {
-  const escaped = mirrorBody(seen);
-  const body = more === undefined ? escaped : more(escaped);
+function attributed(seen: string, prefix: string): string[] {
+  const body = mirrorBody(seen);
   // Nothing at all to say. Reported as no messages rather than as one empty message, which Discord
   // refuses and which would read as the session having answered with silence.
   if (body === "") return [];
   return split(body, prefix);
+}
+
+/**
+ * A peer body, neutralized and drawn as the subtext-marked messages it takes to carry it whole.
+ *
+ * `attributed`'s counterpart for chatter, and composed from the same pieces rather than from a second
+ * escape or a second splitter of its own: where a fence is stays one reading in this file, since two
+ * of them could disagree and the disagreement would be a live chip or a forged attribution in a
+ * region one of them called code.
+ *
+ * `seen` arrives capped, because the cap is measured on the text as it arrived and everything here
+ * runs on escaped text. That order is load-bearing beyond the measurement: `shortened` closes a fence
+ * the cut left open, so a body capped afterwards would carry a delimiter this neutralization never
+ * saw.
+ *
+ * What differs from `mirrorBody`, and why, in the order it happens:
+ *
+ * - The line breaks are normalized first, because everything after this asks where a line starts and
+ *   the answer has to be the same for all of them.
+ * - The table transform is left out altogether. What it draws is a fenced block, and a fence is a
+ *   multi-line construct whose lines cannot each open with a subtext marker and remain a fence. What
+ *   that costs is that a coordination message's table arrives as its own raw Markdown inside subtext,
+ *   pipes and all: nothing in this pipeline escapes a pipe, so a peer can compose a spoiler inside a
+ *   subtext line. Neutralizing the pipe belongs with the oversized spoiler form, which is where a
+ *   pipe first becomes a delimiter this renderer is composing against, and it is not done here.
+ * - Fence delimiters are neutralized next, before the chip escape rather than after it. Run the
+ *   other way round, `withoutChips` would exempt the inside of a fence this then unfences, leaving
+ *   live chip syntax in what has become ordinary markdown.
+ * - The line-leading attribution glyphs are neutralized behind the chip escape as they always were,
+ *   as depth behind the marker rather than as the thing holding the register up: a marked line's
+ *   glyph is no longer line-leading, and the register is not left resting on one pass.
+ * - The lines are broken to fit, the peer's own subtext markers are neutralized, and the drawn ones
+ *   are marked, all of which is `subtexted`, and only then split.
+ */
+function chattered(seen: string, prefix: string): string[] {
+  const escaped = withoutAttributions(withoutChips(withoutFences(newlinesOnly(seen))));
+  // Nothing at all to say, answered exactly as `attributed` answers it and for the same reasons: an
+  // attribution with nothing under it would say a peer sent silence, and Discord refuses an empty
+  // message anyway. Asked before the marking, so the answer is about the body rather than about the
+  // markers this would otherwise have put on it.
+  if (escaped === "") return [];
+  return split(subtexted(escaped), prefix);
 }
 
 /**
@@ -1638,6 +1737,76 @@ function fenceAfter(state: string | null, chunk: string): string | null {
 }
 
 /**
+ * The break characters that end a line for a client without ending one for this file.
+ *
+ * The next line, the line separator, and the paragraph separator. All three are legible break
+ * characters rather than invisible ones, so `withoutInvisible` passes them through, and all three
+ * reach Discord as themselves. What that costs the chatter register is exact: one line as this file
+ * counts lines can be several lines as the client draws them, and every drawn line past the first
+ * carries no subtext marker, which is peer text at reading size under a chatter header.
+ *
+ * Two of the three are line terminators to JavaScript's own multiline `^`, and the third is not, so
+ * leaving them alone would give this file two disagreeing readings of where a line ends before
+ * Discord is even consulted.
+ *
+ * Written as an escape and two Unicode categories rather than as the characters, which is
+ * `isInvisible`'s own rule and holds here for a sharper reason: a literal break character in source is
+ * invisible to review, and two of these three would end the source line they were written on. The two
+ * categories have one member each, the separators named above, so the class is exact rather than
+ * broad.
+ */
+const ODD_BREAKS = /[\x85\p{Zl}\p{Zp}]/gu;
+
+/**
+ * A body whose every line break is a newline.
+ *
+ * The one line model for chatter, established before anything reads a line rather than taught to
+ * each reader. Four passes downstream ask where a line starts or ends: the quote escape, the
+ * attribution escape, the marking, and the splitter. Widening each of their readings would be four
+ * chances to widen three of them, and a break one pass sees and another does not is a drawn line with
+ * no marker on it. Normalizing once leaves each of them reading `\n` and reading it correctly.
+ *
+ * Substitution rather than stripping, because these characters carry the peer's paragraphing: dropped,
+ * two sentences meet mid-line, which changes what the message says.
+ */
+function newlinesOnly(value: string): string {
+  return value.replace(ODD_BREAKS, "\n");
+}
+
+/** A run of three or more backticks, which is what `scanFences` reads as a fence delimiter. */
+const FENCE_DELIMITER = /`{3,}/g;
+
+/**
+ * Backslash-escapes every fence delimiter, leaving shorter runs of backticks alone.
+ *
+ * For chatter alone. A fence is a multi-line construct and the subtext marker is a per-line one, so a
+ * body reaching Discord with a live delimiter in it renders the lines between the delimiters as a
+ * code block: at full size, outside the register, and with the marker drawn as literal characters.
+ * The delimiter is neutralized rather than dropped, so nothing is silently taken out of the body,
+ * which is the trade `inertText` already makes for a backtick anywhere else.
+ *
+ * One delimiter reaching this was written by the renderer rather than by the peer. `shortened` closes
+ * a fence an over-cap cut left open, and that closing delimiter is neutralized here with the rest, so
+ * a cut body drawn in this register shows one delimiter the peer did not write. It is left that way:
+ * suppressing it on this path alone would take either a flag through `shortened` or a second copy of
+ * the cut marker beside it, and the file's own rule is one implementation of that marker, since two
+ * could come to disagree about what a shortened body looks like. The artifact is cosmetic and cannot
+ * reach the register, because what it renders as is characters.
+ *
+ * Nothing survives this that `scanFences` can still read as a delimiter, whatever backslashes the
+ * text already carried: a run's backticks come out of here separated by the backslashes this inserts,
+ * and the runs it leaves alone were bounded by non-backticks to begin with, so no three backticks are
+ * left adjacent anywhere. What an odd backslash in front of a run can leave is one live backtick,
+ * which opens no block.
+ *
+ * Runs of one and two are left alone so inline code inside a line still renders. Inline code cannot
+ * span a line break, so no surviving run can carry a line out of the register.
+ */
+function withoutFences(value: string): string {
+  return value.replace(FENCE_DELIMITER, (run) => run.replace(/`/g, "\\`"));
+}
+
+/**
  * Neutralizes the chip and quote syntax outside fenced code blocks, leaves the inside of one as it
  * was written, and neutralizes a line-leading quote marker everywhere.
  *
@@ -1650,6 +1819,11 @@ function fenceAfter(state: string | null, chunk: string): string | null {
  * Run before the text is split, and safe to run there, because it only ever inserts a backslash in
  * front of `<`, `>`, so it can neither create nor destroy a delimiter: the fence structure the
  * splitter reads afterwards is the structure this read.
+ *
+ * Chatter calls this directly rather than through `mirrorBody`, on text `withoutFences` has already
+ * left no fence in. The exemption then covers nothing and the escape applies uniformly, which is the
+ * reason those two run in that order: the other way round, this would exempt the inside of a fence
+ * that was about to stop being one.
  */
 function withoutChips(value: string): string {
   const escaped = scanFences(null, value)
@@ -1685,6 +1859,11 @@ function withoutChips(value: string): string {
  * of its own: text that becomes line-leading there has to meet this rule exactly as text that
  * arrived that way does. Inserting a backslash creates and destroys no fence delimiter, so the fence
  * structure the splitter reads afterwards is the structure the escape read.
+ *
+ * Chatter runs this in the same position, behind the escape and in front of the marking, though it
+ * draws no tables and its subtext marker means no peer character opens a line by the time the message
+ * is posted. It is kept there as the second cover the whole rendering's unforgeability was resting on
+ * before the marker existed: the register is not left standing on one pass.
  */
 function withoutAttributions(value: string): string {
   return value.replace(ATTRIBUTION_OPENERS, "$1\\$2");
@@ -1696,6 +1875,9 @@ function withoutAttributions(value: string): string {
  * Counted in UTF-16 units because that is the larger of the two counts a length could mean, so
  * holding it holds the code point count too, and cut on code points because half of an astral
  * character is a lone surrogate, which is not valid UTF-8 for the request body.
+ *
+ * Both places a length is cut to fit rather than refused use this: the splitter's hard cut, and the
+ * chatter wrap that exists to keep that cut out of reach.
  */
 function headFitting(value: string, limit: number): string {
   let units = 0;
@@ -1709,7 +1891,11 @@ function headFitting(value: string, limit: number): string {
 }
 
 /**
- * Backs a hard cut off the three places it must not land.
+ * Backs a cut off the three places it must not land.
+ *
+ * The splitter's hard cut and the chatter wrap both place a break inside a line, so both come here
+ * rather than each deciding for itself: two readings of what a break may not straddle would differ
+ * exactly where it matters, and the difference is a stranded escape or half a delimiter.
  *
  * Inside a run of backticks: half a delimiter in one message and half in the next is a fence the
  * text still has and neither message can see, and the escape has already decided what to neutralize
@@ -1740,12 +1926,102 @@ function cutSafely(rest: string, head: string): string {
 }
 
 /**
+ * One escaped chatter line, broken into the pieces that each fit a message whole.
+ *
+ * This is what forecloses the splitter's hard cut for chatter, and the cut is worth naming: handed a
+ * line longer than a message, the splitter cuts it and opens the next message with the tail, which
+ * carries no subtext marker and therefore renders peer text at full size. A line the splitter never
+ * has to cut cannot reach that path, so the register rests on an arithmetic rather than on a promise.
+ *
+ * `cutSafely` places the break, which is the splitter's own reading, so a break here can no more
+ * strand a backslash from what it escapes or halve a run of backticks than one there can. A line
+ * already inside the bound is returned untouched rather than run through the cut: `cutSafely` only
+ * ever shortens, and a line ending in a backslash would come back a piece shorter for no reason.
+ */
+function subtextPieces(line: string): string[] {
+  const pieces: string[] = [];
+  let rest = line;
+  while (rest.length > MAX_PEER_SUBTEXT_LINE_LENGTH) {
+    // At least one code point, always, which is the splitter's own guarantee at its own cut: a bound
+    // too small for the next character would drop the rest of the line rather than break it.
+    const head = cutSafely(
+      rest,
+      headFitting(rest, MAX_PEER_SUBTEXT_LINE_LENGTH) || sliceCodePoints(rest, 1),
+    );
+    pieces.push(head);
+    rest = rest.slice(head.length);
+  }
+  // Never empty: every head above is shorter than the `rest` it was taken from, since the bound it
+  // fits is the bound `rest` exceeded, so the loop always leaves something behind.
+  pieces.push(rest);
+  return pieces;
+}
+
+/**
+ * A subtext marker where a peer wrote one at the start of a drawn line.
+ *
+ * The marker is renderer-composed vocabulary, so a peer writing one is the same forgery the
+ * attribution glyphs are neutralized for, and it is worse than those in one way: the marker this
+ * renderer puts on the line lands immediately in front of the peer's, and `-# -# text` is a doubled
+ * marker rather than a marked line. Discord's heading rule refuses a doubled marker and falls the
+ * line through to a paragraph; whether the subtext rule carries the same guard is not something this
+ * file can know, and a line that falls through is peer text drawn at reading size under a chatter
+ * header, which is the one outcome the register exists to prevent. Neutralized rather than trusted.
+ *
+ * Not in `ATTRIBUTION_OPENERS`, and it cannot join that set: the derivation there reduces each
+ * attribution to `openingGlyph`, one code point, and this marker is two characters whose meaning is
+ * in the pair. The set's promise that a vocabulary added later joins it automatically holds for the
+ * openers it is built from and stops at anything wider than a glyph, which is why this is its own
+ * pass rather than a line in that list.
+ *
+ * Matched wherever it opens a line rather than only where Discord would read it as a marker, since
+ * what Discord reads after the marker is the unknown this is guarding against. The cost is a visible
+ * backslash on a line that opened with the two characters and meant nothing by them, which is the
+ * same honest cost `withoutAttributions` already pays.
+ */
+const SUBTEXT_OPENER = /^([ \t]*)-#/gm;
+
+/**
+ * An escaped chatter body with every line it draws marked as subtext, and every line too long for a
+ * message broken until it fits.
+ *
+ * The marker goes in front of whatever the peer indented with, because a marker with anything at all
+ * in front of it is not a marker. What that costs is the indentation reading as one space further in
+ * than it was written; what it buys is that no line of the body is drawn at reading size.
+ *
+ * A blank piece stays bare. It carries nothing and forges nothing, and a marker in front of nothing
+ * is a composition with no observed rendering, which is not a thing to invent on this surface. The
+ * reading is per drawn piece rather than per source line, and that is not a detail: a wrap can hand
+ * back a piece that is nothing but whitespace, from a source line that carried plenty, and a marker
+ * on one of those is eaten from the end by the splitter's own trailing trim down to a bare `-#`
+ * sitting in the message at reading size.
+ *
+ * The peer's own marker is neutralized here rather than in the escape chain, because the wrap runs
+ * after that chain and can put a mid-line `-#` at the start of a piece. One pass, in the one place
+ * that knows what a drawn line finally is.
+ */
+function subtexted(body: string): string {
+  return body
+    .split("\n")
+    .flatMap((line) => subtextPieces(line))
+    .map((piece) =>
+      piece.trim() === "" ? piece : `${PEER_SUBTEXT}${piece.replace(SUBTEXT_OPENER, "$1\\-#")}`,
+    )
+    .join("\n");
+}
+
+/**
  * Packs a body into messages, each one prefixed and each one within `MAX_MESSAGE_LENGTH`.
  *
  * Paragraphs first, then lines, then a hard cut, because where a message ends is where the reader's
  * eye stops: a break between paragraphs reads as a pause, a break mid-sentence reads as damage.
  * A code fence open across a break is closed and re-opened, so both halves render as code rather
  * than the second half rendering as prose with its indentation collapsed.
+ *
+ * The one splitter for both registers. Chatter arrives here already marked and already broken to
+ * lines that fit, so the hard cut below is unreachable on that path and the fence machinery has
+ * nothing to see; per-line markers are ordinary body characters here and are budgeted as such,
+ * which is why the register needed no change to this function.
  */
 function split(body: string, prefix: string): string[] {
   const messages: string[] = [];

@@ -422,6 +422,23 @@ and none carries a date of its own. An item added from here on carries `(parked 
   deliberate call rather than a defect that effort introduced. The plan's Traps section states the
   cost as "a late archive, not a wrong one", which is true everywhere except here.
 
+- Normalize the three exotic line breaks in `withoutInvisible` (parked 2026-08-27, found by the
+  peer-chatter rendering plan's Section 1 security review, high confidence on the gap and
+  unscoped on the consequence). `withoutInvisible` (`broker/sanitize.ts:72-101`) normalizes only
+  `/\r\n?/`: U+0085 NEL sits above the `code <= 0x1f` arm and U+2028 LINE SEPARATOR and U+2029
+  PARAGRAPH SEPARATOR sit one and two code points below the 0x202a start of the `isInvisible`
+  range, so all three reach Discord raw on every surface. All three are UAX#14 class BK, so one
+  renderer line carrying one is several drawn lines in the client, and JavaScript's multiline `^`
+  compounds it by treating U+2028/U+2029 as terminators but not U+0085, so a line-leading escape
+  and a line splitter can disagree about where a line starts before Discord is ever consulted.
+  Chatter is already immune: `chattered` normalizes the three locally through `newlinesOnly`
+  (`broker/discord/render.ts:1772`). The mirror, the answer, `appendNarration` and the card are
+  not. What is unscoped is whether it matters on those surfaces, which turns on what an extra
+  drawn line does to a card's line budget and to the splitter's paragraph model; that wants a scout
+  before a fix, not a blind extension. Deliberately not folded into the chatter effort: the fix
+  belongs at the shared strip rather than at one consumer, and moving it there changes every
+  surface at once, which is its own change with its own gate.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
