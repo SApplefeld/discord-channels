@@ -2143,9 +2143,40 @@ function subtextPieces(line: string): string[] {
  *
  * Read by both chatter forms. In the marked form it stops a doubled marker; in the spoilered form,
  * where this renderer marks nothing, it is the second cover that form would otherwise lack, since
- * what holds the register there is one rendering this plan has not yet seen a client draw.
+ * what holds the register there is the spoiler concealing the body rather than any marker.
  */
 const SUBTEXT_OPENER = /^([ \t]*)-#/gm;
+
+/**
+ * A line-leading heading marker in a peer body, neutralized so the line cannot draw as a heading.
+ *
+ * The subtext marker this renderer prefixes does not suppress a heading marker behind it: Discord's
+ * subtext rule carries no doubled-marker guard, so `-# # x` draws `x` as a heading, at a size above
+ * the full-size text the register contract already forbids. That is the one composition capable of
+ * drawing peer text larger than an operator's own line, which is why the guard is not optional.
+ *
+ * Escaping the first `#` of the run is what breaks it, because a heading marker is read only at a
+ * line's start: behind an escaped `#` the rest of the run is no longer at a start and draws as the
+ * characters the peer wrote. Matched at any line-leading run rather than only where Discord reads a
+ * heading, on the same reasoning `SUBTEXT_OPENER` is, and paying the same honest cost, a visible
+ * backslash on a line that opened with a hash and meant nothing by it.
+ *
+ * Read by both chatter forms, and applied per drawn piece rather than in the escape chain, because
+ * the wrap runs after the chain and can carry a peer's mid-line hash to the start of a piece.
+ */
+const HEADING_OPENER = /^([ \t]*)#/gm;
+
+/**
+ * One drawn piece of a chatter body with every marker the peer could open it with neutralized.
+ *
+ * Shared by both chatter forms rather than spelled out in each, because these guards are a property
+ * of the surface a piece is drawn on and not of either form that draws one: a guard added to the
+ * marked form alone would leave the spoilered form holding a register on one cover, and the drift
+ * would read as an omission nobody wrote.
+ */
+function withoutOwnMarkers(piece: string): string {
+  return piece.replace(SUBTEXT_OPENER, "$1\\-#").replace(HEADING_OPENER, "$1\\#");
+}
 
 /**
  * An escaped chatter body with every line it draws marked as subtext, and every line too long for a
@@ -2171,7 +2202,7 @@ function subtexted(body: string): string {
     .split("\n")
     .flatMap((line) => subtextPieces(line))
     .map((piece) =>
-      piece.trim() === "" ? piece : `${PEER_SUBTEXT}${piece.replace(SUBTEXT_OPENER, "$1\\-#")}`,
+      piece.trim() === "" ? piece : `${PEER_SUBTEXT}${withoutOwnMarkers(piece)}`,
     )
     .join("\n");
 }
@@ -2227,7 +2258,7 @@ function spoilered(body: string): string {
     .split("\n")
     .flatMap((line) => subtextPieces(line))
     .map((piece) =>
-      piece.trim() === "" ? "" : evenEscapes(piece.replace(SUBTEXT_OPENER, "$1\\-#")),
+      piece.trim() === "" ? "" : evenEscapes(withoutOwnMarkers(piece)),
     )
     .join("\n");
 }

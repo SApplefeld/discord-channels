@@ -794,15 +794,16 @@ Every other rule in this section bounds what content can *draw*; this one bounds
 words are *set*. In a thread's collapsed reading, meaning what a scroll shows with nothing tapped,
 no character of a peer body renders at full size.
 
-**That promise has one unverified precondition, and it is stated here rather than 60 lines down.**
-The renderer marks each drawn line with the subtext marker but neutralizes no heading marker, so a
-peer line written `# text` reaches Discord as a subtext marker followed by a heading marker. Whether
-Discord's subtext rule carries the doubled-marker guard its heading rule does is unobserved, and a
-heading drawing there would be peer text above full size. The live check that settles it is item 6
-of this rendering's plan, and its fallback is its own: escape the heading marker in a chatter body,
-or accept the composition on the evidence. Until that item is read, treat the promise as designed
-and gated rather than as established. The collapsed form's own unknowns, listed below, carry a
-different fallback: the open form at every size.
+**The composition that would break that promise is neutralized, and it is named here rather than 60
+lines down.** Discord's subtext rule carries no doubled-marker guard: a peer line written `# text`
+reaches Discord as a subtext marker followed by a heading marker, and the client draws the line as a
+heading, which is peer text not merely at full size but above it. The renderer therefore escapes the
+first character of any line-leading heading marker run in a chatter body, in both chatter forms and
+per drawn piece rather than per source line, since the line wrap can carry a mid-line marker to the
+start of a piece. Escaping the first character is what breaks the construct, because a heading marker
+is read only at a line's start. The cost is a visible backslash on a line that opened with a hash and
+meant nothing by it, the same honest cost the attribution and subtext-marker passes already pay. The
+collapsed form's own unknowns, listed below, carry a different fallback: the open form at every size.
 
 Two departures from the promise are named rather than incidental.
 The counterparty's display name is peer-chosen and is drawn full size on the attribution line of
@@ -829,14 +830,18 @@ subtext, which claims nothing false about who wrote it. What the marker establis
 messages the broker composed, not an authorship claim, and the register rests on the arithmetic that
 puts the marker in front of every drawn line rather than on the marker being unavailable to anyone
 else. A peer's own line-leading `-#` inside a chatter body is escaped, in the collapsed form as well
-as the open one, so it cannot compose a second marker against a Discord rule this project has not
-observed; that is a guard on the renderer's own composition rather than a forgery control.
+as the open one, so it cannot compose a second marker against a Discord rule whose behaviour on a
+doubled subtext marker this project has not observed; the heading marker beside it is escaped on the
+same line of reasoning and for an observed rule. Both are guards on the renderer's own composition
+rather than forgery controls.
 
-Three compositions this register rests on are not observed on a real client: a spoiler pair spanning
-several lines within one message, an escaped pipe drawn inside one, and a subtext marker followed on
-the same line by a peer's own heading marker. They are checked on the operator's own phone rather
-than asserted here, and if the collapsed form fails that check the fallback is the open form at
-every size.
+One composition this register rests on is not observed on a real client: an escaped pipe drawn inside
+a spoiler. It is checked on the operator's own phone rather than asserted here, and if the collapsed
+form fails that check the fallback is the open form at every size. Two compositions that were on this
+list have since been read on the operator's client. A spoiler pair spanning several lines within one
+message draws as a single concealed block, which is what the collapsed form depends on. A subtext
+marker followed on the same line by a peer's own heading marker draws as a heading, which is why the
+heading marker is escaped rather than left live.
 
 The promise is also scoped to a body the classification recognized as peer traffic. A harness shape
 move that stopped that classification matching would route the same text to the mirror's own
@@ -867,16 +872,17 @@ That paragraph describes the five surfaces taking the narrower escape and nothin
 body leaves a smaller set live, because the register's own two passes reach into it: the fence
 delimiter and the spoiler pair are both neutralized there, so of the four constructs named above
 only emphasis, the heading marker and the masked link are left unneutralized in a peer body drawn
-whole, and the masked link is the only one of those three carrying the security consequence. None of
-the three reaches the one-line renderings, the `brief` mode's line and the collapsed form's teaser
-alike: both compose through the full markdown escape, whose class already covers all three.
+whole, and the masked link is the only one of those two carrying the security consequence. Neither
+reaches the one-line renderings, the `brief` mode's line and the collapsed form's teaser alike: both
+compose through the full markdown escape, whose class already covers them.
 
-"Unneutralized" is the exact word for the heading marker, and it is deliberately weaker than
-"survives". Every drawn line of an open-form body is prefixed with the subtext marker, so a peer's
-`#` is no longer the first thing on its line and the composition Discord actually receives is a
-subtext marker followed by a heading marker. Whether Discord's subtext rule carries the
-doubled-marker guard its heading rule does is not something this project has observed, so the
-composition sits with the two below rather than being claimed either way.
+The heading marker is not in that set, and the reason is worth stating where a reader would look for
+it. It was left live on the reasoning that the subtext marker this renderer prefixes puts a peer's
+`#` somewhere other than the start of its line. Discord's subtext rule carries no doubled-marker
+guard, so the client reads past the prefix and draws the heading anyway, at a size above the full-size
+text the register forbids. A line-leading heading marker in a chatter body is therefore escaped at
+its first character, in both chatter forms, which is what puts it outside the live set rather than
+inside it.
 
 `processToken` never reaches either.
 

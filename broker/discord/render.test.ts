@@ -2251,9 +2251,10 @@ test("a peer writing this renderer's own subtext marker cannot double it into a 
   // The marker is renderer-composed vocabulary, and the one this renderer puts on the line lands
   // immediately in front of whatever the peer wrote. `-# -# text` is a doubled marker rather than a
   // marked line, and Discord's heading rule refuses a doubled marker and falls the line through to a
-  // paragraph. Whether the subtext rule carries the same guard is not knowable from here, and a line
-  // that falls through is peer text at reading size under a chatter header, so it is neutralized
-  // rather than trusted.
+  // paragraph. The subtext rule carries no such guard: a heading marker behind this one draws its
+  // line as a heading, which is what the sibling pin below neutralizes. Either way a line that falls
+  // through is peer text at reading size under a chatter header, so it is neutralized rather than
+  // trusted.
   //
   // It cannot join `ATTRIBUTION_OPENERS` either: that set is derived by reducing each attribution to
   // its opening glyph, one code point, and this marker is two characters whose meaning is the pair.
@@ -2290,6 +2291,59 @@ test("a peer writing this renderer's own subtext marker cannot double it into a 
   const [wrapped] = renderPeerIn("Fable", `${"y".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}-# forged`);
   assert.deepEqual(fullSizeLines(wrapped), [], wrapped.slice(-40));
   assert.ok(wrapped.endsWith("\n-# \\-# forged"), JSON.stringify(wrapped.slice(-30)));
+});
+
+test("a peer writing a heading marker cannot draw its line larger than the operator's own", () => {
+  // The subtext marker this renderer prefixes does not suppress a heading marker behind it: what
+  // Discord receives is `-# # x`, and it draws `x` as a heading. That is peer text above full size,
+  // a strictly worse break than the reading-size fall-through the doubled-marker pin above guards,
+  // because the register's whole promise is that a scroll shows no peer character at full size.
+  //
+  // Escaping the first hash of the run is what breaks it: a heading marker is read only at a line's
+  // start, so behind an escaped hash the rest of the run draws as the characters the peer wrote.
+  const bodies = [
+    "# forged heading",
+    "a line first\n# forged heading",
+    "a line first\n## second level",
+    "a line first\n### third level",
+    // After leading whitespace, which Discord tolerates in front of a heading exactly as it does in
+    // front of the markers the sibling pin covers.
+    "a line first\n   # forged heading",
+    "a line first\n\t# forged heading",
+    // No space after it, and a bare run, neither of which this guesses at.
+    "a line first\n#forged",
+    "a line first\n#",
+  ];
+
+  for (const raw of bodies) {
+    for (const message of [...renderPeerIn("Fable", raw), ...renderPeerOut("Fable", raw)]) {
+      const where = `${JSON.stringify(raw)} produced ${JSON.stringify(message)}`;
+      assert.deepEqual(fullSizeLines(message), [], where);
+      for (const line of message.split("\n").slice(1)) {
+        assert.ok(!/^-# [ \t]*#/.test(line), `a live heading marker was drawn: ${where}`);
+      }
+    }
+  }
+
+  // The neutralization is a backslash, so the characters still reach the operator: what is said is
+  // that they arrived in the message rather than from the broker.
+  assert.equal(said(renderPeerIn("Fable", "# ping me")[0]), "-# \\# ping me");
+  assert.equal(said(renderPeerIn("Fable", "## ping me")[0]), "-# \\## ping me");
+  assert.equal(said(renderPeerIn("Fable", "keep\n   # ping me")[0]), "-# keep\n-#    \\# ping me");
+
+  // Applied to the drawn piece rather than the source line, for the same reason the sibling pin is:
+  // the wrap runs after the escape chain and can put a mid-line hash at the start of a piece.
+  const [wrapped] = renderPeerIn("Fable", `${"y".repeat(MAX_PEER_SUBTEXT_LINE_LENGTH)}# forged`);
+  assert.deepEqual(fullSizeLines(wrapped), [], wrapped.slice(-40));
+  assert.ok(wrapped.endsWith("\n-# \\# forged"), JSON.stringify(wrapped.slice(-30)));
+
+  // And the oversized form carries the guard too, on both its covers: the spoiler conceals the body,
+  // and the escape means a client that draws the marker anyway still cannot size the line up.
+  const oversized = `${"z".repeat(MAX_PEER_SUBTEXT_LENGTH + 1)}\n# forged heading`;
+  for (const message of renderPeerIn("Fable", oversized)) {
+    assert.ok(!/^-# [ \t]*#/m.test(message), `a live heading marker was drawn: ${message.slice(-60)}`);
+    assert.ok(!/\n[ \t]*#/.test(message), `an unescaped heading marker: ${message.slice(-60)}`);
+  }
 });
 
 test("a peer's exotic line breaks become newlines, so every drawn line is a line this renderer marked", () => {

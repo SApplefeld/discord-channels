@@ -316,7 +316,10 @@ audience question without the operator re-reading a header every few lines. That
 marker because it is Discord's own rule for it, and it is why chatter has a body assembly of its
 own: nothing else this renderer draws needs a prefix inside the body. Lines are wrapped to fit a
 message before they are marked, which is what keeps the splitter's hard cut out of reach, since a
-cut line would open the next message with no marker in front of it.
+cut line would open the next message with no marker in front of it. A marker the peer opened a line
+with is escaped before this one is prefixed, the subtext marker and the heading marker alike: the
+prefix moves a peer's marker off the start of its line but does not disarm it, and a heading drawing
+behind the prefix would set peer words larger than the operator's own.
 
 Past a threshold the body is collapsed behind a spoiler instead, under one bounded teaser line, on
 the reasoning that a body that long is not scanned in a scroll whatever type it is set in. The
