@@ -835,13 +835,12 @@ doubled subtext marker this project has not observed; the heading marker beside 
 same line of reasoning and for an observed rule. Both are guards on the renderer's own composition
 rather than forgery controls.
 
-One composition this register rests on is not observed on a real client: an escaped pipe drawn inside
-a spoiler. It is checked on the operator's own phone rather than asserted here, and if the collapsed
-form fails that check the fallback is the open form at every size. Two compositions that were on this
-list have since been read on the operator's client. A spoiler pair spanning several lines within one
-message draws as a single concealed block, which is what the collapsed form depends on. A subtext
-marker followed on the same line by a peer's own heading marker draws as a heading, which is why the
-heading marker is escaped rather than left live.
+Three compositions this register rests on are read on a real client. An escaped pipe inside a spoiler
+draws as an ordinary pipe character, opening neither a nested spoiler nor a table row, so a peer's
+own `||` pair and a table-shaped line both stay inert inside the collapsed form. A spoiler pair
+spanning several lines within one message draws as a single concealed block, which is what the
+collapsed form depends on. A subtext marker followed on the same line by a peer's own heading marker
+draws as a heading, which is why the heading marker is escaped rather than left live.
 
 The promise is also scoped to a body the classification recognized as peer traffic. A harness shape
 move that stopped that classification matching would route the same text to the mirror's own

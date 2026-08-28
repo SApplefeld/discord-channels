@@ -699,3 +699,61 @@ here. Items 2, 3, 7 and 8 are posted and need reading; item 4's spoiler needs a 
 reading. An interactive browser session was proposed to let this session read the renderings itself
 rather than spending operator attention; Chrome is not running on the host, so that route is
 unavailable until it is started.
+
+### Interim board 3 - 2026-08-28
+
+**Every readable item is read on a real client, and seven of the eight pass.** This session drove the
+Discord web client directly through the browser-automation surface rather than relaying screenshots,
+so each reading below is a first-hand observation of the rendered thread.
+
+Item 1, a multi-message chatter body of 80 short lines, passes: every body line draws small and grey
+across all three messages, the header repeats at full size on each, and no line goes full size at a
+split seam.
+
+Item 2, inline code inside a subtext line, passes, and the recorded answer is that the code renders
+rather than degrading. Single backticks survive the escape chain and Discord draws inline code chips
+inside a subtext line; the chips are still small, so the register holds.
+
+Item 3, a body carrying a triple-backtick fence, passes. The delimiters draw as literal characters,
+small and grey, and no code block opens.
+
+Item 4, the oversized spoilered form, passes on all four of its checks. Nothing sits outside the
+spoiler but the header and one small grey teaser line. The body is concealed until tapped. A tapped
+spoiler reveals the body at full size, which is the register contract's own named departure rather
+than a failure. And the composition the security model listed as unread is now read: a peer's own
+pipe pair draws as ordinary pipe characters, opening neither a nested spoiler nor a table row, and a
+table-shaped line does the same. The trailing backslash payload arrived and drew intact, so the
+Section 2 backslash fix is confirmed in the wild rather than only in tests.
+
+Item 6 reproduces its failure exactly on the pre-fix broker, which is the binary that was still live
+at reading time: the subtext-marker line draws small and grey, and both heading-marker lines draw as
+large bold headings. The fix in 8d73126 is not yet re-confirmed live, because reading it requires the
+broker to be out of brief mode.
+
+Item 7, the attribution glyph and a tilde fence, passes, and it corrects a prediction this plan
+carried. The glyph draws clean with no visible backslash, since Discord consumes the escape, so the
+guard costs nothing visible here. The forged header attempt does not read as a real message header,
+and the tilde fence draws as literal tildes with no code block.
+
+Item 8 passes in both halves, and its second half needed no operator typing after all. A peer's
+line-leading quote markers draw as literal characters with no quote bar. The operator's own typed
+lines, already present in the thread, draw a real quote bar at full size under the console label. The
+operator's voice is therefore visually distinct from anything a peer can produce.
+
+**A diagnosis this session got wrong and corrected.** Chrome was reported unavailable on the evidence
+that no process named chrome.exe was running. That probe was wrong: a Chromium-based browser under a
+different executable name was running the extension the whole time. Browser availability is read from
+the extension's own connected-browsers listing, never from a process-name match.
+
+**Documentation changed.** The security model's unobserved-composition list is now empty and the
+paragraph states the three compositions as read. The one remaining unobserved rule named in that
+document is Discord's behaviour on a doubled subtext marker, which is a different question and stays
+as written.
+
+Item 5, brief mode, passes. A three-sentence inbound peer message draws as one message carrying the
+full-size header and exactly one small grey line, the payload's first line; the remaining two lines are
+dropped rather than wrapped or truncated mid-sentence.
+
+**Next actions.** Brief mode is removed from broker.env and the pre-item-5 file is restored, so one
+elevated broker restart is all that stands between here and the item 6 re-confirmation, which is the
+last reading Section 4 needs. Then Section 4 closes and the whole-effort finishing pass runs.
