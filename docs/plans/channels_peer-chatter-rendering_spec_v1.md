@@ -637,3 +637,65 @@ on his phone while this session drives the payloads. The live broker (PID 1160) 
 2026-08-27 20:20, before Section 1 landed at 22:47, so it is serving pre-register code and the
 restart is not optional. Item 5 needs `CHANNEL_PEER_MESSAGES=brief` in `broker.env` and its own
 restart, so it runs last and the setting is restored after.
+
+### Interim board 2 - 2026-08-28
+
+Section 4 is running live with the operator. The broker was restarted onto the register code and the
+first six readings are in.
+
+**Stage.** Items 1 and 4 read pass on their collapsed readings, item 6 read **fail** and its fix is
+shipped, and items 2, 3, 7 and 8 are posted but unread. Item 5 is staged and waiting on a restart.
+
+**Live dispatches.** None. The CHANNELS: Expert seat is acting as the test partner for the inbound
+direction, which is coordination rather than dispatch.
+
+**Gate baseline.** 1569 tests / 1568 pass / 0 fail / 1 skipped, exit 0, 44.1s. One test more than the
+1568 recorded at Chapter 3 and at Interim board 1, that one being this boundary's own pin; no
+regressions.
+
+**What the live check established.**
+
+Item 1 passes: an under-threshold body splitting across three messages draws every body line small
+and grey with the header full size on each, and the split seams carry no unmarked line. Item 4's
+collapsed reading passes: the teaser draws small and grey and each message's body is concealed behind
+a single spoiler block, which retires "a spoiler pair spanning several lines within one message" from
+the security model's unobserved list. The escaped pipe inside a spoiler is still unread, since it
+needs a tap, and it is now the only entry left on that list.
+
+**Item 6 failed, which is the finding this boundary exists for.** A peer line written `# text` draws
+as a heading on the operator's client. Discord's subtext rule carries no doubled-marker guard, so the
+client reads past the `-# ` prefix this renderer puts in front and sets the line as a heading: peer
+text not at full size but above it, which is a strictly worse break than the reading-size
+fall-through the sibling guard was written for. The plan named two dispositions for this item and the
+escaping one was taken, on the reasoning that accepting it would let any peer set its words larger
+than the operator's own in the operator's own thread, which empties the register of its purpose. The
+operator was given the fix, the evidence and the one-line revert rather than being told after the
+fact.
+
+The guard escapes the first character of a line-leading heading marker run, which breaks the
+construct because a heading marker is read only at a line's start. Both chatter forms take it through
+one shared helper: the marked and spoilered forms were already duplicating the subtext-marker replace
+between them, and a second guard added by copy-paste is how one form later loses it in silence, so
+the pair moved to `withoutOwnMarkers` and both call sites route through it. Applied per drawn piece,
+because the wrap runs after the escape chain and can carry a mid-line hash to a piece start. The pin
+was watched failing first and reports the exact string the operator's screenshot shows,
+`-# # forged heading`. Shipped in `8d73126`.
+
+Three documented claims were falsified by the reading and repaired in the same commit.
+`docs/security-model.md` stated the promise as designed-and-gated pending this very item, and its
+unobserved-composition list dropped from three entries to one. `docs/architecture.md` gained the
+reason the prefix alone is not enough. A test comment asserting the subtext rule's behaviour was not
+knowable from here, and a code comment calling the spoiler rendering unseen, were both true when
+written and are not now.
+
+**Local state altered, with its rollback.** `%LOCALAPPDATA%\sapplefeld-channels\broker.env` gained
+`CHANNEL_PEER_MESSAGES=brief` at line 13 for item 5, with a backup beside it at
+`broker.env.pre-item5`. Restoring means deleting that line or copying the backup back, and it is owed
+before the effort closes.
+
+**Next actions.** The operator restarts elevated for item 5, then again to leave brief mode, and that
+second restart is what confirms the item 6 fix on a real client rather than only against the renderer
+here. Items 2, 3, 7 and 8 are posted and need reading; item 4's spoiler needs a tap for the pipe
+reading. An interactive browser session was proposed to let this session read the renderings itself
+rather than spending operator attention; Chrome is not running on the host, so that route is
+unavailable until it is started.
