@@ -272,7 +272,7 @@ SCOTT is this machine's hostname, the host whose broker serves the operator's re
 deployed checkout is `D:\sapplefeld-channels`, distinct from this development tree. Restart the
 broker onto the built code with `install\Repair-Broker.ps1 -Pull` from an elevated prompt
 (`docs/operations.md` owns the procedure; the broker has no health route, so liveness is
-`GET /sessions`). Then the worker composes and drives the five payloads below itself, a real
+`GET /sessions`). Then the worker composes and drives the eight payloads below itself, a real
 cross-session exchange in each direction (`SendMessage` from a sibling session covers inbound;
 this session's own send covers outbound), and the operator reads the thread on the phone. Item 5
 needs `CHANNEL_PEER_MESSAGES=brief` in `broker.env` and its own broker restart, so it runs last
@@ -287,9 +287,31 @@ and the setting is restored after. What is being read, each item pass/fail on it
 4. The oversized form: teaser scannable, body collapsed behind the spoiler, tap reveals it, escaped
    pipes render as pipes, nothing outside the spoiler but header and teaser.
 5. Brief mode: one message, header plus one small grey line.
+6. A body whose lines open with the marker and with a heading marker: a peer line written `-# x`
+   draws the two characters visibly rather than composing a second marker, and a peer line written
+   `# x` draws small and grey rather than as a heading. The second is the open question: the
+   renderer prefixes the subtext marker, so what Discord receives is a subtext marker followed by a
+   heading marker, and whether the subtext rule carries the doubled-marker guard its heading rule
+   does is unobserved. A heading drawing there is peer text above full size, so this item gates the
+   register exactly as item 4 gates the collapsed form.
+7. The escaped attribution glyph: a peer body opening a line with `📡` draws the glyph with a
+   visible backslash in front of it, which is the accepted cost of the attribution pass, and draws
+   no second header. In the same payload, a tilde fence (`~~~`): the fence neutralization matches
+   backtick runs only, so a tilde fence is left live in a chatter body deliberately. Read whether it
+   opens a code block on this surface. If it does, the fence claim needs the tilde form too.
+8. The two quoted registers side by side: an operator-typed message and a peer message in the same
+   thread. The backlog records that a plain `>` blockquote does not render on relay-posted messages
+   at all, drawing as literal `>` characters, and the security model's unforgeability claim rests on
+   the operator's `>>> ` block being visually distinct from anything content can draw. Read whether
+   `>>> ` draws as a quote bar on this surface. If it does not, the discriminator is weaker than the
+   document claims and that is a finding about the security model rather than about this plan, to be
+   recorded and routed rather than fixed here.
 
-Item 4 failing routes to the operator with the evidence (the fallback named in Design). Any other
-item failing reopens its section.
+Items 4 and 6 failing route to the operator with the evidence (the fallback named in Design applies
+to both: subtext at every size for item 4, and for item 6 either escaping the heading marker or
+accepting it). Item 8 is a reading rather than a gate on this plan: whatever it finds is recorded,
+and a finding against the security model's claim is routed out of this effort. Any other item
+failing reopens its section.
 
 ## Traps, each with its handling
 
@@ -485,4 +507,60 @@ is test 238, the POSIX-only token-file guard the test emits on Windows, the same
 gates carried. The intermediate gate over the pre-fix work read 1567 / 1566 / 0 / 1 at 87.8s while
 three reviewers held the box, which measures the contention rather than the tree.
 Next: Section 3: The register vocabulary lands in the docs
+Commit Model: Commit-and-Push
+
+### Chapter 3 - 2026-08-28
+Completed: Section 3: The register vocabulary lands in the docs
+Implemented By: main session (Locus: inline, as the section specifies; the docs-write-guard denies a subagent any write under `docs/`)
+Metrics: review rounds 1; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: the section grew past its three named files, and the growth was the point
+rather than drift. Acceptance criterion 3 is that no claim anywhere in `docs/` is falsified by the
+change, and the sweep found the falsified claims were concentrated in a file the section never
+named: `docs/operations.md`, whose peer-traffic section still showed the pre-register rendering in a
+worked sample and whose `CHANNEL_PEER_MESSAGES` table row still described bodies drawn whole. That
+is the document the operator reads to interpret what they see on the phone, so Section 4's live
+check would have been read against a stale reference. Folded in under the fold predicate (same
+directory, no new acceptance criterion, the same gate), along with `docs/README.md` and
+`docs/plans/README.md`, both of which still said no plan was open. Three of this section's own new
+claims were false when written and were caught by review rather than by me: that the five
+non-chatter surfaces take the shared escape "and nothing else" (they also take the table transform,
+which chatter skips, so the sentence inverted the asymmetry it was written to state); that the table
+transform escapes its cells through the cell escape (the fenced shape uses the block escape, and the
+cell escape belongs to the second, unfenced per-row shape); and that the collapsed form marks no
+line at all (it marks exactly one, the teaser, which is the only peer text drawn outside the
+spoiler, so the sentence contradicted the register it sat beside). Section 4's payload list grew
+from five items to eight, all three additions being compositions the documents would otherwise have
+asserted without evidence: a peer's heading marker behind the subtext marker, the escaped
+attribution glyph beside a tilde fence, and the two quoted registers side by side.
+Assumptions: none beyond the spec.
+Review Findings: adversarial and security reviewers, both at opus/max, both read-only (round
+bracketed with `git status --porcelain` before and after; only this session's own doc edits, so the
+read-only briefs held). The blind lens was skipped deliberately: this is a docs-only section with no
+`Audience:` line, so omitting the `docs/` paths empties the changed-file list and there is no diff
+for that lens to read. Recorded here so the gap reads as a decision. The security dispatch died
+mid-response on an API connection fault, which is an environment fault rather than a result, and
+took its one same-model retry over the corrected state, so its review is of what actually ships.
+One Critical addressed: `docs/operations.md` falsifying acceptance criterion 3, described above.
+Seven Majors addressed across the two reviewers: the three false claims of my own named above, the
+backlog's own peer-chatter item still asserting in the present tense that relays render at full
+size, the new backlog pointer written as a bare repo-rooted code span where its ten neighbours are
+`docs/`-relative markdown links, `docs/README.md`'s peer-traffic archive row stale on both halves,
+and the register promise stated as established while the heading composition that could falsify it
+is unobserved and its live gate unrun. That last one is the finding worth keeping: the document now
+states the promise as designed-and-gated, names item 6 as what settles it, and gives that item its
+own fallback rather than letting it borrow the collapsed form's. Five Minors addressed, including
+scoping the surviving-construct claim to the whole-mode body, since the brief line and the teaser
+both compose through the full markdown escape and carry none of the three. One Minor accepted rather
+than fixed: `MAX_PEER_SUBTEXT_LINE_LENGTH`'s doc block says the lead and tail cost "at most 209
+units" where the exact maximum is 208, which is a true upper bound stated loosely in a sentence that
+already says "about", so the committed file is not churned for it.
+Stamps: adjudicated 3, stamped 2. The three the sweep surfaced were the same peer-session reads
+Chapter 2 skipped, and none steered this section either. The two stamped are the heredoc trap, which
+this section applied by writing its edit scripts through the Write tool rather than a shell
+heredoc, and the record that the operator reads plain language over technical, which shaped
+`operations.md`'s two new paragraphs.
+Gate: 1568 tests / 1567 pass / 0 fail / 1 skip, exit 0, 42.1s, unchanged from Chapter 2's close
+because this section changed no code. Run rather than assumed, since a prose section that quietly
+touched a fixture would look exactly like one that did not.
+Next: Section 4: Live verification
 Commit Model: Commit-and-Push

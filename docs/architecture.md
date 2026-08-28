@@ -305,6 +305,26 @@ ASCII that leaves as two. This session's own side of the arrow renders as a bold
 cannot supply, because every counterparty here is itself a Claude session and a peer named `Claude`
 would otherwise draw an identical header in both directions.
 
+**The body is drawn in a register of its own, which is what makes the thread scannable.** The
+attribution says who a message is between; the register says, from the typography alone, that the
+message is not addressed to the operator. Every non-blank drawn line of an open-form chatter body
+carries Discord's `-#` subtext marker (a blank line stays bare, carrying nothing to mark, and the
+collapsed form below marks no line of its body, its one drawn teaser line carrying the marker like
+any other drawn line), so it renders in small grey type under a full-size header, and a scroll
+answers the
+audience question without the operator re-reading a header every few lines. That is a per-line
+marker because it is Discord's own rule for it, and it is why chatter has a body assembly of its
+own: nothing else this renderer draws needs a prefix inside the body. Lines are wrapped to fit a
+message before they are marked, which is what keeps the splitter's hard cut out of reach, since a
+cut line would open the next message with no marker in front of it.
+
+Past a threshold the body is collapsed behind a spoiler instead, under one bounded teaser line, on
+the reasoning that a body that long is not scanned in a scroll whatever type it is set in. The
+spoiler pair is per message, since a spoiler does not span messages, and its cost is charged against
+that message's budget by the splitter rather than taken out of the slack held back from Discord's
+own ceiling. Both forms hold the same promise, and `security-model.md` states it at its exact width
+along with the escapes that keep a peer from drawing either delimiter.
+
 A peer message posts through the thread's ordering chain like any other line, so it takes its place
 among the narration around it and ends any narration block being grown there. It spends the mirror
 budget, never the alert tier, and mentions nobody.

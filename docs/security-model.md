@@ -437,7 +437,15 @@ decide freshness. Its `✨ Claude · working` attribution is forgeable by conten
 mirrored reply's `✨ Claude` is, and for the same reason that is accepted: it is a Claude-authored
 line opening a Claude-authored message, claiming nothing the message does not already claim. The
 operator-attributed quoted block is the one attribution content cannot draw: no text passing through
-the renderer can compose it, whichever path that text arrived on. What the renderer cannot establish
+the renderer can compose it, whichever path that text arrived on. That statement is about the
+characters, and it carries an unverified precondition about how they draw: a live reading recorded
+in the backlog found that a plain `>` does not render as a quote bar on relay-posted messages at
+all, arriving as literal `>` characters, and if `>>> ` behaves the same way then this block is a
+literal string rather than a visually distinct one and the discriminator is weaker than the
+paragraph reads. What content still cannot do is compose those characters, since the renderer
+escapes the line-leading marker in both regions. The open half is whether Discord un-escapes what
+the renderer wrote, which no check here has read; it is item 8 of the peer-chatter rendering plan's
+live check. What the renderer cannot establish
 is who authored the words handed to it, and on the queued-prompt path the broker awards the operator
 attribution to a line it read off a file, so what holds there is that the attribution belongs to
 whatever wrote that line into the transcript. The accepted-risk list below carries what that rests
@@ -754,12 +762,20 @@ mid-turn typed message, a mirrored reply, a mid-turn narration chunk, a `reply` 
 peer message's body in either direction are prose with code in them, so escaping the whole of
 markdown would trade the readability of the surface away. All six go through one fence-aware
 escape that neutralizes Discord's angle-bracket chip syntax and a line-leading quote marker and
-leaves the rest alone. `renderMirror` applies it to
+leaves the rest alone. The two classes then diverge, and the divergence runs both ways rather than
+one. The five other surfaces additionally take the table transform, which has two shapes and a
+different cell escape in each: a fenced grid, whose cells take the block escape because no backslash
+holds inside a fence, and a per-row rendering with no fence at all, reached when a column will not
+fit, whose cells take the cell escape instead. The per-row shape's own display residues are recorded
+in the backlog rather than here. A peer body skips the transform entirely, because one of its shapes
+draws a fence and a fence cannot carry the per-line register below, and takes
+three further escape-chain passes instead: the attribution pass described next, and the fence and
+pipe neutralizations the register section accounts for. `renderMirror` applies it to
 mirrored, typed, and narration text, `renderAnswer` to the reply tool's, the peer renderings to a
 peer body, and `appendNarration` to a chunk entering an existing message by edit, all before the
 text reaches the message path.
 
-A peer body takes one pass the other five do not, and the difference is who is forging what. The
+The first of those three is the attribution pass, and the difference is who is forging what. The
 escape above stops a chip and a line-leading quote marker; it does not stop an attribution line,
 and the reply marker's accepted residual is why it did not have to: there the forger and the
 claimed author are the same party, so a Claude reply drawing a Claude attribution says nothing
@@ -772,6 +788,61 @@ anyone remembering to. An emoji has no markdown escape, so the backslash renders
 that is the accepted cost of the pass and it is stated at the constant. That is what stops any of them from drawing a
 mention pill, a timestamp chip, or a copy of the renderer's own attribution line, in the one channel
 the operator answers permission prompts in.
+
+**The chatter register is a promise about type size, and it is the only one of its kind here.**
+Every other rule in this section bounds what content can *draw*; this one bounds how large a peer's
+words are *set*. In a thread's collapsed reading, meaning what a scroll shows with nothing tapped,
+no character of a peer body renders at full size.
+
+**That promise has one unverified precondition, and it is stated here rather than 60 lines down.**
+The renderer marks each drawn line with the subtext marker but neutralizes no heading marker, so a
+peer line written `# text` reaches Discord as a subtext marker followed by a heading marker. Whether
+Discord's subtext rule carries the doubled-marker guard its heading rule does is unobserved, and a
+heading drawing there would be peer text above full size. The live check that settles it is item 6
+of this rendering's plan, and its fallback is its own: escape the heading marker in a chatter body,
+or accept the composition on the evidence. Until that item is read, treat the promise as designed
+and gated rather than as established. The collapsed form's own unknowns, listed below, carry a
+different fallback: the open form at every size.
+
+Two departures from the promise are named rather than incidental.
+The counterparty's display name is peer-chosen and is drawn full size on the attribution line of
+every message, because the name is the routing information the header exists to carry; it goes
+through the same full markdown neutralization a card title takes and is bounded before it is drawn.
+And a body past a threshold is collapsed behind a spoiler under one bounded teaser line, so tapping
+it reveals the body at reading size: the tap is the operator choosing to read, and what the register
+protects is the un-tapped scroll.
+
+The other two passes exist to hold that promise, and each closes a way a peer could escape the type
+size. Fence delimiters are neutralized, because a fence is a multi-line construct whose lines cannot
+each carry the per-line subtext marker and remain a fence, so a live delimiter would draw the lines
+between the delimiters at full size outside the register. Every pipe is neutralized, because two
+live pipes are Discord's spoiler delimiter: unneutralized, a peer could hide its own words behind a
+tap in a body small enough to be drawn openly, which inverts what the register buys, and in the
+collapsed form it could close the renderer's own pair early and put the remainder of its message on
+the screen at full size. The pair the renderer composes is therefore the only pair a posted chatter
+message can carry.
+
+**The subtext marker is not in the unforgeable set, and nothing here claims it is.** The set stays
+what it was: the operator-attributed quoted block, and the attribution openers. A `-#` is ordinary
+markdown that any surface's content may contain, and a reply that draws one is drawing its own
+subtext, which claims nothing false about who wrote it. What the marker establishes is a register on
+messages the broker composed, not an authorship claim, and the register rests on the arithmetic that
+puts the marker in front of every drawn line rather than on the marker being unavailable to anyone
+else. A peer's own line-leading `-#` inside a chatter body is escaped, in the collapsed form as well
+as the open one, so it cannot compose a second marker against a Discord rule this project has not
+observed; that is a guard on the renderer's own composition rather than a forgery control.
+
+Three compositions this register rests on are not observed on a real client: a spoiler pair spanning
+several lines within one message, an escaped pipe drawn inside one, and a subtext marker followed on
+the same line by a peer's own heading marker. They are checked on the operator's own phone rather
+than asserted here, and if the collapsed form fails that check the fallback is the open form at
+every size.
+
+The promise is also scoped to a body the classification recognized as peer traffic. A harness shape
+move that stopped that classification matching would route the same text to the mirror's own
+register instead, where it is drawn at reading size inside the operator-attributed quoted block;
+that residual is recorded with the classification below, and it is the one way peer-authored words
+reach full size without any escape here failing.
 
 The quote marker is escaped inside a code fence as well as outside it, so the attribution's
 unforgeability does not rest on this project's reading of where a fence is agreeing with Discord's.
@@ -792,6 +863,21 @@ attribution, so it cannot impersonate this broker or the operator, and following
 operator takes rather than an approval the thread can extract. Nothing here is a permission grant,
 which is answered by a component or by a typed reply and never by a link.
 
+That paragraph describes the five surfaces taking the narrower escape and nothing further. A peer
+body leaves a smaller set live, because the register's own two passes reach into it: the fence
+delimiter and the spoiler pair are both neutralized there, so of the four constructs named above
+only emphasis, the heading marker and the masked link are left unneutralized in a peer body drawn
+whole, and the masked link is the only one of those three carrying the security consequence. None of
+the three reaches the one-line renderings, the `brief` mode's line and the collapsed form's teaser
+alike: both compose through the full markdown escape, whose class already covers all three.
+
+"Unneutralized" is the exact word for the heading marker, and it is deliberately weaker than
+"survives". Every drawn line of an open-form body is prefixed with the subtext marker, so a peer's
+`#` is no longer the first thing on its line and the composition Discord actually receives is a
+subtext marker followed by a heading marker. Whether Discord's subtext rule carries the
+doubled-marker guard its heading rule does is not something this project has observed, so the
+composition sits with the two below rather than being claimed either way.
+
 `processToken` never reaches either.
 
 **Peer traffic is a sixth untrusted-input surface, and its author holds the weakest credential of
@@ -805,7 +891,10 @@ conversation text generally, since a link draws no mention pill, no chip, no quo
 of the attribution, and following one is an act the operator takes rather than an approval the
 thread can extract. The readable-notice text is the other. Neither is a widening of what content
 can do, and the attribution and the quoted block stay unforgeable against a peer body by the pass
-described above.
+described above. What this author cannot reach, unlike the five surfaces beside it, is the spoiler
+and the fence: the register neutralizes both in a peer body, so the weakest-credentialed author
+here is also the one whose text draws the least. A link it posts is drawn in the register's own
+small grey type, or behind the collapsed form's spoiler, rather than at reading size.
 
 **A peer message never stamps engagement, and the classification decides that as well as the
 attribution.** The engagement stamp records that a person is driving, and it is what clears a `⛔`

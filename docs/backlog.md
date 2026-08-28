@@ -253,11 +253,15 @@ and none carries a date of its own. An item added from here on carries `(parked 
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without
   the thread being louder than the terminal. Wanted only if the one-line notice proves too thin.
+  Takes its rendering vocabulary from
+  [`plans/channels_peer-chatter-rendering_spec_v1.md`](plans/channels_peer-chatter-rendering_spec_v1.md),
+  which settles the register, the collapse threshold and the escapes a collapsed body needs.
 - Peer-chatter rendering in threads: subtext, not spoilers (parked 2026-08-27; operator-approved
   and slotted as the first post-reboot effort, in parallel with claude-kit's coordination spec).
-  Session-to-session relays currently render at full size in the same voice as operator-facing
-  lines, so the operator re-checks headers every few lines to know the audience, which from a
-  phone is the dominant reading cost of a busy thread. The approved design: normal text for
+  Delivered: the register shipped in `669cb8f` and the collapsed form in `d0cba9c`, and this item
+  is retired at that plan's close-out. Session-to-session relays used to render at full size in
+  the same voice as operator-facing lines, so the operator re-checked headers every few lines to
+  know the audience, which from a phone was the dominant reading cost of a busy thread. The approved design: normal text for
   operator-facing lines; Discord's `-#` subtext (small grey type, scannable without a tap, one
   prefix per line) for session-to-session chatter, each block led by a bold one-line header naming
   sender and receiver so the routing stays readable at full size; spoilers reserved for oversized

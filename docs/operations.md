@@ -769,11 +769,27 @@ of the arrow this session sits on:
 
 ```
 📡 KIT: Messaging → **Claude**
-the message that session sent, drawn below
+-# the message that session sent, drawn small and grey below
 
 📡 **Claude** → KIT: Messaging
-the message this session sent, drawn below
+-# the message this session sent, drawn small and grey below
 ```
+
+**The header is full size and the body is not.** Every non-blank line of a drawn body carries
+Discord's `-#` subtext marker, so it renders in small grey type: the point is that a scroll tells
+you at a glance which lines are addressed to you, without your re-reading a header every few lines.
+The marker is per line because that is Discord's own rule for it, so a long body carries one on
+every line it draws. The counterparty's name in the header is the one part of a peer message drawn
+at reading size without your asking for it, because that is the routing information the header
+exists to carry. The other way a peer's words reach reading size is the tap described next, which
+is you choosing to read them.
+
+**A long body is collapsed behind a spoiler instead.** Past **2,000** code points the body stops
+being drawn openly and moves behind a tap, under a single small grey teaser line carrying the
+body's opening line. A body that long is not scanned in a scroll whatever size it is set in, so
+collapsing it keeps the thread readable and the body one tap away. Tapping reveals it at reading
+size, which is deliberate: the tap is you choosing to read it. The spoiler is per message, so a
+collapsed body spanning several messages shows one tap target on each.
 
 The bold `Claude` is this session, always, and it is bold for a reason worth knowing: every
 counterparty here is itself a Claude session, so a peer whose display name is `Claude` would
@@ -793,7 +809,9 @@ between two sessions is worth reading, not worth waking someone for. Under `full
 than **16,384** code points is drawn to that length and says it was cut, the bound a mirrored prompt
 takes, because a peer body is text arriving from outside rather than this session's own words; under
 `brief` each message is one line of at most **200** characters: the send's own summary outbound (its
-message's opening line where the send carried no summary), and the body's opening line inbound.
+message's opening line where the send carried no summary), and the body's opening line inbound. That
+one line carries the same `-#` marker every drawn body line carries, so `brief` changes how much of
+a message you see and never the register it is drawn in.
 
 Six `routing:` lines belong to this path, and each carries the direction and the session and never
 the text, because a peer message is conversation content. `routing: the <inbound|outbound> peer
@@ -864,7 +882,7 @@ refused by name rather than guessed at.
 | `CHANNEL_TASK_NOTIFICATION` | brief | How a background task's wake prompt reaches the thread: `brief` posts the one-line 📨 notice, `full` mirrors the whole injected report, `off` posts nothing |
 | `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, open-question alerts, and the recovery of a turn-opening prompt whose mirror hook was lost; also gated by `CHANNEL_MIRROR` |
 | `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
-| `CHANNEL_PEER_MESSAGES` | full | How much of a message this session exchanges with another Claude session reaches the thread, in both directions: `full` draws each message whole under its own 📡 attribution, `brief` draws one line per message, `off` posts none of it. Volume only; attribution is not a knob |
+| `CHANNEL_PEER_MESSAGES` | full | How much of a message this session exchanges with another Claude session reaches the thread, in both directions: `full` draws each message whole under its own 📡 attribution, `brief` draws one line per message, `off` posts none of it. Every drawn body line is small grey subtext whichever setting is in force, and under `full` a body past 2,000 code points is collapsed behind a spoiler under one teaser line. Volume only; attribution and register are not knobs |
 | `CHANNEL_USAGE_CARD` | off | Whether the Fleet: Usage thread and its card exist on this host |
 | `CHANNEL_USAGE_CARD_REFRESH_MS` | 60 s | How often the fleet card is re-read and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_USAGE_CACHE_ROOT` | the profile's claude-swap backup | Where the usage cache and account list are read from |
