@@ -71,15 +71,19 @@ are built in section 2; `dsh_record_rotate` is built in section 3.
 | `dsh_record_rotate` | `session`, `archive_path` | Moves the record file to `archive_path` and starts a fresh one; refused while that session has a turn in flight |
 
 A turn is in flight from the moment the runtime accepts a `session/prompt` until that session's
-`session.status` notification reports the agent idle or reports an error, or `dsh_kill` ends it.
-`dsh_busy` and `dsh_record_rotate` both key on that state.
+`session.status` notification reports the agent idle, or `dsh_kill` ends it. `dsh_busy` and
+`dsh_record_rotate` both key on that state. The status field carries exactly two values, `running`
+and `idle`, established in section 1 both empirically in the fixtures and structurally in the
+protocol's own typing, so there is no error status to end a turn: a turn that ended badly ends on
+an idle like any other, and what went wrong is read off the `turn/end` event's `reason.kind`.
 
 One channel event per finished turn. When a session's `session.status` reports idle after a prompt
-was accepted, or reports an error, the bridge emits `notifications/claude/channel` with `content` =
+was accepted, the bridge emits `notifications/claude/channel` with `content` =
 the worker's final response, bounded at `MAX_CHANNEL_CONTENT` characters (12,000 as the initial
 value; the overflow is in the record file and in `dsh_tail`), and `meta` =
-`{ session, kind, turn, finish_reason, files_touched, commands_run }`. `kind` is `turn_end` for idle,
-`error` for an error status, and `killed` when `dsh_kill` ends an in-flight turn, in which case
+`{ session, kind, turn, finish_reason, files_touched, commands_run }`. `kind` is `turn_end` for a
+turn the runtime completed, `error` for one whose `turn/end` reason says it failed, and `killed`
+when `dsh_kill` ends an in-flight turn, in which case
 `content` is the last assistant text committed in that turn, empty if none; a kill with no turn in
 flight emits nothing, and the bridge's own shutdown emits nothing, the session it would push to
 being gone. Every meta value is a string: `turn` and `commands_run` are decimal counts,
@@ -318,6 +322,18 @@ Every entry here binds every section opened after it was written, dispatched or 
   at all, which is amendment 2 applied to a character class rather than to a function. The reader
   this guards is a model rather than a parser, so the class covers what that reader resolves to the
   delimiter, including spellings a parser would reject as malformed.
+  **The guard's test derives its cases from the class definition rather than enumerating the
+  spellings a reviewer happened to name.** This clause is the fifth round's, and it names the test
+  method as the generator because four fixes at four sites did not stop the sixth gap from being
+  found: each round's test pinned exactly the spellings that round's reviewer wrote down, so the
+  next reviewer only had to name a spelling nobody had thought of yet, and did, five times running.
+  A test built by enumeration can only ever be as wide as the last review, which is why the guard
+  reads correct and keeps failing. So the test walks the class itself, asserting the property over
+  every member the definition admits and over a generated sample of the transformations a reader
+  applies before it resolves a delimiter, compatibility folding among them, so that widening the
+  definition widens the test in the same edit and a spelling nobody named is either covered or
+  visibly not. An enumerated case is then a regression pin for a spelling that once escaped, kept
+  beside the property rather than standing in for it.
 - **A guard at a hostile boundary is a property of the boundary, so a second caller imports it rather
   than reimplementing it.** Before writing a call that spawns a process, builds a child environment,
   joins a path from stored data, or sanitizes text bound for a trusted channel, grep the tree for
@@ -1227,3 +1243,134 @@ repository's main is an install surface that takes the whole gate, and the tree 
 a deliberate red test in it, so a gate run now would read a half-edited worktree and report a red the
 fix round exists to clear. The commit is the durable recovery point and the push rides with the
 section close once the gate is green.
+
+### Interim board 6 - 2026-09-07
+
+Written at the closure drought's floor again: section 2's fifth review round is adjudicated, no
+section has closed since Chapter 1, and the round's outcome fired the tier-escalation ladder, so the
+boundary is worth recording before the escalated round returns.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented and has been through five full three-lens review rounds, all adjudicated; its sixth fix
+round, the first at an escalated tier, is in flight. Sections 3 through 6 are unstarted. Section 2's
+thirteen untracked `bridge/` files and its one modified tracked file are uncommitted.
+
+**Live dispatches.**
+
+- `implementer-fable`, section 2 fix round 6, dispatched with the explicit fable model override that
+  the tier escalation authorizes. It carries one Critical, five Majors and eleven Minors by way of a
+  findings file under the gitignored scratch path, the amendments block including entry 1's new fifth
+  clause, a six-item list of findings named as explicitly not its work, all standing prohibitions,
+  and the box-budget clause with this session's identity substituted. It is told to run targeted
+  per-file lanes only and to leave the whole gate to the orchestrator.
+
+Round 5's three lenses (`adversarial-reviewer`, `blind-reviewer`, `security-reviewer`, all at fable
+through the Agent tool) have completed and are adjudicated. Verdicts were CHANGES_REQUIRED,
+CHANGES_REQUIRED and CONCERNS. First-turn readings were taken on all three and each was healthy: 44,
+and 35 non-synthetic assistant lines with a `<synthetic>` count of zero, the blind lens having
+completed before its reading was due. The round was bracketed by a `git status --porcelain` capture
+before dispatch and again at return; the two are byte-identical, so no agent moved the tree under
+the round and the findings stand.
+
+**The tier-escalation ladder fired, and the comparison it demands was made before the bump was
+spent.** The ladder turns on two consecutive rounds carrying surviving Criticals, which round 4 and
+round 5 now are. The comparison: round 4's Critical was `disown` running at the wrong moment, at the
+runtime's confirmation rather than at the splice, which threw away the turn's own answer; round 5's
+is `disown` failing to clear all the state it owns, so a held idle belonging to a prior turn survives
+the splice and closes this turn with an empty body, losing the answer the same way, at adjacent
+lines, through the fix round 4 itself wrote. That is the same finding class repeating rather than new
+ground, which is the branch where the tier is the lever rather than the spec's premise, so section 2
+escalates from opus to fable for one re-dispatch with both rounds' evidence carried forward. Had no
+class repeated, the correct move would have been the opposite one: no bump, and a consult on the
+spec's premise instead.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. The orchestrator's own
+targeted lane over the post-round-4 tree, measured 2026-09-07T23:17Z, read `bridge/protocol.test.ts`
+15, `bridge/harness.test.ts` 34, `bridge/log.test.ts` 14, `bridge/index.test.ts` 9,
+`bridge/env.test.ts` 3, `bridge/fake-dsh.test.ts` 2, `bridge/redact.test.ts` 8 and
+`import-hygiene.test.ts` 5, every one exit 0, with `npx tsc --noEmit` exit 0. Those counts and exit
+codes confirm the round-4 implementer's own report exactly. The close gate is the orchestrator's and
+has not run. The machine's heavy slot was taken for that lane at 2026-09-07T23:17:05Z and released
+after verifying the claim's own session line; the claims directory is empty as of that release, and
+an absent claim is nobody having claimed the box rather than evidence the box is free.
+
+**A reading trap cost a second false negative and is worth recording as a standing hazard.** The
+count grep over a fully green run came back empty again, exactly as Chapter 1 records. The cause is
+sharper than that Chapter states it: Node prints its summary with a leading information symbol
+rather than a hash, and that symbol is three bytes in UTF-8, so a pattern anchored with a
+single-character wildcard matches one byte, lands mid-glyph and matches nothing. Both times the run
+was green and both times the grep said nothing at all, which is why the verdict is read from the
+process exit code and never from a grep shaped for the lines expected. The escalated brief carries
+this hazard explicitly.
+
+**Rulings adopted since the last boundary.**
+
+- **The round-4 Critical is fixed and confirmed by the orchestrator against the code**, not taken on
+  the implementer's report: `disown` now runs at the splice in `observeReceipt` and `receive` states
+  in the code that it disowns nothing. The deliberately red test written before that round is green,
+  and so is the round-3 test asserting the opposite property, so the two hold together.
+- **A new Critical survived adjudication, rated above the Major the lens gave it.** A held
+  `pendingEnd` survives `disown`, so a prior turn's idle can close this turn with an empty body while
+  the real answer arrives to find no turn. The orchestrator confirmed the reachable sequence by
+  reading the three sites rather than accepting the finding. It is rated Critical because the
+  section's own text names a lost final response as the expensive failure. Three independent signals
+  landed on this one state machine: the adversarial lens found this path, the blind lens flagged its
+  sibling at the same lines, and the round-4 implementer had itself named this area as the claim it
+  would most expect to be wrong. The fix is owed at the level of the state machine's invariant rather
+  than the line, which is what the escalated brief demands.
+- **Standing Brief Amendment 1 gains a fifth clause naming the test method as the generator.** The
+  channel-sanitization class has now been found wanting in five consecutive rounds, and the fourth
+  clause already required the class to derive from one exported definition, which the round-4 fix
+  did correctly. The gap that remained was in how the guard is proven: each round's test pinned
+  exactly the spellings that round's reviewer named, so the next reviewer only had to name one nobody
+  had thought of, and did, five times running. The clause requires the test to derive its cases from
+  the class definition rather than enumerate them, so that widening the definition widens the test in
+  the same edit, with enumerated cases kept as regression pins beside the property rather than in
+  place of it. This is approval drift and is recorded as such.
+- **The orchestrator reversed one of its own rulings on new evidence.** It had ruled that
+  `workspacePath`'s hand-spelled control class should stay independent of the shared hidden class,
+  on the ground that refusing a path and neutralizing text are opposite operations at different
+  boundaries. The adversarial lens showed the reasoning was thinner than claimed: those code points
+  reach a filesystem call, the spawned child's working directory, and a refusal message quoted back
+  to the model. The refusal now derives from the shared class, which refuses strictly more and
+  repairs nothing, so the original objection does not apply to it.
+- **One finding was routed rather than taken where the lens aimed it.** A gap in the invisible class,
+  the Hangul fillers and U+180E, was reported against `broker/sanitize.ts`, which is outside this
+  section's scope and whose narrower class is correct for its own boundary, Discord rather than a
+  model. It is fixed instead at `isHidden` in `bridge/protocol.ts`, which is this plan's own widening
+  point and already widens the broker's class, so the fix needs no scope change and the shipped
+  component is untouched.
+- **One finding was discarded with its reason.** Exact-wording pins on `dsh_busy`'s tool-result text
+  were reported as the retire class for prose pins. The lens offered the counter-reading itself and
+  it is the right one: that output is key-value fields the model parses rather than prose, so the
+  pins are doing real work.
+- **The spec was corrected to as-built** at the Approach's turn-ending clause. It said a turn ends
+  when `session.status` reports an error; the protocol carries exactly two status values, `running`
+  and `idle`, which section 1 established and Chapter 1 already recorded, and the code correctly
+  reads a bad ending off the `turn/end` event's reason. Left uncorrected, section 6's document would
+  have copied a status value that does not exist.
+
+**Deferred to their owners rather than fixed here.** The dependency advisories arriving through the
+MCP SDK are pre-existing, confirmed again this round by an empty lockfile diff against main, and stay
+parked in the backlog. The guard that `workspacePath` duplicates is owned by `broker/intake.ts`,
+outside this section's scope, so amendment 2's out-of-scope route applies and it is named here with
+the export it would need rather than edited: `transcriptPathField` at `broker/intake.ts:319-327`,
+which shares the same UNC, device-prefix and drive-root shape and is currently private to that file.
+The security model's bridge entry belongs to section 6, whose brief must name four items so none is
+lost: the environment scrub's residue, the state file's trust, kill-by-any-name, and the deliberately
+absent channel permission capability.
+
+**Next action per section.** Section 2: adjudicate the escalated fix round, confirm the Critical's
+fix against the code, take the heavy-process claim, run the whole gate with the contention lane
+beside it, then close with a Chapter and commit and push. Sections 3 through 6: unstarted, in order,
+with section 4 still gated on the operator's answer to the Open Questions entry about whether
+`dsh_prompt` should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's thirteen untracked `bridge/` files and its one modified
+tracked file. This plan doc is committed at this boundary and deliberately **not** pushed, on the
+same reasoning as the last four: a push to this repository's main is an install surface that takes
+the whole gate, and the tree is mid-fix-round, so a gate run now would read a half-edited worktree.
+The commit is the durable recovery point and the push rides with the section close once the gate is
+green.
