@@ -17,6 +17,8 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.1.2-rc.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "discord.js": "^14.27.0",
     "zod": "^4.4.3"

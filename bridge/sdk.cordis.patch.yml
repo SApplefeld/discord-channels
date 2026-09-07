@@ -1,0 +1,45 @@
+# The bridge's overlay on the DSH `sdk` profile, passed to the runtime as `--patch <this file>`.
+#
+# A top-level YAML array of loader patch entries, the form the profile's own `cordis.patch.yml`
+# header describes: each entry names a composed row by `id` and overrides that row's config. The
+# launcher applies overlays after every bundle layer, after the profile's own layer, and after the
+# home-level `$DSH_HOME/cordis.patch.yml`, so this file is the last word without editing anything
+# under the operator's harness home.
+#
+# One row is targeted. `permission` is `@deepseek-ai/dsh-permission-presets`, whose `defaultPreset`
+# is the preset a newly created session is pinned to; the service then writes each knob the preset
+# names through that knob's own canonical setter, which is why `sandbox-policy` and `approval` are
+# not named here.
+#
+# An entry's `config` replaces the targeted row's config outright; it is not merged key by key. So
+# this file also drops the `presets` table the `sdk` profile composes, and the table that applies is
+# the service's own schema default, which carries `workspace-write` (workspace-write + ask) and
+# `danger-full-access` (danger-full-access + never). The preset named below is in that default
+# table, so the pin resolves; the profile's third entry, `read-only`, is not, so it is not offered
+# as a switch target under this overlay. Restating the whole table here is what would keep it.
+#
+# What `danger-full-access` means, from the table the `sdk` profile composes: sandbox mode
+# `danger-full-access` and approval policy `never`. The worker therefore runs unsandboxed and is
+# never asked to approve a tool call.
+#
+# The two knobs are independent, and each is set here for its own reason.
+#
+# Approval `never` is forced by the transport. The SDK protocol carries no server-to-client request,
+# so nothing can be asked for permission: policy `ask` has no answerer attached and every tool call
+# that needed one would fail closed.
+#
+# Sandbox `danger-full-access` is a functional requirement rather than a consequence of that, and
+# `{sandbox: workspace-write, approval: never}` was equally expressible here, since this entry
+# replaces the row's whole config. The worker's live tests spawn `claude` and write outside the
+# workspace, so a workspace-bounded sandbox rejects the tools those tests need. The operator's own
+# DSH session runs in this same state, so the setting mirrors it rather than widening it.
+#
+# What actually bounds the worker, stated plainly because an auditor reading this file must not
+# record a control that does not exist: operator approval is the authorization, git is a recovery
+# path for tracked content only, and there is no technical confinement. Under this preset the
+# workspace is the child's working directory and nothing more. The worker runs as the operator with
+# `write`, `edit`, and `pwsh`, so it can read `~/.dsh/.credentials.yaml` or a bot token file and
+# write anywhere the account can.
+- id: permission
+  config:
+    defaultPreset: danger-full-access

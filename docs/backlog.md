@@ -441,6 +441,17 @@ and none carries a date of its own. An item added from here on carries `(parked 
   and a shared-escape change wants its own gate. The fix shape already exists in the tree,
   `withoutPipes` counting its run and evening it up.
 
+- Decide what to do about the two `npm audit` advisories the root tree carries (parked 2026-09-07,
+  found during the DSH bridge plan's section 1 security review). One high, `fast-uri` 3.1.5, an SSRF
+  through URI normalization; one moderate, `qs` 6.15.3. Both trace to `@modelcontextprotocol/sdk`
+  1.30.0 rather than to anything the bridge added: `ajv` reaches `fast-uri` and `express` reaches
+  `qs`. The review that surfaced them assumed they arrived with the DeepSeek Harness packages, and
+  that premise is wrong, which is why this is parked rather than fixed in that section: the fix
+  moves the MCP SDK's transitive tree, which no open plan's scope covers, and nothing the bridge does
+  makes it worse. Whether `fast-uri`'s SSRF is reachable from any path this project actually runs is
+  unestablished. The isolated runtime install at `bridge/runtime/` audits clean at zero
+  vulnerabilities, so this is a pre-existing condition of the relay's own dependency, not new debt.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

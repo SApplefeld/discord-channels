@@ -1,0 +1,9 @@
+{
+  "name": "sapplefeld-channels-dsh-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An isolated single-root install of the DeepSeek Harness runtime, which the bridge spawns as a process and never imports. It is deliberately not an npm workspace of the repository root: @deepseek-ai/dsh-tools keys its scheduler registry on a plain Symbol(), so a registry minted by one physical copy and read by another yields undefined, and hoisting these packages into the root tree beside @deepseek-ai/dsh-sdk-client is what produces the several copies that break it.",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.2-rc.1"
+  }
+}
