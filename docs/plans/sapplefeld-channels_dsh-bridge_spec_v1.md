@@ -306,6 +306,18 @@ Every entry here binds every section opened after it was written, dispatched or 
   sender is an allowlisted human is gated by that allowlist; one whose sender is an unsandboxed
   worker reading arbitrary files and command output is not gated at all, which is why this bridge
   cannot inherit the assumption the relay runs on.
+  **The hostile character class is derived from one exported definition, never spelled a second time
+  at a second site.** This clause is the fourth round's, and it names the generator rather than the
+  site: each of the first three fixes wrote a fresh pattern for the field in front of it, so the
+  attribute path and the body path came to disagree about what counts as hostile inside one file,
+  the attribute path stripping the invisible class while the body path matched ASCII whitespace
+  alone. A tag spelled with a zero-width space between its letters then rendered as a closing tag to
+  the model and matched nothing in the guard. Two sites that hand-write the same class will drift,
+  and the drift is invisible at review because each site reads correct on its own; so the class is
+  imported from the definition another caller already exports and widened there when it is widened
+  at all, which is amendment 2 applied to a character class rather than to a function. The reader
+  this guards is a model rather than a parser, so the class covers what that reader resolves to the
+  delimiter, including spellings a parser would reject as malformed.
 - **A guard at a hostile boundary is a property of the boundary, so a second caller imports it rather
   than reimplementing it.** Before writing a call that spawns a process, builds a child environment,
   joins a path from stored data, or sanitizes text bound for a trusted channel, grep the tree for
@@ -429,7 +441,10 @@ Acceptance:
   the first two lines. No unit test reads that file, since another process appends to it.
 
 Files in scope: `bridge/index.ts`, `bridge/protocol.ts`, `bridge/harness.ts`, `bridge/log.ts`,
-`bridge/fake-dsh.ts`, `bridge/*.test.ts`, `bridge/README.md`.
+`bridge/fake-dsh.ts`, `bridge/*.test.ts`, `bridge/README.md`, `bridge/env.ts` (the child-environment
+and runtime-binary guard, which gained a second caller and so became a shared module rather than a
+private helper), and `bridge/tools/sdk-smoke.ts` (section 1's file, which becomes that guard's other
+caller). The last two are widenings recorded in the Chapter as the approval drift they are.
 
 Tests: lock the turn state machine in both directions (idle status after acceptance ends the turn
 and pushes; an idle status with no accepted prompt pushes nothing), the one-push-per-turn invariant,
@@ -1092,3 +1107,123 @@ tracked file. This plan doc and `docs/backlog.md` are committed at this boundary
 surface that takes the whole gate, and the tree is mid-fix-round, so a gate run now would read a
 half-edited worktree. The commit is the durable recovery point and the push rides with the section
 close once the gate is green.
+
+### Interim board 5 - 2026-09-07
+
+Written at the compaction gate's signal, with section 2's fourth review round adjudicated and its
+fourth fix round in flight. The closure-drought floor is met four times over: four review rounds
+have now been adjudicated on this section and no section has closed since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented and has been through four full three-lens review rounds, all adjudicated; its fourth fix
+round is in flight. Sections 3 through 6 are unstarted. Section 2's twelve untracked `bridge/` files
+and its one modified tracked file are uncommitted.
+
+**Live dispatches.**
+
+- `implementer-opus`, section 2 fix round 4, carrying one Critical, four Majors and eleven Minors,
+  the three Standing Brief Amendments with entry 1's new clause, the standing prohibition on killing
+  any process it did not spawn, and the box-budget clause with this session's identity substituted.
+  It is told to run targeted per-file lanes only and to leave the whole gate to the orchestrator, and
+  five findings are named in its brief as explicitly not its work.
+
+Round 4's three lenses (`adversarial-reviewer`, `blind-reviewer`, `security-reviewer`, all at fable
+through the Agent tool) have completed and are adjudicated. Verdicts were CHANGES_REQUIRED,
+CHANGES_REQUIRED and CONCERNS. First-turn readings were taken on all three at the five-minute window
+and each was healthy: 35, 24 and 39 non-synthetic assistant lines with a `<synthetic>` count of zero,
+so no dispatch took the never-started path.
+
+**A Critical survived adjudication this round, and the tier ladder still does not fire.** The ladder
+turns on two *consecutive* rounds with surviving Criticals. Round 3 had none, so this is the first of
+a possible pair rather than the second, and section 2 stays at opus. If round 5 also carries a
+Critical the ladder fires and the comparison it demands is owed: whether a finding class repeats,
+which would make the tier the lever, or whether the new Criticals land on fresh ground, which would
+make the spec's premise the generator and call for a consult instead of a bump.
+
+**Gate baseline.** Still the whole gate taken 2026-09-07T19:59:14Z on this checkout with no foreign
+uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0, skipped 1, duration
+147.6s, against a committed baseline of 1582/1581/0/1. Fix round 3 reported its own per-file lanes
+going 55 to 66 tests, all exit 0, on the implementer's tree; those are not a whole-gate reading. The
+orchestrator's own lane runs this stretch, on the post-round-3 tree plus its own two folds, read
+`bridge/protocol.test.ts` at 14/14/0 exit 0 and `bridge/harness.test.ts` at 29 tests with the
+deliberate red described below. The close gate is the orchestrator's and has not run. The machine's
+heavy slot was taken and released by the round 3 implementer under the protocol at 22:26:57Z, and the
+claims directory is empty as of 22:41Z; an absent claim is nobody having claimed the box rather than
+evidence the box is free, so the slot is taken under the protocol at the gate rather than assumed.
+
+**Rulings adopted since the last boundary.**
+
+- **The lost-answer Critical is real, and it is a regression fix round 3 introduced.** Two lenses
+  traced it independently and the orchestrator confirmed it by measurement rather than on report:
+  `receive()` calls `disown()` at confirmation time, but everything gathered after a held receipt is
+  the current turn's own, so a runtime that splices, runs the whole turn and goes idle before the
+  prompt request returns its id gets a `turn_end` pushed with an empty body. The confirming test was
+  written into the tree and observed red, `the worker's own words reached the event: ""`, lane exit 1.
+  Round 3's M5 fix was right that prior-turn accumulation had to be cleared and wrong about when, so
+  the two properties now have to hold together and the fix round is told that failing to reconcile
+  them is a NEEDS_CONTEXT rather than a choice between them.
+- **Standing Brief Amendment 1 gains a clause naming the generator rather than the site.** The
+  channel-sanitization class has now appeared in all four rounds: `files_touched` in round 1,
+  `session` and `finish_reason` in round 2, the body being unguarded entirely in round 3, and in
+  round 4 the body's guard being too narrow. Each fix wrote a fresh pattern for the field in front of
+  it, so within one file the attribute path strips the invisible class while the body path matched
+  ASCII whitespace alone, and a closing tag spelled with a zero-width space between its letters
+  renders as a delimiter to the model and matches nothing in the guard. The clause requires the
+  hostile class to be derived from one exported definition rather than spelled a second time, which
+  is amendment 2 applied to a character class rather than to a function. Two sites that hand-write
+  one class will drift, and the drift is invisible at review because each site reads correct alone.
+- **The orchestrator's own fold was itself the round's Major.** The body neutralizer's whitespace
+  widening was written by this session between round 3's return and round 4's dispatch, with a
+  red-before-green probe and a byte-verified restore, and both the security and adversarial lenses
+  then found it ASCII-only. That is the same class the amendment now names, produced by the
+  orchestrator rather than by an implementer, which is worth recording: the generator is the practice
+  of spelling a class at the site, not the seat that spells it.
+- **A flaky control was found by running the suite, which no lens does.** The foreign-idle test's
+  control leg failed once in five whole-lane runs and passed three of three in isolation. Root-caused
+  from the code rather than filed as a flake: the test waits on the fake's replay-end marker and then
+  asserts on what the bridge pushed, so the wait signals the producer's side of the boundary while
+  the assertion reads the consumer's. Round 3 deleted the older silence-detector to kill this class
+  and this leg still raced. The fix round is told to wait on the observable the assertion is about and
+  to sweep the file for the same shape rather than patching the one site.
+- **Two scope widenings are recorded rather than left implicit.** `bridge/env.ts` (the shared
+  child-environment and runtime-binary guard, which became a module when it gained a second caller)
+  and `bridge/tools/sdk-smoke.ts` (section 1's file, that guard's other caller) are now named on
+  section 2's `Files in scope:` line. Both are approval drift and are recorded as such.
+- **One scope ruling handed down rather than asked.** The body neutralizer also covers
+  `<system-reminder>`, on the ground that the class is text the model reads as harness structure
+  rather than the channel tag alone, and a forged system-reminder is the highest-value target after
+  the envelope itself. The fix round is told not to go wider than those two tag names without asking,
+  because neutralizing more would start mangling legitimate worker output.
+
+**Review round 4 adjudicated.** One Critical (found twice, confirmed by measurement), four Majors and
+eleven Minors accepted. Five findings were dispositioned as already-owned rather than acted on: the
+`bridge/env.ts` scope drift, which this session recorded itself; the `fast-uri` and `qs` advisories
+arriving through the MCP SDK, pre-existing and parked; the plan document's LAN address, on the
+operator's close-out list; `dsh_prompt`'s `record`, `party` and `counterparty` schema arguments,
+which are section 3's; and whether a model-facing refusal should neutralize the caller-chosen session
+name, ruled out of scope because a tool result is not rendered as an attribute and the name is the
+calling model's own. The security lens additionally confirmed amendments 2 and 3 as properly applied,
+reading each stored field's guard at the state-file read, and reported `npm audit` in `bridge/runtime`
+clean at zero vulnerabilities across all severities, which is a new fact this round.
+
+**A note on the sidecar's readings.** Roughly a dozen more verdict alerts fired across this stretch.
+Three named the round 3 implementer fighting a control-character edit; that class was checked in full
+with an independent predicate over all twelve `bridge/*.ts` files, matching zero with a planted 0x1F
+control that spoke, so the tree is clean and those alerts described a mid-round state the implementer
+had already reported and fixed. One alert called the implementer's baseline capture a divergence for
+swapping pre-round copies in before measuring, which is exactly the right method. Two were fair and
+had already been caught and acted on in the same turn. Consistent with the operator record putting the
+sidecar at about one fair alert in three.
+
+**Next action per section.** Section 2: adjudicate fix round 4, take the heavy-process claim under the
+protocol, run the whole gate with the contention lane beside it, then close with a Chapter and commit
+and push. Sections 3 through 6: unstarted, in order, with section 4 still gated on the operator's
+answer to the Open Questions entry about whether `dsh_prompt` should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's twelve untracked `bridge/` files and its one modified
+tracked file, plus the orchestrator's two folds inside them. This plan doc is committed at this
+boundary and deliberately **not** pushed, on the same reasoning as the last three: a push to this
+repository's main is an install surface that takes the whole gate, and the tree is mid-fix-round with
+a deliberate red test in it, so a gate run now would read a half-edited worktree and report a red the
+fix round exists to clear. The commit is the durable recovery point and the push rides with the
+section close once the gate is green.
