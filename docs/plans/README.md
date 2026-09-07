@@ -3,7 +3,7 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
+One plan is open: [`sapplefeld-channels_dsh-bridge_spec_v1.md`](sapplefeld-channels_dsh-bridge_spec_v1.md), the DSH bridge channel plugin. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
 first in [`../README.md`](../README.md).
 
 ## Rules
