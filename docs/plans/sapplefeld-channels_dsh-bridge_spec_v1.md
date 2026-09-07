@@ -619,3 +619,56 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`,
   the relay's design, whose server shape `bridge/index.ts` mirrors.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-07
+
+Written at a closure drought: the compaction gate had held 16 offers over 33 minutes with Section 1
+implemented but not yet closed, and four read-only dispatches live whose briefs exist only in the
+orchestrator's context.
+
+**Section stages.** Section 1 (SDK runtime spike and fixtures) is implemented and self-verified by
+its implementer, and is in its first review round. Sections 2 through 6 are unstarted.
+
+**Live dispatches.**
+
+- `adversarial-reviewer` at fable, section 1 against the spec, base ref HEAD, amendments none. Asked
+  additionally to judge the `overrides` block's mechanism and the fixture redaction on their own
+  terms, as areas to examine rather than findings to confirm.
+- `blind-reviewer` at fable, base ref HEAD and the changed-file list only.
+- `security-reviewer` at fable, section 1. Asked to run the two-question grant audit independently
+  and, specifically, to test whether the implementer's three claimed *bounds* on the permission
+  grant's width actually hold; and to judge what the fixture redaction pass does not cover.
+- `consultant` at fable, on the dependency-install decision Section 1 surfaced (below).
+
+All four are read-only and none builds or runs a suite, which is why the round was dispatchable
+against a held heavy-process slot.
+
+**Gate baseline.** Reported by the section 1 implementer from its own runs, on the post-change tree,
+around 2026-09-07T18:05Z: `npm run lint` exit 0; `npm test` exit 0 with tests 1574, pass 1573,
+fail 0, skipped 1. Its pre-change baseline on the same lane was identical. **Not independently
+re-run by the orchestrator**: a peer session on this machine took the heavy-process claim at 2026-09-07T18:12:32Z with an
+expected duration of 3600 seconds, so the verification re-run is owed and waits on that slot.
+
+**Rulings adopted since the last boundary.** None yet; the consult that would produce one is in
+flight.
+
+**Verified independently by the orchestrator, not taken from the implementer's report.** The
+lockfile's one-path-per-package property holds: zero `@deepseek-ai` packages appear at more than one
+path, tested with a predicate that reaches nested paths and was not supplied by the implementer. The
+58 nested `@deepseek-ai` entries are single copies that merely sit nested, not duplicates.
+
+**The open decision.** Section 1 found that co-installing `@deepseek-ai/dsh` and
+`@deepseek-ai/dsh-sdk-client` left the runtime unable to execute any tool
+(`Cannot read properties of undefined (reading 'prepare')`), because `dsh-tools` keys its scheduler
+registry on a plain `Symbol()` and the install produced six physical copies across two version
+lines. The implementer's fix, in the tree and verified working, is an `overrides` block collapsing
+six packages to one version. It forces peers outside the SDK client's declared range, which works
+today and is a semver violation against a preview that announces breaking changes. The alternative
+is dropping the runtime package from the repository tree and launching from an isolated install,
+which is structurally what makes the operator's own session work but contradicts Section 1's
+acceptance criterion 1 and owes an install story in Section 4. The consult rules before Section 2
+builds on either, since Section 2's `bridge/harness.ts` is what encodes how the child is spawned.
+
+**Next action per section.** Section 1: adjudicate the review round, adopt or discard the consult's
+ruling, re-run the gate once the heavy-process slot frees, then close with a Chapter. Sections 2
+through 6: unstarted, and Section 2 opens only once the install-strategy decision is settled.
