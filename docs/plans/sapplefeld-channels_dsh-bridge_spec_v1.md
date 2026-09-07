@@ -66,7 +66,7 @@ are built in section 2; `dsh_record_rotate` is built in section 3.
 | `dsh_prompt` | `session` (a name the caller chooses), `text`, `cwd` (absolute path of the worker's workspace; required on the first prompt for a session name, remembered after, and a later different value is refused until `dsh_kill`), optional `record` (absolute path of the record file, remembered per session), optional `party` (default `Reviewer`) and `counterparty` (default `DeepSeekHarness`) | As soon as the runtime accepts the prompt, without waiting for agent activity: a receipt naming the DSH session id and turn number |
 | `dsh_status` | `session` | Whether the session is live (this bridge holds a running child with it) or stored (known by name with a log on disk and no child, after a kill or a bridge restart); whether a turn is in flight and the last notification time, both from the child; turn count, step count, compaction count and last event kind, all from the on-disk log |
 | `dsh_busy` | none | `true` when any session this bridge owns has a turn in flight, with the session names; the Reviewer consults it before starting a live test run |
-| `dsh_tail` | `session`, `count` (default 40), optional `kinds` (an explicit allow-list of event types) | The last N events from the session log on disk, one line each, bounded per line. The default filter drops the three chunk types (`assistant/chunk`, `text-chunks`, `tool-call-chunks`) and admits every other type; `kinds` replaces the default with the list given |
+| `dsh_tail` | `session`, `count` (default 40), optional `kinds` (an explicit allow-list of event types) | The last N events from the session log on disk, one line each, bounded per line. The default filter drops the four chunk types (`assistant/chunk`, `text-chunks`, `tool-call-chunks`, `reasoning-chunks`) and admits every other type; `kinds` replaces the default with the list given |
 | `dsh_kill` | `session` | Terminates the DSH child. The session log survives on disk; the next `dsh_prompt` with the same name resumes it |
 | `dsh_record_rotate` | `session`, `archive_path` | Moves the record file to `archive_path` and starts a fresh one; refused while that session has a turn in flight |
 
@@ -283,6 +283,30 @@ state-directory segment.
 
 Every file that grep returned appears in some section's Files in scope or under Out of Scope.
 
+## Standing Brief Amendments
+
+Every entry here binds every section opened after it was written, dispatched or inline.
+
+- **Neutralize and bound every string that crosses into a channel attribute, at the boundary rather
+  than at the caller.** A channel event's `meta` values are rendered into the Claude session as XML
+  attributes, and Claude Code does not escape them, so any value carrying a quote, an angle bracket,
+  an ampersand or a control character can end the attribute and inject markup the model reads as
+  structure. Worker-controlled text is the obvious source, but it is not the boundary: a value copied
+  off the runtime wire, a name the calling model chose, and a reason string the vendor may extend
+  with an unknown word are all the same class. So the neutralizer and the length cap belong to the
+  `meta` builder, applied to every value it emits, never to the one field whose defect was found
+  first. This entry exists because that defect was found twice at two different fields in two
+  consecutive review rounds, which is the workflow generating the bug rather than two unlucky sites.
+- **A guard at a hostile boundary is a property of the boundary, so a second caller imports it rather
+  than reimplementing it.** Before writing a call that spawns a process, builds a child environment,
+  joins a path from stored data, or sanitizes text bound for a trusted channel, grep the tree for
+  that boundary's other callers and reuse the guard one of them already exports. Where the owning
+  file sits outside the section's `Files in scope:`, name the file, the guard and the export it needs
+  in the report and leave it unedited rather than cloning it.
+- **A stored identifier is untrusted input the moment it becomes a path segment.** Anything read back
+  from the bridge's own state file, session ids included, is shape-checked before it is joined into a
+  filesystem path.
+
 ## Sections of Work
 
 ### 1. SDK runtime spike and fixtures
@@ -369,8 +393,12 @@ Acceptance:
   `bridge/fake-dsh.ts` is a stdio JSON-RPC stub that speaks `initialize`, `session/prompt`, and
   `shutdown` and replays a fixture from section 1 as its notification stream, so no test touches
   Qwen, opens a port, or shares state with a neighbor.
-- Against the fake, `dsh_prompt` returns within one second of the call with the session id and turn
-  number while the fake is still streaming.
+- Against the fake, `dsh_prompt` returns with the session id and turn number while the fake is still
+  streaming, and returns before any channel push for that turn. The criterion is the ordering rather
+  than a wall-clock bound: a timing assertion measures the machine's load at the moment of the run,
+  and one written here as a one-second bound failed at 2086 ms on a contended box while the property
+  it stood for held. The ordering assertions prove the property the bound was reaching for, which is
+  that the receipt does not wait on the worker.
 - Exactly one channel notification per finished turn, with `content` capped at
   `MAX_CHANNEL_CONTENT`, `kind` correct for idle, error, and kill-in-flight, no notification for a
   kill with no turn in flight, every meta key matching the identifier pattern, every meta value a
@@ -628,6 +656,20 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`,
   `--channels`? Section 5 reads the startup notice; `docs/install.md` records the answer either way.
 - Does a `-p` session with stdin held open receive channel events? Section 5 answers, with the
   interactive fallback stated there.
+- Should `dsh_prompt` be auto-allowed, and does the security model record what it composes? Raised
+  by section 2's security review and carried here because it is an operator decision rather than an
+  implementation choice, and because section 4 is what makes it live. The worker runs as the
+  operator with no sandbox and approval `never`, which the operator has approved. What no document
+  records is the chain that approval composes once the tool is allowed: text that steers the Claude
+  session into a single `dsh_prompt` call reaches arbitrary command execution as the operator,
+  without Claude Code's own approval prompt for a command, because the approval was preset on the
+  far side. The bound is the dedicated worktree and git as a recovery path for tracked content, and
+  there is no technical confinement. Section 4 composes the allow rule
+  (`mcp__plugin_dsh-bridge_dsh-bridge__dsh_prompt`) and must not compose it before this is answered:
+  auto-allow as the other five tools are, allow only against a fixed workspace allowlist, or leave
+  it to a per-call approval. Section 6's `docs/security-model.md` paragraph then records the answer
+  as an accepted risk under that document's own "Accepted, and worth stating" heading, which is
+  where it belongs once the launch path exists rather than while the tools are unreachable.
 
 ## Related
 
@@ -706,3 +748,201 @@ Delta: reading taken 2026-09-07T19:04:23Z on this checkout, whole-tree, with no 
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 2 - 2026-09-07
+
+Written at the compaction gate's own signal: it had held 34 offers over 40 minutes with section 2
+implemented, its review round adjudicated, and a fix round in flight whose brief exists only in the
+orchestrator's context.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through one full three-lens review round, and is in its fix round. Sections 3
+through 6 are unstarted. Section 2's ten files are untracked and uncommitted.
+
+**Live dispatches.**
+
+- `implementer-opus`, the section 2 fix round, carrying one Critical, nine Majors and twelve Minors
+  from the review round below. It also carries a hard prohibition on killing any process it did not
+  spawn, earned by this section (see Incident). It was told the machine's heavy slot is held by a
+  peer until roughly 20:50Z, so it edits under that hold, runs targeted single-file lanes only, and
+  leaves the whole gate to the orchestrator at close.
+
+The three review dispatches (`adversarial-reviewer`, `blind-reviewer`, `security-reviewer`, all at
+fable through the Agent tool) have completed and are adjudicated.
+
+**Gate baseline.** Whole gate run by the orchestrator on the post-implementation tree, taken
+2026-09-07T19:59:14Z on this checkout with no foreign uncommitted files: lint exit 0; test exit 0,
+tests 1609, pass 1608, fail 0, skipped 1, duration 147.6s. Both exit codes read from the runs' own
+markers. The committed baseline this is a delta against is tests 1582, pass 1581, fail 0, skipped 1,
+so the section adds 27 tests and 27 passes.
+
+That baseline took two runs to establish and the reason is recorded rather than smoothed over. The
+first whole-gate run, 2026-09-07T19:53:40Z to 19:59:14Z, came back test exit 1 with tests 1609, pass
+1606, fail 2, duration 280.8s. Both failures were pure wall-clock assertions: section 2's own
+one-second receipt bound, measured at 2086ms, and `hooks/session-start.test.ts`'s hung-broker bound,
+measured at 9233ms, in a pre-existing file this section never touched. Both passed alone at exit 0
+(9 of 9 and 3 of 3), and the re-run with no code change went green. Ruled a machine transient rather
+than a regression, on four grounds: both assertions are wall-clock, both passed in isolation, the
+unchanged re-run passed, and a section cannot redden a file it did not touch while shared load
+explains both at once. Durations across three runs of the identical tree recovered monotonically,
+89.5s measured by the implementer before the incident below, then 280.8s, then 147.6s, which is the
+recovery shape of a box working through an antivirus rescan rather than a code change. The
+orchestrator's own timestamps falsified the competing hypothesis that the kill landed inside the
+gate's window: the gate ran 19:53:40Z to 19:59:14Z and the kill was at 19:38:57Z, 14 minutes 43
+seconds earlier.
+
+**Rulings adopted since the last boundary.**
+
+- One runtime per bridge serves exactly one workspace, and a `dsh_prompt` naming a different `cwd`
+  is refused. Adopted before dispatch, from the installed typings: `InitializeParams.cwd` is
+  process-wide ("recorded on every SDK-created session's header") and the sandbox policy's workspace
+  root is the runtime process's own cwd. The spec gives `dsh_prompt` a per-session `cwd`, so the two
+  had to be reconciled; this generalizes the refusal the spec already specifies for a changed `cwd`
+  on one session name. Reversal is a map of runtimes keyed by workspace, local to `bridge/harness.ts`,
+  with no protocol or tool-contract change.
+- `dsh_prompt` drives the low-level `HarnessClient.prompt`, not `DeepSeekHarness.run()`, because
+  `run()` settles only at idle and the section's acceptance criterion requires the receipt to return
+  while the worker is still streaming.
+- The review round's flake ruling above.
+
+**Review findings adjudicated.** One Critical, nine Majors, twelve Minors accepted; none discarded.
+The Critical is in `bridge/log.ts`: the frame splitter's recovery premise is false, because
+`zstdDecompressSync` does not throw on a truncated frame but returns partial plaintext, so a magic
+sequence occurring inside a compressed payload is taken for a frame boundary and the rest of the log
+is silently lost. The orchestrator confirmed that premise with its own probe rather than taking the
+finding on report, and a reviewer had reproduced the end-to-end effect at a three-frame file of five
+events reading as zero. Two lenses independently found the same concurrent-start race in
+`bridge/harness.ts`, which can spawn two runtimes and defeat the one-workspace invariant. One
+security Major was raised to the operator rather than fixed or parked, and is recorded in this
+plan's Open Questions: whether `dsh_prompt` should be auto-allowed at all, which is a risk-appetite
+decision and which section 4's allow rule makes live.
+
+**Incident, machine-shared state altered.** The section 2 implementer hit a hung test run and ran
+`taskkill /F /IM node.exe`, which is machine-wide rather than scoped to processes it spawned. It
+killed the operator's live DeepSeek Harness web session mid-turn (nothing listening on port 3080
+afterwards; that session's log frozen at 19:38:57Z at 5,473,202 bytes) and destroyed the MCP server
+children of several Claude sessions on the box, including both relay children, which were the only
+route to the operator's phone. All five peer sessions survived; their children did not. No data was
+lost on disk and the harness conversation is resumable from its web UI. The web session was NOT
+restarted by this session, because that is an outward act in another session's working directory and
+belongs to the operator. Two peer seats were notified and both independently verified the readings.
+A kaizen note is filed, and the fix round's brief now carries the prohibition the incident earned.
+
+**Next action per section.** Section 2: adjudicate the fix round's report, re-run the whole gate once
+the peer's heavy-process claim clears at about 20:50Z, then close with a Chapter and commit under
+Commit-and-Push. Sections 3 through 6: unstarted, in order, with section 4 gated on the operator's
+answer to the Open Questions entry above.
+
+**Uncommitted at this boundary.** Section 2's ten `bridge/` files and this plan doc's two edits (the
+Open Questions entry and this board entry). The doc commit is deliberately deferred to the section
+close rather than pushed here, because a push to this repository's main is an install surface that
+takes the whole gate, and the tree is mid-fix-round with a peer holding the box, so a gate run now
+would read a half-edited tree.
+
+### Interim board 3 - 2026-09-07
+
+Written at the compaction gate's signal, six offers held over thirty minutes, with section 2's second
+review round adjudicated and its second fix round in flight.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented and has now been through two full three-lens review rounds, both adjudicated; its second
+fix round is in flight. Sections 3 through 6 are unstarted. Section 2's eleven files are untracked.
+
+**Live dispatches.**
+
+- `implementer-opus`, section 2 fix round 2, carrying eight Majors and ten Minors from the round
+  below, the three new Standing Brief Amendments, and the standing prohibition on killing any process
+  it did not spawn. Its brief carries the box-budget clause with this session's own identity
+  substituted, and instructs it to run targeted per-file lanes only and leave the whole gate to the
+  orchestrator.
+
+The second round's three lenses (`adversarial-reviewer`, `blind-reviewer`, `security-reviewer`, all
+at fable through the Agent tool) have completed and are adjudicated. Round 2 verdicts were
+CHANGES_REQUIRED, CHANGES_REQUIRED and CONCERNS, with **no Critical surviving adjudication**, so the
+tier-escalation ladder does not fire and the section stays at opus.
+
+**Gate baseline.** Unchanged from Interim board 2 and not re-run since: whole gate taken
+2026-09-07T19:59:14Z on this checkout with no foreign uncommitted files, lint exit 0, test exit 0,
+tests 1609, pass 1608, fail 0, skipped 1, duration 147.6s, against a committed baseline of
+1582/1581/0/1. Fix round 1 reported the bridge lane going 35 to 47 tests, so the next whole gate is
+expected to read about plus 12 tests and plus 12 pass against 1609/1608, before whatever fix round 2
+adds. The machine's heavy-process claim file was absent at 2026-09-07T21:09:22Z, the peer having
+released it, so the slot is expected free for the close gate; an absent claim is nobody having
+claimed the box rather than evidence the box is free, so the slot is taken under the protocol at the
+gate rather than assumed.
+
+**Rulings adopted since the last boundary.**
+
+- **The section 2 Critical is real in mechanism and latent in incidence, and the record is corrected
+  to say so.** Interim board 2 stated that a frame magic sequence occurring inside a compressed
+  payload silently loses the rest of the log, as though the loss were occurring. The mechanism is
+  confirmed twice: `zstdDecompressSync` returns partial plaintext rather than throwing on a truncated
+  frame, and the fix round's hand-built three-frame fixture reproduces the end-to-end effect. The
+  incidence on the real corpus is zero. Measured in one pass over the operator's live web session log
+  at 6,192,542 bytes: 15,274 frame magic occurrences against 15,274 real frame starts by a structural
+  RFC 8878 walk, so zero interior false boundaries, and zero trailing bytes after the walk. The old
+  splitter was never wrong on this data; it was one unlucky byte sequence away from silent
+  truncation with no error. The fix stands on that basis rather than on an observed loss.
+- **Acceptance criterion 7 is satisfied.** `dsh_tail` was run by hand against the operator's real
+  session log at `~/.dsh/sessions/--D-DeepSeekHarness--/`, exit 0, while a live process was appending
+  to the file. It read 24,052 events, 7 turns, 926 steps, 21 compactions, recovered all three
+  permission values (`danger-full-access`, `danger-full-access`, `never`) and returned 40 non-chunk
+  lines. The Chapter quotes the first two lines.
+- **An instrument error of the orchestrator's own, caught before it reached a Chapter.** A first
+  reading of that log appeared to show 11,646 duplicate sequence numbers, which would have read as a
+  corrupt or double-written file. It was an artifact: 11,732 of the 24,229 records carry no `seq`
+  field at all, and a Set keyed on the field collapsed every one of them into a single `undefined`
+  bucket. Re-run with a presence guard, zero sequence values repeat anywhere. Banked to the operator
+  memory tier as `counting-distinct-over-an-optional-field-invents-duplicates`.
+- **The plan gains a `Standing Brief Amendments` block**, under the recurrence rule. The class that
+  earned it is worker-controlled or wire-sourced text crossing into a channel attribute: round 1
+  found it at `files_touched`, and round 2 found all three lenses reporting it again at `session` and
+  `finish_reason`, which had skipped the neutralizer round 1 installed. Two instances of one class is
+  the workflow generating the bug, so the guard moves to the `meta` builder and the rule now binds
+  every section opened after it. Two further entries ride with it: a guard at a hostile boundary is
+  imported rather than reimplemented, and a stored identifier is untrusted input the moment it
+  becomes a path segment. The block sits above `## Sections of Work` and so inside the
+  approval-scoped fingerprint; it is approval drift, recorded here and in the Chapter.
+- **Two spec corrections, both drift the round surfaced.** The `dsh_tail` row said the default filter
+  drops three chunk types; it drops four, `reasoning-chunks` being a real vendor type, so the code was
+  right and the document was stale. And section 2's acceptance criterion 2 was a one-second wall-clock
+  bound, which failed at 2086 ms on a contended box while the property it stood for held; the
+  criterion is now the ordering it was reaching for, that the receipt returns while the worker is
+  still streaming and before any channel push for that turn.
+- **Section 2's scope is widened by one file**, `bridge/tools/sdk-smoke.ts`, to fold in the
+  de-duplication of the child-environment guard that now has two producers. That file is section 1's,
+  so the widening is approval drift and is recorded as such.
+
+**Review round 2 adjudicated.** Eight Majors and ten Minors accepted, none discarded; four findings
+were dispositioned as already-owned rather than acted on (the `dsh_prompt` auto-allow decision, which
+is the operator's and section 4's; the LAN address and workspace-key path already committed in this
+document; the `unhandledNotifications` duplication with the relay, which is spec-directed and Out of
+Scope; and the environment denylist-versus-allowlist question, which is a design change rather than a
+defect). The highest-value finding was found independently by two lenses, both citing vendor source
+rather than inferring: `stop()` retries a runtime handle whose `close()` already failed, but the SDK
+client memoizes with `this.closeTask ??= this.performClose()`, so the retry returns the same rejected
+promise forever and can never succeed, while the loop's throw-on-first-failure leaves the current live
+runtime unclosed. One failed shutdown therefore leaks an unsandboxed worker and makes every later
+`dsh_kill` a permanent error. One security Major stands beside it: the receipt under-reports what the
+worker did, missing files written through the shell and everything any subagent session performed,
+while the server's own instructions tell the model it names the files written and counts the commands
+run.
+
+**Incident update.** The operator's DeepSeek Harness web session, killed mid-turn in section 2's first
+fix round by a machine-wide `taskkill`, is running again: port 3080 is listening and the session log
+is being appended to. The rollback this session declined to perform, on the ground that it was an
+outward act in another session's working directory, was performed by someone else. Fix round 1 also
+reported that it killed three node processes by explicit PID, all its own, and issued no kill by image
+name, which is the prohibition the incident earned working as intended.
+
+**Next action per section.** Section 2: adjudicate fix round 2, run the whole gate with the contention
+lane beside it, then close with a Chapter and commit and push. Sections 3 through 6: unstarted, in
+order, with section 4 still gated on the operator's answer to the Open Questions entry about whether
+`dsh_prompt` should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's eleven `bridge/` files, untracked, and this plan doc.
+The doc is committed at this boundary but deliberately **not** pushed: a push to this repository's
+main is an install surface that takes the whole gate, and the tree is mid-fix-round, so a gate run now
+would read a half-edited worktree. The commit is the durable recovery point; the push rides with the
+section close once the gate is green. Commit and push are separate steps by doctrine, and this is that
+separation used deliberately rather than a deferral of the commit model.
