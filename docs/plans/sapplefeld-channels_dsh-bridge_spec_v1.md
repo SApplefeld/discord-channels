@@ -287,9 +287,10 @@ Every file that grep returned appears in some section's Files in scope or under 
 
 Every entry here binds every section opened after it was written, dispatched or inline.
 
-- **Neutralize and bound every string that crosses into a channel attribute, at the boundary rather
-  than at the caller.** A channel event's `meta` values are rendered into the Claude session as XML
-  attributes, and Claude Code does not escape them, so any value carrying a quote, an angle bracket,
+- **Neutralize and bound every string that crosses into a channel event, attributes and body alike,
+  at the boundary rather than at the caller.** A channel event's `meta` values are rendered into the
+  Claude session as XML attributes, and Claude Code does not escape them, so any value carrying a
+  quote, an angle bracket,
   an ampersand or a control character can end the attribute and inject markup the model reads as
   structure. Worker-controlled text is the obvious source, but it is not the boundary: a value copied
   off the runtime wire, a name the calling model chose, and a reason string the vendor may extend
@@ -297,15 +298,30 @@ Every entry here binds every section opened after it was written, dispatched or 
   `meta` builder, applied to every value it emits, never to the one field whose defect was found
   first. This entry exists because that defect was found twice at two different fields in two
   consecutive review rounds, which is the workflow generating the bug rather than two unlucky sites.
+  The body is the same boundary and was the class's third site. Claude Code's own channels reference
+  documents `content` as the body of the `<channel>` tag and states no escaping of it anywhere, and
+  the defence it does describe is a sender check rather than an escape, so a body carrying a closing
+  channel tag can end the envelope and forge a second event with attributes of its own choosing. The
+  builder therefore neutralizes the envelope's own delimiters in `content` too. A channel whose
+  sender is an allowlisted human is gated by that allowlist; one whose sender is an unsandboxed
+  worker reading arbitrary files and command output is not gated at all, which is why this bridge
+  cannot inherit the assumption the relay runs on.
 - **A guard at a hostile boundary is a property of the boundary, so a second caller imports it rather
   than reimplementing it.** Before writing a call that spawns a process, builds a child environment,
   joins a path from stored data, or sanitizes text bound for a trusted channel, grep the tree for
   that boundary's other callers and reuse the guard one of them already exports. Where the owning
   file sits outside the section's `Files in scope:`, name the file, the guard and the export it needs
   in the report and leave it unedited rather than cloning it.
-- **A stored identifier is untrusted input the moment it becomes a path segment.** Anything read back
-  from the bridge's own state file, session ids included, is shape-checked before it is joined into a
-  filesystem path.
+- **Every stored value is untrusted input the moment it reaches the filesystem, and the check is
+  owed field by field rather than to the field that earned the rule.** Anything read back from the
+  bridge's own state file is shape-checked before it is joined into a path, opened, statted, or
+  handed to a child process as a working directory. Enumerate the record's fields at the read and
+  say which guard each one takes; a field admitted on `typeof value === "string"` alone has not been
+  checked. This entry was first written naming session ids, and the next round found the same class
+  at the stored workspace path, which had been admitted as a bare string and reached `statSync` and
+  the spawn. An absolute-path test is not that guard on Windows: a UNC path is absolute, so the
+  first filesystem call on it opens an outbound connection to a host the caller named, under the
+  operator's credentials, before any refusal can run.
 
 ## Sections of Work
 
@@ -449,8 +465,15 @@ Acceptance:
   against the session's `cwd`, since the record the plan exists to write sits in one directory while
   the worker runs in a worktree.
 
+`dsh_prompt`'s own schema is this section's too. Section 2 built it with `additionalProperties: false`
+and without `record`, `party` or `counterparty`, correctly, because nothing read them yet; the wire
+therefore refuses those three arguments today, so adding them to the schema is part of making the
+record work rather than a separate tidy-up. Section 2's review round surfaced this and it is recorded
+here rather than fixed there.
+
 Files in scope: `bridge/record.ts`, `bridge/record.test.ts`, `bridge/protocol.ts` (the tool schema
-for `dsh_record_rotate`), `bridge/index.ts` (dispatch).
+for `dsh_record_rotate`, and `dsh_prompt`'s `record`, `party` and `counterparty` arguments),
+`bridge/index.ts` (dispatch).
 
 Tests: lock the append-only property (an existing section is never altered), the refusal during a
 turn, the relative-path and directory refusals, and the header carry-over on rotate.
@@ -525,6 +548,15 @@ Acceptance, read from the transcript and the filesystem, never from the exit cod
 - The record file holds exactly two sections in order, `## Reviewer` then `## DeepSeekHarness`,
   ending `NEXT: DeepSeekHarness` and `NEXT: Reviewer`.
 - The worker's session appears in `~/.dsh/sessions/` under the throwaway workspace key.
+- The scope key the bridge wrote into its state file is read and recorded. Section 2 keys that file
+  by the bridge process's own working directory so two projects naming one worker keep their own
+  sessions, and that this directory is the Claude session's project directory is inferred from the
+  relay's launch shim spawning with an inherited working directory rather than confirmed: nothing in
+  the channel contract states what Claude Code hands a plugin's MCP child. This run is what settles
+  it. If the key turns out to be a fixed directory, every session shares one scope, the collision the
+  scope exists to prevent returns silently, and the fix is a different discriminator in one function
+  (`defaultScope` in `bridge/harness.ts`); the behaviour degrades to a single shared scope rather
+  than losing data either way.
 
 Files in scope: `bridge/tools/live-e2e.ps1`, the Chapter (`.gitignore`'s `.kit/` line already
 covers the output).
@@ -946,3 +978,117 @@ main is an install surface that takes the whole gate, and the tree is mid-fix-ro
 would read a half-edited worktree. The commit is the durable recovery point; the push rides with the
 section close once the gate is green. Commit and push are separate steps by doctrine, and this is that
 separation used deliberately rather than a deferral of the commit model.
+
+### Interim board 4 - 2026-09-07
+
+Written at the compaction gate's signal, 68 offers held over forty minutes, with section 2's third
+review round adjudicated and its third fix round in flight. The closure-drought floor is met twice
+over: three review rounds have now been adjudicated on this section with no section closing.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented and has been through three full three-lens review rounds, all adjudicated; its third fix
+round is in flight. Sections 3 through 6 are unstarted. Section 2's twelve untracked `bridge/` files
+and its one modified tracked file are uncommitted.
+
+**Live dispatches.**
+
+- `implementer-opus`, section 2 fix round 3, carrying seven Majors and fifteen Minors from the round
+  below, the two sharpened Standing Brief Amendments, the standing prohibition on killing any process
+  it did not spawn, and the box-budget clause with this session's identity substituted. It is told to
+  run targeted per-file lanes only and leave the whole gate to the orchestrator. Four findings are
+  named in its brief as explicitly not its work, so it does not spend a round rediscovering them.
+
+Round 3's three lenses (`adversarial-reviewer`, `blind-reviewer`, `security-reviewer`, all at fable
+through the Agent tool) have completed and are adjudicated. All three were confirmed to have run at
+the tier they were dispatched at rather than silently downgraded, read from their own transcripts.
+Verdicts were APPROVED_WITH_CONCERNS, CHANGES_REQUIRED and CONCERNS, with **no Critical surviving
+adjudication**, so the tier-escalation ladder does not fire and the section stays at opus.
+
+**Gate baseline.** Unchanged and not re-run since Interim board 2: whole gate taken
+2026-09-07T19:59:14Z on this checkout with no foreign uncommitted files, lint exit 0, test exit 0,
+tests 1609, pass 1608, fail 0, skipped 1, duration 147.6s, against a committed baseline of
+1582/1581/0/1. Fix round 2 reported its own per-file lanes at env 3, protocol 11, log 12, index 8,
+redact 8, harness 21, all exit 0, against its starting protocol 9, log 8, index 7, harness 15, so
+plus 21 tests on those lanes. Those are the implementer's numbers on the implementer's tree and are
+not a whole-gate reading; the close gate is the orchestrator's and has not run. The machine's heavy
+slot was taken by a peer at 2026-09-07T21:54:56Z for 1800 seconds, so it is expected free from about
+22:25Z; an absent claim is nobody having claimed the box rather than evidence the box is free, so the
+slot is taken under the protocol at the gate rather than assumed.
+
+**Rulings adopted since the last boundary.**
+
+- **The claim that Claude Code escapes a channel event's body is unsupported, and the amendment is
+  widened to cover the body.** The bridge's code and the relay's alike assert that Claude Code owns
+  the envelope and the escaping inside it. Claude Code's published channels reference documents
+  `content` only as the body of the `<channel>` tag and states no escaping of content or meta
+  anywhere; what it does describe, for untrusted senders, is a sender check rather than an escape,
+  and it names an ungated channel as a prompt injection vector outright. The asymmetry is the tell:
+  the same document says the client sanitizes `description` and `input_preview` when relaying a
+  permission prompt outward to a channel, so the product sanitizes the channel-facing direction and
+  documents nothing for the session-facing one. Standing Brief Amendment 1 is therefore widened from
+  the attributes to the whole event, attributes and body alike, this being the class's third site.
+  The exposure is not equal across the two channels that share the pattern: the relay's senders are
+  an account allowlist, which is exactly the defence the vendor names, while this bridge's sender is
+  an unsandboxed worker reading arbitrary files and command output and is not gated at all. So the
+  bridge takes the guard in this section and the relay's version is routed to the backlog as a
+  decision for the operator rather than a defect fixed on sight.
+- **Standing Brief Amendment 3 is sharpened, because it was under-applied at the first opportunity.**
+  It was written in round 2 naming stored session ids. Round 3 found the same class at the stored
+  workspace path, which was admitted on a bare string type check and reached `statSync` and the
+  spawned child's working directory. The amendment now requires the check field by field, with the
+  record's fields enumerated at the read and each one's guard named, and it records that an
+  absolute-path test is not that guard on Windows: a UNC path is absolute, so the first filesystem
+  call on it opens an outbound connection to a caller-named host under the operator's credentials
+  before any refusal can run. An amendment naming an example rather than an enumeration is read as
+  covering the example.
+- **Two findings correctly belong to other sections and are recorded there rather than fixed here.**
+  Section 3 gains the `dsh_prompt` schema arguments: section 2 built that schema with
+  `additionalProperties: false` and no `record`, `party` or `counterparty`, correctly, since nothing
+  read them yet, which means the wire refuses all three today and section 3's brief must carry the
+  schema edit or its own feature is unreachable. Section 5 gains an acceptance line reading the scope
+  key the bridge writes into its state file, which settles by observation the one claim this section
+  leaves inferred.
+- **The scope key stays inferred, deliberately.** Section 2 keys its state file on the bridge
+  process's own working directory so that two projects naming one worker keep their own sessions.
+  That this directory is the Claude session's project directory is inferred from the relay's launch
+  shim spawning with an inherited working directory; nothing in the channel contract states what
+  Claude Code hands a plugin's MCP child. Three parties named it independently, the implementer among
+  them. It is accepted as inferred because the failure mode is bounded: a fixed directory would mean
+  every session shares one scope, which is today's behaviour rather than data loss, and the fix is a
+  different discriminator in one function.
+
+**Review round 3 adjudicated.** Seven Majors and fifteen Minors accepted. Four were dispositioned as
+already-owned rather than acted on: the two section handoffs above, the `fast-uri` and `qs`
+advisories that arrive through the MCP SDK and are pre-existing and already parked, and the plan
+document's own LAN address, which is on the operator's close-out list. Three Majors were confirmed by
+the orchestrator against the code rather than taken on report. A runtime can become bound and
+unkillable: `spawn` binds the workspace before the prompt request is made, and a non-timeout
+rejection on a first prompt deletes the only session record, after which every `dsh_kill` answers
+"No session named" and every prompt naming another workspace is refused, with nothing the model can
+call to recover it. The workspace path admits a UNC spelling and the stored copy is never
+shape-checked, which is amendment 3's class above. And a unit test asserts on an install the
+repository does not carry, `bridge/runtime/node_modules` being gitignored and produced only by a
+separate install while the root test glob collects the file regardless, so the suite reddens on a
+fresh clone for an environment reason. Two lenses independently found that a control in the test
+suite cannot reach the code it claims to exercise, the fake writing its foreign idle before the
+bridge subscribes, so the test is green whether the bridge handles the case or not: an absence check
+whose silence was never earned.
+
+**A note on the sidecar's readings.** The judgment sidecar raised roughly a dozen verdict alerts
+across this stretch and one was checked in full: it reported that verifying the unkillable-runtime
+finding had diverged, on the ground that the code shown "explicitly implements a working `kill()`
+method", which is the finding rather than a refutation of it, the defect being precisely that
+`kill()` refuses when the session map is empty. Consistent with the operator record putting the
+sidecar at about one fair alert in three.
+
+**Next action per section.** Section 2: adjudicate fix round 3, take the heavy-process claim under
+the protocol, run the whole gate with the contention lane beside it, then close with a Chapter and
+commit and push. Sections 3 through 6: unstarted, in order, with section 4 still gated on the
+operator's answer to the Open Questions entry about whether `dsh_prompt` should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's twelve untracked `bridge/` files and its one modified
+tracked file. This plan doc and `docs/backlog.md` are committed at this boundary and deliberately
+**not** pushed, on the same reasoning as the last one: a push to this repository's main is an install
+surface that takes the whole gate, and the tree is mid-fix-round, so a gate run now would read a
+half-edited worktree. The commit is the durable recovery point and the push rides with the section
+close once the gate is green.

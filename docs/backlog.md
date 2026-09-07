@@ -452,6 +452,21 @@ and none carries a date of its own. An item added from here on carries `(parked 
   unestablished. The isolated runtime install at `bridge/runtime/` audits clean at zero
   vulnerabilities, so this is a pre-existing condition of the relay's own dependency, not new debt.
 
+- Decide whether the relay should neutralize the channel envelope's own delimiters in the `content`
+  it pushes (parked 2026-09-07, surfaced by the DSH bridge plan's third review round on a sibling
+  channel and routed here because the relay serves a different goal). `relay/protocol.ts:26` states
+  that Claude Code owns the envelope and the escaping inside it. Claude Code's published channels
+  reference does not support that: it documents `content` as the body of the `<channel>` tag, states
+  no escaping of content or meta anywhere, and the defence it describes for untrusted senders is a
+  sender check rather than an escape. So a message body carrying a closing channel tag may be able to
+  end the envelope and forge a second event with attributes of its own choosing. What holds the relay
+  today is exactly the defence the vendor names: its senders are an account allowlist, so the forge is
+  available to an allowlisted account rather than to the public, which is why this is a decision to
+  weigh rather than a defect to fix on sight. Two things would settle it: reading a real event whose
+  content carries the delimiter to see what the session actually renders, and the operator's call on
+  whether an allowlisted sender is inside or outside the relay's threat model. The bridge takes the
+  guard regardless, its sender being an unsandboxed worker rather than a person.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
