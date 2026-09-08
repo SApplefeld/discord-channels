@@ -186,6 +186,21 @@ changes. `npm view` on 2026-09-07 reports `@deepseek-ai/dsh` at `0.1.2-rc.1` (di
 and `@deepseek-ai/dsh-sdk-client` at `0.0.1-rc.1`. The bridge pins exact versions, and section 1
 records the versions it validated against in its Chapter.
 
+**One bridge per scope and session name; the bridge guards nothing about a second one.** The
+operator ruled at the keyboard on 2026-09-08 (recorded by the CHANNELS Expert seat, session
+b97861ad, and confirmed to the Worker directly) that two Claude sessions in one project directory
+acting as workers under the same session name is operator error rather than a case the bridge
+defends against: the operator will not run that configuration, and if they did, the consequence
+would be theirs. So the state file carries no ownership lease, no process-liveness check and no
+claim protocol between bridges. Section 2's review rounds 8 through 20 had grown exactly that
+machinery from a reviewer's finding, one repair per round, and the ruling retires it rather than
+finishing it. What survives is narrower and turns on a value the worker runtime mints rather than
+one the bridge invents: a state-file write refuses to lay a different conversation identifier over a
+name that already carries one, so the case section 5 observes as inferred, two sessions in two
+directories whose scope key has collapsed to a single directory, refuses rather than runs two
+runtimes on one worker log. That survivor is recorded under Assumptions with its reversal, because
+it is the Worker's recommendation accepted as low-blast rather than a ruling of the operator's.
+
 ### Facts the implementer needs
 
 Each fact names the surface it was read from on 2026-09-07. A DSH path is a file in the
@@ -931,6 +946,10 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`, 
   or to the Reviewer session's mandate; the cutover is an operator act performed from section 6's
   runbook.
 - Sharing one DSH runtime between several Claude sessions; each bridge owns its own child.
+- Two Claude sessions in one project directory driving one worker session name at the same time.
+  The operator ruled on 2026-09-08 that this is operator error rather than a case the bridge
+  guards, so the state file carries no ownership lease and no liveness check between bridges; the
+  Decisions paragraph on one bridge per scope and name carries the reasoning.
 - Files the sweep returned that a second plugin does not change: the broker test files
   (`broker/board/card.test.ts`, `broker/board/events.test.ts`, `broker/discord/render.test.ts`,
   `broker/routing/outbound.test.ts`, `broker/tail.test.ts`), `broker/config.ts`,
@@ -970,6 +989,13 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`, 
 - assumed 2026-09-07 (default): the record path is not checked against the session's `cwd`;
   reversal: one containment check in `bridge/record.ts`, at the cost of refusing the real record
   when the worker runs in a worktree elsewhere.
+- assumed 2026-09-08 (the Worker's recommendation, accepted by the CHANNELS Expert seat as
+  low-blast and reversible rather than put to the operator): after the lease's removal the state
+  file keeps one compare-and-set on the conversation identifier, so a write that would lay a
+  different identifier over a name already carrying one refuses; this covers the scope-key
+  collapse section 5 observes as inferred, which is two sessions in two directories rather than the
+  operator error the ruling assumes away. Reversal: delete about a dozen lines and their test, and
+  name the residual hazard in `bridge/README.md` and the section 2 Chapter.
 
 ## Operator Verification
 
@@ -3076,3 +3102,42 @@ kaizen skill's own adjudication seats, and it is the note aimed at the wrong cau
 memories were stamped applied, one on how a ruling's prescription is narrower than its argument and one
 on registry staleness. Nothing else outside this repository was changed: this session wrote and deleted
 no heavy-process claim at this boundary, having proceeded under a foreign one.
+
+### Operator rulings on section 2 - 2026-09-08
+
+**Recorded by the CHANNELS Expert seat (session b97861ad) from the operator's keyboard decisions in
+that session, after a reading of Interim boards 2 through 17 and the findings files for rounds 6
+through 19.** The Worker confirmed the operator repeated all four rulings to it directly, so what
+follows is a record for the resuming reader rather than a relay.
+
+**What the reading found.** Twenty rounds on one section, flat at about four Majors a round from
+round 4 onward, with no Critical since round 6. The rounds fell into three phases with one generator
+each: rounds 1 to 7 hardened the channel envelope guard against a threat the product's own escaper
+already covers, settled by the round 6 consult; rounds 3 to 8 fixed turn-state-machine defects where
+two fixes introduced the next round's Critical; and rounds 8 to 20 grew an ownership lease on the
+state file from a round 7 finding, each round finding the previous round's repair open in a new way,
+seven times. The lease was in neither the Goal nor section 2's acceptance list. Prose and comment
+mismatches were Minors in every round read, so the severity rule held; Minors were nonetheless fixed
+per round at fable, eight to sixteen a round.
+
+**The rulings.**
+
+1. The lease's premise is out of scope: two sessions in one project directory under one worker name
+   is operator error, not a case the bridge guards. The lease and its liveness machinery are removed
+   by subtraction. Recorded under Decisions and Out of Scope; the narrow identifier compare-and-set
+   that survives is the Worker's recommendation, recorded under Assumptions with its reversal.
+2. Section 2's review loop is capped at round 20. Fix round 20 lands rather than being killed
+   mid-edit, then one subtraction round, then one bounded review round on that delta, the whole gate
+   with the contention lane, a Chapter, commit and push. A Major that round finds in code the
+   subtraction removed is not fixed; a Major elsewhere is fixed once, without a further review round.
+3. The section's code is committed at the cap, when the section closes and moves on.
+4. Minors are batched into the subtraction round; a Minor-only diff earns no re-review. This holds
+   for every later section of this plan.
+
+**For the kit rather than this plan, held for the operator's dialog rather than filed:** a review
+loop past three rounds is a signal and past five is a stop, and a round whose Majors all sit in code
+the previous fix round wrote calls for a design pass rather than another fix round. The tier ladder
+fires only on consecutive Criticals, which is why it never caught this.
+
+**Next action per section.** Unchanged from Interim board 17 except as ruling 2 states it. Sections
+3 through 6 unstarted, in order.
