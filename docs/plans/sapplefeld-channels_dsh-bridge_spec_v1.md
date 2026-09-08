@@ -1374,3 +1374,123 @@ same reasoning as the last four: a push to this repository's main is an install 
 the whole gate, and the tree is mid-fix-round, so a gate run now would read a half-edited worktree.
 The commit is the durable recovery point and the push rides with the section close once the gate is
 green.
+
+### Interim board 7 - 2026-09-08
+
+Written at the closure drought's floor again, and at the compaction gate's own signal. Section 2's
+sixth review round is adjudicated, no section has closed since Chapter 1, and this round's outcome
+sent the section to a consult rather than to a seventh fix round, which is the boundary worth
+recording before that ruling lands.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented and has been through six full three-lens review rounds, all adjudicated. Its sixth fix
+round, the first at the escalated fable tier, returned and was verified. Sections 3 through 6 are
+unstarted. Section 2's thirteen untracked `bridge/` files and its one modified tracked file are
+uncommitted.
+
+**Live dispatches.**
+
+- `consultant` at fable, on the premise behind the channel-envelope guard. It carries the six-round
+  history, both of this round's confirmed escapes, the paths, and this session's own lean labelled
+  explicitly as an instinct to test rather than to ratify. It is asked to rule between four
+  premises and to say what its ruling does not cover.
+
+Round 6's three lenses (`adversarial-reviewer`, `blind-reviewer`, `security-reviewer`, all at fable
+through the Agent tool) have completed and are adjudicated. Verdicts were CHANGES_REQUIRED,
+APPROVED_WITH_CONCERNS and BLOCK. First-turn readings were taken on all three and each was healthy:
+45, 29 and 37 non-synthetic assistant lines with a `<synthetic>` count of zero. The round was
+bracketed by a `git status --porcelain` capture before dispatch and again at return; the two are
+byte-identical, so no agent moved the tree under the round and the findings stand.
+
+**The escalated fix round did its job, and the section still did not close.** The round-5 Critical
+is fixed at the level of the invariant rather than the line, confirmed by this session reading the
+code rather than accepting the report. The per-turn bookkeeping record is now split in two: the
+fields describing this bridge's own prompt sit on one record that no notification touches, and
+everything the runtime has been observed doing sits in a second record that is replaced whole at
+every boundary by a single constructor. The field whose staleness was round 5's Critical moved
+inside that second record, so clearing it is no longer something an author has to remember; it is a
+property of the field having been declared there at all. Both review lenses traced every ordering
+the test double produces and found the invariant holding on each.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. This session's own
+targeted lane over the post-round-6 tree, measured 2026-09-08T00:10Z under a claim it held and
+released, read `bridge/protocol.test.ts` 17, `bridge/harness.test.ts` 40, `bridge/log.test.ts` 16,
+`bridge/index.test.ts` 10, `bridge/env.test.ts` 3, `bridge/fake-dsh.test.ts` 2,
+`bridge/redact.test.ts` 8 and `import-hygiene.test.ts` 5, every one exit 0, with `npx tsc --noEmit`
+exit 0. Those counts reproduce the fix round's own report exactly. The close gate is this session's
+and has not run. The machine's heavy slot was taken at 2026-09-08T00:09:24Z and released after
+verifying the claim's own session line; the claims directory is empty as of that release, and an
+absent claim is nobody having claimed the box rather than evidence the box is free.
+
+**The tier ladder fired a second time, and the comparison it demands sent the round the other way.**
+The ladder turns on two consecutive rounds carrying surviving Criticals, which rounds 5 and 6 both
+are. The comparison: round 5's Critical was the per-turn bookkeeping failing to clear a field it
+owned, and round 6's is the hostile-character class being hand-enumerated where the Unicode standard
+already names it. **No finding class repeats**, and round 5's fix demonstrably held. That is the
+branch where the tier is not the lever and the specification's own premise is the generator, so no
+bump was spent and a consult was convened instead. The point is doubly settled here, since the
+section was escalated to the strongest tier available last round and there is no bump left to spend.
+
+**Rulings adopted since the last boundary.**
+
+- **The round-5 Critical is fixed and confirmed against the code**, not taken on the implementer's
+  report. The bookkeeping split described above holds, and the deliberately red test written before
+  the round is green.
+- **A new Critical survived adjudication and was confirmed by this session's own probe.** The guard
+  that stops worker text from forging the envelope it rides in tests each character against a
+  hand-written list. The Unicode standard already names that class as a property, and the two do not
+  agree: of the 4,273 code points the standard's own ignorable, control, format and separator
+  properties admit, the hand-written list rejects 4,036. A closing tag spelled with one of them
+  between its letters passes the guard intact, which this session reproduced directly rather than
+  reading off a report.
+- **The clause written last round to stop this class was satisfied and did not stop it, and the
+  reason is structural.** That clause required the guard's test to derive its cases from the class
+  definition rather than enumerate the spellings a reviewer named. The test does exactly that, and
+  walks every code point to do it. But the yardstick the test measures against is built from the
+  guard itself, so it can only ever establish that the guard matches its own definition. It cannot
+  establish that the definition covers what the reader actually ignores, which is the question. The
+  derivation is a circle. This is what the consult is asked to rule on.
+- **The same class was found at a second site in the same file, by two lenses independently and
+  confirmed by probe.** The path that neutralizes the envelope's attributes compares raw characters
+  against an ASCII set, while the path that neutralizes the body folds each character to its
+  canonical form first. So by the file's own stated premise, every character whose canonical form is
+  an attribute delimiter passes the attribute guard untouched. This is the drift that the
+  derive-from-one-definition clause exists to prevent, occurring inside one file between two
+  functions.
+- **The threat's own premise is named as unconfirmed rather than assumed.** Every round has rated a
+  forged tag Critical, and that rating rests on how a model reads a tag spelled with unusual
+  characters. Nobody has tested it against a real session. The consult is asked whether the residual
+  risk is priced correctly at all, since settling the premise may be worth more than another round
+  of hardening against a threat whose reachability is inferred. Section 5 is a live end-to-end run
+  and is where it would be settled.
+
+**Review round 6 adjudicated.** One Critical, four Majors and sixteen Minors accepted; the full
+adjudicated brief is at the gitignored scratch path. Findings dispositioned rather than acted on:
+the accepted two-bridges-in-one-scope write merge, whose accepted cost the blind lens sharpened and
+which is carried to section 5's Chapter rather than redesigned here; and the six items already owned
+elsewhere, re-confirmed as not this round's. One Major is a premise question rather than a code
+change, on whether a session identifier persisted after a timed-out prompt is one the runtime holds:
+the file states one answer and the vendor's own documentation states the other, both cannot hold,
+and section 5's live run is where it is observable.
+
+**A note on what the lenses confirmed rather than found.** Recorded so a later round does not spend
+itself re-deriving it: the per-turn bookkeeping invariant holds on every ordering the test double
+produces; the shutdown and runtime-lost paths cannot both reap the same runtime; the state file's
+fields are each checked at the read; the compressed-log frame walker matches the format's published
+field sizes; and the three vendor-contract claims the state machine rests on were each settled
+against the vendor's own source rather than against its documentation.
+
+**Next action per section.** Section 2: adjudicate the consult's ruling against the code, dispatch
+the fix round it implies, re-review whatever the fix delta earns, take the heavy-process claim, run
+the whole gate with the contention lane beside it, then close with a Chapter and commit and push.
+Sections 3 through 6: unstarted, in order, with section 4 still gated on the operator's answer to
+the Open Questions entry about whether the prompt tool should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's thirteen untracked `bridge/` files and its one modified
+tracked file. This plan doc is committed at this boundary and deliberately **not** pushed, on the
+same reasoning as the last five: a push to this repository's main is an install surface that takes
+the whole gate, and the tree is mid-round with a confirmed Critical outstanding, so a gate run now
+would read a worktree whose known defect has not been fixed. The commit is the durable recovery
+point and the push rides with the section close once the gate is green.
