@@ -467,6 +467,22 @@ and none carries a date of its own. An item added from here on carries `(parked 
   whether an allowlisted sender is inside or outside the relay's threat model. The bridge takes the
   guard regardless, its sender being an unsandboxed worker rather than a person.
 
+- Export the broker's own filesystem-path guard so one boundary has one guard (parked 2026-09-08,
+  surfaced by the DSH bridge plan's eleventh review round on a sibling boundary and routed here
+  because the broker serves a different goal). Two path guards with different rules now sit at two
+  hostile boundaries in this repository: the broker's transcript-path guard is private to
+  `broker/intake.ts` and reads straight off a payload, while the bridge's workspace guard is a
+  stricter second implementation of the same class, refusing a hidden character class and requiring a
+  drive root. The bridge's own comment names the broker's guard rather than cloning it silently, so
+  this is not drift by the DSH plan's standing amendment on hostile-boundary reuse, whose bar is that
+  a second caller either imports the guard or names the file, the guard and the export it needs. This
+  is that naming. What it costs to leave is that the two can drift apart, and the third caller is
+  where that becomes expensive, since whichever guard that author copies decides what the boundary
+  refuses. The shape of the fix is to export the guard from `broker/intake.ts`, or to lift it into
+  `broker/sanitize.ts`, which already holds the shared title composition for the same reason. Which
+  of the two is right is unestablished and wants one read of both call sites, since the stricter
+  bridge rules may or may not be safe to impose on the broker's own payload path.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

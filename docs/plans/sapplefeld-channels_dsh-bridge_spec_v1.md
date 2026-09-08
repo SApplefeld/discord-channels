@@ -374,6 +374,24 @@ Every entry here binds every section opened after it was written, dispatched or 
   the claim file is read immediately before the spawn rather than at the top of the run, and a
   claim's age is taken from the file's modification time rather than from a line inside it.
 
+  The fifth instance arrived as the vendor's own prose rather than as a neighbouring stream, so the
+  rule has a third half. **A vendor document is not the runtime, in either direction: it cannot
+  settle a claim about behaviour, and its silence cannot settle one either.** A document is evidence
+  about what the vendor wrote down, which is a fact about the document. So a premise the code depends
+  on is marked inferred until the runtime has been observed, and it is marked inferred just the same
+  when a document agrees with it, because a document that agrees is the resembling artifact this
+  amendment is about. What a contradicting document does buy is a bound on confidence rather than a
+  measurement: it establishes that the premise is contested, which is enough to route the behaviour
+  to whichever branch is safe under uncertainty and to name the section that can observe the truth.
+  The instance: the bridge asserted throughout its comments and its README that a session id whose
+  log is absent is refused on the resume that would use it, and built a first-turn timeout branch on
+  that assertion, while the SDK it drives documents at `lib/index.js:335` and
+  `lib/types/client.d.ts:92` that an unknown id creates the session instead. Neither sentence was
+  ever measured against a runtime. Note what the earlier halves would have missed here: the first
+  half asks which surface the code reads at run time and the answer was correct, since the code does
+  read the runtime, and the defect was that nobody had read it yet while the prose spoke as though
+  somebody had.
+
 ## Sections of Work
 
 ### 1. SDK runtime spike and fixtures
@@ -2029,3 +2047,139 @@ otherwise as Interim board 10 states them.
 **Committed at this boundary, not pushed,** on the same reasoning as the last eight: a push to main
 is an install surface that takes the whole gate, and no gate has run since the restart. Section 2's
 uncommitted `bridge/` files were left untouched by this seat and are the Worker's.
+
+### Interim board 12 - 2026-09-08
+
+Written at the compaction gate's own signal, 42 offers held over 30 minutes, and at the closure
+drought's floor: section 2's eleventh review round is adjudicated, no section has closed since
+Chapter 1, and fix round 12 is in flight. **The seat changed hands at this boundary.** The Worker
+session bound to this plan from 2026-09-07T17:43Z died with fix round 10 in flight; the operator
+re-armed the goal at the keyboard on 2026-09-08 and it is now bound to a fresh Worker session
+(6ab14fb9), taken cold and delegated.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through eleven full three-lens review rounds, and is in fix round 12, the fifth
+at the escalated fable tier. Sections 3 through 6 are unstarted. Section 2's fifteen untracked
+`bridge/` files and its one modified tracked file are uncommitted.
+
+**Fix round 10 was adjudicated against the code and its own logs, because its report died with its
+session.** The dispatch was in flight when the predecessor session ended, so the report that would
+have carried its reasoning is gone, while its edits and its scratch logs survived. All eleven of its
+findings were verified closed by reading the code: the two lease call sites now both read the state
+file through `recall()`, the first-turn timeout persists only once the log is on disk, the tail keeps
+parsed events and renders only survivors, the container gains a whole-walk plaintext budget, the
+state write refuses a present-but-unreadable file, and the name bound landed at the shared `named()`
+helper rather than at each quoting site, which is a wider fix than the finding asked for. Its
+red-first discipline is recoverable from `.kit/round10-logs/`: 48 tests at 43 pass and 5 fail before
+the fix, 48 pass and 0 fail after, with two clean reruns. A report is not the only place a round's
+reasoning can live, and this round's survived because the code carries it: `recall()`'s own doc
+comment states amendment 4's rule and justifies its fallback, which is what the lost report was asked
+to explain.
+
+**One acceptance bullet was owed and unmet, and it is now built.** Interim board 11 added a bullet
+requiring the turn-end handler to hand the uncapped final response to its listeners while only the
+channel builder cuts, and left it for the resuming Worker to check. The cut was indeed at the builder
+alone, but there was no listener at all: the single turn-end outlet was `push`, which receives the
+notification after the builder has already cut it, so a section 3 record appender hooked there would
+have received truncated text. `BridgeOptions` now carries an optional `onTurnEnd`, called from
+`finish()` inside its own try and catch separate from the push's, so a channel event that cannot be
+sent does not also cost the record its answer and a record that cannot be appended does not swallow
+the event the model waits on. The pin the bullet asks for exists: one turn, an answer of 12,500 code
+points, the listener's text whole and the event's content cut to exactly the cap, with the two tied
+to one turn by their shared session, kind and turn number. It needed an answer-length flag on the
+stand-in runtime, since nothing could previously drive an answer past the cap.
+
+**Live dispatches.**
+
+- `implementer-fable`, section 2 fix round 12, dispatched with the explicit fable model override the
+  escalation authorizes. It carries the round-11 findings file under the gitignored scratch path
+  (five Majors, eight Minors, a ten-item not-your-work list), all four Standing Brief Amendments with
+  the instruction to re-read amendment 4 because it gained a third half minutes before the dispatch,
+  every standing prohibition, the red-first and byte-verified-restore discipline, the corrected test
+  runner, and the box-budget clause with this session's identity substituted.
+
+Round 11's three review dispatches have completed and are adjudicated.
+
+**Review round 11 adjudicated. No Critical from any lens**, which is the third consecutive round that
+can say so, so the tier-escalation ladder does not fire and fable remains the writer tier. Verdicts
+were CHANGES_REQUIRED, CHANGES_REQUIRED and CLEAR. The round was bracketed by a
+`git status --porcelain` capture before dispatch and again at return and the two are byte-identical,
+so no agent moved the tree under the round. Five Majors and eight Minors stand; the security lens
+returned CLEAR with three Minors and nothing above them.
+
+**The round found round 10's own fix defeating the lease it was built to protect, which is the
+fourth time in this section that a fix has broken the case it was written for.** `persistable()`
+writes only records whose owner is this process, and the lease reaches disk only at acceptance and at
+finish, so during a turn's in-flight window the file still carries the previous owner. `recall()`
+replaces the in-memory record with the file's copy unconditionally, so a second prompt for a name
+with a turn in flight puts the stale owner back, and the finishing turn's count and lease are then
+never written at all. Confirmed by this session against `persistable()`, both write sites and
+`recall()` before the finding was acted on. A second Major has the same shape at a different site:
+the first-turn timeout path calls `sessionLogFile` before `finish()`, and that function throws
+outright on an id failing its shape check and on an unreadable harness home, so the throw escapes the
+catch and leaves the turn in flight for the life of the process, which is this section's own named
+expensive failure.
+
+**Rulings adopted since the last boundary.**
+
+- **Standing Brief Amendment 4 gains a third half, under the recurrence rule, and this is its fifth
+  instance.** The new shape: a runtime claim settled against the vendor's own prose rather than
+  against a neighbouring stream. A vendor document is not the runtime in either direction, so it can
+  settle a claim about behaviour no better than its silence can, and a premise the code depends on is
+  marked inferred until the runtime has been observed, marked inferred just the same when a document
+  agrees with it. What a contradicting document buys is a bound on confidence rather than a
+  measurement: enough to route the behaviour to the branch that is safe under uncertainty and to name
+  the section that can observe the truth. Recorded here as the approval drift it is.
+- **The first-turn timeout keeps its session record, reversing round 10's forget branch on evidence
+  that arrived after it.** The bridge asserted throughout its comments and README that an id whose
+  log is absent is refused on the resume that would use it, and round 10 built a branch that forgets
+  such an id on that basis. The SDK documents the opposite verbatim at two paths, that an unknown id
+  creates the session. Neither sentence has been measured against a runtime, so the ruling is made on
+  the cost asymmetry rather than on either document: keeping costs at worst one session name that has
+  lost its conversation and is recovered by using another name, while forgetting costs at worst two
+  unsandboxed workers writing one workspace concurrently with the first answer routed to nobody,
+  which is the hazard the lease design exists to prevent. Reversal is one line if section 5's live run
+  finds unknown ids are in fact refused. The premise's own sentences are reworded to state the
+  refusal as inferred and to name the contradicting line, and section 5 is named as the section that
+  can settle it.
+- **A same-scope record loss is raised on two lenses agreeing.** The state write carries other
+  scopes through as raw parsed bytes by design and then rebuilds this scope from the validated map,
+  so a neighbour's record in this scope in a shape this version refuses is dropped and the rename
+  makes it permanent. The blind lens rated it Minor and the security lens rated it Minor at high
+  confidence; two independent findings on one line, with two sessions per project a supported case,
+  is what moves it into the fix round rather than the backlog.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. This session's own
+targeted verify lane on the post-round-10 tree, taken 2026-09-08T14:46:48Z under a claim it wrote and
+released, both exit codes read from the runs themselves: lint exit 0; the harness and stand-in lanes
+exit 0 with tests 51, pass 51, fail 0, duration 13.8s. That is the lane round 12 reports against. The
+close gate is this session's and has not run.
+
+**A false instrument caught before it did damage, worth carrying because its verdict is
+destructive.** The never-started reading for a dispatch was taken from the output path the Agent tool
+advertises, which on this machine is a zero-byte placeholder created at dispatch and never written
+again. It therefore produced the exact never-started shape, zero bytes and zero assistant lines, for
+a healthy agent, and that shape authorizes a TaskStop, which on a live implementer mid-edit leaves a
+half-written file with no author. Three memory records name this and were stamped applied. The real
+artifact is the agent's own transcript under the session's `subagents/` directory, which showed 7,280
+bytes of growth in eight seconds for the same dispatch.
+
+**Next action per section.** Section 2: adjudicate fix round 12's report against the code, re-review
+whatever the fix delta earns under the owed-round triggers, take the heavy-process claim, run the
+whole gate with the contention lane beside it, then close with a Chapter and commit and push,
+carrying the nine deferred doc-commit pushes with it. Sections 3 through 6: unstarted, in order.
+Section 4 is no longer gated on an Open Questions answer, the operator having answered the prompt
+tool's allow rule at the keyboard on 2026-09-08.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the last nine: a push to this
+repository's main is an install surface that takes the whole gate, and a fix round is editing the
+tree right now, so the gate cannot honestly run yet. The commit is the durable recovery point and the
+push rides with the section close. Section 2's sixteen uncommitted `bridge/` paths stay as they are.
+
+**Routed out of this plan.** The security lens named a path-guard export gap outside this section's
+files: the broker's own transcript-path guard is private and the bridge's workspace guard is a
+stricter second implementation of the same boundary. It is named in the code's own comment rather
+than silent, so it is not drift by amendment 2's bar, but two path guards with different rules now
+sit at two hostile boundaries. Routed to `docs/backlog.md` rather than fixed here.
