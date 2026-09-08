@@ -94,7 +94,9 @@ server's `instructions` string is a static literal, as `relay/protocol.ts` does 
 what the attributes mean and that the body is the worker's own text, data rather than steering.
 
 The record. When `dsh_prompt` carries a `record` path, the bridge appends
-`## <party> @ <ISO>` + the prompt text + `NEXT: <counterparty>` before sending, and on the turn's
+`## <party> @ <ISO>` + the prompt text + `NEXT: <counterparty>` once the runtime has accepted the
+prompt and before the receipt returns (never before sending, so a prompt the bridge refuses or the
+runtime rejects leaves the record untouched), and on the turn's
 end appends `## <counterparty> @ <ISO>` + the final response + `NEXT: <party>`. The record path is
 remembered per session name, so later prompts need not repeat it. Appends are atomic per section
 (one `appendFile` call per section, never a read-modify-write), and the file is created if absent.
@@ -468,6 +470,9 @@ Acceptance:
   `MAX_CHANNEL_CONTENT`, `kind` correct for idle, error, and kill-in-flight, no notification for a
   kill with no turn in flight, every meta key matching the identifier pattern, every meta value a
   string, and `files_touched` capped at `MAX_META_FILES` with the `+N` tail.
+- The turn-end handler hands the uncapped final response to its listeners, and only the channel
+  notification builder cuts at `MAX_CHANNEL_CONTENT`, so section 3's record append receives the full
+  text. Pinned: a final response longer than the cap reaches the turn-end listener whole.
 - `dsh_busy` is `true` between acceptance and the idle status and `false` outside it.
 - `dsh_prompt` with a `cwd` that differs from the remembered one for that name is refused, and
   stays refused after `dsh_kill`, the refusal naming the workspace the name belongs to and telling
@@ -504,10 +509,13 @@ Model: sonnet
 `bridge/record.ts`: the single-writer append the Approach defines, restated here so this section
 stands alone: the record file admits appends from the bridge alone, and every append arrives through
 `dsh_prompt` or the turn-end handler; `dsh_record_rotate` is the only move. `dsh_prompt` with a
-`record` argument appends the party section before sending and remembers the path for the session;
+`record` argument appends the party section once the runtime has accepted the prompt, never before,
+so a refused or rejected prompt leaves the record untouched, and remembers the path for the session;
 turn end appends the counterparty section from the same final response the channel carried, in
 full, not capped; `dsh_record_rotate(session, archive_path)` moves the file with `rename`, refuses
-while the session is in flight, and starts a fresh file carrying the original file's leading header
+while any session whose record path is the same file has a turn in flight (two names may share one
+record, so the refusal keys on the file rather than on the named session), and starts a fresh file
+carrying the original file's leading header
 block, meaning every byte before the first line that begins `## `. Timestamps are the real clock in
 ISO 8601 UTC. Section text is written verbatim: the bridge never edits, summarizes, or escapes what
 either party wrote.
@@ -517,7 +525,9 @@ Acceptance:
 - A prompt with `record` produces exactly one appended section ending in `NEXT: <counterparty>`,
   and the finished turn exactly one more ending in `NEXT: <party>`, byte-identical to the inputs
   between the header and the `NEXT:` line.
-- A rotate during an in-flight turn is refused with a message naming the session; after the turn it
+- A prompt the bridge refuses (a `cwd` mismatch) or the runtime rejects appends nothing to the record.
+- A rotate during an in-flight turn is refused with a message naming every session holding a turn on
+  that file, the idle name that asked included when another name shares the path; after the turn it
   moves the file and the new file's first bytes equal the old header block.
 - A missing record file is created. A `record` or `archive_path` that is relative, or that names an
   existing directory, is refused; the path is otherwise the caller's choice and is not checked
@@ -535,7 +545,8 @@ for `dsh_record_rotate`, and `dsh_prompt`'s `record`, `party` and `counterparty`
 `bridge/index.ts` (dispatch).
 
 Tests: lock the append-only property (an existing section is never altered), the refusal during a
-turn, the relative-path and directory refusals, and the header carry-over on rotate.
+turn including the shared-path case (two names, one record, one in flight), the refused prompt that
+appends nothing, the relative-path and directory refusals, and the header carry-over on rotate.
 
 ### 4. Plugin packaging and launch
 
@@ -552,8 +563,20 @@ sibling of `New-ChannelMcpConfig`) and appends `plugin:dsh-bridge@sapplefeld-cha
 `--channels` entry list; when not set, nothing about the launch changes. `hooks/settings-fragment.json`
 gains the six allow rules (`dsh_prompt`, `dsh_status`, `dsh_busy`, `dsh_tail`, `dsh_kill`,
 `dsh_record_rotate`) in the plugin-scoped form, and `install/Install-Functions.ps1`'s allowed-rule
-list gains the same six so the installer merges them. `docs/install.md`'s managed-settings example
-gains the plugin's `allowedChannelPlugins` row.
+list gains the same six so the installer merges them; the sixth, `dsh_prompt`, is composed on the
+operator's answer of 2026-09-08 recorded under Open Questions (auto-allow, the chain recorded as an
+accepted risk by section 6), never on this section's own reading. The install path gains the second
+plugin wherever it names the first: `install/Install-All.ps1`'s `Install-ChannelPlugin` installs
+`dsh-bridge@sapplefeld-channels` beside `relay@sapplefeld-channels` and checks both in the plugin
+list, `install/Install-Elevated.ps1`'s managed-settings merge adds the
+`{ marketplace: 'sapplefeld-channels'; plugin: 'dsh-bridge' }` row beside the relay's, and
+`install/Install-All.test.ts` pins both rows and both installs. `docs/install.md`'s managed-settings
+example gains the plugin's `allowedChannelPlugins` row, and its sentence that `Install-All.ps1`
+installs and allowlists the plugin says plugins. This section also installs the plugin on this host
+with `claude plugin install dsh-bridge@sapplefeld-channels` (after `claude plugin marketplace add`
+for this checkout where the registration is stale) and records the command and its result in the
+Chapter, so section 5's run meets an installed plugin rather than an allowlist refusal it cannot
+repair from inside its own scope.
 
 Acceptance:
 
@@ -564,13 +587,18 @@ Acceptance:
 - A new `bridge/allow-rules.test.ts` pins the six rule names against the fragment and against the
   tool names in `bridge/protocol.ts`, and `install/Install-Functions.test.ts` pins them against the
   installer's list.
+- `install/Install-All.test.ts` pins the managed-settings allowlist as exactly the relay row and the
+  bridge row, and the installer as installing and checking both plugins, and passes.
 - `npm run lint` and `npm test` pass.
 
 Files in scope: `plugins/dsh-bridge/.claude-plugin/plugin.json`, `plugins/dsh-bridge/.mcp.json`,
 `plugins/dsh-bridge/launch.mjs`, `.claude-plugin/marketplace.json`, `plugins/manifest.test.ts`,
 `plugins/launch-shim.test.ts`, `wrapper/Enter-ClaudeSession.ps1`, `wrapper/launch-line.test.ts`,
 `hooks/settings-fragment.json`, `install/Install-Functions.ps1`, `install/Install-Functions.test.ts`,
-`install/Install-Host.test.ts`, `bridge/allow-rules.test.ts`, `docs/install.md`.
+`install/Install-Host.test.ts`, `install/Install-All.ps1`, `install/Install-Elevated.ps1`,
+`install/Install-All.test.ts`, `bridge/allow-rules.test.ts`, `docs/install.md`. The three `install/`
+files after `Install-Host.test.ts` entered this scope at the 2026-09-08 plan review (Interim board
+11) and left `## Out of Scope` the same day.
 
 Tests: the cross-file pins are the tests; the silent failure they guard is a channel refused at
 launch with the session starting anyway, which is the same failure `plugins/manifest.test.ts`
@@ -590,12 +618,16 @@ channel event or a timeout of 20 minutes elapses, then closes stdin. The first s
 Claude to call `dsh_prompt` with a `record` path in a throwaway workspace and a small task for the
 worker, to call `dsh_busy` once, then to wait for the channel event and report what arrived. The
 script honors `.kit/RUNNING` in `D:\DeepSeekHarness` (it must not start while that file exists,
-since the worker shares the Qwen host and its live tests share the machine).
+since the worker shares the Qwen host and its live tests share the machine). The script also takes
+the machine's heavy-process claim before launching and releases it after, per the role skill's claim
+protocol; the `.kit/RUNNING` check is additional to that claim, never the boundary.
 
 Acceptance, read from the transcript and the filesystem, never from the exit code alone:
 
-- The startup notice registered the channel (the "Channels" line names
-  `plugin:dsh-bridge@sapplefeld-channels`), or, if the allowlist refused it, the Chapter records the
+- The channel registered: the "Channels" line of the startup notice names
+  `plugin:dsh-bridge@sapplefeld-channels`, read from the interactive fallback launch below, or from
+  the `-p` transcript only if that output format carries the notice, which is not assumed. If the
+  allowlist refused it, the Chapter records the
   refusal text and the run is repeated with `--dangerously-load-development-channels`, with the
   install doc updated to say which route this host takes and why.
 - The transcript contains a `dsh_prompt` tool result carrying a session id, a `dsh_busy` result of
@@ -616,8 +648,9 @@ Acceptance, read from the transcript and the filesystem, never from the exit cod
   scope exists to prevent returns silently, and the fix is a different discriminator in one function
   (`defaultScope` in `bridge/harness.ts`); the behaviour degrades to a single shared scope rather
   than losing data either way.
-- The reader premise is measured rather than assumed. One extra prompt in the same run has the
-  worker emit a body carrying four forged-tag spellings: a `<system-reminder>` opening tag, a
+- The reader premise is measured rather than assumed. One extra prompt in the same run, sent under a
+  second session name with no `record` argument so the two-section record criterion above stays
+  untouched, has the worker emit a body carrying four forged-tag spellings: a `<system-reminder>` opening tag, a
   closing channel tag whose letters are fullwidth, one whose angle brackets are the mathematical
   lookalikes, and one whose `c` is the Cyrillic letter. The transcript is then read for whether the
   session treated any of them as structure rather than as text. This is the only observation that
@@ -650,7 +683,10 @@ relay as the second channel; `docs/security-model.md` gains the bridge's egress 
 prompt text, every tool result the worker sees (the contents of files it reads and the output of
 commands it runs), and its own responses travel in cleartext over the LAN to the llama.cpp host at
 `192.168.58.245:11434`, and the record file is written on the local disk with both parties' text
-verbatim. `docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
+verbatim. The same document's allow-rule paragraph (the one stating that one rule is merged into the
+user-level settings file) is rewritten to count the bridge's six rules beside the relay's one, and
+the `dsh_prompt` chain the Open Questions entry describes lands under its accepted-risks heading as
+the operator's 2026-09-08 answer. `docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
 plugin, with the reason: from that build onward Claude Code escapes a channel event's attributes
 and disarms a forged closing channel tag in its body, and the bridge's own guard is the second
 layer under it; below that floor the bridge's guard is the only layer, which is a narrower defence
@@ -676,8 +712,11 @@ Disclosure: nothing; every persona is the operator or the operator's own session
 Acceptance:
 
 - `docs/dsh-bridge.md` exists and every tool and attribute it names matches `bridge/protocol.ts`
-  (a test in `bridge/protocol.test.ts` reads the doc and pins the six tool names and the meta keys).
-- The security model's egress paragraph names the host and port from `~/.dsh/settings.yaml`.
+  (a test in `bridge/protocol.test.ts` reads the doc, pins the six tool names and the meta keys, and
+  asserts that no other `dsh_`-prefixed identifier or `meta` key appears in it).
+- The security model's egress paragraph names the host and port from `~/.dsh/settings.yaml`, its
+  allow-rule paragraph counts seven rules across two plugins, and its accepted-risks list carries the
+  `dsh_prompt` entry.
 - `docs/README.md`'s reference table has the row; the Plans table row for this plan is present
   until the close-out moves it.
 
@@ -701,8 +740,7 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`, 
 - Files the sweep returned that a second plugin does not change: the broker test files
   (`broker/board/card.test.ts`, `broker/board/events.test.ts`, `broker/discord/render.test.ts`,
   `broker/routing/outbound.test.ts`, `broker/tail.test.ts`), `broker/config.ts`,
-  `install/Install-All.ps1`, `install/Install-Elevated.ps1`, `install/Install-Host.ps1`,
-  `install/Install-All.test.ts`, `docs/operations.md`, `docs/backlog.md`, `README.md`,
+  `install/Install-Host.ps1`, `docs/operations.md`, `docs/backlog.md`, `README.md`,
   `relay/README.md`, `relay/index.ts`, `relay/permission.test.ts`, `relay/reply-permission.test.ts`,
   `smoke.test.ts`, and the relay's own plugin files under `plugins/relay/`.
 
@@ -761,7 +799,14 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`, 
   `--channels`? Section 5 reads the startup notice; `docs/install.md` records the answer either way.
 - Does a `-p` session with stdin held open receive channel events? Section 5 answers, with the
   interactive fallback stated there.
-- Should `dsh_prompt` be auto-allowed, and does the security model record what it composes? Raised
+- ANSWERED 2026-09-08 (operator, keyboard; recorded by the CHANNELS Expert seat at the plan review):
+  auto-allow, with the chain recorded as an accepted risk. The reasoning the operator accepted: the
+  Reviewer session that drives the worker already runs with Bash pre-approved, so text able to steer
+  it into one `dsh_prompt` call could steer it into Bash today, and a per-call prompt would add a
+  click to every round while closing nothing; the workspace-allowlist option confines where the
+  worker starts rather than what it reaches. Section 4 composes the rule on this answer and section 6
+  records it. The question as it stood: should `dsh_prompt` be auto-allowed, and does the security
+  model record what it composes? Raised
   by section 2's security review and carried here because it is an operator decision rather than an
   implementation choice, and because section 4 is what makes it live. The worker runs as the
   operator with no sandbox and approval `never`, which the operator has approved. What no document
@@ -1935,3 +1980,52 @@ addition: a push to this repository's main is an install surface that takes the 
 round is editing the tree right now, and the machine's heavy slot is held by another session, so the
 gate cannot honestly run yet. The commit is the durable recovery point and the push rides with the
 section close.
+
+### Interim board 11 - 2026-09-08
+
+**Plan review, run once over the whole spec after a machine hard restart, by the CHANNELS Expert
+seat (session b97861ad) while no session held the leash.** The kit's `plan-reviewer` agent,
+dispatched at fable, effort high, through Workflow with the spec path alone, returned
+`READY_WITH_FINDINGS`: 11 findings, 4 Major and 7 Minor, none Critical. Every finding resting on a
+repository claim was confirmed against the file before adjudication (`install/Install-Elevated.ps1`
+lines 59 to 64, `install/Install-All.ps1` lines 54 to 72, `install/Install-All.test.ts` lines 44 to
+46, `docs/install.md` lines 253 and 270 to 272, `docs/security-model.md` lines 705 to 706,
+`bridge/protocol.ts` line 303). Section 1 is closed and drew no finding.
+
+**Adjudication. plan review: 11 findings, 10 fixed, 0 assumed, 1 asked.**
+
+- Asked and answered: the `dsh_prompt` allow rule (Major, preference-as-ruling). The operator
+  answered at the keyboard 2026-09-08: auto-allow, with the chain recorded as an accepted risk.
+  Section 4 composes the rule on that answer and the Open Questions entry carries the reasoning.
+- Fixed as a scope widening, recorded here as the approval drift it is: section 4 gains
+  `install/Install-All.ps1`, `install/Install-Elevated.ps1` and `install/Install-All.test.ts`, removed
+  from Out of Scope the same day, because the installer hard-codes the relay in both the plugin install
+  and the allowlist merge and the test pins exactly that list, so `docs/install.md` would have
+  described an allowlist the installer never writes and section 5 would have met an uninstalled plugin
+  with no in-scope repair (one Major falsified-surface, one Major unguaranteed-handoff). Section 4
+  also installs the plugin on this host and records the command.
+- Fixed in section 5: the forged-tag prompt goes under a second session name with no `record`, so
+  the two-section record criterion holds (Major, two-way); the "Channels" line is read from the
+  interactive fallback or from the `-p` transcript only where that format carries it (Minor); the run
+  takes the machine's heavy-process claim, `.kit/RUNNING` being additional (Minor, rule-conflict).
+- Fixed in Approach and section 3: the party section is appended after runtime acceptance, so a
+  refused prompt leaves the record untouched (Minor, two-way); rotate refuses while any session
+  sharing the record file has a turn in flight (Minor, unwanted-satisfaction).
+- Fixed in section 2: one new acceptance bullet, the turn-end listener receives the uncapped final
+  response and only the channel builder cuts (Minor, unguaranteed-handoff, low confidence;
+  `bridge/protocol.ts` line 303 cuts at the builder, so the code is expected to hold already).
+- Fixed in section 6: the security model's allow-rule paragraph is rewritten to count seven rules
+  across two plugins and its accepted-risks list gains the `dsh_prompt` entry (Minor,
+  unguaranteed-handoff); the doc pin also refuses any `dsh_` identifier or meta key the protocol does
+  not carry (Minor, unwanted-satisfaction).
+
+**Section 2 in flight is touched in one place,** the new acceptance bullet above. The resuming Worker
+checks it at fix round 10's adjudication.
+
+**Next action per section.** Unchanged from Interim board 10: Section 2 resumes at adjudicating fix
+round 10's report. Section 4 is no longer gated on an Open Questions answer. Sections 3 through 6
+otherwise as Interim board 10 states them.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the last eight: a push to main
+is an install surface that takes the whole gate, and no gate has run since the restart. Section 2's
+uncommitted `bridge/` files were left untouched by this seat and are the Worker's.
