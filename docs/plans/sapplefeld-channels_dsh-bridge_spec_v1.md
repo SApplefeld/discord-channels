@@ -2385,3 +2385,160 @@ repository's main is an install surface that takes the whole gate, a fix round i
 right now, and the machine's heavy slot is held by another session, so the gate cannot honestly run
 yet. The commit is the durable recovery point and the push rides with the section close. Section 2's
 sixteen uncommitted `bridge/` paths stay as they are.
+
+### Interim board 14 - 2026-09-08
+
+Written at the compaction gate's own signal, 21 offers held over 65 minutes, and at a clean point: section
+2's fourteenth fix round is adjudicated against the code, its verification lane has been run by this
+session under a claim it wrote and released, and the fifteenth review round is in flight after its first
+dispatch triple-wedged and was re-dispatched. No section has closed since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through thirteen full three-lens review rounds and fourteen fix rounds, and is in
+review round 15. Sections 3 through 6 are unstarted. Section 2's fifteen untracked `bridge/` files and its
+one modified tracked file are uncommitted.
+
+**Fix round 14 was adjudicated against the code rather than adopted from its report, and all four of its
+Majors and ten Minors verified closed.** `dsh_status` now reads the log under one guard covering the whole
+read, both finding the file and opening it, and degrades to a report carrying `logUnread` with the log
+fields absent, so a log past its ceiling or rotated between the listing and the read no longer costs the
+model the three fields that never needed the log: whether the session is live, whether a turn is in flight,
+and which turn. `tail` still raises on the same read, correctly, the log being that tool's whole subject.
+The caller-supplied session name is bounded at 120 code points in one constant, enforced at the bridge's
+own entry before anything reads it and declared as a schema `maxLength` on all four `session` properties
+through a single shared argument object, so the bound cannot be declared on three of the four by omission.
+A status call's log read is bounded by a byte ceiling stated as a latency budget with the plaintext budget
+derived from the same shared ratio the container walk uses.
+
+**The round's own headline fix was verified live rather than inert, and that check was the whole of the
+adjudication's value.** Round 13's Major was that the ownership lease reached disk only once the runtime
+had answered the prompt, so a second bridge prompting inside that window read the file correctly and still
+found the previous run's dead owner. The fix moves the write ahead of the request, and the code does read
+that way: the record carrying this process as owner is set in the map and written immediately after, before
+the prompt request goes out, with the comment stating amendment 4's fourth half in the code's own words.
+What that reading alone cannot establish is whether the record survives the write, because the write does
+not lay the map down whole: `persistable()` filters it, and a lease written into a map that drops it would
+have left the code reading correctly at every future review while the guard covered every moment except the
+one it exists for, which is this section's own recurring failure shape. The filter keys on ownership
+(`record.owner?.pid === process.pid`) and the claim record carries this pid, so the claim does reach disk at
+that write. The turn count is deliberately withheld until `finish`, and only for a kept turn, so no write
+counts a turn the runtime is not known to have taken.
+
+**This session's own verification lane, taken under a claim it wrote and released.** Both exit codes read
+from the runs themselves rather than from a grep over their output: `npx tsc --noEmit` exit 0;
+`bridge/harness.test.ts` 59 of 59 exit 0 in 13.6s, `bridge/index.test.ts` 12 of 12 exit 0,
+`bridge/log.test.ts` 18 of 18 exit 0, `bridge/protocol.test.ts` 22 of 22 exit 0. Against round 12's lane of
+54, 11, 17 and 21 that is plus 8 tests and plus 8 passes, which is exactly the extension the round reported,
+so the round's own numbers reproduce on this session's tree. Nine files carry today's edits and no others:
+`harness.ts`, `protocol.ts`, `index.ts`, `log.ts`, `README.md` and the four test files, all LF-only at zero
+carriage-return bytes. `bridge/fake-dsh.ts` is byte-identical to its pre-round copy, and
+`bridge/tools/sdk-smoke.ts` was not touched by the round, its modification time predating the dispatch by
+nineteen hours while its diff against HEAD is section 2's own earlier fold.
+
+**The machine's heavy slot cleared, was taken for that lane, and was released at the lane's end rather
+than at the turn's.** The foreign worker seat on another repository that had held the slot since
+2026-09-08T15:43:02Z against a 900-second estimate was gone by 16:52Z, with no `testhost` or `dotnet`
+process left in the list. An absent claim is nobody having claimed the box rather than evidence the box is
+free, so the slot was taken under the protocol at 16:54:50Z with a clock read at the moment of the write,
+held for the four lanes, and deleted after verifying its own session line. The release is timed to the
+operation rather than the turn on purpose: a review round needs no box, and a claim held across one reads
+to every peer as a session still running a suite while it is in fact adjudicating text.
+
+**Review round 15's first dispatch wedged on all three lenses at once, and the cause is recorded because
+it is actionable rather than ambient.** The three lenses were dispatched at fable through the Agent tool
+against a byte-identical tree capture. Each ran about five minutes, produced 44, 27 and 27 non-synthetic
+assistant lines with a `<synthetic>` count of 1, 0 and 1, and then stopped appending within ninety seconds
+of one another. The fifteen-minute review-class growth window closed with no growth on any of them;
+liveness probes were sent to all three and the twelve-minute probe window closed with no rise in any
+non-synthetic assistant count above its value at the send, the probes never having been delivered, since
+delivery happens at an agent's next tool round and none of the three took another. That is the whole wedge
+hallmark, so all three were stopped, and the stop notifications named the cause: each agent's last message
+was an intent to read one file whole, `bridge/harness.ts` at 1,956 lines and 108,432 bytes or
+`bridge/harness.test.ts` at 2,057 lines and 123,333 bytes. Three concurrent whole-file reads of a 108 KB
+source is a cause rather than a coincidence, so the one same-dispatch re-attempt the rule allows was spent
+on a dispatch with that cause removed rather than on an identical retry: every brief now requires those two
+files to be read in slices of at most 400 lines. The re-dispatch is healthy, its first-turn readings at 5,
+21 and 14 non-synthetic assistant lines and all three growing. A wedge is an environment fault rather than
+a failed round, so it counts against neither the two-failure tier ladder nor the never-a-third-dispatch bar,
+and the tree bracket taken before the first dispatch and read again after the stops is byte-identical, so
+no agent moved the tree and the same capture brackets the re-attempt.
+
+**Live dispatches.**
+
+- `adversarial-reviewer` at fable through the Agent tool, section 2 against the spec, base ref `f1772ad`
+  with the changed-file list, the `Amendments in effect:` line carrying all four entries with the fourth's
+  four halves, and two areas named as areas rather than findings: the lease's best-effort claim write with
+  its give-back path and its process-death case, and the `dsh_status` guard's coverage.
+- `blind-reviewer` at fable through the Agent tool, base ref and changed-file list only, with the
+  shared-artifact guard property stated as a standing property of the repository that reads identically for
+  every diff in it, and no mention of the spec, the plan, or the section.
+- `security-reviewer` at fable through the Agent tool, section 2, the same amendments line, the component's
+  threat model, and three areas: the lease's coverage, the session-name bound's enforcement at every entry
+  against amendment 3's field-by-field check, and whether the status ceiling and its derived plaintext
+  budget actually bound the decompression path.
+
+All three carry both reading traps, every standing prohibition, and the range-reading requirement the
+wedge earned.
+
+**Rulings adopted since the last boundary.**
+
+- **The fix round's four concerns are dispositioned rather than carried.** The best-effort claim write,
+  where a failing write is logged and the prompt proceeds rather than refusing, is handed to the
+  adversarial lens as a question rather than adopted or overruled here, since the trade it makes (a
+  neighbour holding the file unreadable would otherwise refuse every prompt for as long as it holds it) is
+  exactly a reviewer's to weigh and is stated in the code and the README rather than hidden. The
+  `dsh_status` deviation from the Approach's letter, where the degraded case reports no counts while the
+  Approach says the counts come from the on-disk log, is a real spec deviation and is corrected to
+  as-built at this section's step 5 rather than reversed: the degraded case is what round 13's Major
+  demanded and the design intent is unchanged, the tool still reading the counts from the log whenever it
+  can. Minor b is closed in code with its reachability confirmed by reading and its runtime occurrence
+  unmeasured, and it carries no durable test because exercising it needs a flag on the stand-in runtime and
+  `bridge/fake-dsh.ts` was omitted from the round's brief though the spec's own Files in scope names it;
+  that omission is this session's and is recorded here rather than charged to the round. The fourth concern
+  needed no ruling: the brief's instruction to use the Edit tool over Bash for text edits is correct on
+  this host, where the shell mangles quoting and backslashes.
+- **Two figures the round could not source are removed rather than left standing.** The log module's
+  comments had carried a figure of about eight megabytes that no artifact supports, the measured snapshot
+  being 4,216,915 bytes and the spec's own observation naming a 4 MB file, and a figure of about four
+  hundred bytes per frame that the snapshot contradicts at an average of 1,379. Both are out of the
+  comments, which now cite this plan's Chapters, which is where a measured figure carrying its own moment
+  belongs.
+- **A kaizen note is filed on the kit rule that produced the triple wedge.** The doctrine's
+  hunting-in-a-large-file rule requires an outline before reading a file past roughly a thousand lines and
+  then exempts the file under review, requiring it read whole. That exemption's reasoning is sound, since a
+  reviewer must see its whole subject and an outline cannot prove absence, so the defect is that it states
+  a reading goal as a reading method, and the most literal mechanism for it has an undocumented ceiling
+  that fails after the agent has done real work and presents as a wedge rather than a refusal. The note
+  names two candidates: require the whole file in bounded ranges rather than one call, or have the dispatch
+  brief template carry a measured line-and-byte count for every in-scope file past a threshold, since the
+  dispatching session already stats those files and the agent cannot know the size before committing to the
+  read.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this checkout
+with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0, skipped 1,
+duration 147.6s, against a committed baseline of 1582/1581/0/1. The targeted lane above, taken by this
+session 2026-09-08T16:55Z to 16:58Z on this checkout under a claim it held and released, with the section's
+own sixteen uncommitted paths present and no foreign uncommitted files, is the current reading on the
+section's own files: tsc exit 0, harness 59/59, index 12/12, log 18/18, protocol 22/22, all exit 0. The
+close gate is this session's and has not run, and the reason is now the round rather than the box: the slot
+is free and the tree is stable, but round 15's fixes will move it, so a whole gate run before those land
+would report on a tree the push will not carry.
+
+**Next action per section.** Section 2: adjudicate review round 15 against the code, dispatch the fix round
+it implies and re-review whatever that fix delta earns under the owed-round triggers, correct the
+Approach's `dsh_status` sentence to as-built at step 5, take the heavy-process claim, run the whole gate
+with the contention lane beside it, then close with a Chapter and commit and push, carrying the twelve
+deferred doc-commit pushes with it. Sections 3 through 6: unstarted, in order. Section 4 carries the
+installer-hardening criterion adopted at Interim board 13; section 6 carries the workspace-containment
+record adopted there.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the last eleven: a push to this
+repository's main is an install surface that takes the whole gate, and a review round is reading the tree
+while its fix round will edit it, so the gate cannot honestly run yet. The commit is the durable recovery
+point and the push rides with the section's close. Section 2's sixteen uncommitted `bridge/` paths stay as
+they are.
+
+**Altered outside this repository.** One line was appended to the kit repository's kaizen inbox at
+`kaizen/notes-NEO-CLAUDE.md` in that clone, which is that file's normal accreting state and is left
+uncommitted there for the kaizen skill's own adjudication seats, and is named here and in the close-out
+rather than left as an unexplained dirty file on the machine.
