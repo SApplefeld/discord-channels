@@ -343,6 +343,20 @@ Every entry here binds every section opened after it was written, dispatched or 
   the spawn. An absolute-path test is not that guard on Windows: a UNC path is absolute, so the
   first filesystem call on it opens an outbound connection to a host the caller named, under the
   operator's credentials, before any refusal can run.
+- **A claim about a runtime artifact is settled against that artifact, never against a second one
+  that resembles it.** This vendor emits several streams that carry the same event vocabulary in
+  different shapes: the SDK notification stream, the on-disk session log, and the composed
+  configuration tree are three different surfaces, and a reading taken from one is evidence about
+  that one alone. So before a guard, a filter or a default is set from a measurement, name the
+  surface the code under it will actually read at run time, and take the measurement there. Where
+  the real surface cannot be read at all, the value is marked inferred and the section that can
+  observe it is named, rather than a stand-in being measured and reported as though it settled the
+  question. The class has now produced two defects a round apart, and both had the same shape: the
+  stand-in agreed with the claim, so the check came back green and the real surface was never
+  opened. Section 1 verified the permission preset against the composed config row rather than
+  against what the runtime mounts, and the bridge's log reader had its chunk filter narrowed on a
+  count taken over the SDK notification fixtures while the reader itself reads the on-disk log,
+  where the types it had stopped dropping are the two most numerous in the file.
 
 ## Sections of Work
 
@@ -442,7 +456,14 @@ Acceptance:
   string, and `files_touched` capped at `MAX_META_FILES` with the `+N` tail.
 - `dsh_busy` is `true` between acceptance and the idle status and `false` outside it.
 - `dsh_prompt` with a `cwd` that differs from the remembered one for that name is refused, and
-  accepted again after `dsh_kill`.
+  stays refused after `dsh_kill`, the refusal naming the workspace the name belongs to and telling
+  the caller to use a different name to work somewhere else. A session name is bound to its
+  workspace for the life of its conversation, because a DSH session's log is filed under the
+  workspace it was created in and reusing its id anywhere else is refused by the runtime, so
+  re-pointing a name would have to abandon the conversation the state file exists to preserve. The
+  criterion first read that a differing `cwd` was accepted again after a kill, which is the opposite
+  of what a kill means here: a kill ends the runtime and deliberately keeps the record, so that the
+  next prompt for that name resumes the same DSH conversation in the same workspace.
 - `dsh_kill` terminates the child and the next `dsh_prompt` for the same name reuses the persisted
   DSH session id and `cwd`.
 - `dsh_tail`, run by hand against the web session's log at
@@ -1623,3 +1644,146 @@ committed at this boundary and deliberately **not** pushed, on the same reasonin
 push to this repository's main is an install surface that takes the whole gate, and a fix round is
 mid-flight in the tree, so a gate run now would read a half-edited worktree. The commit is the
 durable recovery point and the push rides with the section close once the gate is green.
+
+### Interim board 9 - 2026-09-08
+
+Written at the closure drought's floor again: section 2's seventh review round is adjudicated, no
+section has closed since Chapter 1, and fix round 8 is in flight. The boundary is worth recording
+because this is the first round since the premise reversal, and it settles whether the reversal
+held.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through seven full three-lens review rounds, and is in fix round 8, the third
+at the escalated fable tier. Sections 3 through 6 are unstarted. Section 2's fifteen untracked
+`bridge/` files and its one modified tracked file are uncommitted.
+
+**Live dispatches.**
+
+- `implementer-fable`, section 2 fix round 8, dispatched with the explicit fable model override the
+  escalation authorizes. It carries the round-8 findings file under the gitignored scratch path
+  (four Majors, fifteen Minors, an eight-item not-your-work list), all four Standing Brief
+  Amendments including the new fourth, every standing prohibition, the reading trap, and the
+  box-budget clause with this session's identity substituted and the live foreign claim named. It is
+  told to run targeted per-file lanes only and to leave the whole gate to this session.
+
+Fix round 7 (`implementer-fable`) and all three review lenses have completed and are adjudicated.
+
+**Round 7's fix round held, and this session verified the part that mattered rather than adopting
+it.** The round's whole point was to replace a circular test oracle with one taken from a fixture of
+Claude Code's own reader classes, which makes that fixture the yardstick every later green is
+measured against. An error in it would therefore fail silently and in the safe-looking direction,
+since the bridge's own filler class is some 955,000 code points wide against the product's 4,700, so
+a mistyped range boundary would leave every subset assertion green while quietly moving the
+yardstick. The implementer named exactly this as the claim it would most expect to be wrong. It was
+checked against the running build directly: the product's class assembled from the binary's own
+range strings admits 4,700 code points, the fixture admits 4,700, and **no code point in the entire
+code space is classified differently by the two**. The 33-entry delimiter-lookalike map parsed out
+of the product's own table differs from the fixture's nowhere. A control that removed one range from
+the binary-derived class produced a difference, so the comparison demonstrably speaks. The oracle's
+independence was confirmed by reading as well: the test's resolver reaches the fixture's two tables
+and standard normalization only, with no guard symbol in it.
+
+**Review round 7 adjudicated. No Critical from any lens**, which is the first round on this section
+since round 3 that can say so, and it means the tier-escalation ladder does not fire. Verdicts were
+CHANGES_REQUIRED, CHANGES_REQUIRED and CLEAR. First-turn readings were taken on all three at the
+window, each healthy at 37 and 54 non-synthetic assistant lines with a `<synthetic>` count of zero,
+the security lens having completed before its reading was due. The round was bracketed by a
+`git status --porcelain` capture before dispatch and again at return; the two are byte-identical, so
+no agent moved the tree under the round and the findings stand. Four Majors and roughly fifteen
+Minors were accepted; two Minors were found by two lenses independently.
+
+**The round's most valuable finding was settled by measurement, and it inverts a fix from the round
+before.** Round 7 narrowed the session log's default chunk filter to a single event type, on the
+reasoning that the other chunk kinds appear only nested inside it, and counted them to check. The
+count was taken over the SDK notification fixtures. But the tool that uses the filter reads the
+**on-disk session log**, which is a different shape the same runtime writes, and the spec's own
+observation of that log lists the other chunk kinds as top-level types. This session read the
+operator's real log frame by frame to settle it: 39,333 events, zero unparseable lines, zero
+unreadable frames. Of those, `tool-call-chunks` numbers 15,851, `assistant/chunk` 11,421 and
+`text-chunks` 4,465, so chunk events are 81% of the file and the narrowed filter would admit 20,316
+of them. Since the tool returns the last forty events, a busy turn's tail would be almost entirely
+chunk noise with the turn-end and tool-call events the tool exists to surface pushed clean out of
+the window. The narrowing is a regression and round 8 restores the four types.
+
+**Rulings adopted since the last boundary.**
+
+- **The plan gains a fourth Standing Brief Amendment, under the recurrence rule.** The class is *a
+  claim about a runtime artifact settled against a second artifact that resembles it*. It has now
+  produced two defects a section apart, and both had the same shape: the stand-in agreed with the
+  claim, so the check came back green and the real surface was never opened. Section 1 verified the
+  permission preset against the composed configuration row rather than against what the runtime
+  actually mounts, caught in that section's own review. Section 2 set the log reader's chunk filter
+  from a count over the notification fixtures while the reader reads the on-disk log. Two instances
+  of one class is the workflow generating the bug, so the amendment requires the surface the code
+  will actually read at run time to be named before a measurement is taken from it, and requires a
+  value that cannot be measured on the real surface to be marked inferred with the section that can
+  observe it named, rather than a stand-in being measured and reported as settled. This is approval
+  drift and is recorded as such.
+- **The spec's post-kill workspace criterion was stale and is corrected to the code.** The
+  acceptance criterion said a differing workspace is accepted again after a kill. The code refuses
+  it for the life of the record, and the code is right: a DSH session's log is filed under the
+  workspace it was created in and reusing its id elsewhere is refused by the runtime, so re-pointing
+  a name would abandon the conversation the state file exists to preserve, and the refusal names the
+  recovery, which is a different session name. Interim board 2 had already adopted exactly this
+  ruling; nobody brought the acceptance text into line with it, which is the whole of the defect the
+  lens found. Corrected rather than escalated, because the ruling was already adopted and the
+  correction changes no design intent. Approval drift, recorded.
+- **A Major previously accepted under one heading is reopened, because the new finding is a
+  different mechanism.** An earlier round accepted a state-file write merge between two bridges
+  sharing one scope. The blind lens has now named a worse consequence of the same scope key: two
+  Claude sessions in one project directory can drive two runtime processes that reuse a single DSH
+  session id, which puts two appenders on one append-only compressed session-log container and races
+  two turn counts. The earlier acceptance does not cover it, because sharing a project's ordinary
+  files is not the same as sharing a container written on a single-writer assumption. Round 8 adds a
+  lease on the record rather than redesigning the scope key, which stays section 5's to settle by
+  observation.
+- **A reachable path can leave a turn in flight forever, and a test pins the wedged state as
+  correct.** Where a prompt request times out after the runtime has already spliced, run and gone
+  idle, that idle was the turn's only ending and is discarded, no later one arrives, and the tool
+  error meanwhile tells the model to wait for a channel event that cannot come. Round 8 is told to
+  fix this at the level of the invariant and to rewrite the test that currently pins the wedged
+  state, watching the new test fail first.
+- **Two round-7 reversions were weighed and accepted.** The implementer reverted two findings it was
+  asked to fix and justified both with test evidence: a frame-straddle carry that regressed a
+  control, and a hook relocation that broke five tests because the runner runs teardown hooks in
+  registration order. Both lenses that weighed them accepted them. One observation rides forward
+  rather than a fix: the control behind the first is not writer-shaped, so it says less than it
+  looks.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. Fix round 7 reported its
+own targeted lanes on its own tree as `bridge/protocol.test.ts` 21 (up 4), `bridge/harness.test.ts`
+40, `bridge/log.test.ts` 16, `bridge/index.test.ts` 10, `bridge/env.test.ts` 3,
+`bridge/fake-dsh.test.ts` 2, `bridge/redact.test.ts` 8 and `import-hygiene.test.ts` 5, every one
+exit 0 with `npx tsc --noEmit` exit 0; those are the implementer's numbers on the implementer's tree
+and are the baseline round 8 reports against. The close gate is this session's and has not run. The
+machine's heavy slot is held by a foreign session as of 2026-09-08T01:51:55Z, `NEO: Worker` on
+another repository, started 01:43:30Z with an expected 3600 seconds, so it is expected held until
+about 02:43Z; the round was dispatchable against that hold because reviewers build nothing, and the
+constraint rides in every brief.
+
+**A note on the sidecar's readings.** Roughly a dozen more verdict alerts fired across this stretch.
+The great majority concerned a subagent's own tool calls rather than this session's. Two inverted
+their subject in the now-familiar way: one called a growth reading a divergence for using the file's
+modification time rather than reading the transcript, when reading that transcript is exactly what
+the doctrine bars and the modification time is the reading it prescribes, and one reported that a
+file read was of "a different file" when it was the named file. One was fair and useful in an
+unintended way: it flagged that a probe found three code points un-neutralized in a session field,
+which is correct and is by design, those three being comma lookalikes and the comma being unsafe
+only in the path list where it is the separator. Consistent with the operator record putting the
+sidecar at about one fair alert in three.
+
+**Next action per section.** Section 2: adjudicate fix round 8's report against the code, re-review
+whatever the fix delta earns under the owed-round triggers, take the heavy-process claim once the
+foreign hold clears, run the whole gate with the contention lane beside it, then close with a
+Chapter and commit and push, carrying the seven deferred doc-commit pushes with it. Sections 3
+through 6: unstarted, in order, with section 4 still gated on the operator's answer to the Open
+Questions entry about whether the prompt tool should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's fifteen untracked `bridge/` files and its one modified
+tracked file, plus whatever fix round 8 is writing into them right now. This plan doc is committed
+at this boundary and deliberately **not** pushed, on the same reasoning as the last six: a push to
+this repository's main is an install surface that takes the whole gate, and a fix round is editing
+the tree right now, so a gate run now would read a half-edited worktree. The commit is the durable
+recovery point and the push rides with the section close once the gate is green.
