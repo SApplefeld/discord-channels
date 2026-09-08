@@ -3296,3 +3296,124 @@ asked this session to confirm it held no uncommitted edits to the doc; it held n
 at c06ed99 with nothing staged, and the seat released the doc after committing 67db586. Nothing in that
 exchange authorized anything: the rulings are acted on because the operator confirmed them directly, and
 the committed doc is the record.
+
+### Interim board 19 - 2026-09-08
+
+Written at the compaction gate's signal, nine offers held over eight minutes, and at a real boundary
+even though no section has closed: fix round 21 returned a question rather than a diff, the question
+was ruled on mid-round, and the ruling corrects two passages this plan already carries. No section has
+closed since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through nineteen full review rounds, had its twentieth fix round stopped on the
+wedge hallmark with its fix unstarted, and is in fix round 21, the subtraction round the operator's
+cap allows as the last one. Sections 3 through 6 are unstarted. Section 2's untracked `bridge/` files
+and its one modified tracked file are uncommitted and commit at the cap when the section closes, per
+ruling 3 of the operator's rulings recorded at 67db586.
+
+**Live dispatches.** One: `implementer-fable` at fable, fix round 21, agent `a68eefdc0abb7eef3`,
+dispatched 21:48Z and resumed 22:08Z with the ruling below. It was asked to run the subtraction the
+operator's first ruling prescribes, to keep Majors 2, 3 and 4 and guards 2, 3, 4, 6 and 8, to batch
+Minors b, c and d, to triage round 20's uncommitted test edits rather than trust or delete them
+wholesale and report the rule that decided each, and to run its deletion sweep over callers rather
+than definitions. Its work list is `.kit/r21-findings.md` and the ruling that governs over it is
+`.kit/r21-ruling.md`. At 22:21:32Z it was on its 155th non-synthetic assistant line with no synthetic
+lines, and `bridge/harness.ts`, `bridge/harness.test.ts` and `bridge/README.md` all carried mtimes
+inside the previous five minutes, so this round, unlike round 20, is writing its fix rather than only
+its tests.
+
+**The round returned a question, and the question was sound.** Removing the ownership lease removes
+the only thing that told a name this process is running from a name it merely read out of the shared
+state file at construction, and the surviving identifier compare-and-set compares exactly that. The
+round traced the coupling in code: the identifier the write compares is taken from `recall`
+(harness.ts:948), lands in the record the write publishes (:966), and reaches the write at :1046,
+while `recall`'s own discriminant today is the lease predicate (:1201-1208 through :1223). This
+session's work list had said `recall` collapses to preferring the file's record, which would make the
+identifier the write compares a copy of the entry it is compared against, so the survivor could never
+refuse at prompt time. The round declined to choose between a subtraction that leaves the survivor
+inert and an addition that reads against the literal instruction, and asked. That is the behaviour the
+brief asked for and it saved a round spent on the wrong spine.
+
+**The ruling, in three parts, recorded in full at `.kit/r21-ruling.md`, which governs over
+`.kit/r21-findings.md` lines 59-60 and leaves the rest of that file standing.** First, the
+distinction survives and the lease's implementation does not: `recall` prefers the file's record for a
+name this process has not prompted, which the surviving test at `bridge/harness.test.ts:2112` requires
+and which the plan's own resume contract requires, and prefers its own for a name it has, carried by a
+purely local record of prompted names holding no process identifier and reading nothing about any
+other process. Second, a refusal must release this process's claim to the name, because the refusal's
+own advice is to prompt again to resume and that advice is false if the next attempt is refused
+identically; that is the conceding path's purpose surviving without its machinery, and it is pinned.
+Third, and this is the part that reaches the plan doc, the round's own justification overclaimed.
+
+**The survivor cannot prevent two workers on one conversation log, and the plan says twice that it
+can.** A bridge holding no record of its own that adopts the shared file's record is byte-identical to
+resuming after a restart, which the plan requires to work, so the guard cannot tell the hazard from
+the feature; the round 19 consult established that same indistinguishability against a different
+proposed fix, and Amendment 5's corrective half is where it is recorded. What the conditional does buy,
+at exactly its strength: this bridge never lays a different conversation identifier over a name it is
+running, never writes turn counts against a conversation it is not running, and where two bridges both
+read a name as free and both claim it, the loser's write refuses rather than overwriting and its
+caller is told. That is a data-integrity property of the bridge's own state file rather than a
+concurrency guard against a stranger. The code and `bridge/README.md` are written to the narrow claim
+from the start rather than corrected after the fact.
+
+**Two passages are therefore owed a correction when section 2's Chapter lands, and are named here so
+the correction is not lost.** The Decisions paragraph on one bridge per scope and session name says
+the survivor makes the scope-key collapse "refuse rather than run two runtimes on one worker log", and
+the Assumptions entry of 2026-09-08 says it "covers the scope-key collapse section 5 observes as
+inferred". Both are stronger than the code can be. Both are corrected together with the Chapter, named
+in that Chapter as the correction they are, and named again in the close-out. The reversal recorded for
+the assumption is unchanged: delete about a dozen lines and their test, and name the residual hazard.
+Recorded rather than corrected now because the doc is a shared file and the correction belongs with the
+section's own close, not in a boundary entry.
+
+**Accepted from the round's platform probe, which replaces a line in the work list.** On this machine a
+state file staged under a regular file raises `ENOENT` and reads as absent rather than raising
+`ENOTDIR`, a directory at the state-file path raises `EISDIR`, and an exclusive create over an existing
+file raises `EEXIST`. So guard 6's re-staging pins the codes this platform actually raises and reports
+the `ENOTDIR` non-reproduction rather than asserting a code Windows does not raise, with the existing
+pin's assertions unweakened.
+
+**Two sidecar items to carry into the adjudication rather than act on now,** both derived from an
+off-machine model reading this session's command output and unverified from here. One reports that the
+round's harness-suite baseline failed to launch because its log and exit files could not be created,
+while its protocol baseline came back 23 tests, 22 pass, 1 fail; a missing baseline on the file the
+round edits most is exactly what would let a regression pass unseen, and the single protocol failure is
+consistent with round 20 having written tests for fixes it never applied. The other reports that the
+lease-test deletion left lease, owner and pid test code standing at `harness.test.ts` lines 1089,
+1151-1193 and 1443 despite a diff of pure deletion. That is the precise failure the brief warned about,
+a sweep run over definitions rather than callers, and it may equally be a site scheduled for a later
+pass or one the sweep legitimately exempts. Both are checked against the code when the round is
+adjudicated, and neither is treated as a finding until then.
+
+**Gate baseline.** Unchanged from Interim board 18 and still the whole-gate run of 2026-09-07T19:59:14Z
+on this checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608,
+fail 0, skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. The last targeted
+lane this session ran was 2026-09-08T20:22Z with every exit code read from the run's own marker file.
+The counts for `bridge/harness.test.ts` and `bridge/protocol.test.ts` remain stale by construction,
+round 20 having edited both without running either, and round 21 is what measures them. No whole gate
+has run on the present tree and none can honestly run while round 21 is editing it.
+
+**The machine's heavy slot.** This session holds no claim. Round 21's brief carries the claim protocol
+with this session's own name and id substituted, gating every heavy spawn on a read of the live claim
+file, forbidding a write over a live holder's claim, and scoping its release to a claim carrying that
+same id. A clean read of that file remains a sample rather than a clearance.
+
+**Next action per section.** Section 2: adjudicate round 21 against the code rather than its report,
+checking in particular that the local prompted-name record carries no process identifier and reads
+nothing foreign, that the refusal releases the claim so a second prompt resumes, that the deletion
+sweep left no caller behind and that the two sidecar items above hold or fall; then one bounded review
+round on that delta, per ruling 2, where a Major found in code the subtraction removed is not fixed and
+a Major elsewhere is fixed once with no further round; then the two prose corrections above; then the
+heavy-process claim and the whole gate with the contention lane beside it, since the close pushes to a
+trunk consumers install from with no CI gating the merge; then close with a Chapter and commit and push,
+carrying the seventeen deferred doc commits with it. Sections 3 through 6: unstarted, in order, and
+ruling 4 binds all of them.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the sixteen before it: main is an
+install surface that takes the whole gate, and a fix round is editing the tree.
+
+**Altered outside this repository.** Nothing at this boundary. One line remains appended to the kit
+repository's kaizen inbox at `kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the
+kaizen skill's own adjudication seats, and it is the note Interim board 15 established is aimed at the
+wrong cause.
