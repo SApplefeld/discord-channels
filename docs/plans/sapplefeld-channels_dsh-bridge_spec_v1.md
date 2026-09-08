@@ -291,49 +291,42 @@ Every file that grep returned appears in some section's Files in scope or under 
 
 Every entry here binds every section opened after it was written, dispatched or inline.
 
-- **Neutralize and bound every string that crosses into a channel event, attributes and body alike,
-  at the boundary rather than at the caller.** A channel event's `meta` values are rendered into the
-  Claude session as XML attributes, and Claude Code does not escape them, so any value carrying a
-  quote, an angle bracket,
-  an ampersand or a control character can end the attribute and inject markup the model reads as
-  structure. Worker-controlled text is the obvious source, but it is not the boundary: a value copied
-  off the runtime wire, a name the calling model chose, and a reason string the vendor may extend
-  with an unknown word are all the same class. So the neutralizer and the length cap belong to the
-  `meta` builder, applied to every value it emits, never to the one field whose defect was found
-  first. This entry exists because that defect was found twice at two different fields in two
-  consecutive review rounds, which is the workflow generating the bug rather than two unlucky sites.
-  The body is the same boundary and was the class's third site. Claude Code's own channels reference
-  documents `content` as the body of the `<channel>` tag and states no escaping of it anywhere, and
-  the defence it does describe is a sender check rather than an escape, so a body carrying a closing
-  channel tag can end the envelope and forge a second event with attributes of its own choosing. The
-  builder therefore neutralizes the envelope's own delimiters in `content` too. A channel whose
-  sender is an allowlisted human is gated by that allowlist; one whose sender is an unsandboxed
-  worker reading arbitrary files and command output is not gated at all, which is why this bridge
-  cannot inherit the assumption the relay runs on.
-  **The hostile character class is derived from one exported definition, never spelled a second time
-  at a second site.** This clause is the fourth round's, and it names the generator rather than the
-  site: each of the first three fixes wrote a fresh pattern for the field in front of it, so the
-  attribute path and the body path came to disagree about what counts as hostile inside one file,
-  the attribute path stripping the invisible class while the body path matched ASCII whitespace
-  alone. A tag spelled with a zero-width space between its letters then rendered as a closing tag to
-  the model and matched nothing in the guard. Two sites that hand-write the same class will drift,
-  and the drift is invisible at review because each site reads correct on its own; so the class is
-  imported from the definition another caller already exports and widened there when it is widened
-  at all, which is amendment 2 applied to a character class rather than to a function. The reader
-  this guards is a model rather than a parser, so the class covers what that reader resolves to the
-  delimiter, including spellings a parser would reject as malformed.
-  **The guard's test derives its cases from the class definition rather than enumerating the
-  spellings a reviewer happened to name.** This clause is the fifth round's, and it names the test
-  method as the generator because four fixes at four sites did not stop the sixth gap from being
-  found: each round's test pinned exactly the spellings that round's reviewer wrote down, so the
-  next reviewer only had to name a spelling nobody had thought of yet, and did, five times running.
-  A test built by enumeration can only ever be as wide as the last review, which is why the guard
-  reads correct and keeps failing. So the test walks the class itself, asserting the property over
-  every member the definition admits and over a generated sample of the transformations a reader
-  applies before it resolves a delimiter, compatibility folding among them, so that widening the
-  definition widens the test in the same edit and a spelling nobody named is either covered or
-  visibly not. An enumerated case is then a regression pin for a spelling that once escaped, kept
-  beside the property rather than standing in for it.
+- **The envelope guard is the bridge's second layer under Claude Code's own, its classes are
+  Unicode's, and its test's yardstick is the product's.** Claude Code defends the channel envelope
+  itself. It renders an event as an opening `channel` tag carrying a `source` attribute and the
+  caller's `meta` keys, then the body, then the matching closing tag; every attribute value and the
+  source alike pass through an XML escaper that turns `&`, `<`, `>`, `"` and `'` into entities, and
+  the body passes through a close-only disarmer that rewrites a closing channel tag into a form the
+  reader cannot resolve as one. That disarmer skips a filler class of roughly 4,700 code points
+  between the tag's letters, folds 33 bracket and slash lookalikes onto their ASCII forms, and
+  matches case-insensitively, so a closing tag spelled with an invisible character wedged between
+  its letters, or with a fullwidth angle bracket, does not survive it. Three things it does not
+  cover are what the bridge's guard is for: a forged tag that is not the channel tag, an *opening*
+  channel tag rather than a closing one, and a tag name whose letters are themselves spelled in
+  fullwidth or other lookalike letters, which the product matches literally. The bridge's guard is
+  also the only layer on a build that lacks the product's, so it is kept rather than deleted.
+
+  The bridge's classes are Unicode property expressions held in one exported definition, never
+  enumerated ranges and never spelled a second time at a second site: a hidden class for what is
+  replaced in attributes and refused in paths, and a wider filler class for what is skipped while
+  spelling a tag name, the second being the allowlist stated as its complement. The one enumerated
+  table is the delimiter-lookalike map, carried as data with the build it was read from named beside
+  it. Both the attribute path and the body path resolve a code point through one resolver, so the
+  two cannot come to disagree about what a character means, which is the drift that produced a
+  finding inside a single file.
+
+  The guard's test takes its yardstick from a fixture of the product's own classes rather than from
+  the guard. That is what ends the circularity: a test whose oracle is built from the guard proves
+  only that the guard matches itself, however many code points it walks, which is why five
+  consecutive rounds each passed their test and each still found a gap. The test asserts that the
+  bridge's class contains the product's, that hidden, filler and visible characters partition the
+  code space, and that no spelling the fixture's reader resolves to a tag survives the guard, with
+  enumerated spellings kept beside the property as regression pins rather than in place of it.
+
+  Severity in this family is capped at Major until a live session is observed acting on a forged
+  tag. Every rating of Critical so far has rested on an assumption about how a model reads an
+  unusual tag spelling that nobody has measured, and a reported spelling counts as a finding at all
+  only if the fixture's reader resolves it to a tag.
 - **A guard at a hostile boundary is a property of the boundary, so a second caller imports it rather
   than reimplementing it.** Before writing a call that spawns a process, builds a child environment,
   joins a path from stored data, or sanitizes text bound for a trusted channel, grep the tree for
@@ -588,6 +581,15 @@ Acceptance, read from the transcript and the filesystem, never from the exit cod
   scope exists to prevent returns silently, and the fix is a different discriminator in one function
   (`defaultScope` in `bridge/harness.ts`); the behaviour degrades to a single shared scope rather
   than losing data either way.
+- The reader premise is measured rather than assumed. One extra prompt in the same run has the
+  worker emit a body carrying four forged-tag spellings: a `<system-reminder>` opening tag, a
+  closing channel tag whose letters are fullwidth, one whose angle brackets are the mathematical
+  lookalikes, and one whose `c` is the Cyrillic letter. The transcript is then read for whether the
+  session treated any of them as structure rather than as text. This is the only observation that
+  can give this family of findings a real severity: six review rounds rated a forged tag Critical
+  on an assumption about how a model reads an unusual spelling, and nobody has measured it. A
+  spelling the session acts on lifts that one spelling back to Critical and earns a fix; one it
+  reads as text confirms the cap the amendments block now states.
 
 Files in scope: `bridge/tools/live-e2e.ps1`, the Chapter (`.gitignore`'s `.kit/` line already
 covers the output).
@@ -613,7 +615,12 @@ relay as the second channel; `docs/security-model.md` gains the bridge's egress 
 prompt text, every tool result the worker sees (the contents of files it reads and the output of
 commands it runs), and its own responses travel in cleartext over the LAN to the llama.cpp host at
 `192.168.58.245:11434`, and the record file is written on the local disk with both parties' text
-verbatim.
+verbatim. `docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
+plugin, with the reason: from that build onward Claude Code escapes a channel event's attributes
+and disarms a forged closing channel tag in its body, and the bridge's own guard is the second
+layer under it; below that floor the bridge's guard is the only layer, which is a narrower defence
+rather than none. Whether builds before 2.1.260 carry the layer is unknown rather than known to be
+absent, and the line says so.
 
 The four lines below are review inputs for the kit's prose reviewer, which reads a deliverable
 document against a named audience; `company` names the neutral house voice rather than the
@@ -639,7 +646,7 @@ Acceptance:
 - `docs/README.md`'s reference table has the row; the Plans table row for this plan is present
   until the close-out moves it.
 
-Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`,
+Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`, `docs/install.md`,
 `docs/security-model.md`, `bridge/protocol.test.ts`.
 
 ## Out of Scope
@@ -1494,3 +1501,125 @@ same reasoning as the last five: a push to this repository's main is an install 
 the whole gate, and the tree is mid-round with a confirmed Critical outstanding, so a gate run now
 would read a worktree whose known defect has not been fixed. The commit is the durable recovery
 point and the push rides with the section close once the gate is green.
+
+### Interim board 8 - 2026-09-08
+
+Written at the compaction gate's own signal, 56 offers held over 39 minutes. Section 2's consult
+returned and was adjudicated, its ruling was verified against the product rather than adopted on
+report, the amendments block was rewritten on it, and fix round 7 is in flight. The boundary is
+worth recording because this ruling reverses a premise six review rounds were built on.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through six full three-lens review rounds, and is in fix round 7, the second
+at the escalated fable tier. Sections 3 through 6 are unstarted. Section 2's thirteen untracked
+`bridge/` files and its one modified tracked file are uncommitted.
+
+**Live dispatches.**
+
+- `implementer-fable`, section 2 fix round 7, dispatched with the explicit fable model override the
+  escalation authorizes. It carries the rewritten amendment 1, the consult's confirmed premise
+  reversal, the concrete change across five files including two new ones, the round-6 findings still
+  owed, an eight-item list of findings named as explicitly not its work, all standing prohibitions,
+  the reading trap, and the box-budget clause with this session's identity substituted. It is told
+  to run targeted per-file lanes only and to leave the whole gate to this session. First-turn
+  reading at 2026-09-08T01:01Z was healthy: 38 non-synthetic assistant lines, `<synthetic>` count
+  zero. Growth readings at 01:12Z and 01:32Z read 1,168,325 then 2,031,962 bytes with 221
+  non-synthetic assistant lines and still zero synthetic, so the dispatch is alive rather than quiet.
+
+The `consultant` dispatch has completed. Its first-turn reading was healthy at 417,513 bytes and 27
+non-synthetic assistant lines with zero synthetic; it ran 38 tool calls over roughly 26 minutes.
+
+**The consult's ruling, and the fact that inverts six rounds.** Every round since the first has
+rated a forged channel tag Critical on the premise that Claude Code does not escape a channel
+event. That premise is false on every build installed on this machine, and this session confirmed it
+by reading the running binary directly rather than accepting the consultant's account of it. What
+the product does, read at `~/.local/share/claude/versions/2.1.263`:
+
+- The renderer filters meta keys against the identifier pattern, warns about the ones it drops, then
+  builds the envelope with **every attribute value and the source passed through an XML escaper**
+  that turns ampersand, both angle brackets, the double quote and the apostrophe into entities.
+- The **body** is passed through a close-only disarmer for the channel tag, which rewrites a closing
+  tag into a form the reader cannot resolve as one. It skips a filler class of roughly 4,700 code
+  points between the tag's letters, folds a 33-entry table of bracket and slash lookalikes onto
+  their ASCII forms, and matches case-insensitively.
+- The product's filler class **contains U+034F**, which is the exact code point round 6's Critical
+  was reproduced with. That escape is therefore not reachable at the envelope on any installed
+  build, and the finding is downgraded from Critical to Major on that ground rather than on any
+  finding that the bridge's guard was adequate.
+- The rule table that neutralizes forged system-reminder and channel-source tags is the **subagent
+  output** sanitizer and is not applied to channel content, which is what leaves the bridge's guard
+  a real job to do.
+
+A detail worth recording because it nearly stopped the verification one step short: the closing
+channel tag appears nowhere in the binary as a literal string, and the first read of that absence
+was that the payload must be compressed. It is not; the bundle is plainly readable. The tag is
+absent because it is built from a shared constant, and that indirection is exactly the shape of a
+renderer that owns its own escaping. The empty grep was the evidence rather than the obstacle.
+
+**Rulings adopted since the last boundary.**
+
+- **The consult's ruling is adopted, having been confirmed against the product.** The guard's
+  problem was never its class. It was its oracle and its rating. The bridge keeps a guard, because
+  three things the product's layer does not cover are precisely what it is for: a forged tag that is
+  not the channel tag, an opening channel tag rather than a closing one, and a tag name whose
+  letters are themselves lookalikes, which the product matches literally. It is also the only layer
+  on a build that lacks the product's, and whether builds before 2.1.260 carry that layer is unknown
+  rather than known to be absent.
+- **Amendment 1's five clauses are replaced by one.** Each of the five named a generator and each
+  was satisfied by the round that followed it, and the class escaped anyway, six times. The reason
+  is that all five were reasoning about the guard while the question was about the reader. The new
+  clause states the two-layer truth, requires the bridge's classes to be Unicode property
+  expressions in one exported definition with the lookalike table carried as a named copy of the
+  product's, requires both the attribute path and the body path to resolve a code point through one
+  resolver, and requires the test's yardstick to be a fixture of the product's classes rather than
+  the guard. This is approval drift and is recorded as such.
+- **The circularity is named exactly, because it is the round's real lesson.** Round 5's clause
+  required the test to derive its cases from the class definition, and round 6's test did that,
+  walking every code point in Unicode to do it. It still proved nothing, because the yardstick it
+  measured against was built from the guard. A test whose oracle is the thing under test proves only
+  self-consistency, however much it walks. Sample size cannot repair a circular oracle.
+- **Severity in this family is capped at Major** until a live session is observed acting on a forged
+  tag, and a reported spelling counts as a finding only if the fixture's reader resolves it to a tag.
+- **Two items the consult offered as operator forks were taken as low-blast reversible defaults
+  rather than escalated**, and both are recorded here as the approval drift they are. Section 5
+  gains an acceptance line measuring the reader premise directly: one extra prompt has the worker
+  emit four forged-tag spellings and the transcript is read for whether the session treated any as
+  structure. That is the only observation that can give this family a real severity, and section 5
+  is a live run that is happening regardless. Section 6 gains one line in the install document
+  naming a Claude Code version floor of 2.1.260 with its reason, and `docs/install.md` joins that
+  section's Files in scope. Escalating either would have cost an operator round-trip worth more than
+  reversing them.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. The targeted lane over
+the post-round-6 tree, measured by this session 2026-09-08T00:10Z under a claim it held and
+released, read `bridge/protocol.test.ts` 17, `bridge/harness.test.ts` 40, `bridge/log.test.ts` 16,
+`bridge/index.test.ts` 10, `bridge/env.test.ts` 3, `bridge/fake-dsh.test.ts` 2,
+`bridge/redact.test.ts` 8 and `import-hygiene.test.ts` 5, every one exit 0, with `npx tsc --noEmit`
+exit 0. That is the baseline round 7 reports its deltas against. The close gate is this session's
+and has not run. The machine's claims directory was empty at 2026-09-08T00:53:14Z, which is a
+reading rather than a clearance: an absent claim is nobody having claimed the box, never evidence
+the box is free, so the slot is taken under the protocol at the gate.
+
+**A note on the sidecar's readings.** Roughly a dozen verdict alerts fired across this stretch and
+every one concerned a subagent's own tool calls rather than this session's. Two are worth naming
+because they invert their subject. One called a growth reading a divergence for using `stat` rather
+than reading the transcript, when reading that transcript is what the doctrine bars and `stat` is
+the reading it prescribes. Another called the consult's disarmer probe a failure for reporting that
+fullwidth letters pass, when passing is the finding the probe existed to establish. Consistent with
+the operator record putting the sidecar at about one fair alert in three.
+
+**Next action per section.** Section 2: adjudicate fix round 7's report against the code, re-review
+whatever the fix delta earns under the owed-round triggers, take the heavy-process claim, run the
+whole gate with the contention lane beside it, then close with a Chapter and commit and push,
+carrying the five deferred doc-commit pushes with it. Sections 3 through 6: unstarted, in order,
+with section 4 still gated on the operator's answer to the Open Questions entry about whether the
+prompt tool should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's thirteen untracked `bridge/` files and its one
+modified tracked file, plus whatever fix round 7 is writing into them right now. This plan doc is
+committed at this boundary and deliberately **not** pushed, on the same reasoning as the last six: a
+push to this repository's main is an install surface that takes the whole gate, and a fix round is
+mid-flight in the tree, so a gate run now would read a half-edited worktree. The commit is the
+durable recovery point and the push rides with the section close once the gate is green.
