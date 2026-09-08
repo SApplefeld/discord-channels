@@ -3141,3 +3141,158 @@ fires only on consecutive Criticals, which is why it never caught this.
 
 **Next action per section.** Unchanged from Interim board 17 except as ruling 2 states it. Sections
 3 through 6 unstarted, in order.
+
+### Interim board 18 - 2026-09-08
+
+Written at the compaction gate's signal and at a genuine boundary: the operator has ruled on section 2
+and capped its review loop, fix round 20 has been stopped on the wedge hallmark with its fix unstarted,
+and fix round 21, the subtraction round those rulings prescribe, is in flight. No section has closed
+since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through nineteen full review rounds, had its twentieth fix round stopped, and is
+now in fix round 21, which is the subtraction round and the last fix round the operator's cap allows.
+Sections 3 through 6 are unstarted. Section 2's untracked `bridge/` files and its one modified tracked
+file are uncommitted, and under ruling 3 they commit at the cap when the section closes.
+
+**The operator ruled on this section, and the rulings are the record rather than this entry.** They are
+committed at 67db586, written by the CHANNELS Expert seat from the operator's keyboard decisions in
+session b97861ad and confirmed by the operator directly to this session: a Decisions paragraph on one
+bridge per scope and session name, an Out of Scope bullet, an Assumptions bullet, and a Chapters entry
+titled "Operator rulings on section 2 - 2026-09-08" carrying the four rulings and the reading behind
+them. In short: the ownership lease's premise is out of scope and the lease is removed by subtraction;
+the review loop is capped at round 20; the code commits at the cap; and Minors are batched rather than
+fixed per round, which binds every later section of this plan. The Expert's reading that produced them
+found what nineteen boards had not stated plainly, that rounds 8 through 20 grew the lease from a single
+round 7 reviewer finding, one repair per round, seven times, and that the lease was in neither the Goal
+nor section 2's acceptance list.
+
+**One thing survives the removal, and it is this session's recommendation rather than a ruling.** A
+compare-and-set on the conversation identifier stays. The argument for it is a fact this plan already
+records as unmeasured: section 5's acceptance says the state file's scope key is inferred rather than
+confirmed, because nothing in the channel contract states what working directory Claude Code hands a
+plugin's MCP child, and section 5 names the consequence itself, that if the key resolves to a fixed
+directory then every session shares one scope and the collision the scope exists to prevent returns
+silently. That case is two sessions in two different directories rather than the operator error ruling 1
+assumes away, so the ruling's premise does not reach it. The Expert accepted it as low-blast rather than
+spending an operator keystroke, named it to the operator in one line so a single word reverses it, and
+recorded it under Assumptions with its reversal, about a dozen lines and their test. It carries no lease
+and no liveness reading and turns on a value the worker runtime mints rather than one this code invents.
+
+**Fix round 20 was stopped on the wedge hallmark, and it had written no fix at all.** Dispatched
+2026-09-08T20:45:39Z, it took 69 turns and its transcript went flat at 20:59:39Z in the middle of a run
+of four `Edit` calls. All three hallmark terms were met before it was stopped: status still reading
+running, the growth window closed flat, and an unanswered probe. Both instrument controls spoke, 49
+`user` lines printing so the path and the line-type pattern are good, and zero synthetic lines so the
+dispatch was neither the never-started nor the synthetic-only shape. It was stopped at 21:43Z. What it
+left is coherent rather than half-applied, which is the one piece of luck in it: `bridge/harness.ts` was
+last modified 20:11:24Z, thirty-four minutes before that dispatch existed, so the round never touched
+the file its four Majors live in. It had written tests, in `bridge/harness.test.ts` and
+`bridge/protocol.test.ts`, and its own last recorded line says it was about to add a spawn marker to the
+fake runtime so that one of those pins would have an honest control. That is the same failure point as
+round 18's wedge, which Interim board 15 records in the same shape, tests done and fix unstarted.
+
+**A window this session got wrong, corrected before it acted rather than after.** The first probe went
+out at seventeen minutes of flat transcript, on a fifteen-minute growth window. That is the review-class
+window, and an implementer is not review-class: the owning rule defines that class as read-only advisory
+agents that append at every step and run no build by charter, and puts every other class at thirty
+minutes growth and twelve minutes probe as a floor. So the premature probe cost the agent one queued
+round and bought nothing, the real growth window closed at 21:29:39Z, the hallmark's own probe went out
+at 21:29:52Z, and its twelve-minute window closed at 21:41:52Z, which is what made the stop legitimate
+rather than nineteen minutes early. Recorded because the asymmetry runs one way: a stop on a live agent
+discards everything it built with no signal it was nearly done, and this session came close to taking
+that action on a window borrowed from the wrong class.
+
+**Live dispatches.** One: `implementer-fable` at fable, fix round 21 for section 2, the subtraction
+round, dispatched 21:47Z. It carries a reconciled work list at `.kit/r21-findings.md` that supersedes
+the round-19 findings file, which stays as the evidence base. Its brief separates what the ruling
+changed from what it did not: Majors 2, 3 and 4 survive untouched, along with guards 2, 3, 4, 6 and 8,
+while the old Major 1 collapses into the surviving identifier compare-and-set and Minors a and e are
+retired because both name machinery the round deletes. It is asked to triage round 20's uncommitted test
+edits rather than trust or delete them wholesale, keeping the pins for the surviving Majors and deleting
+those pinning lease behaviour, and to report that triage with the rule that decided each test. It is
+also asked to perform Amendment 5's corrective check on the compare-and-set, stating the case it newly
+refuses and showing that no legitimate path wears that shape, and to run its deletion sweep over callers
+rather than over definitions, since a deletion that leaves one caller behind reads as a clean grep for
+the symbol's own definition while the tree no longer compiles.
+
+**Amendment 4 is now history rather than a binding brief input, and the brief says which halves.**
+Amendments 1, 2, 3 and 5 bind as written, and the mapping is worth recording: Amendment 2 is the class
+of Major 4 and Minors b and c, Amendment 3 is the class of the identifier shape test, and Amendment 5 is
+the generator the whole lease recurrence produced. Amendment 4's first five halves describe the
+machinery this round deletes, so they no longer bind a section 2 brief; its sixth half still binds and
+governs Majors 2 and 3 directly, being the rule that a guard which could not read the shared artifact
+has checked nothing and so refuses rather than proceeds, and that a failure policy argued for one of a
+guard's two acts is not a policy for the other. That split is this session's reading, marked inferred in
+the brief itself, with the implementer told to say so if it thinks a retired half still binds.
+
+**A work method carried into the brief that the agent could not see from the tree.** Two of the last
+three fix rounds on this section wedged, and Interim board 15's inferred cause is a large-context turn at
+this tier rather than any file operation, both wedges following edits to the two outsized files in scope,
+about 128 KB and about 154 KB. So round 21's brief requires every edit to either file to be a small
+targeted call with the minimum anchor, one line of plain output after each so a freeze is visible within
+a minute rather than after half an hour, and outline-plus-range reading rather than whole-file reads. The
+cause remains inferred, and a trivial fable dispatch answering in seventeen seconds bounds it without
+settling it.
+
+**Gate baseline.** The whole-gate baseline is still the run of 2026-09-07T19:59:14Z on this checkout with
+no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0, skipped 1,
+duration 147.6s, against a committed baseline of 1582/1581/0/1. This session's last targeted lane on this
+tree was 2026-09-08T20:22Z: `npx tsc --noEmit` exit 0; `node --test` on `bridge/harness.test.ts` 66/66,
+`index.test.ts` 12/12, `log.test.ts` 18/18, `protocol.test.ts` 23/23, `fake-dsh.test.ts` 2/2,
+`env.test.ts` 3/3, every one exit 0 and every exit code read from the run's own marker file rather than
+from a grep over its output, which matters on this project because the summary lines carry a leading
+information symbol. Two of those counts are now stale by construction: round 20 edited `harness.test.ts`
+and `protocol.test.ts` without ever running them, so the current pre-change counts on those two files are
+unmeasured and round 21 measures them. No whole gate has run on the present tree and none can honestly
+run until round 21 stops editing it.
+
+**The machine's heavy slot.** The claim file is absent as of 21:43Z, which under the protocol means
+nobody has claimed the box rather than that the box is free; a clean process poll is a sample and never a
+clearance. This session holds no claim. Round 21's brief carries the claim protocol with this session's
+own name and id substituted, gating every heavy spawn on a read of the live claim file, forbidding a
+write over a live holder's, and scoping its release to a claim carrying that same id.
+
+**Next action per section.** Section 2: take round 21's first-turn reading at five minutes from dispatch,
+which its model override owes whatever the re-block shape, then adjudicate it against the code rather
+than its report, in particular whether the surviving compare-and-set permits the legitimate takeover it
+must permit rather than only refusing what it must refuse, whether the deletion sweep left a caller
+behind, and whether the re-staged write-failure pin still asserts what it asserted before; then one
+bounded review round on that delta, per ruling 2, where a Major found in code the subtraction removed is
+not fixed and a Major elsewhere is fixed once with no further round; then take the heavy-process claim
+and run the whole gate with the contention lane beside it, since the close pushes to a trunk consumers
+install from with no CI gating the merge; then close with a Chapter and commit and push, carrying the
+sixteen deferred doc commits with it. Sections 3 through 6: unstarted, in order, and ruling 4 binds all
+of them. Section 4 carries the installer-hardening criterion and the dependency-advisory criterion in its
+own acceptance list; section 6 carries the workspace-containment record and the security-model entry the
+bridge is owed before the plugin registers.
+
+**Owed to the operator at close-out, as decisions rather than notes.** The state-file pruning fork is
+unchanged and still owed: nothing prunes today, the file grows by one record per distinct scope-and-name
+pair ever used, and reaching its size ceiling becomes a refusal on every prompt on the machine rather
+than a silent loss, which is the better failure and is still a slow fuse; the arithmetic behind how long
+that takes is inferred rather than measured. Also owed: the scope changes to sections 4, 5 and 6 named as
+the scope changes they are; an amendment to the kit's kaizen note, which Interim board 15 established is
+aimed at the wrong cause and which this boundary adds a second reason to amend, since round 20's wedge
+followed the same shape under a brief that mandated small slices; and the kit-level lesson the Expert's
+reading surfaced, that a review loop past three rounds is a signal and past five is a stop, and that a
+round whose Majors all sit in code the previous fix round wrote calls for a design pass rather than
+another fix round, the tier ladder firing only on consecutive Criticals being why nothing caught this.
+The round count itself is no longer owed as a decision: the operator has now made it.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the fifteen before it: a push to
+this repository's main is an install surface that takes the whole gate, and a fix round is editing the
+tree, so the gate cannot honestly run yet. The commit is the durable recovery point and the push rides
+with the section's close.
+
+**Altered outside this repository.** Nothing at this boundary. This session wrote and deleted no
+heavy-process claim here, the slot having been unclaimed throughout, and it wrote nothing to its registry
+entry since the correction recorded at Interim board 17. One line remains appended to the kit
+repository's kaizen inbox at `kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the kaizen
+skill's own adjudication seats, and it is the note aimed at the wrong cause.
+
+**Coordination with the CHANNELS Expert seat.** That seat held the plan doc while it wrote the rulings and
+asked this session to confirm it held no uncommitted edits to the doc; it held none, the doc being clean
+at c06ed99 with nothing staged, and the seat released the doc after committing 67db586. Nothing in that
+exchange authorized anything: the rulings are acted on because the operator confirmed them directly, and
+the committed doc is the record.
