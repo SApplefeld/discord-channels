@@ -64,7 +64,7 @@ are built in section 2; `dsh_record_rotate` is built in section 3.
 | Tool | Arguments | Returns |
 |---|---|---|
 | `dsh_prompt` | `session` (a name the caller chooses), `text`, `cwd` (absolute path of the worker's workspace; required on the first prompt for a session name, remembered after, and a later different value is refused until `dsh_kill`), optional `record` (absolute path of the record file, remembered per session), optional `party` (default `Reviewer`) and `counterparty` (default `DeepSeekHarness`) | As soon as the runtime accepts the prompt, without waiting for agent activity: a receipt naming the DSH session id and turn number |
-| `dsh_status` | `session` | Whether the session is live (this bridge holds a running child with it) or stored (known by name with a log on disk and no child, after a kill or a bridge restart); whether a turn is in flight and the last notification time, both from the child; turn count, step count, compaction count and last event kind, all from the on-disk log |
+| `dsh_status` | `session` | Whether the session is live (this bridge holds a running child with it) or stored (known by name with a log on disk and no child, after a kill or a bridge restart); whether a turn is in flight and the last notification time, both from the child; turn count, step count, compaction count and last event kind, all from the on-disk log, and where that log cannot be read at all, a report naming the reason with those four fields absent while every field above them is still answered, since whether the session is live, whether a turn is in flight and which turn it is never needed the log |
 | `dsh_busy` | none | `true` when any session this bridge owns has a turn in flight, with the session names; the Reviewer consults it before starting a live test run |
 | `dsh_tail` | `session`, `count` (default 40), optional `kinds` (an explicit allow-list of event types) | The last N events from the session log on disk, one line each, bounded per line. The default filter drops the four chunk types (`assistant/chunk`, `text-chunks`, `tool-call-chunks`, `reasoning-chunks`) and admits every other type; `kinds` replaces the default with the list given |
 | `dsh_kill` | `session` | Terminates the DSH child. The session log survives on disk; the next `dsh_prompt` with the same name resumes it |
@@ -415,6 +415,41 @@ Every entry here binds every section opened after it was written, dispatched or 
   hazard the lease exists to prevent, surviving a lease. The two earlier instances are the same
   mechanism read from the other end: the lease read from a snapshot taken in the constructor, and the
   held record replaced by a stale copy from the file.
+
+  The rule has a fifth half, and it closes the gap the fourth one narrowed. **A check and a
+  publication are two acts, and the interval between them belongs to whoever else is reading, so the
+  publication is conditional on the state the check read rather than unconditional on the artifact.**
+  The second half fixed where the check reads. The fourth fixed when the claim is published. Both
+  leave a guard that reads correctly, publishes on time, and still admits two winners, because
+  nothing ties the write to the read that authorized it: the check says the name is free, the write
+  says the name is mine, and between those two sentences another process runs both of its own. So a
+  claim against another process is written as a compare-and-set against the shared artifact, its edit
+  refusing where the artifact now carries another live claimant and reporting that refusal to the
+  caller as a contested claim, or, where the write cannot be made conditional, verified by a read
+  after it that reverts and refuses on finding a foreign claim. Naming the residual window is part of
+  the rule rather than an apology for it: a conditional edit reduces the exposure to a preemption
+  between two adjacent synchronous calls, which is not zero, and a document that says the hazard is
+  closed where the code has narrowed it is the resembling-artifact defect in prose.
+
+  The same rule governs every later write that touches a shared name, not only the claim, and that is
+  where this instance actually bites. A write filtered on "records this process owns" is filtered on
+  the wrong question: it establishes that this process believes it owns the name, never that the
+  artifact agrees, so a turn-count write landing after a neighbour legitimately took the name
+  overwrites a live lease with a stale one and the neighbour is refused mid-conversation by a claim
+  that was already dead. The filter that keeps a claim alive through a write and the filter that
+  decides whether the write may touch a name are two different filters, and one standing in for both
+  is this class's shape again.
+
+  The instance, which is this class's fourth in four rounds and the sixth time in this section that a
+  fix has left open the case it was written for: the fourth half's own repair moved the lease's
+  publication ahead of the prompt, and the write that publishes it lays this bridge's records over the
+  file unconditionally, so two bridges that both read the name as free both publish, the later rename
+  wins whole, neither is told, and both prompt the same session id in two runtimes. The turn-count
+  write at a turn's end reaches the same unconditional edit from the other direction. All three review
+  lenses found it independently in one round, from the spec, from the diff alone, and from the threat
+  model, which is what a defect on a guard's own axis looks like when the guard has been repaired
+  three times without the write being made conditional. The conditional shape was already in the same
+  file thirty lines from the defect, in the claim's own release path.
 
 ## Sections of Work
 
@@ -2542,3 +2577,125 @@ they are.
 `kaizen/notes-NEO-CLAUDE.md` in that clone, which is that file's normal accreting state and is left
 uncommitted there for the kaizen skill's own adjudication seats, and is named here and in the close-out
 rather than left as an unexplained dirty file on the machine.
+
+### Interim board 15 - 2026-09-08
+
+Written at a clean point rather than at the gate's signal: section 2's fifteenth review round is
+adjudicated, Standing Brief Amendment 4 has gained a fifth half for what that round found, and fix
+round 16 is in flight. The compaction this session's last boundary authorized has landed and no
+deferral episode is open. No section has closed since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through fifteen full three-lens review rounds and is in fix round 16. Sections
+3 through 6 are unstarted. Section 2's untracked `bridge/` files and its one modified tracked file
+are uncommitted.
+
+**Review round 15 adjudicated. No Critical from any lens**, which is the sixth consecutive round
+that can say so, so the tier-escalation ladder does not fire and fable remains the writer tier.
+Verdicts were CHANGES_REQUIRED, CHANGES_REQUIRED and CONCERNS. The round was bracketed by a
+`git status --porcelain` capture that is byte-identical to the previous round's closing capture, so
+no agent moved the tree between the rounds.
+
+**The round's finding is one defect, not the two every lens reported, and establishing that was the
+whole of the adjudication's value.** All three lenses found the claim race and the failed-write
+overwrite independently, from the spec, from the diff alone and from the threat model, and each
+proposed its own fix for each. Read against the code they are one cause reached from two
+directions. `writeState`'s edit callback lays every record over the file unconditionally, and the
+re-read that would authorize a refusal is already in hand: `rewriteState` parses the file inside the
+write. So two bridges that both read a name as free both publish it, the later rename wins whole,
+neither is told, and both prompt one session id in two runtimes. The turn-count write at a turn's
+end reaches that same callback through `persistable()`, whose filter keys on this process owning the
+record, which establishes that this bridge believes it holds the name and never that the file
+agrees, so a count written after a neighbour legitimately took the name overwrites a live lease with
+a dead one and refuses that neighbour mid-conversation. One conditional edit closes both, and the
+conditional shape was already in the same file thirty lines from the defect, in the claim's own
+release path.
+
+**A lock file was weighed and rejected.** It would make the window exactly zero, where a conditional
+edit narrows it to a preemption between two adjacent synchronous calls. What it costs is a failure
+mode worse than the one it fixes: a bridge that dies holding the lock wedges every prompt on the
+machine until stale-lock recovery is reasoned about, and stale-lock recovery is the same liveness
+problem the lease already has, moved one level down with nothing gained. The residual window is
+named honestly in the amendment, the code and the README rather than described as closed.
+
+**Standing Brief Amendment 4 gains a fifth half, under the recurrence rule, and it is this class's
+fourth instance in four rounds.** The second half fixed where a guard reads. The fourth fixed when
+the claim is published. Both leave a guard that reads correctly, publishes on time and still admits
+two winners, because nothing ties the write to the read that authorized it. So a claim against
+another process is written as a compare-and-set against the shared artifact, refusing where the
+artifact now carries another live claimant, or verified by a read after the write that reverts and
+refuses on finding a foreign claim. The half carries a second paragraph the instance earned: a write
+filtered on "records this process owns" is filtered on the wrong question, and the filter that keeps
+a claim alive through a write is not the filter that decides whether the write may touch a name.
+
+**The Approach is corrected to as-built at step 5.** Its `dsh_status` row promised the turn, step and
+compaction counts unconditionally from the on-disk log; the degraded case round 13 demanded reports
+the state, the in-flight bit and the turn with those four fields absent. Design intent is unchanged,
+so the sentence is corrected rather than the code reversed.
+
+**Interim board 14's diagnosis of the round-15 triple wedge is wrong, and this entry corrects it.**
+Board 14 attributed three simultaneous reviewer wedges to three concurrent whole-file reads of
+`bridge/harness.ts`, and a kaizen note was filed against the doctrine's read-whole rule on that
+basis. Fix round 16 disconfirms it: the brief mandated slices of at most 400 lines, the agent obeyed,
+and it wedged anyway. Its transcript's own records name what happened. The 123 KB edit to
+`bridge/harness.test.ts` succeeded and the tool result is recorded; what never returned was the next
+inference request, at fable, on roughly 185,000 tokens of cached context. Both wedges share a
+large-context fable turn rather than a file operation, which also explains what the file-size reading
+could not, why round 15's three agents stopped within ninety seconds of one another: one shared meter
+emptying is a mechanism where three coincident large reads is a coincidence. The claim is inferred
+rather than confirmed. A fable dispatch carrying a trivial context answered in seventeen seconds,
+which bounds the hypothesis rather than settling it: that probe tested whether the tier serves at all
+and not the failure mode. What is owed at close-out is an amendment to the kaizen note, which
+currently aims its remedy at how a reviewer reads a large file.
+
+**The recovery was a resume rather than a re-dispatch, and it preserved the round.** The wedged
+agent had written its four tests and left `bridge/harness.ts` byte-identical to its own pre-copy, so
+the fix was unstarted while the tests that pin it were done. A resume carried its context forward,
+with the work method rewritten around the hazard: every edit to either outsized file a small targeted
+call with the minimum anchor, and one line of plain output after each, so a freeze costs a minute
+rather than half an hour. The resumed agent has since changed `harness.ts`, `harness.test.ts`,
+`protocol.ts` and `README.md`.
+
+**Two readings of this session's own were wrong and were caught by controls rather than by
+inspection.** A check for backslashes in a drafted file returned no matches and was reported as
+clean; its control, a file with a backslash written for the purpose, also returned no matches, which
+is what exposed the instrument. This host's Bash tool collapses a backslash even inside a
+single-quoted heredoc, so the same defect had corrupted the pattern, the subject and the calibration
+in one call, and an instrument whose escape syntax travels through the layer under test cannot
+measure that layer. Counting the byte by its octal name settled it: ten in `bridge/protocol.ts`,
+zero in the draft. Separately, a peer session was briefly suspected of writing in the tree on the
+strength of a file modification time, which was a misreading of a listing printed with clock times
+and no dates; the file was the previous day's, and no peer is in the tree.
+
+**The machine's heavy slot is held by another repository's session** and has not overrun: the claim
+was written 2026-09-08T18:39:30Z against a 3600-second estimate, so at the 15:10 local reading it was
+31 minutes into its own 60. No `node --test` or `tsc` process is running, and a foreign claim's
+presence is grounds for waiting where its absence would never be grounds for starting. The fix
+round's brief gates every heavy spawn on a claim-free poll, so its own lanes wait on that slot, and
+so does the close gate.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. The current reading on the
+section's own files is this session's targeted lane of 2026-09-08T16:55Z: tsc exit 0, harness 59/59,
+index 12/12, log 18/18, protocol 22/22, all exit 0, every exit code read from the run. No gate has run
+on the present tree and none can honestly run yet, the round being mid-fix and the box being held.
+
+**Next action per section.** Section 2: adjudicate fix round 16 against the code, re-review whatever
+its delta earns under the owed-round triggers, take the heavy-process claim once the foreign hold
+clears, run this session's verification lane and then the whole gate with the contention lane beside
+it, then close with a Chapter and commit and push, carrying the deferred doc-commit pushes with it.
+Sections 3 through 6: unstarted, in order. Section 4 carries the installer-hardening criterion adopted
+at Interim board 13 and now the dependency-advisory criterion routed from round 15; section 6 carries
+the workspace-containment record and now the security-model entry the bridge is owed before the plugin
+registers.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twelve before it: a push to
+this repository's main is an install surface that takes the whole gate, and a fix round is editing the
+tree while the box is held by another session, so the gate cannot honestly run yet. The commit is the
+durable recovery point and the push rides with the section's close.
+
+**Altered outside this repository.** One line remains appended to the kit repository's kaizen inbox at
+`kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the kaizen skill's own adjudication
+seats. That note is the one this entry establishes is aimed at the wrong cause, and amending it is
+owed at close-out.
