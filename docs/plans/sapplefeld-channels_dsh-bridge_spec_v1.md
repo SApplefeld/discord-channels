@@ -351,12 +351,26 @@ Every entry here binds every section opened after it was written, dispatched or 
   surface the code under it will actually read at run time, and take the measurement there. Where
   the real surface cannot be read at all, the value is marked inferred and the section that can
   observe it is named, rather than a stand-in being measured and reported as though it settled the
-  question. The class has now produced two defects a round apart, and both had the same shape: the
-  stand-in agreed with the claim, so the check came back green and the real surface was never
-  opened. Section 1 verified the permission preset against the composed config row rather than
-  against what the runtime mounts, and the bridge's log reader had its chunk filter narrowed on a
-  count taken over the SDK notification fixtures while the reader itself reads the on-disk log,
-  where the types it had stopped dropping are the two most numerous in the file.
+  question. The class has now produced three defects in as many rounds, and each had the same
+  shape: the stand-in agreed with the claim, so the check came back green and the real surface was
+  never opened. Section 1 verified the permission preset against the composed config row rather
+  than against what the runtime mounts, and the bridge's log reader had its chunk filter narrowed
+  on a count taken over the SDK notification fixtures while the reader itself reads the on-disk
+  log, where the types it had stopped dropping are the two most numerous in the file.
+
+  The third instance is the same generator at run time rather than at the keyboard, so the rule
+  has a second half. **A check whose subject is shared between processes reads the shared artifact
+  at the moment of the check, never a copy of it this process is holding.** An in-memory map loaded
+  at construction, a value cached at startup, a snapshot taken before a wait: each is a second
+  artifact that resembles the first and agrees with it exactly until the moment another process
+  changes the original, which is the only moment the check exists for. So a guard that answers
+  "does another process hold this" opens the file, and one that cannot is not a guard against
+  another process. The instance: the per-session ownership lease was read from a map populated once
+  in the bridge's constructor, so two bridges started before either prompted each saw no owner and
+  the second resumed a session id the first was already running. The machine's own heavy-process
+  protocol is the worked example of the rule, and it is written this way for exactly this reason:
+  the claim file is read immediately before the spawn rather than at the top of the run, and a
+  claim's age is taken from the file's modification time rather than from a line inside it.
 
 ## Sections of Work
 
@@ -1758,7 +1772,7 @@ own targeted lanes on its own tree as `bridge/protocol.test.ts` 21 (up 4), `brid
 `bridge/fake-dsh.test.ts` 2, `bridge/redact.test.ts` 8 and `import-hygiene.test.ts` 5, every one
 exit 0 with `npx tsc --noEmit` exit 0; those are the implementer's numbers on the implementer's tree
 and are the baseline round 8 reports against. The close gate is this session's and has not run. The
-machine's heavy slot is held by a foreign session as of 2026-09-08T01:51:55Z, `NEO: Worker` on
+machine's heavy slot is held by a foreign session as of 2026-09-08T01:51:55Z, a worker seat on
 another repository, started 01:43:30Z with an expected 3600 seconds, so it is expected held until
 about 02:43Z; the round was dispatchable against that hold because reviewers build nothing, and the
 constraint rides in every brief.
@@ -1787,3 +1801,137 @@ at this boundary and deliberately **not** pushed, on the same reasoning as the l
 this repository's main is an install surface that takes the whole gate, and a fix round is editing
 the tree right now, so a gate run now would read a half-edited worktree. The commit is the durable
 recovery point and the push rides with the section close once the gate is green.
+
+### Interim board 10 - 2026-09-08
+
+Written at the compaction gate's own signal, 14 offers held over 32 minutes, and at the closure
+drought's floor: section 2's eighth review round is adjudicated, no section has closed since
+Chapter 1, and fix round 10 is in flight. The boundary is worth recording because this round found
+the previous round's own fix failing in the case it was built for, and because that failure is the
+third instance of a class the plan already carries a rule for.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through eight full three-lens review rounds, and is in fix round 10, the
+fourth at the escalated fable tier. Sections 3 through 6 are unstarted. Section 2's fifteen
+untracked `bridge/` files and its one modified tracked file are uncommitted.
+
+**Live dispatches.**
+
+- `implementer-fable`, section 2 fix round 10, dispatched with the explicit fable model override the
+  escalation authorizes. It carries the round-10 findings file under the gitignored scratch path
+  (four Majors, seven Minors, an eight-item not-your-work list), all four Standing Brief Amendments
+  with the instruction to re-read amendment 4 because it changed since its last dispatch, every
+  standing prohibition, both reading traps, and the box-budget clause with this session's identity
+  substituted and the live foreign claim named as overrun. It is told to run targeted per-file lanes
+  only, to write and delete no claim, and to leave the whole gate to this session. First-turn reading
+  at 2026-09-08T02:55Z was healthy: 38 non-synthetic assistant lines, `<synthetic>` count zero.
+
+Fix round 8 and all three round-9 review lenses have completed and are adjudicated.
+
+**Fix round 8 was adjudicated against the code rather than adopted from its report.** The two things
+its brief made explicit demands about both hold. It watched its new timeout test fail against the
+round-7 code before fixing, restoring from its own pre-probe copies and verifying the restore with a
+byte comparison, and it reported honestly that one of its four tests did not go red in the order the
+scheduler picked. And its lease guard treats the stored owner as untrusted input at the read, per
+amendment 3: `isSessionOwner` requires a record, a safe-integer process id strictly above zero, and
+an ISO-timestamp field matched against a fixed pattern, which is a shape check rather than the
+`typeof` pass the amendment names as insufficient. Its restoration of the log reader's chunk filter
+names the on-disk log as the surface in the code's own comment, which is what amendment 4 asks for at
+the site that earned it. Four of its six concerns were accepted as argued, the unattributed event's
+empty body among them, on the ground that a bridge-authored sentence there would make the server's
+own instructions untrue and would land in section 3's record as though the worker had said it.
+
+**Review round 9 adjudicated. No Critical from any lens**, which is the second consecutive round that
+can say so, so the tier-escalation ladder does not fire. Verdicts were CHANGES_REQUIRED,
+CHANGES_REQUIRED and CONCERNS. First-turn readings were taken at the window on the two lenses still
+running, each healthy at 32 and 41 non-synthetic assistant lines with a `<synthetic>` count of zero;
+the adversarial lens had completed before its reading was due. The round was bracketed by a
+`git status --porcelain` capture before dispatch and again at return, and the two are byte-identical,
+so no agent moved the tree under the round and the findings stand.
+
+**All three lenses independently found the same Major, and this session confirmed it in the code
+before acting on it.** Round 8 added an ownership lease so that two bridges in one project cannot
+drive one DSH conversation, which is the two-appenders-on-one-container hazard board 9 recorded. The
+lease is written to the state file on disk and read from a map populated once in the bridge's
+constructor: `readState(` appears at exactly two places in the file, its own definition and that one
+constructor call, and `writeState` re-reads the file to merge before writing but never refreshes the
+map. So two bridges started before either prompts each hold a snapshot showing the name free; the
+first takes the lease and writes it, and the second consults its own snapshot, passes the refusal,
+and resumes the same session id in a second runtime. The check passes at exactly the moment it exists
+to fail. The test round 8 wrote for the lease cannot see it, because it writes the owned record
+before constructing the second bridge, which is not the ordering two live sessions produce.
+
+**Rulings adopted since the last boundary.**
+
+- **Standing Brief Amendment 4 gains a second half, under the recurrence rule.** The class is *a
+  claim about a runtime artifact settled against a second artifact that resembles it*, and this is
+  its third instance in as many rounds: the permission preset verified against the composed
+  configuration row rather than what the runtime mounts, the chunk filter tuned on a count over the
+  notification stream while the reader reads the on-disk log, and now the lease read from a
+  process-local snapshot rather than the shared file. The generator is one, so the rule gained a
+  clause rather than the block gaining a fifth entry: a check whose subject is shared between
+  processes reads the shared artifact at the moment of the check, never a copy this process holds,
+  and a guard that cannot open the file is not a guard against another process. The machine's own
+  heavy-process protocol is named in the amendment as the worked example, since it is written that
+  way for exactly this reason. This is approval drift and is recorded as such.
+- **A Minor was upgraded to Major on this session's own reading.** The state-file write replaces the
+  whole file with this scope alone where the existing file is unreadable or oversized, which silently
+  deletes another bridge's records; the process that destroys them is not the one that logged the
+  warning. The lens rated it Minor; the consequence is silent loss of a peer's state, so it is
+  routed as a Major with the remedy of refusing to write rather than overwriting.
+- **A pid-reuse Minor is fixed in words rather than in code, deliberately.** All three lenses noted
+  that the lease's recorded start time is never compared, so a recycled process id can hold a name
+  for as long as the unrelated process lives. A creation-time comparison would need a command spawn
+  on this platform, which is a worse cure than the disease, so the refusal is reworded to stop
+  promising a release it cannot guarantee and the limit is stated in the module's README.
+- **A public-repository finding was swept and dispositioned rather than acted on tree-wide.** The
+  security lens flagged the OS account name in a tracked plan-doc line. The sweep, run with a control
+  that demonstrably speaks after a first attempt whose control was silently broken by the shell's
+  backslash handling, found the name is already published across this repository by design: it is the
+  host fixture in sixteen broker test files and two reference documents, and it is the author of
+  every commit. The marginal disclosure is therefore nil. The one gratuitous instance, in board 9's
+  own text, is reworded; the deliberate fixtures are left alone rather than churned; and the single
+  pre-existing instance in an installer's usage example is outside this plan's scope and is routed
+  rather than fixed here.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. Fix round 8 reported its
+own targeted lanes on its own tree as `bridge/protocol.test.ts` 21, `bridge/harness.test.ts` 43 (up
+3), `bridge/log.test.ts` 16, `bridge/index.test.ts` 10, `bridge/env.test.ts` 3,
+`bridge/fake-dsh.test.ts` 2, `bridge/redact.test.ts` 8 and `import-hygiene.test.ts` 5, every one exit
+0 with `npx tsc --noEmit` exit 0; those are the implementer's numbers on the implementer's tree and
+are the baseline round 10 reports against. The close gate is this session's and has not run.
+
+**The machine's heavy slot is held and has overrun.** The claim is a worker seat on another
+repository, file mtime 2026-09-08T01:43:30Z with an expected 3600 seconds, so it is 66 minutes old
+against its own hour at the 02:49Z reading. The holder is live and busy on the roster, which is the
+reading that outranks any file hint, so the claim is honest rather than abandoned and presence is
+grounds for waiting. It is not this session's to delete, its `Session:` line being another's. Both
+review rounds and both fix rounds were dispatchable against the hold because reviewers build nothing
+and the implementers run targeted per-file lanes only; the whole gate is what waits for the slot.
+
+**A note on the sidecar's readings.** Roughly a dozen more verdict alerts fired across this stretch,
+the great majority concerning a subagent's own tool calls. Several inverted their subject in the
+now-familiar way, one calling a growth reading a divergence for using the file's modification time
+rather than reading the transcript when reading that transcript is exactly what the doctrine bars,
+and one reading a modified worktree file as a non-empty index. **One was fair and caught a real
+defect in this session's own work:** it reported that a control meant to prove an absence-sweep's
+predicate had failed to speak, which was true, the shell having eaten the backslashes out of the
+control's needles, and the sweep was re-run with the control built through a route that survives.
+Consistent with the operator record putting the sidecar at about one fair alert in three.
+
+**Next action per section.** Section 2: adjudicate fix round 10's report against the code, re-review
+whatever the fix delta earns under the owed-round triggers, take the heavy-process claim once the
+foreign hold clears, run the whole gate with the contention lane beside it, then close with a Chapter
+and commit and push, carrying the eight deferred doc-commit pushes with it. Sections 3 through 6:
+unstarted, in order, with section 4 still gated on the operator's answer to the Open Questions entry
+about whether the prompt tool should be auto-allowed.
+
+**Uncommitted at this boundary.** Section 2's fifteen untracked `bridge/` files and its one modified
+tracked file, plus whatever fix round 10 is writing into them right now. This plan doc is committed
+at this boundary and deliberately **not** pushed, on the same reasoning as the last seven, with one
+addition: a push to this repository's main is an install surface that takes the whole gate, a fix
+round is editing the tree right now, and the machine's heavy slot is held by another session, so the
+gate cannot honestly run yet. The commit is the durable recovery point and the push rides with the
+section close.
