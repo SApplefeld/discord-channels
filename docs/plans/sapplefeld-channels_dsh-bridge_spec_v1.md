@@ -70,8 +70,14 @@ are built in section 2; `dsh_record_rotate` is built in section 3.
 | `dsh_kill` | `session` | Terminates the DSH child. The session log survives on disk; the next `dsh_prompt` with the same name resumes it |
 | `dsh_record_rotate` | `session`, `archive_path` | Moves the record file to `archive_path` and starts a fresh one; refused while that session has a turn in flight |
 
-A turn is in flight from the moment the runtime accepts a `session/prompt` until that session's
-`session.status` notification reports the agent idle, or `dsh_kill` ends it. `dsh_busy` and
+A turn is in flight from the moment the bridge sends a `session/prompt`, rather than from the moment
+the runtime accepts it, until that session's `session.status` notification reports the agent idle, or
+`dsh_kill` ends it. The earlier boundary is what the bridge was built to, and deliberately: a turn
+the worker completes inside the request window would otherwise end before anything was watching for
+its end, and the receipt is defined not to wait on the worker. What that costs is that `dsh_busy`
+reads true while a request is outstanding, and that a `dsh_kill` arriving inside the request both
+pushes a `killed` event and rejects the prompt call, which is two signals for a prompt the runtime
+never took. `dsh_busy` and
 `dsh_record_rotate` both key on that state. The status field carries exactly two values, `running`
 and `idle`, established in section 1 both empirically in the fixtures and structurally in the
 protocol's own typing, so there is no error status to end a turn: a turn that ended badly ends on
@@ -335,6 +341,16 @@ Every entry here binds every section opened after it was written, dispatched or 
   that boundary's other callers and reuse the guard one of them already exports. Where the owning
   file sits outside the section's `Files in scope:`, name the file, the guard and the export it needs
   in the report and leave it unedited rather than cloning it.
+
+  A diagnostic log is one of those boundaries, and it is the one a reader passes over, because
+  nothing hostile sits on the far side and the danger runs the other way: what crosses it is the
+  detail of a failure, and a Node filesystem error's detail is the path it was raised on, which on
+  this machine runs through the operator's user name, while a parse failure's detail is the bytes it
+  choked on. The instance: one round narrowed the state file's read failure to its error code and
+  left the write failure, the release failure and the parse failure, all within thirty lines, still
+  interpolating the error, each site reading correctly on its own. So the redaction a channel needs
+  is written once and called, and a second site formatting a failure for that same channel calls it
+  rather than keeping the rule itself.
 - **Every stored value is untrusted input the moment it reaches the filesystem, and the check is
   owed field by field rather than to the field that earned the rule.** Anything read back from the
   bridge's own state file is shape-checked before it is joined into a path, opened, statted, or
@@ -450,6 +466,39 @@ Every entry here binds every section opened after it was written, dispatched or 
   model, which is what a defect on a guard's own axis looks like when the guard has been repaired
   three times without the write being made conditional. The conditional shape was already in the same
   file thirty lines from the defect, in the claim's own release path.
+
+  The rule has a sixth half, and it is about what the guard does when it fails rather than about what
+  it does when it works. **A guard that could not read the shared artifact has checked nothing, so it
+  refuses rather than proceeds; and a failure policy argued for one of a guard's acts is not thereby
+  a policy for the other.** A check and a publication fail for different reasons, on different
+  clocks, with different remedies, so the reasoning that makes it right to proceed after one is not
+  transferable to the other by the fact that both arrive at the same catch. Name which act failed
+  before deciding what a failure costs: a publication lost after a clean check leaves a window the
+  guarded act itself bounds, while a read that never happened leaves the guard absent for as long as
+  the artifact stays unreadable, which is not a window at all and needs no race to be exploited. Ask
+  in particular whether the code can even tell the two apart at the point it decides, since a helper
+  that turns a read fault into an empty result hands the decision a silence indistinguishable from
+  damage, and a policy keyed on an axis the catch cannot see is a policy that was never applied.
+
+  Its second sentence is the same rule read from the caller's side. **A refusal is worth nothing
+  until the caller acts on it, so a check that reports a contested result and a caller that discards
+  that report are together no check at all.** A conditional write that correctly declines to lay a
+  name down, and returns the name as contested, leaves this process still believing it holds what the
+  artifact has given away; the belief is what the next act consults, so the refusal has to reach the
+  in-memory record and not only the log. Where the two disagree, the artifact is right.
+
+  The instance, which is this class's fifth in five rounds and the seventh time in this section that a
+  fix has left open the case it was written for: the fifth half's own repair made the claim write a
+  compare-and-set that refuses a contested name and reports it, and both callers dropped the report,
+  one by discarding the returned map at a turn's end and one by never demoting the record it holds.
+  The read that would have caught it asks whether the artifact's owner is a live foreign process, so
+  it corrects the stale belief exactly while the neighbour is running and stops correcting it the
+  moment the neighbour exits, which is when this bridge reclaims the name and writes its own session
+  id over the conversation the neighbour built. Beside it, the same round found the guard's failure
+  policy admitting the hazard with no race at all: the claim write proceeds whenever it cannot write,
+  on reasoning recorded about a refused rename, and the same catch is reached by a state file that is
+  present and unreadable, a condition that persists until the operator repairs it and during which
+  every bridge in the project checks no lease and publishes no claim.
 
 ## Sections of Work
 
@@ -2699,3 +2748,142 @@ durable recovery point and the push rides with the section's close.
 `kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the kaizen skill's own adjudication
 seats. That note is the one this entry establishes is aimed at the wrong cause, and amending it is
 owed at close-out.
+
+### Interim board 16 - 2026-09-08
+
+Written at the compaction gate's own signal and at a clean point both: fix round 16 is adjudicated
+against the code, review round 17 is adjudicated, a consult on the ownership lease's failure policy
+has ruled and been adopted, Standing Brief Amendment 4 has gained a sixth half, and fix round 18 is
+in flight. No section has closed since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through seventeen full review rounds and is in fix round 18. Sections 3
+through 6 are unstarted. Section 2's untracked `bridge/` files and its one modified tracked file are
+uncommitted.
+
+**Fix round 16 was adjudicated against the code rather than adopted from its report, and the
+decisive question was whether its compare-and-set is live or inert.** It is live, confirmed
+structurally: the write side reaches its refusal through `foreignClaimant`, which applies
+`isSessionOwner` and then `heldElsewhere`, the same predicate pair the read side applies, and the
+owner shape the claim actually writes satisfies that predicate, so a foreign live claim on disk does
+reach the refusal instead of falling through it. Round 14's lesson was that a correct-reading fix can
+be inert when its filter keys on the wrong field, and what makes this one unable to drift is that
+read side and write side now share one predicate by construction. The round's seven reported lane
+results were then reproduced independently rather than accepted: `tsc` clean and six test files
+green, every exit code read from the run's own marker file.
+
+**Review round 17 found two Majors, and one of them is the orchestrator's own ruling reversed.** The
+round-16 report declared a concern about a stale in-memory owner after a contested skip, and the
+orchestrator ruled it already closed by the recall path, which returns the stored record when a held
+name's owner on disk is a live foreign process. That ruling was wrong, and the adversarial lens found
+the step it missed: the correction is conditional on the neighbour's process still being alive, so it
+holds exactly while the neighbour runs and stops the moment the neighbour exits, which is precisely
+when this bridge reclaims the name and writes its own session id over the conversation the neighbour
+built. The compare-and-set refuses correctly and both of its callers discard the refusal, so the
+process goes on believing it holds a name the file has given away. The existing control walks that
+path and asserts only the owning process, never which conversation survived, so a green suite reports
+nothing.
+
+**The lease's failure policy went to a consult, which corrected the framing and ruled.** The security
+lens found that the claim write proceeds whenever it cannot write, on reasoning recorded about a
+rename refused for a moment while a neighbour holds the file, and that the same catch is reached by a
+state file that is present and unreadable, which persists until the operator repairs it and during
+which every bridge in the project checks no lease and publishes no claim. That admits the plan's
+central hazard with no race at all. The orchestrator's proposed axis was transient against persistent
+and was wrong: the file reader turns a filesystem read fault into an empty result, so damage and a
+transient read fault arrive at the decision indistinguishable, and a policy keyed on that axis would
+never have been applied. The axis that is visible is which act of the write failed. Adopted: a write
+whose read failed refuses the prompt, because the guard checked nothing and published nothing; a
+write whose publish failed keeps proceeding, because the check found no foreign claimant and only the
+publication is lost for a window the turn itself bounds; and the turn-end count write stays
+best-effort in both cases, that turn being over. The precedent sits in the same file, where an
+unopenable process is read as alive on the identical asymmetry: a wrong reading of dead costs two
+runtimes on one log, a wrong reading of alive costs one refusal.
+
+**Standing Brief Amendment 4 gains a sixth half, its fifth instance in five rounds and the seventh
+time in this section that a fix has left open the case it was written for.** Two sentences. A guard
+that could not read the shared artifact has checked nothing, so it refuses rather than proceeds, and
+a failure policy argued for one of a guard's two acts is not thereby a policy for the other; ask in
+particular whether the code can tell the two apart at the point it decides. And, from the caller's
+side, a refusal is worth nothing until the caller acts on it, so a check that reports a contested
+result and a caller that discards the report are together no check at all, the belief being what the
+next act consults.
+
+**Standing Brief Amendment 2 gains a paragraph naming the diagnostic log as a boundary of its kind,
+and it earned itself twice within the hour.** The class is a failure's detail crossing a channel that
+promises less: a filesystem error's detail is the path it was raised on, which on this machine runs
+through the operator's user name, and a parse failure's detail is the bytes it choked on. Round 16
+narrowed the state file's read failure to its error code and left the write failure, the release
+failure and the parse failure, all within thirty lines, still interpolating the error. The
+orchestrator closed those three through one shared helper rather than three hand-kept rules, watched
+the pin go red first at exit 1 with the old line carrying a full path verbatim, and restored the
+probe from a pre-probe copy verified byte-identical. The blind lens then found a fourth instance the
+sweep had not reached, in the log-tail tool, whose filesystem error still reaches the model with the
+log's absolute path while the correct code-only renderer sits twelve hundred lines away and is
+already used by the status tool.
+
+**The Approach's in-flight definition is corrected to as-built.** It said a turn is in flight from
+the moment the runtime accepts a prompt; the bridge marks it live from the moment it sends one, and
+deliberately, since a turn the worker completes inside the request window would otherwise end before
+anything watched for its end. Design intent is unchanged, so the sentence is corrected rather than
+the code reversed, and what the earlier boundary costs is now stated with it.
+
+**Live dispatches.** One: `implementer-fable` at fable, fix round 18 for section 2, carrying the
+adjudicated findings file, four Majors and six Minors, the adopted consult ruling, and the sixth
+half. Asked to watch every new or changed test red before its fix and to sweep for further exits
+carrying a filesystem error's message, reporting that sweep with its predicate and scope. The three
+round-17 review dispatches and the consult have all returned.
+
+**A brief defect of the orchestrator's own, recorded because the reviewer caught it.** The blind
+dispatch's file list was split into "primary" and "also changed", which is diff-describing framing:
+it would not read identically for every diff in the repository, so it is contamination of exactly the
+lens that exists to read without the intent story. The reviewer named it and reviewed all files on
+equal footing anyway. The split is not repeated.
+
+**Gate baseline.** The whole-gate baseline is still the run of 2026-09-07T19:59:14Z on this checkout
+with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0, skipped
+1, duration 147.6s, against a committed baseline of 1582/1581/0/1. This session's own targeted lane
+was re-run on the present tree at 2026-09-08T19:35Z under a heavy-process claim it wrote and
+released: `npx tsc --noEmit` exit 0; `node --test` on `bridge/harness.test.ts` 63 tests 63 pass 0
+fail, `index.test.ts` 12/12, `log.test.ts` 18/18, `protocol.test.ts` 22/22, `fake-dsh.test.ts` 2/2,
+`env.test.ts` 3/3, every one exit 0 and every exit code read from the run's own marker file rather
+than from a grep over its output, which matters on this project because the summary lines carry a
+leading information symbol. That is plus four tests on this session's previous reading of 59 for the
+harness file, the four being round 16's own lease pins. No whole gate has run on the present tree and
+none can honestly run until fix round 18 stops editing it.
+
+**The machine's heavy slot.** A peer session on another repository held it from 19:27:12Z with a
+900-second estimate and cleared it at 19:34:30Z, inside its own estimate. This session then wrote its
+own claim, ran the lane, and released it at 19:36:48Z, verifying its own session line before the
+delete. The slot was free at the time of writing and fix round 18's brief gates every heavy spawn on
+a claim-free poll.
+
+**Next action per section.** Section 2: adjudicate fix round 18 against the code, re-review whatever
+its delta earns under the owed-round triggers, then take the heavy-process claim and run the whole
+gate with the contention lane beside it, since the close pushes to a trunk consumers install from
+with no CI gating the merge, then close with a Chapter and commit and push, carrying the fourteen
+deferred doc-commit pushes with it. Sections 3 through 6: unstarted, in order. Section 4 carries the
+installer-hardening criterion and the dependency-advisory criterion; section 6 carries the
+workspace-containment record and the security-model entry the bridge is owed before the plugin
+registers.
+
+**Owed to the operator at close-out, as decisions rather than notes.** The consult surfaced one
+operator fork this plan does not cover: whether the bridge's state file prunes records nobody has
+prompted for a long time, and after how long. Nothing prunes today, so the file grows by one record
+per distinct project-and-name pair ever used, and under the adopted ruling reaching its size ceiling
+becomes a refusal on every prompt on the machine rather than a silent loss of the guard, which is the
+better failure and is still a slow fuse. The arithmetic behind how long that takes is inferred rather
+than measured. Also owed: the three scope changes to sections 4, 5 and 6 named as the scope changes
+they are, and an amendment to the kit's kaizen note, which interim board 15 established is aimed at
+the wrong cause.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the thirteen before it: a push
+to this repository's main is an install surface that takes the whole gate, and a fix round is editing
+the tree, so the gate cannot honestly run yet. The commit is the durable recovery point and the push
+rides with the section's close.
+
+**Altered outside this repository.** One line remains appended to the kit repository's kaizen inbox
+at `kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the kaizen skill's own
+adjudication seats, and it is the note aimed at the wrong cause. Nothing else outside this repository
+was changed: this session's heavy-process claim was written and deleted at the machine's coordinator
+directory, which is that file's normal use.
