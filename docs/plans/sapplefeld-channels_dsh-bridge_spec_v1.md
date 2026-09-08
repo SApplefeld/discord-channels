@@ -392,6 +392,30 @@ Every entry here binds every section opened after it was written, dispatched or 
   read the runtime, and the defect was that nobody had read it yet while the prose spoke as though
   somebody had.
 
+  The rule has a fourth half, and it is the write side of the second. **A guard against another
+  process is worth only what is visible to that process at the window's start, so the claim is
+  published before the act it guards rather than after the act succeeds.** The second half fixed the
+  read: open the shared file at the moment of the check. That leaves the other end untouched, and a
+  guard can read the file faultlessly and still see nothing, because the fact it is looking for has
+  not been written yet. So name the window a guard is meant to cover, then check that the claim
+  reaches the shared artifact before that window opens; where the claim is written only once the
+  guarded act has returned, the guard covers every moment except the one it exists for. The
+  publication and the reading are one mechanism and a round that repairs one of them has repaired
+  half a guard. The machine's own heavy-process protocol is the worked example on this side too, and
+  in the same detail: the claim is written *before* the spawn, never once the suite is running, and
+  it is deleted after the operation ends rather than when the turn does.
+
+  The instance, which is this class's third in three rounds and the fifth time in this section that
+  a fix has left open the case it was written for: the per-session ownership lease is set in memory
+  with this process as owner before the prompt is sent, and reaches disk only once the runtime has
+  answered the prompt request, which is bounded by the request timeout rather than by anything
+  quick. A second bridge in the scope, prompting inside that window, reads the file correctly under
+  the second half's rule, finds the previous run's dead owner or no owner at all, takes the name, and
+  resumes the same session id in a second runtime. That is the two-unsandboxed-workers-on-one-log
+  hazard the lease exists to prevent, surviving a lease. The two earlier instances are the same
+  mechanism read from the other end: the lease read from a snapshot taken in the constructor, and the
+  held record replaced by a stale copy from the file.
+
 ## Sections of Work
 
 ### 1. SDK runtime spike and fixtures
@@ -607,6 +631,21 @@ Acceptance:
   installer's list.
 - `install/Install-All.test.ts` pins the managed-settings allowlist as exactly the relay row and the
   bridge row, and the installer as installing and checking both plugins, and passes.
+- **The bridge's execution chain is hardened by the installer, and pinned.** `install/Install-Host.ps1`
+  hardens every path Claude Code or the bridge executes from, and until this section it names
+  `hooks/`, `relay/`, `wrapper/`, `install/`, `broker/`, the token file and the state root, with no
+  `bridge/` entry at all. Installing this plugin is what puts four new paths on that chain:
+  `bridge/index.ts` and the rest of the bridge's own sources, which Claude Code runs through the
+  plugin shim; `bridge/runtime/`, whose `@deepseek-ai/dsh` binary the bridge spawns; and
+  `bridge/sdk.cordis.patch.yml`, which is the file that presets the worker's sandbox and approval to
+  `danger-full-access` and `never`. Write access to any of them is code execution in the operator's
+  context, and the patch file specifically lets an attacker change the worker's confinement without
+  touching a hardened file. So this section adds `Protect-ChannelPath` entries for `bridge/` and
+  `bridge/runtime/`, and `install/Install-Host.test.ts` pins them beside the entries it already pins
+  for the relay. This criterion is the disposition of a security Major raised by section 2's
+  thirteenth review round, and it lands here rather than there because the exposure does not exist
+  until this section installs the plugin: section 2's files are not on any execution chain while the
+  plugin is unregistered.
 - `npm run lint` and `npm test` pass.
 
 Files in scope: `plugins/dsh-bridge/.claude-plugin/plugin.json`, `plugins/dsh-bridge/.mcp.json`,
@@ -614,9 +653,11 @@ Files in scope: `plugins/dsh-bridge/.claude-plugin/plugin.json`, `plugins/dsh-br
 `plugins/launch-shim.test.ts`, `wrapper/Enter-ClaudeSession.ps1`, `wrapper/launch-line.test.ts`,
 `hooks/settings-fragment.json`, `install/Install-Functions.ps1`, `install/Install-Functions.test.ts`,
 `install/Install-Host.test.ts`, `install/Install-All.ps1`, `install/Install-Elevated.ps1`,
-`install/Install-All.test.ts`, `bridge/allow-rules.test.ts`, `docs/install.md`. The three `install/`
+`install/Install-All.test.ts`, `install/Install-Host.ps1`, `bridge/allow-rules.test.ts`,
+`docs/install.md`. The three `install/`
 files after `Install-Host.test.ts` entered this scope at the 2026-09-08 plan review (Interim board
-11) and left `## Out of Scope` the same day.
+11) and left `## Out of Scope` the same day. `install/Install-Host.ps1` entered it at Interim board
+13 and left `## Out of Scope` then, on the hardening criterion above.
 
 Tests: the cross-file pins are the tests; the silent failure they guard is a channel refused at
 launch with the session starting anyway, which is the same failure `plugins/manifest.test.ts`
@@ -704,7 +745,16 @@ commands it runs), and its own responses travel in cleartext over the LAN to the
 verbatim. The same document's allow-rule paragraph (the one stating that one rule is merged into the
 user-level settings file) is rewritten to count the bridge's six rules beside the relay's one, and
 the `dsh_prompt` chain the Open Questions entry describes lands under its accepted-risks heading as
-the operator's 2026-09-08 answer. `docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
+the operator's 2026-09-08 answer. That accepted-risk entry states the boundary as it actually is,
+which is wider than the entry's own reasoning implies: the worker's workspace is checked for shape
+and not for location, so any absolute drive-rooted directory the calling model names is admitted,
+and the dedicated worktree the risk's reasoning leans on is a convention the operator and the
+calling session keep rather than a confinement the code enforces. The document says so rather than
+leaving an auditor to infer a bound that is not there. This sentence is the disposition of a
+security Major from section 2's thirteenth review round, whose code half is the operator's recorded
+decision (a workspace allowlist was one of the three options answered on 2026-09-08 and was not the
+one chosen), leaving the record as the part still owed.
+`docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
 plugin, with the reason: from that build onward Claude Code escapes a channel event's attributes
 and disarms a forged closing channel tag in its body, and the bridge's own guard is the second
 layer under it; below that floor the bridge's guard is the only layer, which is a narrower defence
@@ -758,7 +808,7 @@ Files in scope: `docs/dsh-bridge.md`, `docs/README.md`, `docs/architecture.md`, 
 - Files the sweep returned that a second plugin does not change: the broker test files
   (`broker/board/card.test.ts`, `broker/board/events.test.ts`, `broker/discord/render.test.ts`,
   `broker/routing/outbound.test.ts`, `broker/tail.test.ts`), `broker/config.ts`,
-  `install/Install-Host.ps1`, `docs/operations.md`, `docs/backlog.md`, `README.md`,
+  `docs/operations.md`, `docs/backlog.md`, `README.md`,
   `relay/README.md`, `relay/index.ts`, `relay/permission.test.ts`, `relay/reply-permission.test.ts`,
   `smoke.test.ts`, and the relay's own plugin files under `plugins/relay/`.
 
@@ -2183,3 +2233,155 @@ files: the broker's own transcript-path guard is private and the bridge's worksp
 stricter second implementation of the same boundary. It is named in the code's own comment rather
 than silent, so it is not drift by amendment 2's bar, but two path guards with different rules now
 sit at two hostile boundaries. Routed to `docs/backlog.md` rather than fixed here.
+
+### Interim board 13 - 2026-09-08
+
+Written at the compaction gate's own signal, 19 offers held over 40 minutes, and at the closure
+drought's floor: section 2's thirteenth review round is adjudicated, no section has closed since
+Chapter 1, and fix round 14 is in flight.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through thirteen full three-lens review rounds, and is in fix round 14, the
+sixth at the escalated fable tier. Sections 3 through 6 are unstarted. Section 2's fifteen untracked
+`bridge/` files and its one modified tracked file are uncommitted.
+
+**Fix round 12 was adjudicated against the code rather than adopted from its report, and all five of
+its Majors and eight Minors verified closed.** `recall()` now refuses to replace a record this
+process owns with the file's copy, returning the disk record only in the one case the file can speak
+to that the copy cannot, another live process holding the name, with `heldElsewhere()` as the single
+predicate both that path and the refusal read, so the two cannot come to disagree. `sessionLogFile`
+is gone from the timeout catch entirely rather than guarded there, and now has exactly two callers,
+both of them tools where a throw is a failed call that strands nothing; the freshly minted session id
+is held to the same shape check as the stored one at the point it is minted, so both take one guard
+before either is written down or rendered. The first-turn record is kept, with the premise's own
+sentences reworded to state the refusal as inferred, to cite the two SDK paths that contradict it,
+and to name Section 5 as the section that observes the runtime. The turn-end payload carries an
+`accepted` bit so Section 3's record writer can order its two sections, with the listener's contract
+stated in the option's own doc. And the state write now carries every scope's entries through raw and
+overlays this bridge's records onto its own scope's raw entries by name, so a neighbour's record in a
+shape this version refuses is no longer deleted by the rename.
+
+The round's own reported protocol breach is recorded rather than smoothed over: its red lanes were
+spawned in the same command as the claim-file read, with no conditional between them, and ran about
+fifty seconds while a foreign claim was live. The reds are unaffected in kind, each having failed on
+the assertion it names, but they were taken on a contended box. Its later spawns were gated on a
+poller it wrote for the purpose, and fix round 14's brief carries that pattern as an instruction
+along with the reason the chained form cannot work: a read and a spawn in one command cannot branch
+on what the read returned.
+
+**Two items round 12 flagged rather than fixed were folded by this session, both in the section's own
+files.** The log call in `lost()` is now guarded on its own, which matters more than the Minor it
+mirrors: everything that method exists to do runs after that line, so a throwing sink would have left
+the model waiting on turns nothing would ever end and an unsandboxed worker running with no handle
+left to reap it by. And the workspace-binding premise in `refuseWrongWorkspace`'s doc and in
+`bridge/README.md` is marked inferred with Section 5 named, with the refusal's reasoning restated so
+that it no longer rests on that premise: pointing a name at a new workspace abandons the conversation
+the state file exists to preserve, which holds whichever way the runtime answers.
+
+**Live dispatches.**
+
+- `implementer-fable`, section 2 fix round 14, dispatched with the explicit fable model override the
+  escalation authorizes. It carries the round-13 findings file under the gitignored scratch path
+  (four Majors, ten Minors, a thirteen-item not-your-work list), all four Standing Brief Amendments
+  with the instruction to re-read amendment 4 because it gained a fourth half minutes before the
+  dispatch, every standing prohibition, both reading traps, the red-first and byte-verified-restore
+  discipline, and the box-budget clause with this session's identity substituted, the live foreign
+  claim named as overrun, and the instruction to gate every spawn on a claim-free poll rather than
+  reading the claim once.
+
+Round 13's three review dispatches have completed and are adjudicated.
+
+**Review round 13 adjudicated. No Critical from any lens**, which is the fourth consecutive round
+that can say so, so the tier-escalation ladder does not fire and fable remains the writer tier.
+Verdicts were APPROVED_WITH_CONCERNS, CHANGES_REQUIRED and CONCERNS. First-turn readings were taken
+on all three at the window and each was healthy: 40, 22 and 42 non-synthetic assistant lines with a
+`<synthetic>` count of zero. The round was bracketed by a `git status --porcelain` capture before
+dispatch and again at return and the two are byte-identical, so no agent moved the tree under the
+round. Four Majors and ten Minors stand.
+
+**The round's two most consequential findings, both confirmed by this session before they were acted
+on.** `dsh_status` calls the log reader unguarded, and that reader throws on states that are ordinary
+rather than exotic, a log past its ceiling and a generation file rotated between the existence check
+and the read among them, so the whole tool call fails and the model loses the fields that never
+needed the log at all: whether the session is live, whether a turn is in flight, and which turn.
+Found independently by two lenses, and the report type already models the degraded case. Separately,
+the owner lease reaches disk only once the runtime has answered the prompt, so during a window
+bounded by the request timeout rather than by anything quick the file still carries the previous run's
+dead owner, and a second bridge in the scope reads it correctly, takes the name, and resumes the same
+session id in a second runtime. That is the two-unsandboxed-workers-on-one-log hazard the lease exists
+to prevent, surviving a lease, and the existing test states both halves of it in its own comment while
+exercising only the same-bridge case.
+
+**Rulings adopted since the last boundary.**
+
+- **Standing Brief Amendment 4 gains a fourth half, under the recurrence rule, and it is the write
+  side of the second.** The second half fixed the read: a check whose subject is shared between
+  processes opens the shared file at the moment of the check. That left the other end untouched, and
+  a guard can read the file faultlessly and still see nothing, because the fact it is looking for has
+  not been written yet. So a guard against another process is worth only what is visible to that
+  process at the window's start, and the claim is published before the act it guards rather than
+  after that act succeeds. The lease is this class's third instance in three rounds and the fifth
+  time in this section that a fix has left open the case it was written for; the two earlier
+  instances are the same mechanism read from the other end, the lease taken from a constructor
+  snapshot and the held record replaced by a stale copy. The machine's own heavy-process protocol is
+  named as the worked example on this side too, and in the same detail: its claim is written before
+  the spawn, never once the suite is running. Approval drift, recorded.
+- **An unowned security Major is given an owner rather than parked, and the owner is section 4.** The
+  installer hardens every path on the execution chain and names no `bridge/` path at all, so the
+  bridge's own sources, its runtime binary and the patch file that presets the worker's sandbox and
+  approval to their widest values sit outside the protected set; write access to any of them is code
+  execution in the operator's context, and the patch file in particular lets the worker's confinement
+  be changed without touching a hardened file. It is not section 2's to fix, and the reason is not
+  scope bookkeeping: the exposure does not exist while the plugin is unregistered, and section 4 is
+  what registers it. So section 4 gains an acceptance criterion for the hardening and its pin, and
+  `install/Install-Host.ps1` joins that section's `Files in scope` and leaves `## Out of Scope` the
+  same day. Approval drift, recorded, and named to the operator as the scope change it is.
+- **A security Major on the workspace's containment is ruled a recorded decision rather than a
+  defect, with the record half routed to section 6.** The workspace is checked for shape and not for
+  location, so any absolute drive-rooted directory the calling model names is admitted, and the
+  dedicated worktree the accepted risk's reasoning leans on is a convention rather than a
+  confinement. The operator answered that exact fork at the keyboard on 2026-09-08 with a workspace
+  allowlist as one of three options and not the one chosen, so adding a location check now would
+  reverse a decision rather than close a defect. What was genuinely owed is the record: section 6
+  now states the boundary as it actually is, wider than the accepted risk's own reasoning implies,
+  rather than leaving an auditor to infer a bound that is not there.
+- **Two deviations from acceptance criteria are recorded rather than reversed.** `dsh_busy` reads
+  true from the moment a prompt is sent rather than from acceptance, where the criterion says
+  acceptance; the code's reason is sound, since a turn marked in flight only after acceptance has
+  already missed the idle that would end it, and the wider window is the safer one for what
+  `dsh_busy` is consulted for. And a channel push can precede `dsh_prompt`'s return on two paths, a
+  held end released at confirmation and the request timeout's own finish, where the criterion says
+  the receipt returns before any push for that turn; the inversion happens only when the turn was
+  already over. Both stand as written and the fix round is told not to change either. The README
+  paragraph that implies the event always follows the receipt is the fix round's to correct.
+
+**Gate baseline.** The whole-gate baseline is still the run taken 2026-09-07T19:59:14Z on this
+checkout with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0,
+skipped 1, duration 147.6s, against a committed baseline of 1582/1581/0/1. Fix round 12 reported its
+own final lanes on its own tree, with exit codes read from the runs, as `tsc --noEmit` exit 0,
+`harness.test.ts` 54 of 54 exit 0 (from a baseline of 49), `index.test.ts` 11 of 11 exit 0 (from 10),
+`log.test.ts` 17 of 17 and `protocol.test.ts` 21 of 21 both unchanged and exit 0; those are the
+implementer's numbers on the implementer's tree, taken partly under the contention recorded above,
+and they are the baseline round 14 reports against. This session's own verification lane and the
+close gate have not run, and the reason is the box rather than the schedule.
+
+**The machine's heavy slot is held and has overrun.** The claim is a worker seat on another
+repository, file modification time 2026-09-08T15:43:02Z with an expected 900 seconds, so at the
+16:05Z reading it was 22 minutes old against its own fifteen. Presence is grounds for waiting and an
+absent claim would not be grounds for starting, so the slot is taken under the protocol at the gate
+rather than assumed. It is not this session's to delete, its `Session:` line being another's. Round
+13's three lenses were dispatchable against the hold because reviewers build nothing, and the
+constraint rode in all three briefs; the whole gate is what waits.
+
+**Next action per section.** Section 2: adjudicate fix round 14's report against the code, re-review
+whatever the fix delta earns under the owed-round triggers, take the heavy-process claim once the
+foreign hold clears, run this session's verification lane and then the whole gate with the contention
+lane beside it, then close with a Chapter and commit and push, carrying the eleven deferred
+doc-commit pushes with it. Sections 3 through 6: unstarted, in order. Section 4 now carries the
+installer-hardening criterion above; section 6 now carries the containment record.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the last ten: a push to this
+repository's main is an install surface that takes the whole gate, a fix round is editing the tree
+right now, and the machine's heavy slot is held by another session, so the gate cannot honestly run
+yet. The commit is the durable recovery point and the push rides with the section close. Section 2's
+sixteen uncommitted `bridge/` paths stay as they are.
