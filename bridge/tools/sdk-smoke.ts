@@ -23,9 +23,11 @@
 // `@deepseek-ai/dsh-sdk-client` in one tree is what produces those several copies.
 //
 // The harness home travels in the child environment. `HarnessClientOptions.env` replaces the child
-// environment outright when given, so building it by hand would drop PATH and everything else. The
-// base is `scrubbedParentEnv` from `@deepseek-ai/dsh-subprocess`, the same scrub every in-repo DSH
-// spawner starts from. That scrub is why `DSH_HOME` is set after it and not before.
+// environment outright when given, so building it by hand would drop PATH and everything else. That
+// environment is built by `childEnv` in bridge/env.ts, which the bridge spawns through too: it is a
+// guard on what a worker process is handed, and one copy of it is the only way both spawners can be
+// said to have the same guard. The launcher path and the permission overlay come from there for the
+// same reason.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -33,8 +35,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DeepSeekHarness } from "@deepseek-ai/dsh-sdk-client";
 import type { HarnessNotification, RunResult } from "@deepseek-ai/dsh-sdk-client";
-import { scrubbedParentEnv } from "@deepseek-ai/dsh-subprocess";
 import { runDirectly } from "../../broker/entrypoint.ts";
+import { MODEL, PROVIDER, REQUEST_TIMEOUT_MS, RUNTIME_BIN, RUNTIME_PATCH, childEnv, requireRuntimeBin } from "../env.ts";
 
 /** The repository root, from this file's own location, so the script runs from any directory. */
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -49,18 +51,14 @@ const WORKSPACE = path.join(REPO_ROOT, ".kit", "dsh-spike-workspace");
 /** Where the redacted notification streams land, one JSONL file per run. */
 const FIXTURES = path.join(REPO_ROOT, "bridge", "fixtures");
 
-/** The overlay that presets the worker's permission knobs. */
-const PATCH = path.join(REPO_ROOT, "bridge", "sdk.cordis.patch.yml");
-
 /**
- * The launcher, resolved through the isolated runtime install at bridge/runtime/ rather than through
- * this repository's own node_modules or a global `dsh`.
+ * The overlay that presets the worker's permission knobs, and the launcher resolved through the
+ * isolated runtime install at bridge/runtime/ rather than through this repository's own
+ * node_modules or a global `dsh`. Both are the bridge's own, so this script and the bridge cannot
+ * spike one install and ship another.
  */
-const DSH_BIN = path.join(REPO_ROOT, "bridge", "runtime", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
-
-/** The provider route and model, matching the `ollama` provider entry in the operator's settings. */
-const PROVIDER = "ollama";
-const MODEL = "qwen3.8:27b";
+const PATCH = RUNTIME_PATCH;
+const DSH_BIN = RUNTIME_BIN;
 
 /** The operator's harness home, and the dedicated one the fallback seeds from it. */
 const SHARED_HOME = path.join(os.homedir(), ".dsh");
@@ -87,9 +85,6 @@ const ARTIFACT = "hello-from-qwen.txt";
  * forever with no log line saying so.
  */
 const RUN_TIMEOUT_MS = 15 * 60 * 1000;
-
-/** Bound on each JSON-RPC request. Generous: it covers the `initialize` handshake and a boot. */
-const REQUEST_TIMEOUT_MS = 120_000;
 
 /** One absolute path the fixtures must not carry, and what stands in for it. */
 export interface RedactionRule {
@@ -335,36 +330,6 @@ function writeFixture(file: string, notifications: readonly HarnessNotification[
 }
 
 /**
- * The child environment for the runtime.
- *
- * `scrubbedParentEnv` is the far side's own guard and the base every DSH child starts from; the
- * explicit values merge after it, which is the order that package documents, because the scrub
- * removes every `DSH_*` name and would otherwise remove the home this function exists to set.
- *
- * What that scrub actually drops is every name matching `/KEY|PASSWORD|SECRET|TOKEN/i` and every
- * `DSH_*` name. That is a name-shape filter and not a guarantee: `GITHUB_PAT`, `SSH_AUTH_SOCK`, and
- * any `*_URL` carrying an embedded password all survive it. The two families removed here on top of
- * it are this session's own: a worker spawned from a Claude Code session would otherwise inherit
- * `CLAUDE_*` and `CHANNEL_*`, which name that session's messaging socket and identity, and the
- * worker has no business holding either.
- *
- * `OLLAMA_API_KEY` is named by the provider entry in the operator's settings, and it is
- * credential-shaped, so the scrub takes it: passing it back is a deliberate act and reaches the
- * child only when the parent actually carries a value.
- */
-export function childEnv(home: string, parentApiKey: string | undefined): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(scrubbedParentEnv())) {
-    const upper = key.toUpperCase();
-    if (upper.startsWith("CLAUDE") || upper.startsWith("CHANNEL_")) continue;
-    env[key] = value;
-  }
-  env.DSH_HOME = home;
-  if (parentApiKey !== undefined) env.OLLAMA_API_KEY = parentApiKey;
-  return env;
-}
-
-/**
  * Seed a dedicated harness home from the operator's, for the case where two runtimes on one home
  * turn out not to coexist. The two files are copied and never moved; the operator's home is read
  * and nothing in it is written.
@@ -388,18 +353,17 @@ function fail(message: string): never {
 /**
  * The runtime launcher, or an exit saying how to install it.
  *
- * The runtime is not a dependency of this repository and `npm install` at the root does not produce
- * it. Without this the failure is a spawn of a path that does not exist, reported by the SDK client
- * as a launch error naming neither the missing directory nor the command that creates it.
+ * The check is the bridge's own, imported rather than restated: it is a precondition of the same
+ * spawn against the same install, and two copies of it drift into two different sentences about one
+ * missing directory. What is local here is the exit, because this is a script the operator runs by
+ * hand and a stack trace is not what it owes them.
  */
-function requireRuntimeBin(): string {
-  if (!existsSync(DSH_BIN)) {
-    fail(
-      `the DSH runtime is not installed at '${DSH_BIN}'. It lives in its own single-root install, ` +
-        "so run 'npm ci' in bridge/runtime; installing at the repository root does not produce it.",
-    );
+function requireRuntime(): string {
+  try {
+    return requireRuntimeBin(DSH_BIN);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
-  return DSH_BIN;
 }
 
 /** Reject rather than hang, and say which run it was. The harness is closed by the caller either way. */
@@ -509,7 +473,7 @@ async function main(): Promise<void> {
   // the arrangement the whole plan rests on and therefore the one this spike has to test.
   const home = chosenHome(process.argv) === "dedicated" ? seedDedicatedHome() : SHARED_HOME;
 
-  requireRuntimeBin();
+  requireRuntime();
   mkdirSync(WORKSPACE, { recursive: true });
   mkdirSync(FIXTURES, { recursive: true });
   const rules = redactionRules(WORKSPACE, REPO_ROOT, os.homedir());
