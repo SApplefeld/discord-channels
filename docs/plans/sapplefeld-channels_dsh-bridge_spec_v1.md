@@ -499,6 +499,36 @@ Every entry here binds every section opened after it was written, dispatched or 
   on reasoning recorded about a refused rename, and the same catch is reached by a state file that is
   present and unreadable, a condition that persists until the operator repairs it and during which
   every bridge in the project checks no lease and publishes no claim.
+- **A helper answers the question its author asked, so a caller asking a different question must not
+  spend its answer, and the value that separates the two questions is usually not the one the helper
+  reads.** This is the generator behind the recurrence the previous amendment keeps recording, and it
+  is a different rule from the one about importing a guard at a shared boundary: import the guard
+  where the question is the same, and where the question differs, find the discriminant the new
+  question actually turns on rather than reaching for the answer already in hand. The two questions
+  are hard to tell apart precisely because one predicate reads correctly for both at every review: it
+  is right about what it says and wrong about what the caller concluded from it. So the test at a
+  reused predicate is not whether it is correct but whether the caller's question is the author's, and
+  the way to settle that is to construct the case where the two answers must differ. Where no such
+  case exists the questions are one; where it exists, the predicate is being spent rather than reused.
+  Ask it of a permission test in particular, since a permission is always a conclusion drawn from
+  evidence about something else.
+
+  The instance: the bridge's write asked whether a live foreign process held a name and spent that
+  answer as whether it might replace the record under the name. Those differ exactly when a neighbour
+  claimed the name, ran a conversation, and exited, which is when the write laid this bridge's session
+  id over the neighbour's conversation with nothing reported and nothing conceded. The discriminant
+  was never the owner: it is the session id, which the runtime mints and this code never invents, so
+  the write is permitted where the record names the same conversation and refused where it names
+  another with nobody live holding it.
+
+  The corrective half is what makes this amendment worth its length, because the obvious repair is
+  itself an instance of the class. This session proposed refusing a write that met a dead lease over a
+  record it had not written, and a consult established that shape is exactly what a legitimate
+  takeover wears: a bridge with no record of its own adopts the file's dead-owned record, keeps the
+  session id in it, and its own claim write then meets a dead foreign lease over a record it did not
+  write. The permitted case and the forbidden case are indistinguishable in the field the proposed
+  rule read, and differ only in the field it did not. So a fix aimed at a reused predicate states the
+  case it newly refuses and checks that no legitimate path wears that shape, before it is written.
 
 ## Sections of Work
 
@@ -730,6 +760,18 @@ Acceptance:
   thirteenth review round, and it lands here rather than there because the exposure does not exist
   until this section installs the plugin: section 2's files are not on any execution chain while the
   plugin is unregistered.
+- **The two dependency advisories are dispositioned here, with the lockfile change landing in this
+  section's own diff.** `npm audit` reports `fast-uri` (high) and `qs` (moderate), both transitive
+  through `@modelcontextprotocol/sdk`, the first through its schema validator and the second through
+  Express. Reachability from the bridge is low and is not the reason this is owed: the bridge runs the
+  stdio transport, so Express and `qs` are off its path, and the validator is reached only where the
+  SDK validates a schema with it. What makes it this section's is that a lockfile change reddens
+  suites outside the diff that changed it, so it belongs in the section that already touches the
+  install surface rather than in a bridge-core fix round, and it must not be taken while section 2 is
+  in review. The disposition is either the upgrade that clears both or a recorded decision to accept
+  them with the reachability argument written out, and the section's Chapter names which. This
+  criterion is the disposition of a security Minor raised by section 2's fifteenth review round and
+  raised again by its nineteenth, and it lands here for the timing reason above.
 - `npm run lint` and `npm test` pass.
 
 Files in scope: `plugins/dsh-bridge/.claude-plugin/plugin.json`, `plugins/dsh-bridge/.mcp.json`,
@@ -2887,3 +2929,150 @@ at `kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the kaizen 
 adjudication seats, and it is the note aimed at the wrong cause. Nothing else outside this repository
 was changed: this session's heavy-process claim was written and deleted at the machine's coordinator
 directory, which is that file's normal use.
+
+### Interim board 17 - 2026-09-08
+
+Written at the compaction gate's own signal and at a clean point both: fix round 18 is adjudicated
+against the code, review round 19 has run three lenses and been adjudicated, a consult has ruled on
+the recurrence and corrected this session's framing, Standing Brief Amendment 5 has been written from
+that ruling, and fix round 20 is in flight. No section has closed since Chapter 1.
+
+**Section stages.** Section 1 is closed and pushed (commit 7e790cd). Section 2 (Bridge core) is
+implemented, has been through nineteen full review rounds and is in fix round 20. Sections 3 through 6
+are unstarted. Section 2's untracked `bridge/` files and its one modified tracked file are
+uncommitted.
+
+**Fix round 18 was adjudicated against the code rather than adopted from its report, and all four of
+its Majors are live rather than inert.** The one worth recording is Major 1, because its fix works by
+subtraction and that is what makes it verifiable: `concede` deletes the in-memory owner lease, and
+`recall`'s branch that preferred the local record is gated on a predicate requiring an owner, so
+clearing the lease makes the record fail that gate and later reads defer to the file. Traced through
+the failure the finding named: neighbour takes the name, the write reports it contested, the lease is
+cleared, the neighbour exits, and `recall` now returns the file's record rather than this bridge's
+stale one. The round's reported lane results were then reproduced independently rather than accepted:
+`tsc` clean and six test files green, every exit code read from the run's own marker file. The
+round also correctly declined to delete the conceded record, keeping the workspace binding and count
+for the case where the file later carries no entry at all, which a deleted record would meet as a name
+the bridge can no longer describe.
+
+**Review round 19 found the same class one level deeper on both axes, and the finding that matters
+most reversed this session's own adjudication of an hour earlier.** Three lenses ran and converged
+independently on two Majors. The concession round 18 added reaches the in-memory record only through a
+write that reported the name contested, and the predicate behind that report requires the neighbour's
+process to be alive, so where a neighbour claimed a name, ran a conversation and exited before this
+bridge's turn ended, nothing is reported, nothing is conceded, and this bridge lays its own session id
+over the neighbour's conversation. Separately, the tri-state file reader that exists so a read fault
+cannot be mistaken for an empty file opens with an existence check that returns false on any error, so
+a present-but-inaccessible file reads as absent and the refusal never fires; the doc comment two lines
+above that call argues for why the check should not be there while the check is still there. A third
+Major is the fifth instance of the diagnostic-boundary amendment's class and sits two lines above the
+fix written for that class: the log-tail tool renders its failure code-only inside a guard, and calls
+the path-raising helper outside it.
+
+**The consult ruled on the recurrence and corrected the framing, and the correction is the load-bearing
+part.** This session's lean was that both defects were one class, a two-valued signal standing in for a
+three-valued reality, and that the remedy was re-typing at the boundary. The ruling: two defects, not
+one, sharing a generator that a shared type would not have prevented. And the repair this session
+proposed was itself an instance of the class. Refusing a write that meets a dead lease over a record it
+did not write is exactly what a legitimate takeover wears, because a bridge with no record of its own
+adopts the file's dead-owned record, keeps the session id in it, and its own claim write then meets a
+dead foreign lease over a record it did not write. Implemented literally, that rule makes resuming a
+dead bridge's session impossible. The crux was verified here before adoption: the bridge never mints a
+session id, it reuses the remembered one or takes the runtime's, so identity is the discriminant the
+owner field cannot supply. Adopted: the write becomes a compare-and-set on record identity, with a
+two-kind report so that a live holder and a superseded name get different refusals; the lying existence
+check is deleted and the create path publishes with exclusive create, which is correct whether or not
+the platform exposes the rename window the reviewer could not establish. The consult also found a site
+this session's brief never named: the reader that folds unreadable into empty, which is why the refusal
+can only happen after the worker runtime has been spawned and bound.
+
+**Standing Brief Amendment 5 is new, and it is the generator the previous amendment kept recording
+instances of.** A helper answers the question its author asked, so a caller asking a different question
+must not spend its answer, and the value separating the two questions is usually not the one the helper
+reads. It is a different rule from importing a guard at a shared boundary: import the guard where the
+question is the same, and where it differs, find the discriminant the new question turns on. The
+entries are hard to tell apart because the reused predicate reads correctly at every review, being
+right about what it says and wrong about what the caller concluded. Its corrective half carries this
+session's own error: a fix aimed at a reused predicate states the case it newly refuses and checks that
+no legitimate path wears that shape, before it is written.
+
+**A routing recorded on two earlier boards had never landed in the section that has to act on it.**
+Boards 13 and 16 both state that the dependency-advisory item was routed to section 4. Section 4's
+acceptance list carried no such criterion, which was confirmed by reading the section whole rather than
+by grep, since an outline never proves absence. The criterion is now written there, with the reason it
+belongs to that section rather than to a bridge-core fix round: a lockfile change reddens suites
+outside its own diff, so it lands with the install surface, and it must not be taken while section 2 is
+in review. This is approval drift, recorded here as that.
+
+**A defect in this session's own registry entry, corrected.** The entry's prose said no plan was armed
+to this session and that the seat awaited direction. That was true when written at takeover and false
+from the moment the goal was armed here, while the machine-stamped heartbeat above it kept the entry
+looking maintained. A coordinator seat briefing the operator from that entry would have reported this
+seat idle while it was nineteen rounds into a leashed run. The prose and the in-flight estimate are
+rewritten and the CLI stamped the status moment; the machine's own fields were left untouched. The
+project's operator-tier memory already records this exact trap, that the freshest-looking field is the
+one saying nothing about the prose, and it is stamped applied.
+
+**Live dispatches.** One: `implementer-fable` at fable, fix round 20 for section 2, carrying the
+adjudicated round-19 findings file with four Majors, five Minors, the adopted ruling, the ten guards the
+ruling's argument implies but its prescription does not state, and an explicit list of what is not this
+round's work. Asked in particular to perform Amendment 5's corrective check on the identity
+compare-and-set, naming the case it newly refuses and showing no legitimate path wears that shape, and
+to re-stage the write-failure pin rather than weaken its assertions, since the read-fault fix turns that
+pin's staged fault into a read failure and would take it red for the wrong reason. The three round-19
+review dispatches and the consult have all returned.
+
+**Gate baseline.** The whole-gate baseline is still the run of 2026-09-07T19:59:14Z on this checkout
+with no foreign uncommitted files: lint exit 0, test exit 0, tests 1609, pass 1608, fail 0, skipped 1,
+duration 147.6s, against a committed baseline of 1582/1581/0/1. This session re-ran its own targeted
+lane on the present tree at 2026-09-08T20:22Z: `npx tsc --noEmit` exit 0; `node --test` on
+`bridge/harness.test.ts` 66 tests 66 pass 0 fail, `index.test.ts` 12/12, `log.test.ts` 18/18,
+`protocol.test.ts` 23/23, `fake-dsh.test.ts` 2/2, `env.test.ts` 3/3, every one exit 0 and every exit
+code read from the run's own marker file rather than from a grep over its output, which matters on this
+project because the summary lines carry a leading information symbol. That is plus three on the harness
+file and plus one on protocol against this session's previous reading, the four being round 18's own
+pins. That run was contended: the machine's heavy-process slot carried a live foreign claim from
+another repo written 2026-09-08T20:08:25Z with a 3600-second estimate, and this session named the
+contention and proceeded without writing a claim, which is what the protocol permits and is the only
+option available, since there is one claim file and writing would have replaced a live holder's. No
+whole gate has run on the present tree and none can honestly run until fix round 20 stops editing it.
+
+**The machine's heavy slot.** Held by a foreign session from 20:08:25Z with a 3600-second estimate, so
+its own declaration runs to roughly 21:08Z. This session holds no claim, and fix round 20's brief
+carries the claim protocol with this session's own name and id substituted, gating every heavy spawn on
+a read of the live claim file and forbidding a write over a live holder's.
+
+**Next action per section.** Section 2: adjudicate fix round 20 against the code, in particular whether
+the identity compare-and-set permits the legitimate takeover it must permit rather than only refusing
+what it must refuse, and whether the re-staged write-failure pin still asserts what it asserted before;
+re-review whatever the delta earns under the owed-round triggers; then take the heavy-process claim and
+run the whole gate with the contention lane beside it, since the close pushes to a trunk consumers
+install from with no CI gating the merge; then close with a Chapter and commit and push, carrying the
+fifteen deferred doc-commit pushes with it. Sections 3 through 6: unstarted, in order. Section 4 now
+carries the installer-hardening criterion and, as of this boundary, the dependency-advisory criterion
+in its own acceptance list rather than only on a board. Section 6 carries the workspace-containment
+record and the security-model entry the bridge is owed before the plugin registers.
+
+**Owed to the operator at close-out, as decisions rather than notes.** The state-file pruning fork is
+unchanged and still owed: nothing prunes today, the file grows by one record per distinct scope-and-name
+pair ever used, and under the adopted failure policy reaching its size ceiling becomes a refusal on
+every prompt on the machine rather than a silent loss of the guard, which is the better failure and is
+still a slow fuse. The arithmetic behind how long that takes is inferred rather than measured. Also
+owed: the scope changes to sections 4, 5 and 6 named as the scope changes they are, this boundary's
+section 4 criterion among them; an amendment to the kit's kaizen note, which interim board 15
+established is aimed at the wrong cause; and the round count itself, since nineteen review rounds on one
+section is a fact worth a decision rather than a line in a board.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the fourteen before it: a push to
+this repository's main is an install surface that takes the whole gate, and a fix round is editing the
+tree, so the gate cannot honestly run yet. The commit is the durable recovery point and the push rides
+with the section's close.
+
+**Altered outside this repository.** Two things, both named rather than left to be discovered. This
+session's own registry entry under the machine's coordinator directory was rewritten as described
+above, which is that file's normal use by its only prose writer. One line remains appended to the kit
+repository's kaizen inbox at `kaizen/notes-NEO-CLAUDE.md` in that clone, uncommitted there for the
+kaizen skill's own adjudication seats, and it is the note aimed at the wrong cause. Two operator-tier
+memories were stamped applied, one on how a ruling's prescription is narrower than its argument and one
+on registry staleness. Nothing else outside this repository was changed: this session wrote and deleted
+no heavy-process claim at this boundary, having proceeded under a foreign one.
