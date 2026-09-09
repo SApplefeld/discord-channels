@@ -730,8 +730,12 @@ remembered one; a prompt naming none keeps it.
 
 Files in scope: `bridge/record.ts`, `bridge/record.test.ts`, `bridge/protocol.ts` (the tool schema
 for `dsh_record_rotate`, and `dsh_prompt`'s `record`, `party` and `counterparty` arguments),
-`bridge/index.ts` (dispatch), `bridge/harness.ts` and `bridge/harness.test.ts` (`record` on
-`PromptArgs`, and the line in `prompt`'s own state write that persists it).
+`bridge/protocol.test.ts` (the tool-family pins that schema reddens), `bridge/index.ts` (dispatch)
+and `bridge/index.test.ts` (that dispatch's own tests), `bridge/harness.ts` and
+`bridge/harness.test.ts` (`record` on `PromptArgs`, the shared record-path and canonical-path
+guards this section resolves through rather than re-spelling, and the line in `prompt`'s own state
+write that persists the path), and `bridge/README.md`, whose count of the tools and of
+`dsh_prompt`'s arguments this section's own change falsified.
 
 Tests: lock the append-only property (an existing section is never altered), the refusal during a
 turn including the shared-path case (two names, one record, one in flight), the refused prompt that
@@ -3582,3 +3586,190 @@ an install surface that takes the whole gate, and a fix round is editing the tre
 
 **Altered outside this repository.** Nothing at this boundary beyond three memory applied-stamps in
 the operator tier.
+
+### Interim board 21 - 2026-09-08
+
+Written at the compaction gate's signal, one hundred and four offers held over forty-one minutes,
+at the boundary between section 3's second review round and its second fix round. No section has
+closed since Chapter 2. This entry supplements Interim board 20 rather than repeating it: what is
+new is the fix round's return, this session's own verification of it against the code, the second
+review round's findings, and one finding routed to a consult rather than to a fix.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented and has been through two review rounds and one fix round; its second
+fix round is not yet dispatched, because one of that round's own inputs is under consultation.
+Sections 4 through 6 are unstarted. Section 3's files are uncommitted and commit at its close, per
+the plan's Commit-and-Push model. The plan-doc commit 1a09377 is committed and not pushed; the push
+rides with the section's close, on the same reasoning as the twenty boards before it.
+
+**The first fix round returned DONE and every fix was verified against the code rather than against
+its report.** Both Criticals are closed at their sites. The record writer now keys its pending turns
+on an opaque token a registration mints rather than on the session name, and refuses to mint a
+second token while a name holds one, so the second prompt's own discard is a no-op that cannot reach
+the first turn's entry. That fix rests on a premise this session checked rather than accepted: the
+harness refuses a second prompt for a name with a turn in flight, at two sites in
+`bridge/harness.ts`, so a prompt whose registration is refused is itself refused a moment later and
+no party section is lost. The rotate now refuses, before anything is touched, an archive path naming
+the record itself and one naming a file that already exists, both compared on a canonical form that
+resolves the path and folds case on Windows.
+
+All five Majors of the first round are closed and checked: the session name is trimmed once at the
+dispatch edge and used for every lookup below it; an append failure now reaches the model in the
+receipt text rather than only the diagnostic stream, and the whole turn is dropped rather than left
+holding the worker's answer; the shared path guard moved to `bridge/harness.ts` and is exported, so
+the wire, the stored value and the rotate all run through one predicate; `party` and `counterparty`
+are bounded, refused blank, refused a line break and refused the hidden class, by reusing the guard
+`bridge/protocol.ts` already exports rather than by matching its protections by hand; and the
+remembered path is read through a new `Bridge.remembered` that wraps the same lookup the prompt
+itself makes. The one Major left deliberately unfixed is unchanged and what was owed instead has
+landed: the rotate's tool description now says the refusal covers a session this bridge is running
+and names what it cannot see.
+
+**Three probes of this session's own against that delta all fell,** and one of them fell on evidence
+worth recording, because it is the answer to a hazard a later round would otherwise re-raise: the
+record writer's new rethrow cannot swallow the channel event the model waits on, because
+`bridge/harness.ts` already wraps the record delivery in its own catch, separate from the push's and
+after it, with a comment stating exactly that invariant. That is section 2's code rather than this
+round's, which is why the fix round's rethrow is safe.
+
+**The second review round ran three lenses at opus and effort high through the Workflow route,**
+since the writer tier is sonnet and a reviewer one tier above a sonnet writer takes an effort the
+Agent tool cannot set. The blind brief was authored as its own literal carrying the changed-file
+list alone, sharing no constant with the sighted two. All three were told no build and no suite run
+was available to them, because a foreign heavy-process claim holds the machine's one slot. The tree
+bracket was IDENTICAL across the round. The round was owed rather than optional under the fix-delta
+bar on two independent triggers: the delta writes outside the tree, at the rotate's rename and at a
+new recursive directory create in the append path, and it reaches input handling and path
+construction.
+
+**No lens returned a Critical,** so the tier ladder does not fire and section 3 stays at sonnet.
+Adversarial and blind returned CHANGES_REQUIRED and security returned CONCERNS. Every finding below
+was verified against the code by this session before anything was dispatched, and two verifications
+sharpened a finding past what any lens stated.
+
+**The Majors owed and going to the second fix round.** The rotate branch resolves both the record
+path and the busy-holder list from a fresh read of the shared state file, which is the exact lookup
+the first fix round deliberately moved the prompt path off, for the reason its own comment gives:
+that file lags this process's own copy whenever a state write has failed, which the code treats as
+an ordinary consequence. One class was fixed in one place and left in the other, which is the
+sharpened form of what the adversarial and blind lenses each raised; the consequence is a rename
+running between a live turn's party section and its counterparty section, splitting one exchange
+across the archive and the fresh file, which is precisely what the refusal exists to prevent. The
+rotate's failure exit is the one exit in the whole dispatch that returns an error's message raw,
+where every other refusal in the same block neutralizes and bounds its text, so a filesystem error
+hands the model both absolute paths verbatim and bypasses the forged-tag guard; all three lenses
+found it independently and it was also this session's own held observation, which is why it was
+withheld from the briefs rather than pre-rated. A killed or lost turn is recorded as though the
+worker had answered, because the turn-end wiring passes the text alone and discards the kind and the
+finish reason the harness supplies beside it, so `dsh_kill` mid-turn writes an empty counterparty
+section byte-indistinguishable from a worker that answered with nothing; the blind lens found this
+one alone. The rotate misreports a partial failure, telling the model nothing was archived when the
+rename has already happened, and never creates the record's own parent directory where the append
+path does. Two paths accept a prompt, append nothing and say nothing about it, while a third
+identical state is a hard refusal, so the three disagree about one condition. And the canonical-path
+rule is re-spelled in the record module byte-identically to the harness's own unexported one, which
+is the standing amendment on importing a guard rather than reimplementing it, with no cycle and no
+excuse: the harness is in this section's scope and the record module already imports from it.
+
+**One security Major is fixed rather than routed, per the rule that a security Major never takes the
+out-of-scope route.** The rotate is a move-and-truncate primitive over any caller-named path, and
+its reach exceeds the bound the operator's own recorded acceptance states, which is a dedicated
+worktree and git as a recovery path for tracked content; the rotate reaches untracked files outside
+any worktree, where neither half of that bound applies, and the lens supplied a worked input that
+renames an operator file out of the home directory. The available fix is orthogonal to the operator's
+ruling and does not reverse it: refuse a rotate whose target exists and carries no bridge-written
+section header, which is proof the target is a record before anything destroys it.
+
+**One security Major is under consultation rather than in the fix round,** and it is the item most
+worth the operator's attention. The record's own structure is forgeable by the party the record
+exists to hold accountable: the worker's answer is written verbatim by design, so an answer
+containing a section header and a `NEXT:` line produces a fabricated counterparty section
+byte-indistinguishable from a real one. It is not a fix-round item because every available repair
+collides with something the plan has already settled. Escaping the body is barred by the section's
+own acceptance criterion, which requires the appended body to be byte-identical to the input. A
+forge-resistant delimiter changes the record's published format, and that format is not private:
+section 6's runbook is a protocol amendment the operator pastes into the live record's own header,
+so a nonce would appear there and in front of every human reader. Accepting it and documenting the
+residual is available and section 6 already owns a neighbouring accepted-risk paragraph. The consult
+was convened on trigger (d), a load-bearing decision the spec does not cover, with this session's
+lean stated as an instinct to test rather than a conclusion: that a worker which can open the file
+directly makes the in-band vector no new capability, and the finding is therefore a truthfulness
+problem about what the document claims rather than an integrity boundary. The consult was asked
+specifically to test that lean, since single-writer is the property section 3 exists to create, so
+"the worker could just open the file" may describe the world this section ends rather than the world
+after it.
+
+**Fifteen Minors are batched into the same fix round per the operator's fourth ruling,** and a
+Minor-only diff earns no re-review. Two are worth naming here because of what they are rather than
+what they cost. One is a recurrence: a temp directory leak at a test site the previous round's own
+sweep of that exact class missed, which under the recurrence rule takes a mechanical check rather
+than a brief amendment, since an amendment steers the writer and the writer is the one who cannot
+see the class in a line just written. The other is a reversal, and the first on this passage: the
+previous round moved the party timestamp from flush time to registration time, and this round's
+blind lens argues registration time reads backwards once two session names share one file. It is
+resolved as a claim fix rather than by reversing the behaviour a second time, since the spec
+promises a real clock and never promises an ordering across names: the stamp stays where it is and
+the comment states the guarantee as per-session. Naming it is the point, because a second reversal
+on one passage would mandate a consult.
+
+**Three scope widenings are recorded as the approval drift they are,** and the section's
+`Files in scope:` line now names all three. The dispatch's own test file is folded on the section
+loop's fold predicate: the same directory as files already in scope, no acceptance criterion the
+section does not already carry, and covered by the gate the close will run. It is folded because the
+dispatch layer this section added ships with no test of its own, which the adversarial lens raised
+as a Major and the security lens as a Minor, and the section's own Tests line asks for cases that
+exist today only as unit tests of pure helpers with a hand-supplied busy-name array. The protocol
+test file is on the line at last, having been folded a round earlier for a stale tool-family pin.
+And `bridge/README.md` re-opens under the section loop's standing carve-out for a document an
+earlier section wrote whose describing passages this section's own change falsified: it is in
+section 2's scope, and it still counts five tools and omits three arguments of the prompt. That is
+the third consecutive section of this plan whose scope line has widened mid-run, which is a
+planning-stage lesson for the close-out rather than an implementer failure.
+
+**Live dispatches.** One: the consultant, at fable and effort high through the Agent tool, asked to
+rule on the forgeable-record question above, to test this session's lean rather than ratify it, and
+to return one of three implementable shapes: accept with the exact sentences owed to the security
+model and the runbook, a named delimiter change with what it costs the runbook and the human reader,
+or a fork that is genuinely the operator's with a recommendation attached. The second fix round is
+deliberately not dispatched beside it, because the ruling may touch the same two functions the fix
+round edits and two agents in one file is what turns one wrong guess into hours of damage.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T00:5xZ on NEO-CLAUDE, each exit
+code taken from the run itself and the counts parsed in node rather than by a one-character anchor:
+type check exit 0, and the bridge suites at env 3/3/0, fake-dsh 2/2/0, harness 69/69/0, index
+12/12/0, log 18/18/0, protocol 23/23/0, record 17/17/0 and redact 8/8/0, every suite exit 0, for 152
+tests, 152 passes and no failures. The pre-section figure on the same eight suites is 131, so the
+section stands at plus 21 tests. The fix round's own report gave its baseline as 143, which is the
+same tree read before this session's fix to the stale tool-family pin, so plus 9 passes on its
+reading and plus 8 new tests on this one, and the two reconcile rather than disagree. The whole-gate
+baseline is unchanged and is still the 2026-09-08T23:07:38Z run recorded on Chapter 2's `Gate:`
+line, at tests 1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the present tree, and
+none can honestly run while the machine's heavy slot is held.
+
+**The machine's heavy slot.** This session holds no claim. The foreign claim has been rewritten since
+board 20 and is live and fresh: `NEO: Worker` on repo `Neuro-Evolution-Operations`, session
+`44e999c1`, now expecting 5400 seconds, with its `Started:` line and the file's own modification time
+agreeing at 2026-09-09T00:46:05Z, so the anomaly board 20 named is gone. It was not written over. The
+contention is named rather than absorbed: the targeted lane above ran beside it, being a type check
+and eight small suites, and the whole gate the close owes waits for the slot.
+
+**Two dispatch-instrument facts from this round are worth carrying.** Only two of the three lenses
+started, and the workflow journal is what says so, which matters because a queued agent is
+indistinguishable from one that never started and a probe cannot tell them apart, a queued agent
+being unable to answer either; the concurrency reading is the discriminating one, and it said the
+third lens was waiting rather than dead. And the journal's own result records key their payload under
+a field named `result` rather than `value`, so a reader keyed on the wrong name reports every lens as
+having returned nothing, which reads exactly like a round that produced no findings.
+
+**Next action per section.** Section 3: adopt the consult's ruling against the code and write it to
+the plan where it changes what a dispatch is built from, then dispatch the second fix round carrying
+the eight owed Majors, the ruling, and the fifteen batched Minors; then the targeted lane, then the
+heavy-process claim and the whole gate with the contention lane beside it, since the close pushes to
+a trunk consumers install from with no continuous integration gating the merge; then close with a
+Chapter and commit and push. Sections 4 through 6: unstarted, in order, with the plan's four standing
+rulings binding all of them.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twenty boards before it:
+main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
+
+**Altered outside this repository.** Nothing at this boundary.
