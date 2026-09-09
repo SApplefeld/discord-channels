@@ -553,6 +553,44 @@ Every entry here binds every section opened after it was written, dispatched or 
   write. The permitted case and the forbidden case are indistinguishable in the field the proposed
   rule read, and differ only in the field it did not. So a fix aimed at a reused predicate states the
   case it newly refuses and checks that no legitimate path wears that shape, before it is written.
+- **A guard's discriminant has to be a property only the thing it admits can hold, so where the
+  legitimate target and the refused class are content-identical there is no content guard to write,
+  and the honest fix names instead the one artifact whose corruption the code cannot survive.**
+
+  The instance: a rotate was hardened to refuse a target that exists, is not empty, and carries no
+  section this bridge ever wrote, and the predicate written for it tested for any Markdown
+  second-level heading. Every ordinary document passes that, and the append path defeats it outright,
+  since a prompt writes a section into whatever file its `record` names, so one prompt makes every
+  file on the machine pass a guard meant to tell a record from a document. The false refusal landed
+  on this plan's own path in the same stroke: a rotate writes the leading header alone into the fresh
+  file, and the cutover record's header is forty-five lines carrying no such heading, so the second
+  rotate refuses a file this writer had itself just created, with a message saying it does not look
+  like a record. Both halves were unreachable from the fixture the fix shipped with, whose control
+  was drawn from the pattern's own literal.
+
+  What the class admits is what replaced it: the bridge's own state directory is refused as a record
+  or an archive target, and nothing else is. Read the difference rather than the shape, because the
+  two look alike and only one is defensible. A policy about where a caller's file may live cannot be
+  written here at all, since the legitimate record is an existing document of the operator's in a
+  directory the plan does not choose; a refusal of the artifact this code reads as its own authority
+  is a different rule, and it admits every path such a policy would have refused. An artifact a
+  program reads as authority is never a valid target for a write whose path the caller names, and
+  what makes that asymmetric is recovery rather than privilege: a caller who names a document
+  destroys one file the operator can restore, while one who names the session map wedges every
+  bridge in every scope on this machine until a hand repair, a prompt refusing on a map it cannot
+  read and the write deliberately declining to replace one.
+
+  The second half is about the brief rather than the code, and it is the more expensive of the two.
+  **A constraint is briefed with the authority it actually holds, so a default this plan assumed is
+  never handed to a reviewer as a decision the operator made.** The instance: two consecutive review
+  rounds were briefed that the operator had ruled the record path shape-checked and not
+  location-checked, and told in as many words not to re-litigate it. The operator's answer of that
+  date was about auto-allowing the prompt tool, and the sentence in it about an allowlist speaks to
+  where the worker starts rather than to what it reaches; the record's own rule is this plan's
+  recorded default assumption, carrying a stated reversal beside it. A reviewer told a question is
+  closed stops looking at it, so a borrowed authority narrows the search on a premise nobody made,
+  and the round comes back agreeing. Cite the line that settles a constraint before briefing it as
+  settled, and where the line is an assumption of ours, brief it as one and let the lens weigh it.
 
 ## Sections of Work
 
@@ -919,6 +957,24 @@ leaving an auditor to infer a bound that is not there. This sentence is the disp
 security Major from section 2's thirteenth review round, whose code half is the operator's recorded
 decision (a workspace allowlist was one of the three options answered on 2026-09-08 and was not the
 one chosen), leaving the record as the part still owed.
+A second accepted-risk bullet is owed beside that one, and it is the disposition of a security
+Major from section 3's second review round as a consult ruled it on 2026-09-08: a record section's
+speaker line is the bridge's word about which call produced the section, never proof of who wrote
+the text in it. The bridge writes both parties' text verbatim between a header it composes and a
+`NEXT:` line, so a body that itself contains a header line reads as a further section to anyone
+who parses the file by its lines. Nothing in the file establishes authorship past that: the
+single-writer rule binds the two agents by instruction rather than by confinement, the worker runs
+unsandboxed with the record and the bridge's state file both readable to it, and no delimiter the
+bridge could choose is a secret from a party that can read the file, so forge-resistance against a
+writer running as the same principal has no key to rest on. A body-borne forgery is the same
+capability as opening the file and writing a section, reached through a narrower door, since the
+forged text also stands in the worker's own session log (`dsh_tail`) and in the channel event that
+carried it, where a direct write leaves neither trace. The bullet names its own reopen condition: a
+worker confined away from the record and the state root would make a bridge-held secret keepable,
+and a real delimiter possible. The cutover runbook carries one sentence of the same fact for the
+human reader, that a section's speaker line records which bridge call produced it rather than
+proving authorship, and that where it matters what the worker actually said, the worker's own
+session log is its side of the record.
 `docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
 plugin, with the reason: from that build onward Claude Code escapes a channel event's attributes
 and disarms a forged closing channel tag in its body, and the bridge's own guard is the second
@@ -947,6 +1003,8 @@ Acceptance:
 - `docs/dsh-bridge.md` exists and every tool and attribute it names matches `bridge/protocol.ts`
   (a test in `bridge/protocol.test.ts` reads the doc, pins the six tool names and the meta keys, and
   asserts that no other `dsh_`-prefixed identifier or `meta` key appears in it).
+- The security model's accepted-risks list carries the record-attribution bullet with its reopen
+  condition, and the runbook's protocol amendment carries the one-sentence form of the same fact.
 - The security model's egress paragraph names the host and port from `~/.dsh/settings.yaml`, its
   allow-rule paragraph counts seven rules across two plugins, and its accepted-risks list carries the
   `dsh_prompt` entry.
@@ -3773,3 +3831,157 @@ rulings binding all of them.
 main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
 
 **Altered outside this repository.** Nothing at this boundary.
+
+### Interim board 22 - 2026-09-09
+
+Written at the compaction gate's signal, at the boundary between section 3's third review round and
+its third fix round. No section has closed since Chapter 2. This entry supplements Interim board 21
+rather than repeating it: what is new is the second fix round's return and this session's
+verification of it, a third review round whose central finding is a defect in the brief this session
+wrote, and a consult that corrected two premises this session had been briefing as settled.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented and has been through three review rounds and two fix rounds; its
+third fix round is not yet dispatched at this boundary. Sections 4 through 6 are unstarted. Section
+3's files are uncommitted and commit at its close, per the plan's Commit-and-Push model. Three
+plan-doc commits are committed and not pushed: 1a09377, cb6cde3, and the one this boundary lands.
+
+**The second fix round returned DONE and was verified against the code rather than against its
+report.** All nine owed items are closed at their sites and the eight bridge suites stand at 165
+tests, 165 passing, no failures, against a pre-round baseline of 152. Two things the verification
+caught are worth recording because the report alone would not have shown them. The report's prose
+about its own rotate guard said an absent record and a header-only record both refuse; the code
+refuses neither an absent one, which still takes the fresh-file branch the acceptance criterion
+requires, so the prose was wrong where the code was right. And the round left the wire's path bound
+declared twice, once in each module, on a cycle argument that was sound in the direction it tried and
+had a free direction available: this session moved the constant to the module the import already
+runs from, so the bound is now one value both surfaces read.
+
+**The third review round ran three lenses at opus and effort high through the Workflow route,** the
+tree bracket was IDENTICAL across it, and no lens returned a Critical, so the tier ladder does not
+fire and section 3 stays at sonnet. Adversarial returned CHANGES_REQUIRED with three Majors and
+thirteen Minors, blind CHANGES_REQUIRED with three Majors and ten Minors, security CONCERNS with two
+Majors and seven Minors. The round was owed rather than optional under the fix-delta bar: the delta
+writes outside the tree at the rotate's rename and at a directory create the fix round made
+unconditional, and it reaches input handling and path construction.
+
+**The round's central finding is a defect in the brief this session wrote, not in the work.** All
+three lenses independently found the rotate guard added by the second fix round inert. It tests for
+any Markdown second-level heading, so every ordinary document passes; and the append path defeats it
+outright, since a prompt writes a section into whatever file its record argument names, so one
+prompt makes every file on the machine pass a guard meant to tell a record from a document. This
+session specified that guard, translating a lens's phrase about a bridge-written section header into
+a pattern that matches no such thing. Its false refusal reaches the plan's own path in the same
+stroke, which this session confirmed at the file: a rotate writes the leading header alone into the
+fresh file, and the cutover record's own header is forty-five lines carrying no such heading, so the
+second rotate refuses a file the writer had just created. The guard's fixture could not have caught
+either half, its control having been drawn from the pattern's own literal.
+
+**The round's most serious finding is new, and this session rates it above the lenses.** The append
+path has no target guard at all: the record path is checked for shape and for not being an existing
+directory, and nothing else, so a prompt appends a section into any existing file that is not a
+directory. Confirmed end to end at the code: a record path naming the bridge's own session map
+appends a section into it, the map then fails its parse, a prompt refuses on a map it cannot read
+before any name is recalled or any runtime starts, and the write deliberately declines to replace a
+file it could not read, so every prompt in every scope for every bridge process on this machine is
+refused until the operator repairs the file by hand. The project's own threat model already treats
+this exact wedge as worth a dedicated bound, which is why the session name is length-capped. All
+three lenses rated it Major on one shared ceiling, that the calling session already holds
+pre-approved shell access so this is no escalation. This session rates it Critical on a different
+axis: that ceiling is about deliberate reach, and the wedge is reachable by a single mistyped path,
+which is the same accidental axis the session-name bound already guards. The rating changes no
+routing, since the finding is fixed in this section either way, and it does not fire the tier ladder,
+which turns on Criticals in consecutive rounds where the previous round carried none.
+
+**A consult was convened on two independent triggers and its ruling is adopted whole.** The triggers
+were a second failed attempt at one problem, the arbitrary-file rotate having now been answered once
+and answered wrongly, and a load-bearing decision the spec does not cover. The ruling adopts the
+split this session proposed and corrects the frame around it in two ways that matter more than the
+split does, both of which this session verified at the plan and at the file before adopting.
+
+The first correction is an error of this session's, and it ran for two rounds. Both the second and
+the third review round were briefed that the operator had ruled the record path shape-checked and
+not location-checked, and told in as many words not to re-litigate it. The operator's answer of that
+date was about auto-allowing the prompt tool, and the sentence in it about an allowlist speaks to
+where the worker starts rather than to what it reaches. The record's own rule is this plan's own
+recorded default assumption, carrying a stated reversal beside it. So a location check on the record
+was never barred by authority; it loses on the merits instead, since any allowlist refuses the
+cutover's own record. Two rounds of lenses were told a question was closed on an authority that did
+not cover it.
+
+The second correction retires this session's central argument for why no content guard can work. The
+cutover target already carries eight sections in the bridge's own header shape with eight matching
+NEXT lines, read from the file, so a header-shape guard does not collide with the cutover as this
+session claimed in the consult brief. The conclusion survives on other evidence the ruling supplied
+and this session confirmed: after a rotate the live record is its leading header alone with no
+section in it, so a header-shape guard on the append refuses the very next prompt. No content
+predicate separates a fresh record from an operator document, and the marker that would separate
+them is the published-format change the earlier consult already barred.
+
+**What the adopted ruling has section 3 build.** A refusal of any record or archive path resolving to
+the bridge's own state directory, at every site the record-path guard already runs, on a predicate
+exported beside it. Directory scope rather than file scope, because the state write stages a
+sibling temporary file in that directory and renames it over the map, so a record named there can be
+renamed over the map by a concurrent write, which this session confirmed at the write. The guard that
+failed is deleted rather than corrected, with its documentation claims and the bridge readme's
+version of them corrected in this section's own delta, since a guard that buys nothing while
+claiming to tell a document from a record is worse than none. The general reach is accepted and
+documented, on the same reasoning the earlier forgeability consult established, and the sentences
+owed to the security model and to the runbook are recorded for section 6 beside the forgeability
+bullet already written there. The ruling states, and this session adopts, that refusing the bridge's
+own state directory is not a location policy wearing another hat: it refuses one artifact this code
+reads as its own authority and admits every path an allowlist would have refused. That is recorded
+as a declared design fact rather than raised, and the ruling found no operator fork surviving.
+
+**The sixth standing brief amendment was written at this boundary,** before any dispatch, per the
+adoption trigger. It carries both halves of what this round taught: that a guard's discriminant has
+to be a property only the thing it admits can hold, so where the legitimate target and the refused
+class are content-identical the honest fix names the one artifact whose corruption the code cannot
+survive; and that a constraint is briefed with the authority it actually holds, so a default this
+plan assumed is never handed to a reviewer as a decision the operator made.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T01:58Z on NEO-CLAUDE, on the tree
+as the second fix round and this session's own constant change left it, every exit code taken from
+the run itself and the counts parsed in node: type check exit 0, and the bridge suites at env 3/3/0,
+fake-dsh 2/2/0, harness 70/70/0, index 21/21/0, log 18/18/0, protocol 23/23/0, record 20/20/0 and
+redact 8/8/0, every suite exit 0, for 165 tests, 165 passes and no failures. The pre-section figure
+on the same eight suites is 131, so the section stands at plus 34 tests. The whole-gate baseline is
+unchanged and is still the 2026-09-08T23:07:38Z run recorded on Chapter 2's Gate line, at tests
+1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the present tree, and none can
+honestly run while the machine's heavy slot is held.
+
+**An instrument fact worth carrying, because it produced a wrong reading twice in one boundary.** The
+count parser this session wrote for those eight suites returned zero for all of them while every
+exit code read 0, first because the runner's summary lines open with an information glyph rather than
+TAP's hash, which a banked memory records and which was applied here, and then a second time because
+a regular expression built by string concatenation inside a node one-liner lost its escapes in
+transit while the same pattern written as a literal matched at once. The exit codes were the gate
+throughout; the counts were a claim, and the claim's instrument was broken in two different ways
+before it spoke. Both are now banked.
+
+**The machine's heavy slot.** This session holds no claim. The foreign claim is live and has been
+refreshed since board 21: `NEO: Worker` on repo `Neuro-Evolution-Operations`, session `44e999c1`,
+expecting 5400 seconds, its modification time reading 2026-09-09T01:46:20Z. It was not written over
+and it was not deleted. The contention is named rather than absorbed: the targeted lane above ran
+beside it, being a type check and eight small suites, and the whole gate the close owes waits for the
+slot.
+
+**Live dispatches.** None at this boundary. The consult has returned and its ruling is adopted; the
+third fix round is dispatched immediately after this entry lands.
+
+**Next action per section.** Section 3: dispatch the third fix round carrying the adopted ruling's
+state-directory guard, the deletion of the failed guard with its documentation corrections, and the
+round's batched Minors; then the targeted lane, then the heavy-process claim and the whole gate with
+the contention lane beside it, since the close pushes to a trunk consumers install from with no
+continuous integration gating the merge; then close with a Chapter and commit and push. Sections 4
+through 6: unstarted, in order, with the plan's four standing rulings and now six standing
+amendments binding all of them. Section 6 additionally owes the two accepted-risk bullets this
+boundary and the previous one recorded for it.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twenty-one boards before it:
+main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
+
+**Altered outside this repository.** Five records added to the memory store's operator tier, which
+is shared by every project on this machine: the four instrument facts board 21 listed as owed, plus
+the regular-expression fact above. One of them was written beside an existing record on the same root
+cause and points at it as its companion rather than restating it. Nothing else.
