@@ -720,9 +720,18 @@ therefore refuses those three arguments today, so adding them to the schema is p
 record work rather than a separate tidy-up. Section 2's review round surfaced this and it is recorded
 here rather than fixed there.
 
+The remembered path persists in the shared session-state file, in `SessionRecord`'s `record`
+field, which section 2 built and already validates: a bridge restart adopts it with the rest of
+the record, so a caller names the record once rather than again on the first prompt after every
+restart. Its writer is `prompt` itself, which already publishes that session's record before the
+prompt goes out, so `record` is an argument of `dsh_prompt` in the harness as well as on the wire
+and nothing outside the bridge writes the state file. A prompt naming a path replaces the
+remembered one; a prompt naming none keeps it.
+
 Files in scope: `bridge/record.ts`, `bridge/record.test.ts`, `bridge/protocol.ts` (the tool schema
 for `dsh_record_rotate`, and `dsh_prompt`'s `record`, `party` and `counterparty` arguments),
-`bridge/index.ts` (dispatch).
+`bridge/index.ts` (dispatch), `bridge/harness.ts` and `bridge/harness.test.ts` (`record` on
+`PromptArgs`, and the line in `prompt`'s own state write that persists it).
 
 Tests: lock the append-only property (an existing section is never altered), the refusal during a
 turn including the shared-path case (two names, one record, one in flight), the refused prompt that
@@ -3448,3 +3457,128 @@ Delta: reading taken 2026-09-08T23:10:14Z on NEO-CLAUDE, under the contention na
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 20 - 2026-09-08
+
+Written at the compaction gate's signal, forty-five offers held over thirty-one minutes, at the
+boundary between section 3's first review round and its fix round. No section has closed since
+Chapter 2.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented, has been through one full review round at opus across three lenses,
+and is in its first fix round. Sections 4 through 6 are unstarted. Section 3's files are uncommitted
+and commit at its close, per the plan's Commit-and-Push model.
+
+**The section opened with a question rather than a diff, and the question was sound.** The dispatch
+returned NEEDS_CONTEXT asking whether the remembered record path persists in the shared
+session-state file or lives only in the record module's process memory, naming the file-scope
+conflict behind it: persisting it needs `bridge/harness.ts`, which the section's own
+`Files in scope:` line did not name. It was ruled from section 2's committed code rather than
+escalated. Four sites settle it: the `SessionRecord` doc comment at `bridge/harness.ts:300`, which
+says the interface is what the bridge remembers "across a kill and across a restart" while `record?`
+is a field of it; the field's own comment at `:306`; `admittedRecord`'s comment at `:1878`, whose
+sentence about the next write persisting the session without the path is coherent only if writes
+persist the field; and section 3's own "remembers the path for the session". The in-process reading
+contradicts all four.
+
+**The ruling also rejected the shape the question proposed for the persisting write, on the
+questioner's own evidence.** Its persistent option added a field-level compare-and-set or a
+`setRecordPath` export so the record module could write the state file from outside `Bridge`, and
+its own analysis showed that any read-then-write from outside races `prompt`'s pre-prompt write and
+`finish`'s turn-end write. The answer is not a safer external writer but no external writer: the
+path arrives with a prompt, so `record` joins `PromptArgs` and `Bridge.prompt` writes it into the
+record it already publishes. One interface field and one line in an object literal, with no new
+export and no lock.
+
+**Two spec amendments were made and are recorded as the approval drift they are.** Section 3's
+`Files in scope:` line now names `bridge/harness.ts` and `bridge/harness.test.ts`, folded on the
+section loop's fold predicate: the same directory as files already in scope, no acceptance criterion
+the section does not already carry, and covered by the gate the close will run. And a paragraph above
+that line now states where the path persists, that `prompt` is its writer, and that a prompt naming a
+path replaces the remembered one while a prompt naming none keeps it, which is a declared assumption
+the acceptance criteria did not settle. `bridge/protocol.test.ts` was folded in later on the same
+predicate, to fix a stale tool-count pin that the section's sixth tool reddened.
+
+**Live dispatches.** One: `implementer-sonnet`, agent `a2f987cde988ac7d8`, resumed for section 3's
+first fix round. It was asked to fix two Criticals and five Majors, to leave one Major deliberately
+unfixed, and to batch eight Minors into this one round per the plan's fourth standing ruling. Its
+first turn built the section whole and returned DONE.
+
+**The review round's findings, all verified against the code by this session before the fix round was
+dispatched.** Three lenses ran at opus and effort high through the Workflow route, since the writer
+tier is sonnet and a reviewer one tier above a sonnet writer takes `high`, which the Agent tool
+cannot set. Adversarial and blind both returned CHANGES_REQUIRED and security returned BLOCK. Two
+Criticals: the record writer keys its pending turns on the session name, so a second prompt for a
+name whose turn is in flight overwrites that turn's entry and the refusal's own catch then deletes
+it, losing the worker's answer on an ordinary retry that the refusal text itself invites; and
+`dsh_record_rotate` renames onto its archive path with no existence check and no equality check
+against the record, so an archive path naming the record destroys the record and leaves no archive
+while reporting success, and one naming any existing file replaces it silently, which reaches outside
+this repository. Five Majors are fixed in the round: the writer keyed on the raw session name while
+the bridge keys turn ends on the trimmed one, losing every turn under a padded spelling; an append
+failure swallowed to the diagnostic stream while the prompt answers accepted; the stored record path
+admitted by the workspace guard alone rather than by the record module's own, so the directory
+refusal covers the wire and not the value the bridge opens; `MAX_PARTY_NAME` declared on the schema
+and enforced nowhere, with a blank party admitted through a nullish default and a newline able to
+forge a section header; and the remembered path read off disk rather than off the value the prompt
+will use, with a comment claiming an ordering the code does not have. One Major is justified and not
+fixed: the rotate's in-flight refusal reads liveness from this process's own map and cannot see a
+sibling bridge, which is the multi-bridge premise the operator's first ruling struck for section 2,
+so an on-disk marker would re-import it. What is owed instead is the qualification of the tool
+description's claim, which promises more than a process-local guard delivers, and that correction is
+in the round.
+
+**One security Major is routed rather than fixed here, and it is the item most worth the operator's
+attention.** The record path is any absolute local path by the section's own spec text, which states
+the path is the caller's choice and is not checked against the session's `cwd`. Composed with the
+rotate, that made an append-and-truncate primitive over any file the process can write, which no
+document prices. Fixing the rotate's clobber removes the truncate half and leaves the append half,
+which the spec authorized deliberately. What remains owed is the accepted-risk paragraph in
+`docs/security-model.md`, already section 6's work, naming this composed primitive explicitly, plus
+one observation for section 4: the security lens reads the plan's auto-allow list as placing
+`dsh_record_rotate` among the auto-allowed tools on the section's own reading rather than on the
+operator's ruling, a classification made when the rotate looked like bookkeeping.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T00:0xZ on NEO-CLAUDE, each exit
+code taken from the run itself and the count instrument controlled against the one failing suite,
+which spoke: type check exit 0, and the bridge suites at env 3/3/0, fake-dsh 2/2/0, harness 67/67/0,
+index 12/12/0, log 18/18/0, protocol 23/23/0, record 11/11/0 and redact 8/8/0, for 144 tests, 144
+passes and no failures once the folded pin was fixed. The pre-section figure on the same eight suites
+is 131, which reconciles the section's own arithmetic: this session's Chapter 2 baseline of 123 was
+taken over six suites and omitted `bridge/redact.test.ts`, whose eight tests are the difference. The
+whole-gate baseline is unchanged and still the 2026-09-08T23:07:38Z run recorded on Chapter 2's
+`Gate:` line, at tests 1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the present
+tree, and none can honestly run while a fix round is editing it.
+
+**A structural import check was run over the prospective commit set** rather than over a list of
+names, since section 2's close caught two shipping files by that method at the last moment. Eighteen
+sources under `bridge/` and forty relative imports resolve with none missing, under a control that
+withheld `bridge/record.ts`, a target no literal in the pattern names, and that reported the two
+importers referencing it.
+
+**The machine's heavy slot.** This session holds no claim. A foreign claim has stood throughout,
+`NEO: Worker` on repo `Neuro-Evolution-Operations`, session `44e999c1`, expecting 3600 seconds, and
+it was not written over. One anomaly is named rather than absorbed: its `Started:` line reads
+2026-09-08T23:35:00Z while the file's own modification time is 23:27:20Z, so that field names a
+moment later than the write that created it. The claim was aged from the modification time, which is
+the machine's stamp rather than its writer's composition.
+
+**Two instrument facts cost time here and are worth carrying.** `sed` in this shell strips CR in text
+mode, so `cat -A` behind a `sed` pipe reported every line of a CRLF region as LF, and a splice built
+on that reading was refused by its own guard; line endings are read in node from the raw bytes. And
+`find -printf %TH:%TM` prints local time while `date -u` prints UTC, so a growth reading that mixes
+the two on this box reads four hours stale.
+
+**Next action per section.** Section 3: await the fix round, verify every fix against the code rather
+than against its report, run one bounded review round on the fix delta where that delta earns one,
+then the targeted lane, then the heavy-process claim and the whole gate with the contention lane
+beside it, since the close pushes to a trunk consumers install from with no continuous integration
+gating the merge, then close with a Chapter and commit and push. Sections 4 through 6: unstarted, in
+order, with the plan's four standing rulings binding all of them, and section 4 additionally carrying
+the auto-allow observation above and the three dependency advisories.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the nineteen before it: main is
+an install surface that takes the whole gate, and a fix round is editing the tree.
+
+**Altered outside this repository.** Nothing at this boundary beyond three memory applied-stamps in
+the operator tier.
