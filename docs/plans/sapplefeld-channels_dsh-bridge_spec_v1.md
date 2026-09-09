@@ -592,6 +592,30 @@ Every entry here binds every section opened after it was written, dispatched or 
   and the round comes back agreeing. Cite the line that settles a constraint before briefing it as
   settled, and where the line is an assumption of ours, brief it as one and let the lens weigh it.
 
+- **A guard that compares spellings admits every other spelling of the same file, so a guard about
+  identity resolves the path to the object it names before comparing it, or checks the object it
+  actually opened.** The instance: this plan's own state-directory refusal compared the output of a
+  canonical-path helper that is a lexical resolve plus a case fold on Windows, resolving no link, no
+  junction and no short name. Windows publishes an 8.3 short name for the state directory by default,
+  with no privilege and nothing to set up, so a record path spelled through that short name named the
+  same file and the guard did not see it. Confirmed at the guard's own arithmetic on this machine: the
+  long spelling is refused and the short spelling is admitted, and the short name is read off the
+  filesystem rather than guessed. What makes this worth an amendment rather than one fix is that the
+  guard was the answer to a Critical, so a guard that holds only for the spelling the author had in
+  mind reads as a closed finding while leaving the finding open. Two remedies work and the second is
+  the stronger: resolve the candidate through a real-path call on its deepest existing ancestor before
+  the comparison, or compare the identity of the handle the code actually opened against the identity
+  of the artifact it is protecting, which no spelling can route around because it never looks at one.
+  The rule generalizes past paths: wherever a guard admits or refuses on a rendering of a thing, the
+  thing has other renderings, and the guard is written against the thing.
+
+  The test half is the same lesson from the other side, and it is why three reviewers had to find this
+  rather than the suite. The guard's own test passed because its negative control was a string that
+  merely shared a prefix with the protected directory, which is exactly the case a lexical comparison
+  gets right. A control drawn from the class a guard handles proves the instrument runs and says
+  nothing about the class it fails, so a guard about identity is tested against a second real spelling
+  of one real object, withheld from whatever the guard's own code spells.
+
 ## Sections of Work
 
 ### 1. SDK runtime spike and fixtures
@@ -3985,3 +4009,157 @@ main is an install surface that takes the whole gate, and the gate cannot run wh
 is shared by every project on this machine: the four instrument facts board 21 listed as owed, plus
 the regular-expression fact above. One of them was written beside an existing record on the same root
 cause and points at it as its companion rather than restating it. Nothing else.
+
+### Interim board 23 - 2026-09-09
+
+Written at the compaction gate's signal, sixty-four offers held over thirty-two minutes, at the
+boundary between section 3's fourth review round and the tier escalation that round earns. No
+section has closed since Chapter 2. This entry supplements Interim board 22 rather than repeating
+it: what is new is the third fix round's return and this session's verification of it, a fourth
+review round, and the escalation of section 3 off the tier that has now answered one Critical
+wrongly twice.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented and has been through four review rounds and three fix rounds; its
+fourth fix round is dispatched at fable immediately after this entry lands. Sections 4 through 6 are
+unstarted. Section 3's files are uncommitted and commit at its close, per the plan's Commit-and-Push
+model. Four plan-doc commits are committed and not pushed: 1a09377, cb6cde3, 38a1c43, and the one
+this boundary lands.
+
+**The third fix round returned DONE and was verified against the code rather than against its
+report.** All four owed items are closed at their sites. The state-directory guard is exported from
+the harness beside the record-path guard and called at five sites, the failed content guard and both
+its fixtures are gone, the two false documentation claims are corrected, and the round declined to
+add the broader location check it was told not to add. This session re-ran the whole targeted lane
+itself: the type check exits 0 and the eight bridge suites stand at 169 tests, 169 passing, no
+failures, every exit code read from its own run and the counts parsed with literal patterns, against
+a pre-round baseline of 165. Three things the verification caught are worth recording. A Windows
+hazard this session suspected in the round's new exclusive-create claim, that renaming over a file
+whose handle is still open fails on that platform, falls: the claim is closed before the rename. A
+claim mismatch this session suspected in the rotate's documentation also falls, the doc having been
+written to state the conditional the code actually implements. And the round deviated from its brief
+in one place deliberately and said so: a remembered record path naming the state directory warns and
+appends nothing rather than refusing the prompt, which mirrors the sibling case immediately above it
+and is accepted here, since a remembered path is state the caller did not name on this call.
+
+**The fourth review round was owed rather than optional,** on two independent triggers of the
+fix-delta bar: the delta rewrote the append to a raw file descriptor and the rotate to an
+exclusive-create claim, both writes outside the tree, and it added a security guard at five call
+sites. Three lenses ran at opus and effort high through the Workflow route. The tree bracket was
+IDENTICAL across the round. Adversarial returned CHANGES_REQUIRED with two Majors and twelve Minors,
+blind CHANGES_REQUIRED with three Majors and nine Minors, security CONCERNS with two Majors and
+four Minors. Adversarial found no spec drift on its first pass.
+
+**The round's central finding is that the guard which answered round 3's Critical does not hold, and
+this session rates it Critical against the lenses' Major.** The state-directory refusal compares the
+output of a lexical canonical-path helper, a resolve plus a case fold on Windows, which resolves no
+link, no junction and no short name. The security lens confirmed on this host that Windows publishes
+the 8.3 short name SAPPLE~1 for the state directory, so a record path spelled through it names the
+same file and the guard admits it: one tool call, no privilege, no race, and the machine-wide wedge
+round 3 raised is open again. This session reproduced it independently before the round returned and
+then again at the guard's own arithmetic, reading the short name off the filesystem rather than
+guessing it: the long spelling is refused and the short spelling is admitted. The blind lens found
+the same defect at low confidence by the junction route. The lenses rated it Major on the standing
+ceiling that the calling session already holds pre-approved shell access; this session rates it
+Critical on the ground it used in round 3, that the ceiling speaks to deliberate reach while this
+route needs nothing deliberate at all, the short name being a default of the filesystem.
+
+**The tier ladder fires, and its earned check is what fires it.** Two consecutive rounds now carry a
+Critical surviving adjudication, and the ladder requires naming whether a finding class repeats
+before spending a bump. It repeats exactly: round 3's Critical was that the append path has no target
+guard, so the shared session map can be wedged, and round 4's is that the target guard added does not
+hold, so the shared session map can be wedged. Same class, same consequence, and the second failed
+attempt at one problem. That is the tier branch rather than the framing branch, which is what keeps
+this from being a fourth consult. Section 3 therefore escalates from sonnet to fable for its fourth
+fix round, carrying both rounds' evidence, at the implementer's own pinned effort rather than a
+raised one, since the compensation notch is a reviewer instrument. The same bump is owed
+independently by the bar against a third dispatch at one tier, which three sonnet fix rounds have
+now reached.
+
+**The other Major going to that round is a security Major, so it is fixed in this section or raised,
+never routed.** The security lens argues that the accepted general reach of the record path rests on
+a rationale that does not cover the act the code performs. The reach was accepted on the ground that
+a caller naming a document destroys one file the operator can restore, which is true of a
+destructive write and false of an append: the append creates parent directories and adds
+worker-controlled text verbatim, so a record path naming a shell profile or an instruction file the
+machine reads as authority plants content with nothing destroyed and nothing to restore. The lens
+supplies a discriminant that costs the cutover document nothing and takes the same form this plan
+already adopted for the state file, refusing the machine's own execution and instruction chain rather
+than policing where a caller's files may live. This session adopts it as a fix rather than a fork: it
+is additive, it reverses no part of the accepted reach, and it follows the adopted ruling's own
+logic, that the honest guard names the artifacts whose corruption the code cannot survive. The
+earlier consult's conclusion stands; what changes is that its list of such artifacts was short by the
+machine's own execution chain.
+
+**Two further Majors and the round's Minors go with them.** The append path's single unlooped write
+can report fewer bytes than the section holds, which silently truncates the record this section
+exists to make byte-exact, and both the adversarial and blind lenses found it independently from the
+API contract rather than from a run. The rotate leaves its zero-byte exclusive claim behind on any
+rename failure, so a retry with the same archive path is refused by the bridge's own leftover and the
+operator is left looking at an empty archive beside an intact record. Both are in the code the third
+fix round wrote, which is the fourth consecutive round whose Majors sit in the previous round's own
+repair, and that pattern is a close-out lesson rather than an implementer failure.
+
+**A house-rule violation this session found independently and all three lenses also raised:** two
+test names in the record suite narrate a guard that no longer exists. The em-dash sweep over the
+whole delta is clean, run with a control that spoke.
+
+**The seventh standing brief amendment was written at this boundary,** before the escalated dispatch,
+per the adoption trigger. It carries the lesson in the general form: a guard that compares spellings
+admits every other spelling of the same file, so a guard about identity resolves the path to the
+object it names or checks the object it actually opened, and its test is written against a second
+real spelling of one real object rather than against a string the guard's own code spells.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T03:30Z on NEO-CLAUDE, on the tree
+as the third fix round left it, every exit code taken from the run itself: type check exit 0, and the
+bridge suites at env 3/3/0, fake-dsh 2/2/0, harness 72/72/0, index 23/23/0, log 18/18/0, protocol
+23/23/0, record 20/20/0 and redact 8/8/0, every suite exit 0, for 169 tests, 169 passes and no
+failures. The pre-section figure on the same eight suites is 131, so the section stands at plus 38
+tests. The whole-gate baseline is unchanged and is still the 2026-09-08T23:07:38Z run recorded on
+Chapter 2's Gate line, at tests 1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the
+present tree, and none can honestly run while the machine's heavy slot is held.
+
+**An instrument fact that cost two readings at this boundary.** This session's first reproduction of
+the short-name bypass reported the guard refusing both spellings, which would have vindicated the
+guard. It was false: the paths were built inside a node one-liner from Git Bash, which strips the
+backslash escapes and collapsed every Windows path to a drive root, so the guard was being asked
+about a directory nobody named. Re-run from a script file it reproduced at once. Separately, a line
+ending read through a sed pipe reported the amendments block as bare LF where the raw bytes report it
+as CRLF, since git-bash sed strips CR in text mode. Both classes are already banked in the operator
+tier; both bit again here, which is the argument for reaching for the file-based form first rather
+than after a wrong reading.
+
+**The machine's heavy slot.** This session holds no claim and wrote none. The foreign claim is live
+and has been refreshed since board 22: `NEO: Worker` on repo `Neuro-Evolution-Operations`, session
+`44e999c1`, expecting 5400 seconds, its modification time reading 2026-09-09T02:32:06Z and agreeing
+with its own Started line. It was not written over and it was not deleted. The contention was named
+in every brief this boundary sent: the third fix round was told the whole-repository suite was
+off-limits and confirmed in its report that it ran only the type check and the eight targeted
+suites, and all three review lenses were told no build and no suite was available to them. The whole
+gate the close owes waits for the slot.
+
+**Live dispatches.** None at the moment this entry is written. The fourth fix round is dispatched at
+fable immediately after it lands, carrying the state-directory guard rebuilt on identity rather than
+spelling, the execution-chain refusal, the append's partial-write loop, the rotate's claim cleanup,
+and both rounds' batched Minors.
+
+**Next action per section.** Section 3: dispatch the fourth fix round at fable with both rounds'
+evidence; then the targeted lane; then, if that round's delta owes a round under the fix-delta bar,
+a fifth review round, which is also the round at which the loop's own upper bound is reached and the
+count goes to the operator at close-out; then the heavy-process claim and the whole gate with the
+contention lane beside it, since the close pushes to a trunk consumers install from with no
+continuous integration gating the merge; then close with a Chapter and commit and push. Sections 4
+through 6: unstarted, in order, with the plan's four standing rulings and now seven standing
+amendments binding all of them. Section 6 additionally owes the two accepted-risk bullets recorded
+for it at the previous two boundaries, and now a third, the execution-chain refusal's own entry in
+the security model.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twenty-two boards before it:
+main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
+
+**Altered outside this repository.** One line appended to the kit's kaizen inbox on this machine, on
+the compaction checkpoint's long-leg open dying with the deferral episode that was live when it
+opened, which this run has now reproduced three times. It is left uncommitted in that clone
+deliberately: the notes file there already carried an uncommitted line this session did not author,
+and that clone is four commits behind its origin, so committing would have swept a peer's work.
+Nothing else.
