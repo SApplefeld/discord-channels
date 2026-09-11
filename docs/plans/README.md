@@ -3,7 +3,7 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-One plan is open: [`sapplefeld-channels_dsh-bridge_spec_v1.md`](sapplefeld-channels_dsh-bridge_spec_v1.md), the DSH bridge channel plugin. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
+Two plans are open: [`sapplefeld-channels_dsh-bridge_spec_v1.md`](sapplefeld-channels_dsh-bridge_spec_v1.md), the DSH bridge channel plugin, and [`channels_thread-rebinding_spec_v1.md`](channels_thread-rebinding_spec_v1.md), one Discord thread across a long-running supervisor's restarts. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
 first in [`../README.md`](../README.md).
 
 ## Rules
