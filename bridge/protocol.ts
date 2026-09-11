@@ -73,6 +73,26 @@ export const MAX_META_VALUE = 2_600;
  */
 export const MAX_META_REASON = 48;
 
+/**
+ * The most of a `party` or `counterparty` name a record's section header spends, in code points.
+ *
+ * The two are the caller's own choice, `dsh_prompt`'s defaults being {@link DEFAULT_PARTY} and
+ * {@link DEFAULT_COUNTERPARTY}, and each becomes the whole of one word on a section header line in
+ * the record file. Bounded well past any name a caller would choose, and declared on the tool schema
+ * as `maxLength`, exactly as {@link MAX_SESSION_NAME} is for `session`.
+ */
+export const MAX_PARTY_NAME = 60;
+
+/**
+ * The section header's default speaker names, when a `dsh_prompt` names neither.
+ *
+ * Declared here, the one place the tool schema's own description and `record.ts`'s dispatch default
+ * both read it from, so the wire's stated default and the value a caller actually gets cannot drift
+ * apart the way two independently spelled literals could.
+ */
+export const DEFAULT_PARTY = "Reviewer";
+export const DEFAULT_COUNTERPARTY = "DeepSeekHarness";
+
 /** The most of one session-log event that `dsh_tail` writes on its line, in code points. */
 export const MAX_TAIL_LINE = 400;
 
@@ -432,6 +452,17 @@ export const STATUS_TOOL_NAME = "dsh_status";
 export const BUSY_TOOL_NAME = "dsh_busy";
 export const TAIL_TOOL_NAME = "dsh_tail";
 export const KILL_TOOL_NAME = "dsh_kill";
+export const RECORD_ROTATE_TOOL_NAME = "dsh_record_rotate";
+
+/**
+ * The most of `record` or `archive_path` the wire is told to admit, in code points.
+ *
+ * The one bound under both the wire's declaration and what `recordFilePath` enforces past it. It is
+ * declared here rather than in `harness.ts` because the import already runs this way: `harness.ts`
+ * imports real bindings from this module, so its own `MAX_PATH_LENGTH` derives from this constant
+ * and the two cannot come to disagree about the length a path may be.
+ */
+export const MAX_STORED_PATH_LENGTH = 1024;
 
 /**
  * The `session` argument as every tool but the first declares it.
@@ -442,7 +473,7 @@ export const KILL_TOOL_NAME = "dsh_kill";
 const SESSION_ARGUMENT = { type: "string", maxLength: MAX_SESSION_NAME, description: "The session name." } as const;
 
 /**
- * The five tools, in the order the model meets them.
+ * The six tools, in the order the model meets them.
  *
  * `session` is a name the caller chooses and the bridge remembers; it is not the DSH session id,
  * which the caller never has to hold. `cwd` is required on the first prompt of a session and
@@ -474,6 +505,26 @@ export const TOOLS = [
             "conversation, so a different value is refused; use a different session name to work " +
             "somewhere else. One worker serves one workspace at a time, so a new session naming " +
             "another workspace waits for dsh_kill.",
+        },
+        record: {
+          type: "string",
+          maxLength: MAX_STORED_PATH_LENGTH,
+          description:
+            "Absolute path of a file to keep a plain-text record of this conversation in: a section " +
+            "for this prompt and a section for the worker's answer, appended in order and never " +
+            "edited. Remembered per session once given, so name it once rather than on every later " +
+            "prompt or after a restart; a value here replaces what was remembered, and omitting it " +
+            "keeps that. A relative path or one naming an existing directory is refused.",
+        },
+        party: {
+          type: "string",
+          maxLength: MAX_PARTY_NAME,
+          description: `Your own name on this turn's record section header. Defaults to "${DEFAULT_PARTY}". Not remembered: it applies to this call alone.`,
+        },
+        counterparty: {
+          type: "string",
+          maxLength: MAX_PARTY_NAME,
+          description: `The worker's name on this turn's record section header. Defaults to "${DEFAULT_COUNTERPARTY}". Not remembered: it applies to this call alone.`,
         },
       },
       required: ["session", "text"],
@@ -534,6 +585,24 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: RECORD_ROTATE_TOOL_NAME,
+    description:
+      "Move a session's record file aside and start a fresh one carrying the same leading header. " +
+      "Refused while any session this bridge is running and sharing that record file has a turn in " +
+      "flight, whether or not it is the one named here, since two session names can share one " +
+      "record; this cannot see a turn another bridge process is running on the same file. Also " +
+      "refused when archive_path names the record itself or a file that already exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: SESSION_ARGUMENT,
+        archive_path: { type: "string", maxLength: MAX_STORED_PATH_LENGTH, description: "Absolute path the current record is moved to." },
+      },
+      required: ["session", "archive_path"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /**
@@ -571,4 +640,7 @@ export const INSTRUCTIONS =
   "contends with the worker for this machine. dsh_status reports one session. dsh_kill stops the " +
   "worker process, and one worker serves every session here, so it stops that one worker whatever " +
   "session is named and every turn in flight ends with it; the conversations survive on disk and " +
-  "the next dsh_prompt resumes them.";
+  "the next dsh_prompt resumes them.\n\n" +
+  "Name a `record` on dsh_prompt to keep a plain-text transcript: your prompt and the worker's " +
+  "answer each land as their own section, in full and unedited, once the runtime has accepted the " +
+  "turn they belong to. dsh_record_rotate moves the current record aside and starts a fresh one.";

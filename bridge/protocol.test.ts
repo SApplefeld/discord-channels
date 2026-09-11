@@ -591,7 +591,7 @@ test("every tool that takes a session name declares the bound the bridge enforce
   // to refuse it first. One pin over the family rather than one per tool, so a tool added later that
   // takes a name without the bound reddens here.
   const taking = TOOLS.filter((tool) => Object.hasOwn(tool.inputSchema.properties, "session"));
-  assert.equal(taking.length, 4, "four of the five tools take a session name");
+  assert.equal(taking.length, 5, "five of the six tools take a session name");
   for (const tool of taking) {
     const session = (tool.inputSchema.properties as Record<string, { type: string; maxLength?: number }>).session;
     assert.equal(session.type, "string");

@@ -4,20 +4,23 @@ The DSH bridge: an MCP channel server, a stdio child of one Claude Code process,
 a DeepSeek Harness worker and pushes the worker's answers back into the session.
 
 It is the relay's shape with a DeepSeek Harness runtime where the relay has a Discord broker. It
-declares `claude/channel` and five tools; instead of carrying an operator's messages both ways, it
+declares `claude/channel` and six tools; instead of carrying an operator's messages both ways, it
 spawns `dsh --profile sdk`, drives sessions over the SDK's JSON-RPC-over-stdio protocol, and emits
 one `notifications/claude/channel` event per finished worker turn. It declares no
 `claude/channel/permission`: the events it carries are a machine's output, and a permission relay on
 that channel would let a worker's text approve Claude's tool calls.
 
-## The five tools
+## The six tools
 
-- `dsh_prompt(session, text, cwd?)` hands one task to the worker and returns as soon as the runtime
-  accepts it, naming the DSH session id and the turn number. It never waits for the worker. The
-  session name is at most `MAX_SESSION_NAME` code points, declared on the schema as `maxLength` and
-  refused by the bridge past it: the name is a key in the state file every bridge on the machine
-  shares, and that file is refused whole past its own ceiling, so an unbounded name would be one
-  prompt away from wedging persistence for every bridge in every scope.
+- `dsh_prompt(session, text, cwd?, record?, party?, counterparty?)` hands one task to the worker and
+  returns as soon as the runtime accepts it, naming the DSH session id and the turn number. It never
+  waits for the worker. The session name is at most `MAX_SESSION_NAME` code points, declared on the
+  schema as `maxLength` and refused by the bridge past it: the name is a key in the state file every
+  bridge on the machine shares, and that file is refused whole past its own ceiling, so an unbounded
+  name would be one prompt away from wedging persistence for every bridge in every scope. `record`
+  names a file to keep a plain-text transcript of the conversation in; see "The record" below.
+  `party` and `counterparty` name the two speakers on that transcript's own section headers, each at
+  most `MAX_PARTY_NAME` code points, defaulting to "Reviewer" and "DeepSeekHarness".
 - `dsh_status(session)` reports the session's record, its DSH session id, workspace and turn count, as
   the state file has it at the call for a name this bridge has not prompted, so a neighbour bridge's
   advance of such a name is what it shows, and from this bridge's own copy for a name it has prompted,
@@ -52,6 +55,28 @@ that channel would let a worker's text approve Claude's tool calls.
   which is what keeps an unsandboxed child reachable after a refusal took its record away. The
   session logs survive and the next `dsh_prompt` for a name resumes the same conversation in the
   same workspace.
+- `dsh_record_rotate(session, archive_path)` moves the session's record file to `archive_path` and
+  starts a fresh one at the same path, carrying the original's leading header. Refused while any
+  session this bridge is running and sharing that same record file has a turn in flight, whether or
+  not it is the name given here, since two session names can share one record; a sibling bridge
+  process running a turn on the same file is invisible to this check. Also refused when
+  `archive_path` names the record itself or a file that already exists, and when either the record or
+  `archive_path` names this bridge's own state directory, the one artifact every bridge process on
+  the machine shares and cannot survive corrupted; naming any other file the operator already has is
+  not checked against, since a location check there would refuse the operator's own documents.
+
+## The record
+
+Naming `record` on `dsh_prompt` keeps a plain-text, append-only transcript of one conversation
+beside the file `dsh_prompt`'s own record path names, one section per turn: the prompting party's
+text, once the runtime has accepted the prompt, and the worker's answer, once the turn ends, each
+verbatim between its own `## <speaker> @ <timestamp>` header and its `NEXT: <speaker>` line. A
+prompt the bridge refuses or the runtime rejects appends nothing. The record is a file a person
+reads, not a tool result a model does, so nothing here is neutralized or capped: a killed turn or a
+runtime loss names its kind and finish reason in the header only, as `(kind: finish_reason)`, and the
+body stays exactly what the runtime said, empty or not. The path is remembered per session in the
+shared state file once given, so a later prompt for the same name need not repeat it, and a value
+given again replaces what was remembered. `dsh_record_rotate` is the only way the file moves.
 
 ## The channel event
 
@@ -281,6 +306,8 @@ sentence naming the `npm ci` that fixes it.
 - `index.ts` wires the MCP server and is the entry point Claude Code spawns.
 - `protocol.ts` holds the tool schemas, the event builder, the bounds, and the `instructions` string.
 - `harness.ts` owns the runtime child, the session map, the turn state machine, and the receipt.
+- `record.ts` owns the record file: the single writer that appends a turn's two sections in order,
+  and `dsh_record_rotate`'s move-and-truncate.
 - `log.ts` reads a session log off disk, frame by frame.
 - `env.ts` names the runtime launcher and the patch, provider and model it is started with, checks
   that the launcher is installed, and builds the child environment. Both the bridge and the spike

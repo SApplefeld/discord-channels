@@ -14,7 +14,23 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Bridge, MAX_PATH_LENGTH, MAX_RETAINED_FILES, MAX_STATE_BYTES, MAX_STATE_DIAGNOSTICS, closeAll, defaultScope, dshRuntimeSpec, noteFile, readState, releaseState, workspacePath, writeState } from "./harness.ts";
+import {
+  Bridge,
+  MAX_PATH_LENGTH,
+  MAX_RETAINED_FILES,
+  MAX_STATE_BYTES,
+  MAX_STATE_DIAGNOSTICS,
+  closeAll,
+  defaultScope,
+  dshRuntimeSpec,
+  insideStateDirectory,
+  noteFile,
+  readState,
+  recordFilePath,
+  releaseState,
+  workspacePath,
+  writeState,
+} from "./harness.ts";
 import type { BridgeOptions, SessionRecord, TouchedFiles } from "./harness.ts";
 import { MAX_STATUS_LOG_BYTES } from "./log.ts";
 import { MAX_CHANNEL_CONTENT, MAX_META_FILES, MAX_SESSION_NAME } from "./protocol.ts";
@@ -513,6 +529,55 @@ test("a state file that cannot be written costs the turn nothing", async (t) => 
   assert.ok(!unwritten.includes(workspace), `and not by the path it was raised on: ${unwritten}`);
 });
 
+test("remembered answers from this process's own copy, which a state-file write failure never reaches", async (t) => {
+  // The shape a dispatch resolving "what record does this turn write to" from a separate read of the
+  // state file can get wrong: a write `prompt` makes is logged and never raised on failure, so
+  // `this.sessions` still carries the record it intended while the file on disk does not, and a
+  // fresh `readState` of that file disagrees with what `prompt` is about to use. `remembered` is the
+  // same lookup `prompt` makes, so it cannot disagree with it.
+  const { workspace, own } = stand(t);
+  const stateFile = path.join(workspace, "blocked", "sessions.json");
+  mkdirSync(path.dirname(stateFile), { recursive: true });
+  writeFileSync(stateFile, JSON.stringify({ version: 2, scopes: {} }));
+  mkdirSync(`${stateFile}.${String(process.pid)}.tmp`);
+  const blocked = own(
+    new Bridge({
+      stateFile,
+      scope: workspace,
+      home: path.join(workspace, "home"),
+      runtime: { command: process.execPath, args: [FAKE, RUN], env: process.env, requestTimeoutMs: PATIENCE_MS },
+      provider: "fake-provider",
+      model: "fake-model",
+      push: () => undefined,
+      log: () => undefined,
+    }),
+  );
+  const recordFile = path.join(workspace, "record.md");
+
+  await blocked.prompt({ session: "builder", text: "make a file", cwd: workspace, record: recordFile });
+
+  assert.equal(blocked.remembered("builder")?.record, recordFile, "this process's own copy has the record, write failure notwithstanding");
+  assert.equal(readState(stateFile, workspace).get("builder"), undefined, "while a fresh read of the file the write never reached has nothing at all");
+});
+
+test("remembered hands back a snapshot, not the live record a later turn's end goes on to mutate", async (t) => {
+  // `remembered` can return this bridge's own live entry, the same object `finish` writes the
+  // runtime's turn number into once the turn it describes ends. A caller holding that object rather
+  // than a copy of it would see its own snapshot change out from under it once the turn it read
+  // during finishes, which is exactly the shape a second caller of this lookup (a rotate's own busy
+  // check, resolving each name's record the same way) is about to become.
+  const { bridge, pushed, workspace } = stand(t);
+
+  await bridge.prompt({ session: "builder", text: "make a file", cwd: workspace });
+  const before = bridge.remembered("builder");
+  assert.equal(before?.turn, 0, "the count as of the last turn that finished, taken before this one has");
+
+  await until(() => pushed.length > 0, "the turn to end");
+
+  assert.equal(before?.turn, 0, "the earlier snapshot still reads as it did at the call, the turn's own end notwithstanding");
+  assert.equal(bridge.remembered("builder")?.turn, 1, "a fresh call sees the turn the snapshot above was taken before");
+});
+
 test("a status names the session, its workspace and what its log records", async (t) => {
   const { bridge, pushed, workspace } = stand(t);
 
@@ -809,6 +874,45 @@ test("the workspace guard admits one place on this machine and refuses the shape
   }
 });
 
+test("the record-file guard admits workspacePath's own shapes and additionally refuses an existing directory", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "dsh-bridge-recordpath-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const asDirectory = path.join(dir, "already-a-directory");
+  mkdirSync(asDirectory);
+
+  assert.equal(recordFilePath("relative/record.md"), undefined, "a relative path is refused, as workspacePath refuses it");
+  assert.equal(recordFilePath(""), undefined, "and an empty one names nothing at all");
+  assert.equal(recordFilePath(asDirectory), undefined, "a path naming an existing directory is not a file this bridge opens");
+
+  // The control: an absolute path naming a file, existing or not, is admitted, so the refusals above
+  // are this guard's rules rather than a function that refuses everything.
+  const file = path.join(dir, "record.md");
+  assert.equal(recordFilePath(file), file, "a file that does not exist yet is admitted");
+  writeFileSync(file, "hi", "utf8");
+  assert.equal(recordFilePath(file), file, "and so is one that already does");
+});
+
+test("insideStateDirectory admits only the state file's own directory, itself or a path inside it, folding case exactly as canonicalPath does", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "dsh-bridge-statedir-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = path.join(dir, "state", "sessions.json");
+  const stateDir = path.join(dir, "state");
+
+  assert.equal(insideStateDirectory(stateFile, stateDir), true, "the directory itself");
+  assert.equal(insideStateDirectory(stateFile, stateFile), true, "the map file itself");
+  assert.equal(insideStateDirectory(stateFile, path.join(stateDir, "sibling.md")), true, "a sibling file in the same directory");
+  assert.equal(insideStateDirectory(stateFile, path.join(stateDir, "nested", "deeper.md")), true, "a path nested under it");
+  if (process.platform === "win32") {
+    assert.equal(insideStateDirectory(stateFile, stateFile.toUpperCase()), true, "a case variant of the map file, folded as canonicalPath folds it");
+  }
+
+  // The control: a sibling directory whose name merely starts with the state directory's own name as
+  // a string is not inside it, so this keys on the path boundary rather than on a string prefix.
+  assert.equal(insideStateDirectory(stateFile, `${stateDir}-decoy`), false, "a directory name that shares a string prefix is not inside it");
+  assert.equal(insideStateDirectory(stateFile, path.join(dir, "elsewhere.md")), false, "a file in the parent directory, outside the state directory");
+  assert.equal(insideStateDirectory(stateFile, path.join(os.tmpdir(), "unrelated.md")), false, "an unrelated path elsewhere on the machine");
+});
+
 test("a workspace that names a host rather than a place on this machine is refused before it is opened", async (t) => {
   // `path.isAbsolute` is true of a UNC path, and the first filesystem call on one opens an outbound SMB
   // connection to a host the caller named, under the operator's credentials, before any refusal
@@ -883,10 +987,10 @@ test("a kill inside the prompt request writes no session id the runtime never to
 });
 
 /** This scope's records as the state file holds them now, empty when the file or the scope is absent. */
-function scopeOnDisk(stateFile: string, scope: string): Record<string, { sessionId: string; cwd: string; turn: number }> {
+function scopeOnDisk(stateFile: string, scope: string): Record<string, { sessionId: string; cwd: string; turn: number; record?: string }> {
   if (!existsSync(stateFile)) return {};
   const parsed = JSON.parse(readFileSync(stateFile, "utf8")) as {
-    scopes: Record<string, Record<string, { sessionId: string; cwd: string; turn: number }>>;
+    scopes: Record<string, Record<string, { sessionId: string; cwd: string; turn: number; record?: string }>>;
   };
   return parsed.scopes[scope] ?? {};
 }
@@ -2165,4 +2269,88 @@ test("a file full of refused records does not mute the reader about the file its
   writeFileSync(stateFile, "{ not json");
   await assert.rejects(bridge.prompt({ session: "builder", text: "make a file", cwd: workspace }), /does not parse/);
   assert.ok(logged.some((line) => line.includes("does not parse")), `the line about the file is said past the bound: ${logged.join(" | ")}`);
+});
+
+test("a record whose shape the workspace guard refuses is refused before any runtime is spawned", async (t) => {
+  // Section 3's own field: validated the same way `cwd` is and before the same spawn, since a value
+  // this write is about to persist to the state file is a path this bridge later joins into a
+  // filesystem call, exactly as `admittedRecord` treats one already on disk. "Before any runtime is
+  // spawned" is measured rather than only claimed by the title: the stand-in's own replay count stays
+  // at zero across every refusal below.
+  const { bridge, workspace, replays } = stand(t);
+  const asDirectory = path.join(workspace, "already-a-directory");
+  mkdirSync(asDirectory);
+
+  for (const refused of ["relative/record.md", "\\\\attacker\\share\\x", "  ", asDirectory]) {
+    await assert.rejects(
+      bridge.prompt({ session: "builder", text: "make a file", cwd: workspace, record: refused }),
+      /record .* does not name a file on this machine/,
+      `${JSON.stringify(refused)} must be refused as a path`,
+    );
+    assert.equal(replays(), 0, `no runtime ran for ${JSON.stringify(refused)}`);
+  }
+  // The control: an absolute local path on the same call is accepted, so the refusals above are the
+  // guard rather than a prompt that has stopped taking a record at all.
+  const receipt = await bridge.prompt({
+    session: "builder",
+    text: "make a file",
+    cwd: workspace,
+    record: path.join(workspace, "record.md"),
+  });
+  assert.match(receipt.sessionId, /^session-/);
+});
+
+test("a record naming this bridge's own state directory is refused, distinctly from the shape refusal above, and the state map is left untouched", async (t) => {
+  // `stateFile` is a real absolute path this stand actually reads and writes, taken from the stand
+  // itself rather than handed as a literal, so this exercises the guard against the artifact it
+  // actually protects rather than a string that merely happens to look like it.
+  const { bridge, workspace, stateFile, replays } = stand(t);
+  // A first prompt so the state map holds real bytes this test can check are unmoved, rather than
+  // asserting "still absent" against a file the refusal itself might never have created.
+  await bridge.prompt({ session: "builder", text: "make a file", cwd: workspace });
+  await until(() => replays() >= 1, "the first, unrelated prompt's replay to end");
+  const before = readFileSync(stateFile, "utf8");
+
+  for (const target of [stateFile, path.join(path.dirname(stateFile), "sibling.md")]) {
+    await assert.rejects(
+      bridge.prompt({ session: "builder", text: "make a file", cwd: workspace, record: target }),
+      /own state directory/,
+      `${JSON.stringify(target)} must be refused as this bridge's own bookkeeping, not as an ordinary path shape`,
+    );
+  }
+  assert.equal(readFileSync(stateFile, "utf8"), before, "the state map's bytes are unchanged by either refused attempt");
+  assert.equal(replays(), 1, "no runtime ran for either refusal; the one replay is the first, unrelated prompt");
+});
+
+test("a session's remembered record survives a restart, with no record argument on the resuming prompt", async (t) => {
+  // The persisted half of section 3: `SessionRecord.record` is what a caller names once rather than
+  // again on the first prompt after a restart, and a bridge restart is a fresh `Bridge` over the same
+  // state file, exactly as it is for the workspace and the DSH session id.
+  const { bridge, pushed, workspace, stateFile, own } = stand(t);
+  const recordFile = path.join(workspace, "record.md");
+
+  const first = await bridge.prompt({ session: "builder", text: "make a file", cwd: workspace, record: recordFile });
+  await until(() => pushed.length > 0, "the turn to end");
+  await bridge.kill("builder");
+
+  assert.equal(scopeOnDisk(stateFile, workspace).builder.record, recordFile, "the record path reached disk with the rest of the record");
+
+  const successor = own(
+    new Bridge({
+      stateFile,
+      scope: workspace,
+      home: path.join(workspace, "home"),
+      runtime: { command: process.execPath, args: [FAKE, RUN], env: process.env, requestTimeoutMs: PATIENCE_MS },
+      provider: "fake-provider",
+      model: "fake-model",
+      push: () => undefined,
+      log: () => undefined,
+    }),
+  );
+
+  // No record given: the resuming prompt is answered by the same conversation, and the file still
+  // names the record this session remembered before the restart.
+  const resumed = await successor.prompt({ session: "builder", text: "what did you create", cwd: workspace });
+  assert.equal(resumed.sessionId, first.sessionId, "the same conversation resumes");
+  assert.equal(scopeOnDisk(stateFile, workspace).builder.record, recordFile, "and the record path is still the one it was given before the restart");
 });

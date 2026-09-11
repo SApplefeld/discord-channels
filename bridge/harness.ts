@@ -6,15 +6,16 @@
 // directory, so one runtime serves exactly one workspace and the first prompt is what binds it. And
 // there is no cancel on the wire: `dsh_kill` is the whole of cancellation, which is why a killed
 // turn has to be reported rather than merely stopped.
-import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DeepSeekHarness, RequestTimeoutError, TransportClosedError } from "@deepseek-ai/dsh-sdk-client";
 import type { HarnessNotification, NotificationSubscription } from "@deepseek-ai/dsh-sdk-client";
 import { REQUEST_TIMEOUT_MS, RUNTIME_BIN, RUNTIME_PATCH, childEnv, requireRuntimeBin } from "./env.ts";
 import { DEFAULT_TAIL_COUNT, isSessionId, isTurnNumber, readSessionCounts, readSessionLog, sessionLogFile } from "./log.ts";
 import type { LogReading } from "./log.ts";
-import { MAX_META_FILES, MAX_SESSION_NAME, channelNotification, isHidden, isRecord, metaValue, untrustedLine } from "./protocol.ts";
+import { MAX_META_FILES, MAX_SESSION_NAME, MAX_STORED_PATH_LENGTH, channelNotification, isHidden, isRecord, metaValue, untrustedLine } from "./protocol.ts";
 import type { ChannelNotification, TurnKind } from "./protocol.ts";
 
 /**
@@ -82,17 +83,18 @@ function diagnostic(error: unknown): string {
 }
 
 /**
- * A failure on the session map, said by the code the caller can act on and nothing else.
+ * A filesystem failure, said by the code the caller can act on and nothing else.
  *
  * The state file's path runs through the local application data directory, which carries the
  * operator's user name, and a Node filesystem error embeds the path it was raised on; a parse
- * failure carries the file's own bytes instead, which are session names and workspace paths. Both
- * land in a debug log. So this one file's failures are reported through one helper rather than
+ * failure carries the file's own bytes instead, which are session names and workspace paths. A
+ * record's path is the caller's own choice and can run through the operator's home the same way.
+ * All of it lands in a debug log. So these failures are reported through one helper rather than
  * through a rule each site keeps for itself, since a site written by hand carries the protections
  * its author could see and drops the ones it could not. A read the map's own reader refused carries
  * no filesystem code for three of its four reasons, so that type is said by its reason instead.
  */
-function stateFault(error: unknown): string {
+export function stateFault(error: unknown): string {
   if (error instanceof StateUnreadError) return error.code ?? error.reason;
   return isRecord(error) && typeof error.code === "string" ? untrustedLine(error.code) : "no code";
 }
@@ -192,7 +194,7 @@ export function dshRuntimeSpec(home: string = DSH_HOME, parent: NodeJS.ProcessEn
  * Past the classic Windows MAX_PATH, so a deep checkout fits; what it bounds is the length of a
  * string that reaches a system call and a refusal message, not any real workspace.
  */
-export const MAX_PATH_LENGTH = 1024;
+export const MAX_PATH_LENGTH = MAX_STORED_PATH_LENGTH;
 
 /** The prefixes that name a host rather than a place on this machine, in both slash spellings. */
 const REMOTE_PREFIX = /^[\\/][\\/]/;
@@ -236,6 +238,147 @@ export function workspacePath(value: string): string | undefined {
   if (REMOTE_PREFIX.test(trimmed)) return undefined;
   if (process.platform === "win32" ? !WINDOWS_ROOT.test(trimmed) : !path.isAbsolute(trimmed)) return undefined;
   return trimmed;
+}
+
+/**
+ * A path this bridge will open as a file, or undefined for one it refuses: `workspacePath`'s own
+ * shape guard, plus a refusal of a path naming a directory that already exists, and of one the
+ * filesystem cannot place at all (a drive that is not there).
+ *
+ * The record file `dsh_prompt`'s `record` argument names, and `dsh_record_rotate`'s `archive_path`,
+ * are both this shape: a file this bridge appends to, renames, or creates, never a directory a
+ * runtime is spawned inside, which is what `workspacePath` alone admits. Defined here rather than in
+ * `record.ts`, which already imports `samePath` from this file: the reverse import would be
+ * circular. Every caller that persists or opens one of these paths calls this directly (`prompt`
+ * here, and `index.ts`'s dispatch for a stored `record` and for `archive_path`), and `record.ts`
+ * runs it and `refusedRecordTarget` once more at the open itself, so the guard is a property of the
+ * file rather than of the callers that remembered to check.
+ */
+export function recordFilePath(value: string): string | undefined {
+  const admitted = workspacePath(value);
+  if (admitted === undefined || isDirectory(admitted)) return undefined;
+  return placedPath(admitted) === undefined ? undefined : admitted;
+}
+
+/**
+ * `candidate` as the filesystem places it, or undefined for one it cannot place at all.
+ *
+ * The deepest ancestor that exists is resolved through the filesystem's own real path, which
+ * expands an 8.3 short name, a junction and a symbolic link into the one spelling the object has;
+ * the tail that does not exist yet is appended unchanged, since a path with no object behind it has
+ * no spelling but its own; and the whole is folded as `canonicalPath` folds. Every comparison of a
+ * caller's path against a place this bridge protects goes through this, because a comparison of
+ * spellings admits every other spelling of the same object, and Windows publishes a short name for
+ * a long directory name by default, with nothing to set up. Undefined where no ancestor exists (a
+ * drive that is not there) or where the filesystem refuses to say (a permission it will not grant),
+ * and every guard here refuses such a path rather than comparing it by its spelling.
+ *
+ * `realpathSync.native` rather than `realpathSync`: the JavaScript walk keeps a short name as it was
+ * written, and only the native call asks the filesystem for the object's final name.
+ */
+export function placedPath(candidate: string): string | undefined {
+  let existing = path.resolve(candidate);
+  const tail: string[] = [];
+  for (;;) {
+    let real: string;
+    try {
+      real = realpathSync.native(existing);
+    } catch (error) {
+      if (!isRecord(error) || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) return undefined;
+      const parent = path.dirname(existing);
+      if (parent === existing) return undefined;
+      tail.unshift(path.basename(existing));
+      existing = parent;
+      continue;
+    }
+    return canonicalPath(tail.length === 0 ? real : path.join(real, ...tail));
+  }
+}
+
+/**
+ * Whether `candidate`, as the filesystem places it, is `root` or a path inside it. True for a
+ * candidate or a root the filesystem cannot place, since a comparison against nothing proves nothing
+ * and every caller here refuses on true.
+ */
+function placedWithin(candidate: string, root: string): boolean {
+  const target = placedPath(candidate);
+  const dir = placedPath(root);
+  if (target === undefined || dir === undefined) return true;
+  return target === dir || target.startsWith(`${dir}${path.sep}`);
+}
+
+/**
+ * Whether `candidate` names the bridge's own state directory, `stateFile`'s parent, or a path inside
+ * it.
+ *
+ * `writeState` stages its temporary file in that directory before renaming it over the map (see
+ * `writeState`'s own `${file}.${pid}.tmp` and the rename that follows it), so a record or an archive
+ * path anywhere in that directory, not only the map file's own path, can be renamed over the map by a
+ * concurrent state write. This is directory-scoped rather than file-scoped for that reason: a guard
+ * that compared only against `stateFile` itself would admit exactly the sibling path that write
+ * exposes. Compared through `placedPath`, so a short name, a junction or a link to the directory is
+ * the directory, and a sibling whose name merely begins with the directory's own is not.
+ */
+export function insideStateDirectory(stateFile: string, candidate: string): boolean {
+  return placedWithin(candidate, path.dirname(stateFile));
+}
+
+/** This checkout's root, from this file's own location, exactly as `env.ts` derives it. */
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * The places this machine executes or reads as instructions, on this product's account: the trees
+ * `install/Install-Host.ps1` hardens (`hooks/`, `relay/`, `wrapper/`, `install/`, `broker/`, and
+ * the channels state root under the local application data directory, which holds the broker's
+ * configuration and token), `bridge/` itself with the runtime's permission patch inside it, the
+ * Claude Code home, and the harness home the worker runtime reads its own configuration from.
+ *
+ * A record is appended to, never replaced, and `appendSection` creates the file and its directory
+ * when neither exists, so a record path naming a place in this list plants a worker's text where a
+ * shell, a hook, the runtime or the session reads it, with nothing destroyed and nothing to restore.
+ * The list is these places and nothing else: an ordinary document anywhere on the machine is a
+ * legitimate record, and a rule about where a caller's file may live would refuse the operator's own
+ * documents, which is why the refusal is of the machine's instruction chain rather than of a location.
+ */
+export function executionSurface(env: NodeJS.ProcessEnv = process.env): readonly string[] {
+  const home = os.homedir();
+  return [
+    ...["bridge", "hooks", "relay", "wrapper", "install", "broker"].map((tree) => path.join(REPO_ROOT, tree)),
+    path.join(home, ".claude"),
+    DSH_HOME,
+    path.join(env.LOCALAPPDATA ?? home, "sapplefeld-channels"),
+  ];
+}
+
+/**
+ * Whether `candidate`, as the filesystem places it, names one of the places in {@link executionSurface}
+ * or a path inside one. `surface` is the list itself, taken by a test that drives the comparison
+ * against roots of its own; every caller in the bridge takes the machine's.
+ */
+export function insideExecutionSurface(candidate: string, surface: readonly string[] = executionSurface()): boolean {
+  return surface.some((root) => placedWithin(candidate, root));
+}
+
+/** The clause a refusal says for a record or archive target inside this bridge's own state directory. */
+export const STATE_DIRECTORY_REFUSAL = "names this bridge's own state directory";
+
+/** The clause a refusal says for a record or archive target inside {@link executionSurface}. */
+export const EXECUTION_SURFACE_REFUSAL = "names a place this machine executes or reads as instructions";
+
+/**
+ * Why `candidate` is refused as a record or an archive target, as the clause the refusal says, or
+ * undefined for a path this bridge will write to.
+ *
+ * The one rule under every caller that opens, renames or persists such a path: the state directory
+ * first, since it sits inside the channels state root and the more specific clause is the one an
+ * operator can act on, then the rest of the execution surface. A path `recordFilePath` refuses never
+ * reaches here from a caller in the bridge, and one it would refuse is refused here too, since
+ * `placedWithin` treats a path the filesystem cannot place as inside everything.
+ */
+export function refusedRecordTarget(stateFile: string, candidate: string): string | undefined {
+  if (insideStateDirectory(stateFile, candidate)) return STATE_DIRECTORY_REFUSAL;
+  if (insideExecutionSurface(candidate)) return EXECUTION_SURFACE_REFUSAL;
+  return undefined;
 }
 
 /**
@@ -425,6 +568,15 @@ export interface PromptArgs {
   readonly session: string;
   readonly text: string;
   readonly cwd?: string;
+  /**
+   * The record file this turn's sections are appended to, remembered per session once given.
+   *
+   * A prompt naming one replaces what the session remembered; a prompt naming none keeps it, so a
+   * caller names the record once rather than again on every later prompt or after a restart. The
+   * bridge itself never appends to this file: `record.ts` does, reading the resolved path back off
+   * the state file this write persists it to.
+   */
+  readonly record?: string;
 }
 
 export interface PromptReceipt {
@@ -509,8 +661,9 @@ export interface BridgeOptions {
    * send.
    *
    * Every field arrives raw, `session` and `finishReason` included, where the channel event carries
-   * both neutralized: a record is a different boundary with a different reader, and the writer owns
-   * neutralization at its own edge.
+   * both neutralized: the record writer appends this text verbatim by design, since a record is a
+   * file a person reads rather than a tool result a model does, so nothing here runs it through the
+   * neutralizer the channel event's own fields take.
    */
   readonly onTurnEnd?: (turn: {
     readonly session: string;
@@ -698,13 +851,18 @@ function unreadLog(error: unknown, next: string): string {
  * The one rule under both the workspace comparison and the scope key, so the two cannot come to
  * disagree about which spellings name one directory.
  */
-function canonicalPath(value: string): string {
+export function canonicalPath(value: string): string {
   const resolved = path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-/** Two paths naming one place, as the filesystem compares them. */
-function samePath(left: string, right: string): boolean {
+/**
+ * Two paths naming one place, as the filesystem compares them.
+ *
+ * The one rule for that comparison, built on `canonicalPath`, so a second caller of it (`record.ts`'s
+ * own path-identity checks among them) imports this rather than re-deriving the comparison by hand.
+ */
+export function samePath(left: string, right: string): boolean {
   return canonicalPath(left) === canonicalPath(right);
 }
 
@@ -866,6 +1024,26 @@ export class Bridge {
     if (!isDirectory(workspace)) {
       throw new Error(`Workspace '${quoted(workspace)}' is not a directory.`);
     }
+    // A `record` that is present is read as a path, exactly as `cwd` is, and refused before any
+    // runtime is spawned for it: `recordFilePath` is the fuller guard `record.ts`'s own append and
+    // rotate hold every record path to, so the value this write is about to persist is checked no
+    // less than the value this bridge will later open as a file.
+    const validatedRecord = args.record === undefined ? undefined : recordFilePath(args.record);
+    if (args.record !== undefined && validatedRecord === undefined) {
+      throw new Error(
+        `record '${quoted(args.record)}' does not name a file on this machine. It must be an absolute local path that ` +
+          "does not name an existing directory: a relative one, a network path, a device path, a blank, an " +
+          "existing directory and a drive that is not there are all refused.",
+      );
+    }
+    // A shape-valid record path is still refused when it names this bridge's own state directory,
+    // where `writeState` stages and renames its temporary file, or a place this machine executes or
+    // reads as instructions, where an append plants text. Distinct from the shape refusal above,
+    // since such a path is otherwise an ordinary absolute file `recordFilePath` admits.
+    const targetRefusal = args.record !== undefined && validatedRecord !== undefined ? refusedRecordTarget(this.options.stateFile, validatedRecord) : undefined;
+    if (args.record !== undefined && targetRefusal !== undefined) {
+      throw new Error(`record '${quoted(args.record)}' ${targetRefusal}, so it is refused rather than being kept as a record.`);
+    }
     this.refuseWrongWorkspace(name, known, workspace);
     if (this.live.has(name)) {
       throw new Error(`Session '${named(name)}' has a turn in flight. Wait for its channel event, or end it with dsh_kill.`);
@@ -905,10 +1083,15 @@ export class Bridge {
     // The turn number stays as it was; the turn that is starting is counted when it finishes. The
     // name is this process's from here on: `recall` answers it from this copy rather than the file
     // until the prompt is taken back or a write finds the file naming another conversation under it.
+    // The record follows the same rule the class doc states: a prompt naming one replaces what was
+    // remembered, and a prompt naming none keeps it. The guard's own return is stored, exactly as
+    // `workspace` stores `cwd`'s, rather than the raw argument: trimmed the same way, so a padded
+    // value does not come back untrimmed on the next read.
+    const record = args.record === undefined ? remembered?.record : validatedRecord;
     const written: SessionRecord = {
       sessionId,
       cwd: workspace,
-      ...(remembered?.record === undefined ? {} : { record: remembered.record }),
+      ...(record === undefined ? {} : { record }),
       turn: remembered?.turn ?? 0,
     };
     const claimed = this.prompted.has(name);
@@ -1278,6 +1461,24 @@ export class Bridge {
   busy(): { busy: boolean; sessions: string[] } {
     const sessions = [...this.live.keys()];
     return { busy: sessions.length > 0, sessions };
+  }
+
+  /**
+   * What this bridge remembers about `name` right now: the same lookup `prompt` itself makes before
+   * deciding what a turn without its own `record` argument writes to.
+   *
+   * `recall` reads this process's own copy for a name it has prompted rather than the file, and a
+   * state-file write that failed is logged and never raised: `this.sessions` still carries what
+   * `prompt` intended in that case, while a fresh read of the file would not. A caller resolving
+   * "what record does this session write to" from a separate disk read can therefore disagree with
+   * what `prompt` is about to use; this is the same lookup, so it cannot.
+   */
+  remembered(name: string): SessionRecord | undefined {
+    // A shallow copy: `recall` can return this bridge's own live entry, the same object `finish`
+    // mutates when the turn it describes ends, and a caller holding the live object would see it
+    // change under it rather than reading the record as it stood at the call.
+    const record = this.recall(name.trim());
+    return record === undefined ? undefined : { ...record };
   }
 
   /**
@@ -1744,7 +1945,9 @@ export class Bridge {
           accepted: turn.accepted,
         });
       } catch (error) {
-        this.options.log(`dsh-bridge: a finished turn for '${named(name)}' could not be recorded: ${diagnostic(error)}`);
+        // The code alone, as `index.ts` says the party section's failure: a record write's error
+        // names the record path, which is the caller's and can run through the operator's home.
+        this.options.log(`dsh-bridge: a finished turn for '${named(name)}' could not be recorded (${stateFault(error)})`);
       }
     } finally {
       // The runtime's own numbering, which is authoritative and is written only here: a turn is
@@ -1985,6 +2188,18 @@ function rawScopes(parsed: unknown): Record<string, unknown> {
     if (isRecord(entries)) scopes[scope] = entries;
   }
   return scopes;
+}
+
+/**
+ * The fault that keeps the session map from being read right now, or undefined where it can be.
+ *
+ * `readState` turns any of these into an empty map, which is right for a report that would rather
+ * show nothing than fail, and wrong for a caller that needs to tell "nothing is remembered" from
+ * "nothing could be read": `prompt` itself raises this fault rather than treating it as an absence,
+ * and a caller resolving a record outside `prompt` is held to the same distinction.
+ */
+export function stateReadFault(file: string, log: (line: string) => void = () => undefined): StateUnreadError | undefined {
+  return unreadFault(parseStateFile(file, log));
 }
 
 /** One scope's session map as it sits on disk. */

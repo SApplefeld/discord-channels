@@ -14,20 +14,35 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { runDirectly } from "../broker/entrypoint.ts";
 import { MODEL, PROVIDER } from "./env.ts";
-import { Bridge, DSH_HOME, defaultScope, defaultStateFile, dshRuntimeSpec } from "./harness.ts";
+import {
+  Bridge,
+  DSH_HOME,
+  defaultScope,
+  defaultStateFile,
+  dshRuntimeSpec,
+  insideStateDirectory,
+  recordFilePath,
+  stateFault,
+  stateReadFault,
+} from "./harness.ts";
 import type { StatusReport } from "./harness.ts";
+import { DEFAULT_COUNTERPARTY, DEFAULT_PARTY, ROTATE_FRESH_FILE_FAILED_CODE, RecordWriter, partyName, rotateRecord } from "./record.ts";
 import {
   BUSY_TOOL_NAME,
   INSTRUCTIONS,
   KILL_TOOL_NAME,
+  MAX_PARTY_NAME,
   MAX_REFUSAL_LENGTH,
   MAX_TAIL_COUNT,
   PROMPT_TOOL_NAME,
+  RECORD_ROTATE_TOOL_NAME,
   STATUS_TOOL_NAME,
   TAIL_TOOL_NAME,
   TOOLS,
+  isRecord,
   untrustedLine,
 } from "./protocol.ts";
+import type { TurnKind } from "./protocol.ts";
 
 /**
  * The most of a notification's method name that is written, in code points, and the most distinct
@@ -132,13 +147,66 @@ function stringArgument(args: Record<string, unknown>, key: string): string | un
   return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * What `callTool` needs to keep the record file: where this bridge's session map lives, and the one
+ * writer every dsh_prompt and every turn-end append through.
+ *
+ * Optional on `callTool` itself, so a caller with nothing to record (every existing test among them)
+ * calls it exactly as before; `startBridge` is the one caller that always supplies it.
+ */
+export interface RecordContext {
+  readonly stateFile: string;
+  readonly writer: RecordWriter;
+  readonly log: (line: string) => void;
+}
+
+/** The real clock, as an ISO 8601 UTC string: what a record section's header names. */
+function now(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * What a finished turn does to the record: append the counterparty's section through the writer the
+ * turn's own party section, if any, was registered on.
+ *
+ * The one line `startBridge` wires `Bridge`'s `onTurnEnd` to, pulled out so a test can drive the real
+ * wiring between the two without also standing up the MCP server that wire sits inside: a test that
+ * instead rebuilt this line by hand would still pass were `startBridge`'s own copy to drop back to
+ * carrying `text` alone, since it would never touch the code the drop happened in.
+ */
+export function recordTurnEnd(
+  records: RecordContext,
+  turn: { readonly session: string; readonly text: string; readonly kind: TurnKind; readonly finishReason: string; readonly accepted: boolean },
+): void {
+  records.writer.noteTurnEnd(turn.session, turn.text, now, turn.kind, turn.finishReason, turn.accepted);
+}
+
+/**
+ * The system error code alone, or the message when there is none, never the whole of an unknown
+ * error's detail.
+ *
+ * A Node filesystem error's message quotes the path it was raised on, and a record path can run
+ * through the operator's own home directory; `harness.ts`'s own diagnostics take the same narrowing
+ * for the same reason. This is the one line the model reads about a failed append, so it is held to
+ * the same rule as the lines nobody but a log reads.
+ */
+function faultCode(error: unknown): string {
+  if (isRecord(error) && typeof error.code === "string") return error.code;
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** One tool call, answered from the bridge. Held apart from the wiring so it can be driven by test. */
 export async function callTool(
   bridge: Bridge,
   name: string,
   args: Record<string, unknown>,
+  records?: RecordContext,
 ): Promise<CallToolResult> {
-  const session = stringArgument(args, "session");
+  // Trimmed once, here, and used for every lookup below: `Bridge.prompt` trims its own `session`
+  // argument before it becomes a key in the state file or in a turn-end payload, and a dispatch that
+  // kept the raw, padded spelling would append a party section under one key and find the matching
+  // turn end filed under the trimmed one, so the counterparty section would never be found.
+  const session = stringArgument(args, "session")?.trim();
   try {
     if (name === PROMPT_TOOL_NAME) {
       const body = stringArgument(args, "text");
@@ -150,7 +218,133 @@ export async function callTool(
       if (Object.hasOwn(args, "cwd") && args.cwd !== undefined && cwd === undefined) {
         return failure("dsh_prompt's cwd must be a string naming an absolute local path.");
       }
-      const receipt = await bridge.prompt({ session, text: body, ...(cwd === undefined ? {} : { cwd }) });
+      const recordArg = stringArgument(args, "record");
+      if (Object.hasOwn(args, "record") && args.record !== undefined && recordArg === undefined) {
+        return failure("dsh_prompt's record must be a string naming an absolute local path.");
+      }
+      const partyArg = stringArgument(args, "party");
+      if (Object.hasOwn(args, "party") && args.party !== undefined && partyArg === undefined) {
+        return failure("dsh_prompt's party must be a string.");
+      }
+      const counterpartyArg = stringArgument(args, "counterparty");
+      if (Object.hasOwn(args, "counterparty") && args.counterparty !== undefined && counterpartyArg === undefined) {
+        return failure("dsh_prompt's counterparty must be a string.");
+      }
+      // A record path present on this call is refused up front, before any runtime is spawned for
+      // it: `recordFilePath` is the fuller check (a directory is refused too, not only a relative
+      // path) that `record.ts`'s own append and rotate hold every record path to. Omitted, the path
+      // this turn writes to is whatever `bridge.remembered` says, which is the same lookup `prompt`
+      // itself is about to make: this process's own copy for a name it has prompted, the file for one
+      // it has not. A separate read of the state file here could disagree with that, since a state
+      // write `prompt` makes is logged and never raised on failure, so the file can lag what this
+      // process's own copy, and `prompt`'s own fallback, already carry. That value is re-checked
+      // through the same guard a wire path takes, since a directory can appear at that path after it
+      // was stored and before it is opened.
+      let recordPath: string | undefined;
+      // Said in the receipt, through `recordWarning` below, and not only in the log: a caller reading
+      // only the receipt cannot otherwise tell a turn that kept no record apart from an ordinary one,
+      // which is the same gap a registration refusal below is closed for.
+      let unresolvedReason: string | undefined;
+      if (recordArg !== undefined) {
+        recordPath = recordFilePath(recordArg);
+        if (recordPath === undefined) {
+          return failure(
+            `dsh_prompt's record '${untrustedLine(recordArg, 120)}' must be an absolute local path that does not name an existing directory.`,
+          );
+        }
+        // Shape-valid but still refused when it names this bridge's own state directory: nothing
+        // below this point writes to `recordPath` unless `records` is given, so a caller with no
+        // `records` context (every test that does not stand one up) has nothing here to guard.
+        if (records !== undefined && insideStateDirectory(records.stateFile, recordPath)) {
+          return failure(
+            `dsh_prompt's record '${untrustedLine(recordArg, 120)}' names this bridge's own state directory, so it is refused rather than being kept as a record.`,
+          );
+        }
+      } else if (records !== undefined) {
+        const remembered = bridge.remembered(session)?.record;
+        if (remembered !== undefined) {
+          recordPath = recordFilePath(remembered);
+          if (recordPath === undefined) {
+            unresolvedReason = "the record remembered for this session no longer names a file this bridge will open";
+            records.log(`dsh-bridge: ${unresolvedReason} ('${untrustedLine(session)}'), so this turn appends nothing to it`);
+          } else if (insideStateDirectory(records.stateFile, recordPath)) {
+            recordPath = undefined;
+            unresolvedReason = "the record remembered for this session names this bridge's own state directory, so it will not be opened";
+            records.log(`dsh-bridge: ${unresolvedReason} ('${untrustedLine(session)}'), so this turn appends nothing to it`);
+          }
+        }
+      }
+      let party = DEFAULT_PARTY;
+      if (partyArg !== undefined) {
+        const validated = partyName(partyArg);
+        if (validated === undefined) {
+          return failure(`dsh_prompt's party must be a non-blank string of at most ${String(MAX_PARTY_NAME)} code points, with no line break.`);
+        }
+        party = validated;
+      }
+      let counterparty = DEFAULT_COUNTERPARTY;
+      if (counterpartyArg !== undefined) {
+        const validated = partyName(counterpartyArg);
+        if (validated === undefined) {
+          return failure(`dsh_prompt's counterparty must be a non-blank string of at most ${String(MAX_PARTY_NAME)} code points, with no line break.`);
+        }
+        counterparty = validated;
+      }
+      // Registered before the prompt is sent, since the turn's end can arrive and ask for its
+      // counterparty section before this call gets its own receipt back: `Bridge`'s `onTurnEnd` can
+      // run from inside a still-pending prompt request, and the writer holds that section until its
+      // party's has landed rather than losing track of which record and which names this turn was
+      // for. The token this returns, never the session name, is what every later call below names
+      // this turn by: a second prompt for a name that already has one pending is refused this token
+      // (undefined) rather than being let to replace the first turn's still-live registration.
+      const token = records?.writer.registerTurn(session, recordPath, party, counterparty, now);
+      let receipt: Awaited<ReturnType<Bridge["prompt"]>>;
+      try {
+        receipt = await bridge.prompt({
+          session,
+          text: body,
+          ...(cwd === undefined ? {} : { cwd }),
+          ...(recordArg === undefined ? {} : { record: recordArg }),
+        });
+      } catch (error) {
+        records?.writer.discardTurn(token);
+        throw error;
+      }
+      // The party's section is appended here, once the runtime has accepted the prompt and before
+      // this call's own receipt returns, and never before: a prompt the bridge refused or the
+      // runtime rejected threw out of the block above and never reaches this line. Reported in the
+      // receipt rather than raised, since the task has already been accepted and a failure to keep
+      // its transcript must not read to the model as a prompt that failed, while still being
+      // something the model is told about rather than only a line in a diagnostics stream it never
+      // reads.
+      let recordWarning: string | undefined;
+      if (recordPath === undefined && unresolvedReason !== undefined) {
+        recordWarning = `record: NOT appended this turn (${unresolvedReason})`;
+      } else if (recordPath !== undefined && token === undefined) {
+        // `registerTurn` refuses silently for a record path it was given: a name that already holds
+        // a pending turn, or this writer already at its bound of turns held pending at once. Either
+        // way nothing will ever be appended for this turn, and the model told only that the prompt
+        // was accepted would have no way to know its transcript was not kept.
+        recordWarning = "record: NOT appended this turn (no turn was registered for its record; one may already be pending on it, or this bridge already holds as many pending as it allows)";
+      }
+      try {
+        records?.writer.appendParty(token, body);
+      } catch (error) {
+        // `faultCode` already narrows an unknown error to its system code where it has one, but a
+        // code-less message still carries whatever a filesystem error names, so the model-facing copy
+        // is bounded and neutralized exactly as the rotate's own failure receipt is, below.
+        const code = faultCode(error);
+        const bounded = untrustedLine(code, MAX_REFUSAL_LENGTH);
+        // `partyAppended` distinguishes the one failure where half the turn is already on disk: the
+        // party section landed and only a counterparty section flushed alongside it failed. Saying
+        // "NOT appended this turn" there would be false, since a record on disk now carries the
+        // party's own words with nobody told.
+        recordWarning =
+          isRecord(error) && error.partyAppended === true
+            ? `record: the party section was appended, but its counterparty could not be (${bounded})`
+            : `record: NOT appended this turn (${bounded})`;
+        records?.log(`dsh-bridge: the party section for '${untrustedLine(session)}' could not be appended to its record (${code})`);
+      }
       // The name is the caller's own and is neutralized where it reaches the model, as every other
       // tool result that carries one does.
       return text(
@@ -159,7 +353,80 @@ export async function callTool(
           `session: ${untrustedLine(session)}`,
           `dsh_session: ${receipt.sessionId}`,
           `turn: ${String(receipt.turn)}`,
+          ...(recordWarning === undefined ? [] : [recordWarning]),
         ].join("\n"),
+      );
+    }
+    if (name === RECORD_ROTATE_TOOL_NAME) {
+      const archiveArg = stringArgument(args, "archive_path");
+      if (session === undefined || archiveArg === undefined) return failure("dsh_record_rotate needs a session and an archive_path.");
+      if (records === undefined) return failure("dsh_record_rotate is not available on this connection.");
+      // Checked before anything is resolved from the map, so a file that is present and unreadable is
+      // told apart from a name with no record: `bridge.remembered` falls through to `held` (nothing)
+      // for either, and the two need different words, exactly as `prompt`'s own pre-spawn check does.
+      const fault = stateReadFault(records.stateFile, records.log);
+      if (fault !== undefined) {
+        return failure(
+          `Session '${untrustedLine(session)}'s record could not be checked: the session map cannot be read right now (${stateFault(fault)}), so the rotate is refused rather than guessed at.`,
+        );
+      }
+      // The same lookup `dsh_prompt` itself makes before deciding what a turn without its own
+      // `record` argument writes to: this bridge's own copy for a name it has prompted, and the file
+      // for one it has not. A separate read of the state file here could disagree with it, since a
+      // state write `prompt` makes is logged and never raised on failure.
+      const remembered = bridge.remembered(session)?.record;
+      if (remembered === undefined) return failure(`Session '${untrustedLine(session)}' has no record file to rotate.`);
+      const recordPath = recordFilePath(remembered);
+      if (recordPath === undefined) {
+        return failure(`Session '${untrustedLine(session)}'s remembered record no longer names a file this bridge will open, so there is nothing to rotate.`);
+      }
+      if (insideStateDirectory(records.stateFile, recordPath)) {
+        return failure(
+          `Session '${untrustedLine(session)}'s remembered record names this bridge's own state directory, so it is refused rather than rotated.`,
+        );
+      }
+      const archivePath = recordFilePath(archiveArg);
+      if (archivePath === undefined) {
+        return failure(
+          `dsh_record_rotate's archive_path '${untrustedLine(archiveArg, 120)}' must be an absolute local path that does not name an existing directory.`,
+        );
+      }
+      if (insideStateDirectory(records.stateFile, archivePath)) {
+        return failure(
+          `dsh_record_rotate's archive_path '${untrustedLine(archiveArg, 120)}' names this bridge's own state directory, so it is refused rather than being written to.`,
+        );
+      }
+      // This bridge's own registered turns alone: a sibling bridge's turn on the same file is
+      // invisible to this check, exactly as the tool's own description says, and no lock or marker
+      // file widens it to see one, per the operator's ruling that a second bridge is not a case this
+      // bridge guards. Read from the writer's own bookkeeping rather than from `bridge.busy()`: a
+      // turn's live entry clears before its counterparty section is flushed, so a holder list built
+      // from busy sessions can go empty while this writer still has a section queued for the same
+      // file, mid-`await` in a concurrent `dsh_prompt`.
+      const holders = records.writer.holdersOf(recordPath);
+      if (holders.length > 0) {
+        return failure(
+          `Session '${untrustedLine(session)}'s record was not rotated: ${holders.map((name) => untrustedLine(name)).join(", ")} still has a turn in flight on the same file, in this bridge.`,
+        );
+      }
+      let archived: boolean;
+      try {
+        archived = rotateRecord(recordPath, archivePath);
+      } catch (error) {
+        // The one rotate failure whose raw message would carry `recordPath`, this session's remembered
+        // record and not an argument of this call, through to the model: reported instead from this
+        // call's own `archivePath`, exactly as the success text below does.
+        if (isRecord(error) && error.code === ROTATE_FRESH_FILE_FAILED_CODE) {
+          return failure(
+            `Session '${untrustedLine(session)}'s record was moved to ${untrustedLine(archivePath, 120)}, but a fresh file could not be started at the same path; the previous record is intact there.`,
+          );
+        }
+        return failure(untrustedLine(faultCode(error), MAX_REFUSAL_LENGTH));
+      }
+      return text(
+        archived
+          ? `Rotated. The record continues at the same path with a fresh body; the previous one is at ${untrustedLine(archivePath, 120)}.`
+          : "There was no record on disk yet, so a fresh, empty one was started at the same path; nothing was archived.",
       );
     }
     if (name === STATUS_TOOL_NAME) {
@@ -239,8 +506,17 @@ export async function startBridge(env: NodeJS.ProcessEnv = process.env): Promise
     },
   );
 
-  const bridge = new Bridge({
+  const recordLog = (line: string): void => {
+    process.stderr.write(`${line}\n`);
+  };
+  const records: RecordContext = {
     stateFile: defaultStateFile(env),
+    writer: new RecordWriter(recordLog),
+    log: recordLog,
+  };
+
+  const bridge = new Bridge({
+    stateFile: records.stateFile,
     // The state file is one path per machine and session names are the model's to choose, so the
     // scope is what keeps this project's `builder` from being another project's.
     scope: defaultScope(),
@@ -257,7 +533,10 @@ export async function startBridge(env: NodeJS.ProcessEnv = process.env): Promise
         process.stderr.write(`dsh-bridge: could not deliver a turn: ${untrustedLine(String(error))}\n`);
       });
     },
-    log: (line) => process.stderr.write(`${line}\n`),
+    onTurnEnd: (turn) => {
+      recordTurnEnd(records, turn);
+    },
+    log: recordLog,
   });
 
   // Claude Code probes a stdio server's protocol revision by starting it, closing it, and respawning
@@ -281,7 +560,7 @@ export async function startBridge(env: NodeJS.ProcessEnv = process.env): Promise
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!initialized) return failure("This connection is not initialized.");
-    return callTool(bridge, request.params.name, request.params.arguments ?? {});
+    return callTool(bridge, request.params.name, request.params.arguments ?? {}, records);
   });
 
   await server.connect(new StdioServerTransport());
