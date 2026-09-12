@@ -33,6 +33,7 @@ function announce(registry: Registry, processToken: string, sessionId: string): 
     event: "SessionStart",
     processToken,
     sessionName: "neo-warden",
+    lineage: null,
     sessionId,
     source: "startup",
     toolName: null,

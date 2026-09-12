@@ -498,6 +498,13 @@ const QUESTION_ATTRIBUTION = "❓ **Waiting on you**";
 const MODEL_CHANGE_ATTRIBUTION = "🔀 **Model changed**";
 
 /**
+ * The line a lineage rebind is announced with: a system-style notice attributed to neither party,
+ * since a restart is neither the operator's turn nor the session's. See item 3 of
+ * docs/plans/channels_thread-rebinding_spec_v1.md.
+ */
+const RESTART_ATTRIBUTION = "↻ supervisor restarted";
+
+/**
  * The glyph an attribution opens its line with, past the quote marker a prompt leads with, which is
  * already neutralized wherever untrusted text could carry it.
  */
@@ -543,6 +550,7 @@ const ATTRIBUTION_OPENERS = new RegExp(
         TASK_ATTRIBUTION,
         QUESTION_ATTRIBUTION,
         MODEL_CHANGE_ATTRIBUTION,
+        RESTART_ATTRIBUTION,
       ].map(openingGlyph),
     ),
   ]
@@ -797,6 +805,18 @@ const TASK_ID = /<task-id>([\s\S]*?)<\/task-id>/;
  * empty once trimmed, or over the length bound leaves the bare line, never a throw: whatever the
  * prompt carries, the notice composes.
  */
+/**
+ * Item 3 (docs/plans/channels_thread-rebinding_spec_v1.md): the one line a lineage rebind posts,
+ * naming the lineage that reattached. `lineage` is launcher-set config rather than Discord content,
+ * but it still reaches this render site as a string from outside, and every field this renderer
+ * draws is neutralized regardless of its usual source - consistency here costs nothing and a
+ * lineage name embedding a chip or a quote marker draws exactly as typed rather than as itself.
+ */
+export function renderRestartNotice(lineage: string): string {
+  const shown = inertText(lineage);
+  return shown === "" ? RESTART_ATTRIBUTION : `${RESTART_ATTRIBUTION} ${SEPARATOR} ${shown}`;
+}
+
 export function renderTaskNotice(text: string): string {
   const line = TASK_ATTRIBUTION;
   const match = TASK_ID.exec(withoutInvisible(text));

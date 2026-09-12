@@ -33,6 +33,7 @@ async function broker(t: TestContext, options: { replyHeartbeatMs?: number } = {
     event: "SessionStart",
     processToken: TOKEN,
     sessionName: "neo-warden",
+    lineage: null,
     sessionId: "session-a",
     source: "startup",
     toolName: null,

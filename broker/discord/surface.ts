@@ -67,6 +67,14 @@ export type SurfaceOptions = {
   bindings?: ThreadBinding[];
   /** Called whenever a binding is created, changed, or dropped, so the caller can persist. */
   onBind?: (bindings: ThreadBinding[]) => void;
+  /**
+   * Called once a rebind actually happens: a session carrying CHANNEL_LINEAGE registered and this
+   * surface found an existing thread already bound to that same lineage (a previous session under
+   * it, restarted). The reconciler itself never posts a thread message (see ThreadMessenger's own
+   * comment on why); this is the signal the caller needs to post the one-line restart notice item 3
+   * asks for, with the thread it landed in. See docs/plans/channels_thread-rebinding_spec_v1.md.
+   */
+  onRebind?: (event: { lineage: string; fromSessionId: string; toSessionId: string; threadId: string | null }) => void;
   log?: (message: string) => void;
   /** Called once when Discord rejects the credential, which no retry can fix. */
   onFatal?: (message: string) => void;
@@ -159,7 +167,13 @@ export function createSurface(options: SurfaceOptions): Surface {
    * the name and the title are carried in the binding precisely so a thread whose session is
    * already gone can still be titled with the name, or the rename, the operator knows it by.
    */
-  function placeholder(sessionId: string, name: string | null, title: string | null): SessionView {
+  function placeholder(
+    sessionId: string,
+    name: string | null,
+    title: string | null,
+    lineage: string | null,
+    startedAt: number,
+  ): SessionView {
     return {
       sessionId,
       name,
@@ -179,6 +193,16 @@ export function createSurface(options: SurfaceOptions): Surface {
       needsAttention: false,
       blocked: false,
       lifecycle: "ended",
+      // Round 62 point 2: a restored placeholder now carries the lineage and startedAt its own
+      // binding persisted, so it can join a lineage-takeover match from the very first pass after
+      // a restart, before its own session has re-registered. Without this, the shape where the old
+      // session's own still-live roster record reconciles before the new one's does opened a second
+      // thread: the placeholder's lineage was null, the old view's lineage loop found no match, and
+      // it fell through to a fresh entry - live, so not abandoned, and not caught by the ended-view
+      // guard that protects the other ordering. A fresh session's own real view still overwrites
+      // both fields the moment it lands, the same as every other placeholder field.
+      lineage,
+      startedAt,
     };
   }
 
@@ -200,7 +224,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       abandoned: false,
       refusals: 0,
       retirePasses: 0,
-      lastView: placeholder(binding.sessionId, binding.name, binding.sessionTitle),
+      lastView: placeholder(binding.sessionId, binding.name, binding.sessionTitle, binding.lineage, binding.startedAt),
       sessionTitle: binding.sessionTitle,
     });
   }
@@ -217,6 +241,8 @@ export function createSurface(options: SurfaceOptions): Surface {
         name: entry.lastView.name,
         sessionTitle: entry.sessionTitle,
         title: entry.renderedName,
+        lineage: entry.lastView.lineage,
+        startedAt: entry.lastView.startedAt,
       });
     }
     return all;
@@ -431,7 +457,14 @@ export function createSurface(options: SurfaceOptions): Surface {
     return true;
   }
 
-  function entryFor(view: SessionView, state: SurfaceState): ThreadState {
+  /**
+   * Null means: build nothing for this view, this pass. The one case that produces it is a session
+   * with no entry of its own whose lineage already belongs to a same-or-newer session - see the
+   * ordering comment below. Returning null rather than a fresh entry is what keeps a superseded
+   * session (whose roster record the broker retains and keeps reporting) from ever opening a
+   * second thread of its own once a newer session has taken its lineage's thread.
+   */
+  function entryFor(view: SessionView, state: SurfaceState): ThreadState | null {
     const now = options.now();
     const existing = threads.get(view.sessionId);
     // Sticky, the same guarantee `noteTitle` already gives the registry record it came from: a
@@ -444,6 +477,70 @@ export function createSurface(options: SurfaceOptions): Surface {
     const effectiveView: SessionView = view.title === sessionTitle ? view : { ...view, title: sessionTitle };
     const name = threadName(effectiveView, state);
     let entry = existing;
+    // Item 2 (docs/plans/channels_thread-rebinding_spec_v1.md): a session with no entry of its own
+    // yet, carrying a lineage another entry already answers to, takes that entry over instead of
+    // getting a fresh one - the thread a restart would otherwise duplicate. Guarded to a real
+    // thread only (messageId !== null): a lineage match against a placeholder that never posted
+    // has nothing worth taking over, and falling through to the ordinary fresh-entry path below
+    // costs nothing since that path is exactly what a first-ever launch under this lineage needs.
+    //
+    // Round 62 point 3: a takeover only ever runs from an older session to a newer one
+    // (view.startedAt > other.lastView.startedAt). The broker's roster keeps an ended session's
+    // record, so a superseded session's own view kept arriving in every later tick, and a
+    // superseded-IDs set (this fix's first attempt) only held that off in memory - a broker
+    // restart drops it, restores the winning session's binding from disk, and the departed
+    // session's still-retained roster record reads as a fresh session under its old lineage again.
+    // The startedAt ordering needs nothing new persisted: it is already on the registry's own
+    // SessionRecord, reloaded from the registry's own persistence on every broker restart, and it
+    // makes the wrong direction structurally impossible rather than remembered-and-checked - the
+    // older session's own startedAt never becomes greater than the newer one's, restart or not.
+    // A placeholder entry (a binding restored before its session has re-registered) carries no
+    // lineage of its own yet (see `placeholder()` below), so it never matches here regardless of
+    // its startedAt; the ordering only ever compares two sessions that have each announced
+    // themselves for real.
+    if (entry === undefined && view.lineage !== null) {
+      for (const [otherId, other] of threads) {
+        if (otherId === view.sessionId) continue;
+        if (other.lastView.lineage !== view.lineage) continue;
+        if (other.messageId === null) continue;
+        // A surface Discord kept permanently refusing is not worth resurrecting silently: better a
+        // fresh thread the new session can actually use than a rebind onto one nothing will ever
+        // paint again with no sign anything is wrong.
+        if (other.abandoned) continue;
+        // A real lineage match exists. Only a newer session takes it over - never the reverse. An
+        // older or equal one defers instead of falling through to the fresh-entry path below: this
+        // is the same match, not a miss, so building a second thread for it would be exactly the
+        // duplicate this feature exists to prevent, just approached from the other direction. This
+        // is what stops a superseded session's still-reappearing roster record from ever opening
+        // its own thread once a newer session already took its lineage's one.
+        if (view.startedAt <= other.lastView.startedAt) return null;
+        threads.delete(otherId);
+        // Refusals and retire-passes are about the surface's own recent Discord traffic, not about
+        // which session speaks for it - carrying them over would count the old session's failures
+        // (or its own retirement countdown, if it had briefly started one) against the new one.
+        other.refusals = 0;
+        other.retirePasses = 0;
+        threads.set(view.sessionId, other);
+        entry = other;
+        // Stamped before bound() persists it, not left to the common assignment below: bound()
+        // reads bindings() straight from `entry`, and the binding must carry the new session's own
+        // lineage and startedAt (Round 64 point 2's fix) from this first persist, not the old
+        // session's, which is all `other.lastView` still holds at this point otherwise.
+        entry.lastView = effectiveView;
+        // The persisted binding is keyed by session ID, and the takeover just changed which ID
+        // this thread answers to. Unconditional, not folded into the titleMoved check below: a
+        // broker restart before any other change reaches this entry restores it under the old ID,
+        // and the ordering guard above cannot protect a session ID whose binding was never moved.
+        bound();
+        options.onRebind?.({
+          lineage: view.lineage,
+          fromSessionId: otherId,
+          toSessionId: view.sessionId,
+          threadId: other.threadId,
+        });
+        break;
+      }
+    }
     if (entry === undefined) {
       entry = {
         messageId: null,
@@ -491,6 +588,8 @@ export function createSurface(options: SurfaceOptions): Surface {
       exitedAfterMs: options.exitedAfterMs,
     });
     const entry = entryFor(view, state);
+    // null: a same-or-newer session already holds this lineage's thread. Nothing to build.
+    if (entry === null) return;
     // A thread is archived on the derived exited, which includes the backstop's presumption about a
     // record that has merely been silent, and posting into an archived thread revives it on
     // Discord's side. So a session that comes back stops being an archived one here the moment it

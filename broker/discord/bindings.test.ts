@@ -18,6 +18,8 @@ const BINDING: ThreadBinding = {
   name: "neo-intake",
   title: "⚙ neo-intake · working",
   sessionTitle: "the real title",
+  lineage: "supervisor-1",
+  startedAt: 1_000_000,
 };
 
 test("bindings survive a round trip through the file", () => {

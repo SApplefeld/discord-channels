@@ -571,6 +571,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     sessionId: "0f3c9d21-4444-4000-8000-000000000004",
     processToken: "0f3c9d21-4444-4000-8000-00000000000b",
     name: "wired-session",
+    lineage: null,
     host: "NEO",
     source: "startup",
     state: "live",

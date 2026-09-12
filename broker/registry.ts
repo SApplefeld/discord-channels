@@ -159,6 +159,12 @@ export type SessionRecord = {
   processToken: string;
   /** Human name from CHANNEL_SESSION, absent if the wrapper did not set one. */
   name: string | null;
+  /**
+   * The stable name from CHANNEL_LINEAGE, absent for every session that did not set one. Read-only
+   * for now (item 1): nothing yet uses it to rebind a thread across a restart. See
+   * docs/plans/channels_thread-rebinding_spec_v1.md.
+   */
+  lineage: string | null;
   host: string;
   /** The SessionStart trigger: startup, resume, clear, compact, or fork. */
   source: string | null;
@@ -263,6 +269,13 @@ export type HookIntake = {
   event: HookEvent;
   processToken: string;
   sessionName: string | null;
+  /**
+   * A stable name a launcher sets to survive a restart, carried in from `X-Channel-Lineage`. Null
+   * for every launch that does not opt in - the wrapper never sets one, so an interactive session
+   * carries none, and this field being null is what item 1's own proof line means by "behaves
+   * exactly as today." See docs/plans/channels_thread-rebinding_spec_v1.md in this repository.
+   */
+  lineage: string | null;
   sessionId: string | null;
   source: string | null;
   toolName: string | null;
@@ -582,6 +595,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       sessionId,
       processToken: intake.processToken,
       name: intake.sessionName,
+      lineage: intake.lineage,
       host: options.host,
       source: intake.source,
       state: "live",

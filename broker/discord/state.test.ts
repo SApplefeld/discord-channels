@@ -23,12 +23,14 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     backgroundTasks: [],
     goal: null,
     title: null,
+    lineage: null,
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,
     needsAttention: false,
     blocked: false,
     lifecycle: "live",
+    startedAt: NOW,
     ...overrides,
   };
 }
@@ -187,6 +189,7 @@ const RECORD: SessionRecord = {
   sessionId: "session-a",
   processToken: "token",
   name: "neo-intake",
+  lineage: null,
   host: "NEO",
   source: "startup",
   state: "live",

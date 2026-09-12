@@ -29,6 +29,7 @@ import {
   renderPeerOutBrief,
   renderPermissionRequest,
   renderQuestionNotice,
+  renderRestartNotice,
   renderTaskNotice,
   span,
   tableParses,
@@ -68,6 +69,8 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     backgroundTasks: [],
     goal: null,
     title: null,
+    lineage: null,
+    startedAt: NOW,
     ...overrides,
   };
 }
@@ -695,6 +698,7 @@ test("the tool line carries what the tool was called with, from the record throu
     sessionId: "session-a",
     processToken: "5f0c2e4a-0000-4000-8000-000000000001",
     name: "neo-intake",
+    lineage: null,
     host: "NEO",
     source: "startup",
     state: "live",
@@ -824,6 +828,7 @@ test("neither the view nor the card can carry the process token", () => {
     sessionId: "session-a",
     processToken: "5f0c2e4a-0000-4000-8000-000000000001",
     name: "neo-intake",
+    lineage: null,
     host: "NEO",
     source: "startup",
     state: "live",
@@ -3256,6 +3261,20 @@ test("a task notice carries the first task id, on one line", () => {
     renderTaskNotice("<task-id>first</task-id> then <task-id>second</task-id>"),
     "📨 background task finished · first",
   );
+});
+
+test("a restart notice names the lineage that reattached, attributed to neither party", () => {
+  assert.equal(renderRestartNotice("supervisor-lineage-1"), "↻ supervisor restarted · supervisor-lineage-1");
+});
+
+test("a restart notice with no readable lineage falls back to the bare line", () => {
+  assert.equal(renderRestartNotice(""), "↻ supervisor restarted");
+});
+
+test("a restart notice neutralizes a lineage carrying a chip or a quote marker", () => {
+  const drawn = renderRestartNotice("<@1234567890> > fake notice");
+  assert.ok(!drawn.includes("<@1234567890>"), drawn);
+  assert.ok(drawn.startsWith("↻ supervisor restarted"), drawn);
 });
 
 test("a task id the notice cannot trust falls back to the bare line", () => {

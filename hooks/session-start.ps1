@@ -49,6 +49,14 @@ try {
     if ($env:CHANNEL_SESSION -match '^[\x20-\x7E]+$') {
         $headers['X-Channel-Session-Name'] = $env:CHANNEL_SESSION
     }
+    # CHANNEL_LINEAGE, same ASCII gate as CHANNEL_SESSION above and absent from every launch that
+    # does not opt in (the wrapper never sets it; agent_persona's supervisor is the one launcher
+    # that does, once per supervisor lifetime, not per child). Carries a session's restart identity
+    # across a brand-new session ID, which is the one thing CHANNEL_SESSION and CHANNEL_PROCESS_TOKEN
+    # (a fresh GUID every launch) cannot do.
+    if ($env:CHANNEL_LINEAGE -match '^[\x20-\x7E]+$') {
+        $headers['X-Channel-Lineage'] = $env:CHANNEL_LINEAGE
+    }
 
     Invoke-RestMethod `
         -Uri "http://127.0.0.1:$brokerPort/hook" `
