@@ -15,7 +15,7 @@ import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { createPinKeeper } from "./discord/pins.ts";
-import { renderModelChange, renderQuestionNotice } from "./discord/render.ts";
+import { renderModelChange, renderQuestionNotice, renderRestartNotice } from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import {
   answerableFromThread,
@@ -1143,6 +1143,15 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.error(message);
         logger.error(message);
         stopRefresh();
+      },
+      // Item 3: the reconciler itself never posts (see ThreadMessenger's own comment on why), so
+      // this is the caller that turns a rebind into the one-line notice the thread gets. A rebind
+      // with no thread ID yet (the surface has posted the starter message but has not opened the
+      // thread on it) has nowhere to post into; the very next pass opens it, and there is nothing
+      // here worth retrying for, since the notice is a courtesy line, not state anything depends on.
+      onRebind: (event) => {
+        if (event.threadId === null) return;
+        void messenger.postToThread({ threadId: event.threadId, text: renderRestartNotice(event.lineage) });
       },
     });
     // The channel's pin list, driven from the same timer the surfaces are. Its own budgets and its
