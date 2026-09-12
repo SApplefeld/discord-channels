@@ -23,6 +23,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     backgroundTasks: [],
     goal: null,
     title: null,
+    lineage: null,
     turnCount: 0,
     lastHookAt: NOW,
     endedAt: null,

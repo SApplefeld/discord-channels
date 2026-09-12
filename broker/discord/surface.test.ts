@@ -111,6 +111,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     backgroundTasks: [],
     goal: null,
     title: null,
+    lineage: null,
     turnCount: 1,
     lastHookAt: START,
     endedAt: null,
@@ -1389,3 +1390,56 @@ test("a rejected token stops the surfaces once, loudly", async () => {
   assert.match(fatal[0], /token was rejected/);
   assert.equal(calls.posts.length, 1, "no further call is made against a rejected credential");
 });
+
+// Item 2 (docs/plans/channels_thread-rebinding_spec_v1.md): a session carrying the same lineage as
+// a previous one takes over that session's thread instead of opening a second one.
+test("a session with the same lineage as a departed one takes over its thread", async () => {
+  const time = clock();
+  const calls = recorder();
+  const rebinds: { lineage: string; fromSessionId: string; toSessionId: string; threadId: string | null }[] = [];
+  const surface = surfaceWith(time, calls, {
+    onRebind: (event) => rebinds.push(event),
+  });
+
+  await surface.tick([view({ sessionId: "session-a", lineage: "supervisor-1" })]);
+  assert.equal(calls.opens.length, 1, "the first launch opens its own thread");
+
+  // The old session is gone from the roster entirely (the registry let it go, or it simply never
+  // reappears in the same tick), and a new one under the same lineage takes its place.
+  await surface.tick([view({ sessionId: "session-b", lineage: "supervisor-1" })]);
+
+  assert.equal(calls.opens.length, 1, "no second thread is opened for the rebind");
+  assert.equal(surface.threadFor("session-b"), "thread-1", "the new session answers to the old thread");
+  assert.equal(surface.threadFor("session-a"), null, "the old session's own key is gone, moved rather than duplicated");
+  assert.deepEqual(rebinds, [
+    { lineage: "supervisor-1", fromSessionId: "session-a", toSessionId: "session-b", threadId: "thread-1" },
+  ]);
+});
+
+// The control: two sessions with no lineage set (the default, and every launch that does not opt
+// in) never rebind onto one another, whatever their other fields carry - each gets its own thread.
+test("two lineage-less sessions never rebind onto each other's thread (control)", async () => {
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  // Both sessions present in every tick from the point session-b appears, so neither one's entry
+  // is retired for going missing from the roster - that is a different, already-covered behavior,
+  // and not what this test is about. Three ticks: the first posts session-a's starter message, the
+  // second opens session-a's thread and posts session-b's, the third opens session-b's.
+  await surface.tick([view({ sessionId: "session-a" })]);
+  await surface.tick([view({ sessionId: "session-a" }), view({ sessionId: "session-b" })]);
+  await surface.tick([view({ sessionId: "session-a" }), view({ sessionId: "session-b" })]);
+
+  assert.equal(calls.opens.length, 2, "each session opened its own thread");
+  assert.equal(surface.threadFor("session-a"), "thread-1");
+  assert.equal(surface.threadFor("session-b"), "thread-1", "the fixed recorder thread id, but a distinct open call each");
+});
+
+// The `other.abandoned` guard in entryFor (a lineage match against a surface Discord kept
+// permanently refusing must not resurrect it silently) is exercised by reading the code alongside
+// "a surface Discord keeps refusing is given up on" above, which already proves `abandoned` is
+// reachable with a live messageId under this same harness. Driving that exact state and then a
+// same-tick lineage match needs the dwell/budget timing that test already spends its own setup on;
+// duplicating it here for one boolean guard was not the cheapest proof available, so it is read
+// against that sibling test rather than re-driven - named here rather than left silent about it.

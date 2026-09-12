@@ -54,6 +54,12 @@ export type SessionView = {
   blocked: boolean;
   /** The registry's own lifecycle state, mapped to a surface state by `deriveSurfaceState`. */
   lifecycle: SessionRecord["state"];
+  /**
+   * The stable name from CHANNEL_LINEAGE, null for a session that did not set one. Read by the
+   * surface reconciler alone, to rebind a lineage's existing thread instead of opening a new one
+   * across a restart - see docs/plans/channels_thread-rebinding_spec_v1.md.
+   */
+  lineage: string | null;
 };
 
 /**
@@ -87,6 +93,7 @@ export function toView(record: SessionRecord, signals: ViewSignals = {}): Sessio
     needsAttention: signals.needsAttention ?? false,
     blocked: signals.blocked ?? false,
     lifecycle: record.state,
+    lineage: record.lineage,
   };
 }
 

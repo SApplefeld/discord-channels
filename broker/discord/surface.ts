@@ -67,6 +67,14 @@ export type SurfaceOptions = {
   bindings?: ThreadBinding[];
   /** Called whenever a binding is created, changed, or dropped, so the caller can persist. */
   onBind?: (bindings: ThreadBinding[]) => void;
+  /**
+   * Called once a rebind actually happens: a session carrying CHANNEL_LINEAGE registered and this
+   * surface found an existing thread already bound to that same lineage (a previous session under
+   * it, restarted). The reconciler itself never posts a thread message (see ThreadMessenger's own
+   * comment on why); this is the signal the caller needs to post the one-line restart notice item 3
+   * asks for, with the thread it landed in. See docs/plans/channels_thread-rebinding_spec_v1.md.
+   */
+  onRebind?: (event: { lineage: string; fromSessionId: string; toSessionId: string; threadId: string | null }) => void;
   log?: (message: string) => void;
   /** Called once when Discord rejects the credential, which no retry can fix. */
   onFatal?: (message: string) => void;
@@ -179,6 +187,10 @@ export function createSurface(options: SurfaceOptions): Surface {
       needsAttention: false,
       blocked: false,
       lifecycle: "ended",
+      // The binding carries no lineage (it is keyed by session ID, not by it); null here is
+      // overwritten the moment the real registry view arrives, same as every other placeholder
+      // field is.
+      lineage: null,
     };
   }
 
@@ -444,6 +456,38 @@ export function createSurface(options: SurfaceOptions): Surface {
     const effectiveView: SessionView = view.title === sessionTitle ? view : { ...view, title: sessionTitle };
     const name = threadName(effectiveView, state);
     let entry = existing;
+    // Item 2 (docs/plans/channels_thread-rebinding_spec_v1.md): a session with no entry of its own
+    // yet, carrying a lineage another entry already answers to, takes that entry over instead of
+    // getting a fresh one - the thread a restart would otherwise duplicate. Guarded to a real
+    // thread only (messageId !== null): a lineage match against a placeholder that never posted
+    // has nothing worth taking over, and falling through to the ordinary fresh-entry path below
+    // costs nothing since that path is exactly what a first-ever launch under this lineage needs.
+    if (entry === undefined && view.lineage !== null) {
+      for (const [otherId, other] of threads) {
+        if (otherId === view.sessionId) continue;
+        if (other.lastView.lineage !== view.lineage) continue;
+        if (other.messageId === null) continue;
+        // A surface Discord kept permanently refusing is not worth resurrecting silently: better a
+        // fresh thread the new session can actually use than a rebind onto one nothing will ever
+        // paint again with no sign anything is wrong.
+        if (other.abandoned) continue;
+        threads.delete(otherId);
+        // Refusals and retire-passes are about the surface's own recent Discord traffic, not about
+        // which session speaks for it - carrying them over would count the old session's failures
+        // (or its own retirement countdown, if it had briefly started one) against the new one.
+        other.refusals = 0;
+        other.retirePasses = 0;
+        threads.set(view.sessionId, other);
+        entry = other;
+        options.onRebind?.({
+          lineage: view.lineage,
+          fromSessionId: otherId,
+          toSessionId: view.sessionId,
+          threadId: other.threadId,
+        });
+        break;
+      }
+    }
     if (entry === undefined) {
       entry = {
         messageId: null,
