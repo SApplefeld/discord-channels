@@ -487,6 +487,20 @@ load path a state file is read through, one edge short of a cycle that type-chec
 the first restore. `sanitize.ts` imports nothing at run time, and `import-hygiene.test.ts` pins both
 that leaf property and the direction, each with a control so the pin cannot pass for want of a subject.
 
+A restart is the one case where a new session ID does not mean a new thread. `CHANNEL_LINEAGE`, an
+optional env var alongside `CHANNEL_SESSION` and `CHANNEL_PROCESS_TOKEN`, is a stable name a launcher
+sets once and carries across every child it starts - `agent_persona`'s supervisor is the one launcher
+that does, the wrapper never does, so an interactive session is unaffected. It reaches the registry the
+same way `CHANNEL_SESSION` does (`X-Channel-Lineage`, `hooks/session-start.ps1`), and it rides on
+`SessionRecord` read-only until a new session with no thread of its own registers under a lineage
+another entry already answers to: `broker/discord/surface.ts`'s `entryFor` moves that entry to the new
+session's key instead of opening a second thread, guarded against a match with no real thread yet and
+against one this surface already gave up on after repeated permanent Discord refusals. The rebind posts
+one system-style line into the thread naming that the supervisor restarted, since a restart is neither
+the operator's turn nor the session's; nothing else about the thread's history or its rename cadence
+changes; and every session that never sets `CHANNEL_LINEAGE` - which is every session but a supervisor's
+- takes no path this paragraph describes.
+
 ## The fleet board card
 
 A third surface answers what the other two cannot: which plans are open across the projects on this
