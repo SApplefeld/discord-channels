@@ -148,6 +148,21 @@ type ThreadState = {
 
 export function createSurface(options: SurfaceOptions): Surface {
   const threads = new Map<string, ThreadState>();
+  /**
+   * Item 2's defect (Round 60, PR #1 point 3): the broker's roster keeps an ended session's own
+   * record, so its view keeps arriving in every later tick's `views` array carrying the same
+   * lineage it always did. Without this set, the session a takeover just moved a thread away from
+   * looks, on its own next reconcile, exactly like a fresh session under that lineage - it has no
+   * entry of its own (the takeover deleted it), so the lineage-match loop in `entryFor` hands the
+   * thread right back, and the next tick after that gives it to whichever session's view happened
+   * to reconcile last. A session ID lands here the moment it is the `fromSessionId` of a takeover,
+   * and `reconcile` refuses to build anything for one, forever: its thread now belongs to whichever
+   * session took it, and the old ID has nothing left to say about it. Kept in memory only, not
+   * persisted with the bindings - a broker restart is out of scope for this fix (the flip-flop
+   * reproduces within one running broker, no restart involved), and every case the round names is
+   * a same-process, multi-tick scenario. Flagged for the plan doc rather than silently narrowed.
+   */
+  const superseded = new Set<string>();
   // Discord buckets a channel modification per channel, and a thread is a channel, so one flapping
   // session must not be able to hold up an urgent rename on another thread.
   const renameBudgets = new Map<string, Budget>();
@@ -472,6 +487,7 @@ export function createSurface(options: SurfaceOptions): Surface {
         // paint again with no sign anything is wrong.
         if (other.abandoned) continue;
         threads.delete(otherId);
+        superseded.add(otherId);
         // Refusals and retire-passes are about the surface's own recent Discord traffic, not about
         // which session speaks for it - carrying them over would count the old session's failures
         // (or its own retirement countdown, if it had briefly started one) against the new one.
@@ -530,6 +546,10 @@ export function createSurface(options: SurfaceOptions): Surface {
   }
 
   async function reconcile(view: SessionView): Promise<void> {
+    // A superseded session's thread already belongs to whoever took it over; this session ID has
+    // nothing left to build or take back, no matter how many more ticks the roster keeps reporting
+    // its ended record.
+    if (superseded.has(view.sessionId)) return;
     const state = deriveSurfaceState(view, options.now(), {
       idleAfterMs: options.idleAfterMs,
       exitedAfterMs: options.exitedAfterMs,

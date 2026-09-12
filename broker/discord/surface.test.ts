@@ -1416,6 +1416,66 @@ test("a session with the same lineage as a departed one takes over its thread", 
   ]);
 });
 
+// Round 60 finding 3 (PR #1 point 3): the live broker keeps an ended session's record in its
+// roster, so its view keeps arriving in every tick's `views` array after a rebind, carrying the
+// same lineage it always did. Confirmed live by the Reviewer's own probe: without the superseded
+// guard, the old session's next reconcile has no entry of its own (the takeover deleted it), reads
+// as a fresh session under that lineage, and takes the thread back - flip-flopping every tick and
+// posting a second restart notice each time.
+test("a rebind holds even when the departed session's ended record keeps reappearing", async () => {
+  const time = clock();
+  const calls = recorder();
+  const rebinds: { lineage: string; fromSessionId: string; toSessionId: string; threadId: string | null }[] = [];
+  const surface = surfaceWith(time, calls, {
+    onRebind: (event) => rebinds.push(event),
+  });
+
+  await surface.tick([view({ sessionId: "session-a", lineage: "supervisor-1" })]);
+  await surface.tick([view({ sessionId: "session-b", lineage: "supervisor-1" })]);
+
+  const endedA = view({ sessionId: "session-a", lineage: "supervisor-1", lifecycle: "ended", endedAt: time.now() });
+  const liveB = view({ sessionId: "session-b", lineage: "supervisor-1" });
+  for (let i = 0; i < 3; i++) {
+    await surface.tick([endedA, liveB]);
+    assert.equal(surface.threadFor("session-b"), "thread-1", `tick ${i}: session-b still holds the thread`);
+    assert.equal(surface.threadFor("session-a"), null, `tick ${i}: session-a's key stays gone`);
+  }
+
+  assert.equal(calls.opens.length, 1, "only the one thread ever opened");
+  assert.deepEqual(rebinds, [
+    { lineage: "supervisor-1", fromSessionId: "session-a", toSessionId: "session-b", threadId: "thread-1" },
+  ], "exactly one rebind, not one per tick");
+});
+
+// The same defect, with the old session's roster record still reporting itself live rather than
+// ended - the Reviewer's probe hit this shape too, and the fix (a superseded set, checked before
+// any lineage match or fresh entry) does not distinguish the two: once session-a is the
+// `fromSessionId` of a takeover, its own view builds nothing on any later tick, live or not.
+test("a rebind holds even when the departed session's record still reports itself live", async () => {
+  const time = clock();
+  const calls = recorder();
+  const rebinds: { lineage: string; fromSessionId: string; toSessionId: string; threadId: string | null }[] = [];
+  const surface = surfaceWith(time, calls, {
+    onRebind: (event) => rebinds.push(event),
+  });
+
+  await surface.tick([view({ sessionId: "session-a", lineage: "supervisor-1" })]);
+  await surface.tick([view({ sessionId: "session-b", lineage: "supervisor-1" })]);
+
+  const liveA = view({ sessionId: "session-a", lineage: "supervisor-1" });
+  const liveB = view({ sessionId: "session-b", lineage: "supervisor-1" });
+  for (let i = 0; i < 3; i++) {
+    await surface.tick([liveA, liveB]);
+    assert.equal(surface.threadFor("session-b"), "thread-1", `tick ${i}: session-b still holds the thread`);
+    assert.equal(surface.threadFor("session-a"), null, `tick ${i}: session-a's key stays gone`);
+  }
+
+  assert.equal(calls.opens.length, 1, "only the one thread ever opened");
+  assert.deepEqual(rebinds, [
+    { lineage: "supervisor-1", fromSessionId: "session-a", toSessionId: "session-b", threadId: "thread-1" },
+  ], "exactly one rebind, not one per tick");
+});
+
 // The control: two sessions with no lineage set (the default, and every launch that does not opt
 // in) never rebind onto one another, whatever their other fields carry - each gets its own thread.
 test("two lineage-less sessions never rebind onto each other's thread (control)", async () => {
