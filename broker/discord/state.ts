@@ -60,6 +60,13 @@ export type SessionView = {
    * across a restart - see docs/plans/channels_thread-rebinding_spec_v1.md.
    */
   lineage: string | null;
+  /**
+   * When this session registered. Read by the surface reconciler alone, to order a lineage
+   * takeover: a session only ever takes a thread from an older one, never gives it back to one
+   * that registered before it did - see docs/plans/channels_thread-rebinding_spec_v1.md, item 2's
+   * broker-restart fix.
+   */
+  startedAt: number;
 };
 
 /**
@@ -94,6 +101,7 @@ export function toView(record: SessionRecord, signals: ViewSignals = {}): Sessio
     blocked: signals.blocked ?? false,
     lifecycle: record.state,
     lineage: record.lineage,
+    startedAt: record.startedAt,
   };
 }
 

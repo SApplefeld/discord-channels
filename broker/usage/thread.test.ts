@@ -145,6 +145,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     needsAttention: false,
     blocked: false,
     lifecycle: "live",
+    startedAt: START,
     ...overrides,
   };
 }

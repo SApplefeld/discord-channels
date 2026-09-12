@@ -70,6 +70,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     goal: null,
     title: null,
     lineage: null,
+    startedAt: NOW,
     ...overrides,
   };
 }
