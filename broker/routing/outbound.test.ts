@@ -61,6 +61,7 @@ function announce(
     event: "SessionStart",
     processToken,
     sessionName: "neo-warden",
+    lineage: null,
     sessionId,
     source,
     toolName: null,

@@ -187,6 +187,7 @@ const RECORD: SessionRecord = {
   sessionId: "session-a",
   processToken: "token",
   name: "neo-intake",
+  lineage: null,
   host: "NEO",
   source: "startup",
   state: "live",

@@ -23,11 +23,17 @@ function clock(start = 1_000_000) {
   };
 }
 
-function sessionStart(sessionId: string, source: string | null, name = "neo-intake"): HookIntake {
+function sessionStart(
+  sessionId: string,
+  source: string | null,
+  name = "neo-intake",
+  lineage: string | null = null,
+): HookIntake {
   return {
     event: "SessionStart",
     processToken: TOKEN,
     sessionName: name,
+    lineage,
     sessionId,
     source,
     toolName: null,
@@ -47,6 +53,7 @@ function postToolUse(
     event: "PostToolUse",
     processToken,
     sessionName: null,
+    lineage: null,
     sessionId,
     source: null,
     toolName,
@@ -63,6 +70,7 @@ function askUserQuestion(sessionId: string | null = null): HookIntake {
     event: "PreToolUse",
     processToken: TOKEN,
     sessionName: null,
+    lineage: null,
     sessionId,
     source: null,
     toolName: "AskUserQuestion",
@@ -77,6 +85,7 @@ function stop(processToken = TOKEN): HookIntake {
     event: "Stop",
     processToken,
     sessionName: null,
+    lineage: null,
     sessionId: null,
     source: null,
     toolName: null,
@@ -142,6 +151,7 @@ test("a tool event carrying an input but no name moves neither", () => {
     event: "PostToolUse",
     processToken: TOKEN,
     sessionName: null,
+    lineage: null,
     sessionId: null,
     source: null,
     toolName: null,
@@ -447,6 +457,7 @@ test("a PreToolUse event is liveness alone: it stamps and revives, and moves no 
     event: "PreToolUse",
     processToken: TOKEN,
     sessionName: null,
+    lineage: null,
     sessionId: "session-a",
     source: null,
     toolName: "AskUserQuestion",
@@ -713,6 +724,7 @@ test("a live session is never evicted to hold the cap", () => {
       event: "SessionStart",
       processToken: `token-${index}`,
       sessionName: `session-${index}`,
+    lineage: null,
       sessionId: `session-${index}`,
       source: "startup",
       toolName: null,
@@ -800,6 +812,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     event: "SessionStart",
     processToken: victim,
     sessionName: "neo-warden",
+    lineage: null,
     sessionId: "session-a",
     source: "startup",
     toolName: null,
@@ -812,6 +825,7 @@ test("a SessionStart cannot take over a session another process token holds", ()
     event: "SessionStart",
     processToken: attacker,
     sessionName: "neo-warden",
+    lineage: null,
     sessionId: "session-a",
     source: "startup",
     toolName: null,
@@ -838,6 +852,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     event: "SessionStart",
     processToken: first,
     sessionName: "one",
+    lineage: null,
     sessionId: "session-a",
     source: "startup",
     toolName: null,
@@ -851,6 +866,7 @@ test("a session ID left behind by an ended session can be announced again", () =
     event: "SessionStart",
     processToken: second,
     sessionName: "two",
+    lineage: null,
     sessionId: "session-a",
     source: "startup",
     toolName: null,
@@ -869,6 +885,7 @@ test("relayClosed ends only the session it names, held by the token that names i
     event: "SessionStart",
     processToken: token,
     sessionName: "one",
+    lineage: null,
     sessionId: "session-a",
     source: "startup",
     toolName: null,
@@ -1134,6 +1151,7 @@ test("the header's launch name never overwrites a tailed title", () => {
     event: "PostToolUse",
     processToken: TOKEN,
     sessionName: "header-name-on-post",
+    lineage: null,
     sessionId,
     source: null,
     toolName: "Bash",
@@ -1409,4 +1427,29 @@ test("a restored session starts with no roster, since nothing here saw its tasks
   registry.apply(sessionStart("session-b", "clear"));
 
   assert.deepEqual(byId(registry.list(), "session-b").backgroundTasks, []);
+});
+
+// Item 1 (docs/plans/channels_thread-rebinding_spec_v1.md): a session that never sets
+// CHANNEL_LINEAGE must behave exactly as it does today - this is the plan's own proof line for
+// this item, and every other test in this file already exercises the no-lineage path since
+// sessionStart() defaults to it. This test states the contract directly rather than leaving it
+// implicit in every other assertion's incidental success.
+test("a session with no CHANNEL_LINEAGE carries a null lineage and nothing else about it changes", () => {
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  const applied = registry.apply(sessionStart("session-a", "startup"));
+
+  assert.equal(applied?.lineage, null);
+  assert.equal(byId(registry.list(), "session-a").lineage, null);
+});
+
+// The opt-in half of the same contract: a session that does set CHANNEL_LINEAGE carries it on the
+// record, read-only for now (item 1 does not yet rebind anything on it - that is item 2).
+test("a session with CHANNEL_LINEAGE set carries it on the record, unused so far", () => {
+  const time = clock();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: time.now });
+  const applied = registry.apply(sessionStart("session-a", "startup", "neo-intake", "supervisor-lineage-1"));
+
+  assert.equal(applied?.lineage, "supervisor-lineage-1");
+  assert.equal(byId(registry.list(), "session-a").lineage, "supervisor-lineage-1");
 });

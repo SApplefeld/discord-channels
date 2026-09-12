@@ -159,6 +159,7 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     typeof value.sessionId === "string" &&
     typeof value.processToken === "string" &&
     optionalString(value.name) &&
+    absentOrString(value.lineage) &&
     typeof value.host === "string" &&
     optionalString(value.source) &&
     typeof value.state === "string" &&
@@ -201,11 +202,15 @@ function cleanRecord(record: SessionRecord): SessionRecord {
   // Widened for the same reason: a snapshot written before this field existed carries no value for
   // it, and it lands as null here rather than as undefined on a record every surface reads.
   const title: string | null | undefined = record.title;
+  // Widened for the same reason: a snapshot written before item 1 shipped carries no key for it at
+  // all, and it lands as null here rather than as undefined on a record every surface reads.
+  const lineage: string | null | undefined = record.lineage;
   return {
     ...record,
     sessionId: clean(record.sessionId),
     processToken: clean(record.processToken),
     name: record.name === null ? null : cleanWellFormed(record.name),
+    lineage: lineage === undefined || lineage === null ? null : clean(lineage),
     host: clean(record.host),
     source: record.source === null ? null : clean(record.source),
     lastTool: record.lastTool === null ? null : clean(record.lastTool),
@@ -311,6 +316,7 @@ function persisted(record: SessionRecord): PersistedRecord {
     sessionId: record.sessionId,
     processToken: record.processToken,
     name: record.name,
+    lineage: record.lineage,
     host: record.host,
     source: record.source,
     state: record.state,

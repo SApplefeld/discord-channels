@@ -8,6 +8,8 @@
 //     X-Channel-Hook-Event:     SessionStart | PreToolUse | PostToolUse | Stop
 //     X-Channel-Process-Token:  the CHANNEL_PROCESS_TOKEN GUID the launch wrapper minted
 //     X-Channel-Session-Name:   the CHANNEL_SESSION human name (optional)
+//     X-Channel-Lineage:        the CHANNEL_LINEAGE stable name (optional), set by a launcher that
+//                               wants restart continuity - see docs/plans/channels_thread-rebinding_spec_v1.md
 //     X-Channel-Mirror:         the per-session mirror switch, carried by the PreToolUse question
 //                               hook alone among this route's entries, because its payload is the
 //                               one on this route that carries conversation text
@@ -408,6 +410,9 @@ export function parseIntake(
       event: event as HookEvent,
       processToken,
       sessionName: header(request, "x-channel-session-name"),
+      // Opt-in only: absent for every launch that never set CHANNEL_LINEAGE, which the registry
+      // reads as "behaves exactly as today" (this plan's item 1 proof).
+      lineage: header(request, "x-channel-lineage"),
       sessionId,
       // Recorded verbatim rather than checked against the known trigger names, so a value Claude
       // Code adds later lands in the registry instead of being refused.
@@ -589,6 +594,7 @@ export function redact(record: SessionRecord): PublicSessionRecord {
   return {
     sessionId: record.sessionId,
     name: record.name,
+    lineage: record.lineage,
     host: record.host,
     source: record.source,
     state: record.state,
