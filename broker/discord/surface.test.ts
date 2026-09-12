@@ -483,6 +483,8 @@ test("a startup pass archives a restored thread whose session already exited, ex
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -514,6 +516,8 @@ test("a restored thread whose record is still retained as ended is archived too"
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -691,6 +695,8 @@ test("a restored binding reattaches instead of opening a second thread", async (
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -740,6 +746,8 @@ test("a binding is reported for persistence as it is created and dropped", async
         name: "neo-intake",
         sessionTitle: null,
         title: null,
+        lineage: null,
+        startedAt: START,
       },
     ]),
     "the posted message is recorded before the thread exists",
@@ -755,6 +763,8 @@ test("a binding is reported for persistence as it is created and dropped", async
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · active",
+        lineage: null,
+        startedAt: START,
       },
     ]),
     "and the title it carries is recorded with it",
@@ -787,6 +797,8 @@ test("a session's live title reaches the persisted binding, not the launch name"
         name: "neo-intake",
         sessionTitle: "Renamed Session",
         title: null,
+        lineage: null,
+        startedAt: START,
       },
     ]),
     "the live view's title, not its launch name, is what the binding carries",
@@ -995,6 +1007,8 @@ test("a restored binding whose message is gone and whose session exited is not r
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
     onBind: (bindings) => seen.push(JSON.stringify(bindings)),
@@ -1123,6 +1137,8 @@ test("a restored binding keeps the session name and the title the thread carries
         name: "neo-intake",
         sessionTitle: null,
         title: "⚠ neo-intake · exited",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -1147,6 +1163,8 @@ test("a restored binding whose session is gone is titled with the name, not the 
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -1173,6 +1191,8 @@ test("a restored binding whose session is gone composes its own title, not the l
         name: "neo-intake",
         sessionTitle: "Renamed by /rename",
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -1198,6 +1218,8 @@ test("a thread carrying the previous title format is renamed once and then left 
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -1239,6 +1261,8 @@ test("a live view whose title is null does not repaint a restored thread back to
         name: "neo-intake",
         sessionTitle: "Renamed Session",
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
     onBind: (bindings) => seen.push(JSON.stringify(bindings)),
@@ -1277,6 +1301,8 @@ test("the pin list reads the cards of the sessions that are running, and only af
         name: "neo-intake",
         sessionTitle: null,
         title: "⚙ neo-intake · working",
+        lineage: null,
+        startedAt: 0,
       },
     ],
   });
@@ -1517,6 +1543,55 @@ test("a rebind holds across a broker restart, not just within one broker's run",
   }
 
   assert.equal(calls.opens.length, 1, "no thread opened again across the restart");
+  assert.deepEqual(secondRebinds, [], "the restored surface never rebinds - session-a is never newer");
+});
+
+// Round 64 point 2: the shape above survives because a fresh entry born from an ended-and-lifecycle
+// view starts abandoned (see entryFor's fresh-entry construction), which happens to also block the
+// duplicate-thread path even before the ordering fix could apply. The supervisor's actual hard-kill
+// path is different: the old session's roster record stays live until the backstop presumes it
+// exited, and the registry reports older sessions first - so the old view both reconciles before
+// the new one's AND is not ended, and nothing stopped it from opening a second thread until the
+// restored placeholder itself carried real lineage and startedAt (this round's fix to `bindings.ts`
+// and `placeholder()`). Confirmed live by the Reviewer's own probe running the restart shape four
+// ways; this is the one of the four that failed before this round's fix.
+test("a rebind holds across a broker restart even when the old session's own record still reports live and reconciles first", async () => {
+  const time = clock();
+  const calls = recorder();
+  const seen: string[] = [];
+  const firstRebinds: unknown[] = [];
+  const firstSurface = surfaceWith(time, calls, {
+    onBind: (bindings) => seen.push(JSON.stringify(bindings)),
+    onRebind: (event) => firstRebinds.push(event),
+  });
+
+  await firstSurface.tick([view({ sessionId: "session-a", lineage: "supervisor-1", startedAt: START })]);
+  await firstSurface.tick([view({ sessionId: "session-b", lineage: "supervisor-1", startedAt: START + 1 })]);
+  assert.equal(firstRebinds.length, 1, "the rebind happened before the restart");
+
+  const restoredBindings = JSON.parse(seen.at(-1)!) as ThreadBinding[];
+  assert.equal(restoredBindings.length, 1, "only session-b's binding survived the takeover");
+  assert.equal(restoredBindings[0]!.lineage, "supervisor-1", "the surviving binding persisted its lineage");
+  assert.equal(restoredBindings[0]!.startedAt, START + 1, "the surviving binding persisted its startedAt");
+
+  const secondRebinds: unknown[] = [];
+  const secondSurface = surfaceWith(time, calls, {
+    bindings: restoredBindings,
+    onRebind: (event) => secondRebinds.push(event),
+  });
+
+  // Old session first in the array, still reporting live - the exact ordering the Reviewer's probe
+  // found failing, and the one caught only by the placeholder now carrying real lineage/startedAt
+  // from the restored binding rather than waiting for session-a's own view to (never) supply them.
+  const liveA = view({ sessionId: "session-a", lineage: "supervisor-1", startedAt: START });
+  const liveB = view({ sessionId: "session-b", lineage: "supervisor-1", startedAt: START + 1 });
+  for (let i = 0; i < 3; i++) {
+    await secondSurface.tick([liveA, liveB]);
+    assert.equal(secondSurface.threadFor("session-b"), "thread-1", `tick ${i}: session-b still holds the thread after the restart`);
+    assert.equal(secondSurface.threadFor("session-a"), null, `tick ${i}: session-a's key stays gone after the restart`);
+  }
+
+  assert.equal(calls.opens.length, 1, "no second thread opened across the restart, old session still live");
   assert.deepEqual(secondRebinds, [], "the restored surface never rebinds - session-a is never newer");
 });
 

@@ -34,6 +34,24 @@ export type ThreadBinding = {
    * fully composed thread title (glyph, name, state suffix) this field is one input to.
    */
   sessionTitle: string | null;
+  /**
+   * The stable name from CHANNEL_LINEAGE, null for a session that never set one. Carried here
+   * for the same reason `name` and `sessionTitle` are: a restart can outlive the registry
+   * record, and a restored placeholder with no lineage of its own cannot join a takeover match
+   * until its session re-registers - which is too late for the shape where the old session's own
+   * still-live roster record reconciles first (Round 62 point 2, docs/plans/
+   * channels_thread-rebinding_spec_v1.md). Absent on a snapshot predating this field, which
+   * `cleanBinding` turns into null, the same as every other optional field here.
+   */
+  lineage: string | null;
+  /**
+   * When this session registered, mirroring `SessionView.startedAt` - see that field's own
+   * comment in `broker/discord/state.ts` for what it orders. 0 on a snapshot predating this
+   * field: the oldest possible value, so a restored placeholder from before this field shipped
+   * never wins an ordering comparison it has no real data for, which is the conservative
+   * direction (worst case, an old session opens a fresh thread rather than wrongly keeping one).
+   */
+  startedAt: number;
 };
 
 type Snapshot = {
@@ -63,6 +81,11 @@ function absentOrString(value: unknown): boolean {
   return value === undefined || optionalString(value);
 }
 
+/** Same shape as `absentOrString`, for the one numeric optional field this snapshot carries. */
+function absentOrNumber(value: unknown): boolean {
+  return value === undefined || typeof value === "number";
+}
+
 function isBinding(value: unknown): value is ThreadBinding {
   if (!isRecord(value)) return false;
   return (
@@ -72,7 +95,9 @@ function isBinding(value: unknown): value is ThreadBinding {
     typeof value.archived === "boolean" &&
     optionalString(value.name) &&
     optionalString(value.title) &&
-    absentOrString(value.sessionTitle)
+    absentOrString(value.sessionTitle) &&
+    absentOrString(value.lineage) &&
+    absentOrNumber(value.startedAt)
   );
 }
 
@@ -83,6 +108,8 @@ function cleanBinding(binding: ThreadBinding): ThreadBinding {
   // above accepts; it lands as null here, the same as an explicit null, so nothing downstream ever
   // meets an undefined.
   const sessionTitle: string | null | undefined = binding.sessionTitle;
+  const lineage: string | null | undefined = binding.lineage;
+  const startedAt: number | undefined = binding.startedAt;
   return {
     sessionId: clean(binding.sessionId),
     messageId: clean(binding.messageId),
@@ -98,6 +125,8 @@ function cleanBinding(binding: ThreadBinding): ThreadBinding {
       sessionTitle === undefined || sessionTitle === null
         ? null
         : boundedTitle(sessionTitle, MAX_PEER_NAME_LENGTH),
+    lineage: lineage === undefined || lineage === null ? null : clean(lineage),
+    startedAt: typeof startedAt === "number" ? startedAt : 0,
   };
 }
 

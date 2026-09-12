@@ -167,7 +167,13 @@ export function createSurface(options: SurfaceOptions): Surface {
    * the name and the title are carried in the binding precisely so a thread whose session is
    * already gone can still be titled with the name, or the rename, the operator knows it by.
    */
-  function placeholder(sessionId: string, name: string | null, title: string | null): SessionView {
+  function placeholder(
+    sessionId: string,
+    name: string | null,
+    title: string | null,
+    lineage: string | null,
+    startedAt: number,
+  ): SessionView {
     return {
       sessionId,
       name,
@@ -187,15 +193,16 @@ export function createSurface(options: SurfaceOptions): Surface {
       needsAttention: false,
       blocked: false,
       lifecycle: "ended",
-      // The binding carries no lineage (it is keyed by session ID, not by it); null here is
-      // overwritten the moment the real registry view arrives, same as every other placeholder
-      // field is.
-      lineage: null,
-      // 0 is never compared meaningfully: a placeholder's lineage stays null (above) until the
-      // real registry view lands, and the lineage-match loop in entryFor never reaches the
-      // startedAt comparison for an entry whose lineage does not match yet. The real value arrives
-      // in the same overwrite that gives the entry its real lineage.
-      startedAt: 0,
+      // Round 62 point 2: a restored placeholder now carries the lineage and startedAt its own
+      // binding persisted, so it can join a lineage-takeover match from the very first pass after
+      // a restart, before its own session has re-registered. Without this, the shape where the old
+      // session's own still-live roster record reconciles before the new one's does opened a second
+      // thread: the placeholder's lineage was null, the old view's lineage loop found no match, and
+      // it fell through to a fresh entry - live, so not abandoned, and not caught by the ended-view
+      // guard that protects the other ordering. A fresh session's own real view still overwrites
+      // both fields the moment it lands, the same as every other placeholder field.
+      lineage,
+      startedAt,
     };
   }
 
@@ -217,7 +224,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       abandoned: false,
       refusals: 0,
       retirePasses: 0,
-      lastView: placeholder(binding.sessionId, binding.name, binding.sessionTitle),
+      lastView: placeholder(binding.sessionId, binding.name, binding.sessionTitle, binding.lineage, binding.startedAt),
       sessionTitle: binding.sessionTitle,
     });
   }
@@ -234,6 +241,8 @@ export function createSurface(options: SurfaceOptions): Surface {
         name: entry.lastView.name,
         sessionTitle: entry.sessionTitle,
         title: entry.renderedName,
+        lineage: entry.lastView.lineage,
+        startedAt: entry.lastView.startedAt,
       });
     }
     return all;
@@ -513,6 +522,11 @@ export function createSurface(options: SurfaceOptions): Surface {
         other.retirePasses = 0;
         threads.set(view.sessionId, other);
         entry = other;
+        // Stamped before bound() persists it, not left to the common assignment below: bound()
+        // reads bindings() straight from `entry`, and the binding must carry the new session's own
+        // lineage and startedAt (Round 64 point 2's fix) from this first persist, not the old
+        // session's, which is all `other.lastView` still holds at this point otherwise.
+        entry.lastView = effectiveView;
         // The persisted binding is keyed by session ID, and the takeover just changed which ID
         // this thread answers to. Unconditional, not folded into the titleMoved check below: a
         // broker restart before any other change reaches this entry restores it under the old ID,
