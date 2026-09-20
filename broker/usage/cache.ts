@@ -9,6 +9,11 @@
 // beside them holds base64-encoded plaintext OAuth material. The allowlist of two paths is the
 // whole of that guarantee.
 //
+// `sequence.json`'s identity map is the membership authority: an account not listed there does not
+// render, however long the cache still remembers it. The cache supplies the numbers for whichever
+// accounts survive that check. `sequence.json`'s own `sequence` array, claude-swap's rotation order,
+// is a different fact and is not read here.
+//
 // Mirroring rather than polling is the design: the numbers are whatever claude-swap last wrote, and
 // `fetchedAt` rides out with them so the card can age them honestly. A cache nobody is refreshing
 // goes stale, and a stale reading is still a reading.
@@ -217,25 +222,34 @@ function scopedWindows(value: unknown): ScopedWindow[] {
 
 /**
  * The accounts to read, ascending and bounded, each with the key it was found under: the cap counts
- * accounts this reader can actually render, so an unusable entry never spends a slot a later
- * readable one needed.
+ * accounts that survive both checks below, so neither an unusable entry nor a retired one spends a
+ * slot a later live account needed.
+ *
+ * `isMember` is the identity map's statement of which accounts exist. An entry whose key it rejects
+ * is dropped before it can spend a cap slot, exactly as an unreadable entry is. When the identity map
+ * itself was not read, the caller passes a test that admits every key, so the fallback is every
+ * cached entry standing exactly as read.
  *
  * A key is kept only when it survives the round trip through a number, which is the same key the
- * identity file is looked up under. `"01"`, `"007"`, and a key past the precision of a double all
- * read back as some other account's key or as no key at all, so each of them would render one
- * account twice or read a neighbour's numbers under the wrong label.
+ * identity map is checked under. `"01"`, `"007"`, and a key past the precision of a double all read
+ * back as some other account's key or as no key at all, so each of them would render one account
+ * twice or read a neighbour's numbers under the wrong label.
  *
  * Ascending numeric order is how both files key their accounts and how the operator's console lists
  * them; `sequence.json`'s `sequence` array is claude-swap's rotation order, a different fact, and it
  * is not read here.
  */
-function accountEntries(accounts: Record<string, unknown>): Array<[string, Record<string, unknown>]> {
+function accountEntries(
+  accounts: Record<string, unknown>,
+  isMember: (key: string) => boolean,
+): Array<[string, Record<string, unknown>]> {
   const keys = Object.keys(accounts)
     .filter((key) => /^\d+$/.test(key) && String(Number(key)) === key)
     .sort((left, right) => Number(left) - Number(right));
   const entries: Array<[string, Record<string, unknown>]> = [];
   for (const key of keys) {
     if (entries.length >= MAX_USAGE_ACCOUNTS) break;
+    if (!isMember(key)) continue;
     const entry = accounts[key];
     if (isRecord(entry)) entries.push([key, entry]);
   }
@@ -297,10 +311,14 @@ function parsed(read: CappedRead): { value: unknown } | { failed: UsageUnavailab
  *
  * The two files fail independently, and they are not equally load-bearing. `usage.json` is the
  * numbers, so anything wrong with it is an unavailable reading. `sequence.json` is display identity
- * alone, so a missing or malformed one leaves every account's label and active marker empty and the
- * numbers standing: a card that says "account 2, 46% of the five-hour window" is worth far more
- * than no card. The cache's own `email` field is not the fallback, because it is not on this
- * reader's allowlist for that file.
+ * alone and membership, so the two roles part company when it fails. A missing or malformed one
+ * leaves every account's label and active marker empty and the numbers standing: a card that says
+ * "account 2, 46% of the five-hour window" is worth far more than no card. The cache's own `email`
+ * field is not the fallback, because it is not on this reader's allowlist for that file.
+ *
+ * An identity map that reads cleanly and holds no accounts is a read map rather than a failed one,
+ * so it filters every cached account out and the reading carries none. That is claude-swap stating
+ * it holds no accounts, and this card's contract is to show what claude-swap shows.
  *
  * It does not throw, and that is structural rather than audited: the whole body runs inside one
  * guard, so the guarantee holds for the calls whose failure modes are not this module's to enumerate
@@ -329,11 +347,18 @@ function reading(options: ReadUsageOptions): UsageReading {
 
   const identity = parsed(read(path.join(root, "sequence.json"), MAX_USAGE_FILE_BYTES));
   const sequence = "failed" in identity || !isRecord(identity.value) ? {} : identity.value;
-  const identities = isRecord(sequence["accounts"]) ? sequence["accounts"] : {};
+  const rawIdentities = sequence["accounts"];
+  const identityMapRead = isRecord(rawIdentities);
+  const identities = identityMapRead ? rawIdentities : {};
   const activeNumber = finite(sequence["activeAccountNumber"]);
 
   const accounts: UsageAccount[] = [];
-  for (const [key, entry] of accountEntries(cached)) {
+  // Object.hasOwn, never `in`: `identities` is parsed from another program's file, and `in` answers
+  // for `Object.prototype`'s own members as well as the file's. The key filter upstream admits only
+  // digits, so nothing inherited can reach here today; the guard that makes it safe lives in another
+  // function, which is exactly why this one does not lean on it.
+  const isMember = (key: string) => !identityMapRead || Object.hasOwn(identities, key);
+  for (const [key, entry] of accountEntries(cached, isMember)) {
     const named = identities[key];
     const lastGood = isRecord(entry["lastGood"]) ? entry["lastGood"] : {};
     accounts.push({
