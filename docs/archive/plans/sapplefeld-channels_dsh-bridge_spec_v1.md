@@ -1,6 +1,6 @@
 # DSH bridge: a channel that drives a DeepSeek Harness worker by message
 
-Status: In Progress
+Status: Superseded
 Commit Model: Commit-and-Push
 Created: 2026-09-07
 
@@ -553,6 +553,68 @@ Every entry here binds every section opened after it was written, dispatched or 
   write. The permitted case and the forbidden case are indistinguishable in the field the proposed
   rule read, and differ only in the field it did not. So a fix aimed at a reused predicate states the
   case it newly refuses and checks that no legitimate path wears that shape, before it is written.
+- **A guard's discriminant has to be a property only the thing it admits can hold, so where the
+  legitimate target and the refused class are content-identical there is no content guard to write,
+  and the honest fix names instead the one artifact whose corruption the code cannot survive.**
+
+  The instance: a rotate was hardened to refuse a target that exists, is not empty, and carries no
+  section this bridge ever wrote, and the predicate written for it tested for any Markdown
+  second-level heading. Every ordinary document passes that, and the append path defeats it outright,
+  since a prompt writes a section into whatever file its `record` names, so one prompt makes every
+  file on the machine pass a guard meant to tell a record from a document. The false refusal landed
+  on this plan's own path in the same stroke: a rotate writes the leading header alone into the fresh
+  file, and the cutover record's header is forty-five lines carrying no such heading, so the second
+  rotate refuses a file this writer had itself just created, with a message saying it does not look
+  like a record. Both halves were unreachable from the fixture the fix shipped with, whose control
+  was drawn from the pattern's own literal.
+
+  What the class admits is what replaced it: the bridge's own state directory is refused as a record
+  or an archive target, and nothing else is. Read the difference rather than the shape, because the
+  two look alike and only one is defensible. A policy about where a caller's file may live cannot be
+  written here at all, since the legitimate record is an existing document of the operator's in a
+  directory the plan does not choose; a refusal of the artifact this code reads as its own authority
+  is a different rule, and it admits every path such a policy would have refused. An artifact a
+  program reads as authority is never a valid target for a write whose path the caller names, and
+  what makes that asymmetric is recovery rather than privilege: a caller who names a document
+  destroys one file the operator can restore, while one who names the session map wedges every
+  bridge in every scope on this machine until a hand repair, a prompt refusing on a map it cannot
+  read and the write deliberately declining to replace one.
+
+  The second half is about the brief rather than the code, and it is the more expensive of the two.
+  **A constraint is briefed with the authority it actually holds, so a default this plan assumed is
+  never handed to a reviewer as a decision the operator made.** The instance: two consecutive review
+  rounds were briefed that the operator had ruled the record path shape-checked and not
+  location-checked, and told in as many words not to re-litigate it. The operator's answer of that
+  date was about auto-allowing the prompt tool, and the sentence in it about an allowlist speaks to
+  where the worker starts rather than to what it reaches; the record's own rule is this plan's
+  recorded default assumption, carrying a stated reversal beside it. A reviewer told a question is
+  closed stops looking at it, so a borrowed authority narrows the search on a premise nobody made,
+  and the round comes back agreeing. Cite the line that settles a constraint before briefing it as
+  settled, and where the line is an assumption of ours, brief it as one and let the lens weigh it.
+
+- **A guard that compares spellings admits every other spelling of the same file, so a guard about
+  identity resolves the path to the object it names before comparing it, or checks the object it
+  actually opened.** The instance: this plan's own state-directory refusal compared the output of a
+  canonical-path helper that is a lexical resolve plus a case fold on Windows, resolving no link, no
+  junction and no short name. Windows publishes an 8.3 short name for the state directory by default,
+  with no privilege and nothing to set up, so a record path spelled through that short name named the
+  same file and the guard did not see it. Confirmed at the guard's own arithmetic on this machine: the
+  long spelling is refused and the short spelling is admitted, and the short name is read off the
+  filesystem rather than guessed. What makes this worth an amendment rather than one fix is that the
+  guard was the answer to a Critical, so a guard that holds only for the spelling the author had in
+  mind reads as a closed finding while leaving the finding open. Two remedies work and the second is
+  the stronger: resolve the candidate through a real-path call on its deepest existing ancestor before
+  the comparison, or compare the identity of the handle the code actually opened against the identity
+  of the artifact it is protecting, which no spelling can route around because it never looks at one.
+  The rule generalizes past paths: wherever a guard admits or refuses on a rendering of a thing, the
+  thing has other renderings, and the guard is written against the thing.
+
+  The test half is the same lesson from the other side, and it is why three reviewers had to find this
+  rather than the suite. The guard's own test passed because its negative control was a string that
+  merely shared a prefix with the protected directory, which is exactly the case a lexical comparison
+  gets right. A control drawn from the class a guard handles proves the instrument runs and says
+  nothing about the class it fails, so a guard about identity is tested against a second real spelling
+  of one real object, withheld from whatever the guard's own code spells.
 
 ## Sections of Work
 
@@ -720,9 +782,22 @@ therefore refuses those three arguments today, so adding them to the schema is p
 record work rather than a separate tidy-up. Section 2's review round surfaced this and it is recorded
 here rather than fixed there.
 
+The remembered path persists in the shared session-state file, in `SessionRecord`'s `record`
+field, which section 2 built and already validates: a bridge restart adopts it with the rest of
+the record, so a caller names the record once rather than again on the first prompt after every
+restart. Its writer is `prompt` itself, which already publishes that session's record before the
+prompt goes out, so `record` is an argument of `dsh_prompt` in the harness as well as on the wire
+and nothing outside the bridge writes the state file. A prompt naming a path replaces the
+remembered one; a prompt naming none keeps it.
+
 Files in scope: `bridge/record.ts`, `bridge/record.test.ts`, `bridge/protocol.ts` (the tool schema
 for `dsh_record_rotate`, and `dsh_prompt`'s `record`, `party` and `counterparty` arguments),
-`bridge/index.ts` (dispatch).
+`bridge/protocol.test.ts` (the tool-family pins that schema reddens), `bridge/index.ts` (dispatch)
+and `bridge/index.test.ts` (that dispatch's own tests), `bridge/harness.ts` and
+`bridge/harness.test.ts` (`record` on `PromptArgs`, the shared record-path and canonical-path
+guards this section resolves through rather than re-spelling, and the line in `prompt`'s own state
+write that persists the path), and `bridge/README.md`, whose count of the tools and of
+`dsh_prompt`'s arguments this section's own change falsified.
 
 Tests: lock the append-only property (an existing section is never altered), the refusal during a
 turn including the shared-path case (two names, one record, one in flight), the refused prompt that
@@ -906,6 +981,24 @@ leaving an auditor to infer a bound that is not there. This sentence is the disp
 security Major from section 2's thirteenth review round, whose code half is the operator's recorded
 decision (a workspace allowlist was one of the three options answered on 2026-09-08 and was not the
 one chosen), leaving the record as the part still owed.
+A second accepted-risk bullet is owed beside that one, and it is the disposition of a security
+Major from section 3's second review round as a consult ruled it on 2026-09-08: a record section's
+speaker line is the bridge's word about which call produced the section, never proof of who wrote
+the text in it. The bridge writes both parties' text verbatim between a header it composes and a
+`NEXT:` line, so a body that itself contains a header line reads as a further section to anyone
+who parses the file by its lines. Nothing in the file establishes authorship past that: the
+single-writer rule binds the two agents by instruction rather than by confinement, the worker runs
+unsandboxed with the record and the bridge's state file both readable to it, and no delimiter the
+bridge could choose is a secret from a party that can read the file, so forge-resistance against a
+writer running as the same principal has no key to rest on. A body-borne forgery is the same
+capability as opening the file and writing a section, reached through a narrower door, since the
+forged text also stands in the worker's own session log (`dsh_tail`) and in the channel event that
+carried it, where a direct write leaves neither trace. The bullet names its own reopen condition: a
+worker confined away from the record and the state root would make a bridge-held secret keepable,
+and a real delimiter possible. The cutover runbook carries one sentence of the same fact for the
+human reader, that a section's speaker line records which bridge call produced it rather than
+proving authorship, and that where it matters what the worker actually said, the worker's own
+session log is its side of the record.
 `docs/install.md` gains one line naming a Claude Code version floor of 2.1.260 for this
 plugin, with the reason: from that build onward Claude Code escapes a channel event's attributes
 and disarms a forged closing channel tag in its body, and the bridge's own guard is the second
@@ -934,6 +1027,8 @@ Acceptance:
 - `docs/dsh-bridge.md` exists and every tool and attribute it names matches `bridge/protocol.ts`
   (a test in `bridge/protocol.test.ts` reads the doc, pins the six tool names and the meta keys, and
   asserts that no other `dsh_`-prefixed identifier or `meta` key appears in it).
+- The security model's accepted-risks list carries the record-attribution bullet with its reopen
+  condition, and the runbook's protocol amendment carries the one-sentence form of the same fact.
 - The security model's egress paragraph names the host and port from `~/.dsh/settings.yaml`, its
   allow-rule paragraph counts seven rules across two plugins, and its accepted-risks list carries the
   `dsh_prompt` entry.
@@ -3448,3 +3543,654 @@ Delta: reading taken 2026-09-08T23:10:14Z on NEO-CLAUDE, under the contention na
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 20 - 2026-09-08
+
+Written at the compaction gate's signal, forty-five offers held over thirty-one minutes, at the
+boundary between section 3's first review round and its fix round. No section has closed since
+Chapter 2.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented, has been through one full review round at opus across three lenses,
+and is in its first fix round. Sections 4 through 6 are unstarted. Section 3's files are uncommitted
+and commit at its close, per the plan's Commit-and-Push model.
+
+**The section opened with a question rather than a diff, and the question was sound.** The dispatch
+returned NEEDS_CONTEXT asking whether the remembered record path persists in the shared
+session-state file or lives only in the record module's process memory, naming the file-scope
+conflict behind it: persisting it needs `bridge/harness.ts`, which the section's own
+`Files in scope:` line did not name. It was ruled from section 2's committed code rather than
+escalated. Four sites settle it: the `SessionRecord` doc comment at `bridge/harness.ts:300`, which
+says the interface is what the bridge remembers "across a kill and across a restart" while `record?`
+is a field of it; the field's own comment at `:306`; `admittedRecord`'s comment at `:1878`, whose
+sentence about the next write persisting the session without the path is coherent only if writes
+persist the field; and section 3's own "remembers the path for the session". The in-process reading
+contradicts all four.
+
+**The ruling also rejected the shape the question proposed for the persisting write, on the
+questioner's own evidence.** Its persistent option added a field-level compare-and-set or a
+`setRecordPath` export so the record module could write the state file from outside `Bridge`, and
+its own analysis showed that any read-then-write from outside races `prompt`'s pre-prompt write and
+`finish`'s turn-end write. The answer is not a safer external writer but no external writer: the
+path arrives with a prompt, so `record` joins `PromptArgs` and `Bridge.prompt` writes it into the
+record it already publishes. One interface field and one line in an object literal, with no new
+export and no lock.
+
+**Two spec amendments were made and are recorded as the approval drift they are.** Section 3's
+`Files in scope:` line now names `bridge/harness.ts` and `bridge/harness.test.ts`, folded on the
+section loop's fold predicate: the same directory as files already in scope, no acceptance criterion
+the section does not already carry, and covered by the gate the close will run. And a paragraph above
+that line now states where the path persists, that `prompt` is its writer, and that a prompt naming a
+path replaces the remembered one while a prompt naming none keeps it, which is a declared assumption
+the acceptance criteria did not settle. `bridge/protocol.test.ts` was folded in later on the same
+predicate, to fix a stale tool-count pin that the section's sixth tool reddened.
+
+**Live dispatches.** One: `implementer-sonnet`, agent `a2f987cde988ac7d8`, resumed for section 3's
+first fix round. It was asked to fix two Criticals and five Majors, to leave one Major deliberately
+unfixed, and to batch eight Minors into this one round per the plan's fourth standing ruling. Its
+first turn built the section whole and returned DONE.
+
+**The review round's findings, all verified against the code by this session before the fix round was
+dispatched.** Three lenses ran at opus and effort high through the Workflow route, since the writer
+tier is sonnet and a reviewer one tier above a sonnet writer takes `high`, which the Agent tool
+cannot set. Adversarial and blind both returned CHANGES_REQUIRED and security returned BLOCK. Two
+Criticals: the record writer keys its pending turns on the session name, so a second prompt for a
+name whose turn is in flight overwrites that turn's entry and the refusal's own catch then deletes
+it, losing the worker's answer on an ordinary retry that the refusal text itself invites; and
+`dsh_record_rotate` renames onto its archive path with no existence check and no equality check
+against the record, so an archive path naming the record destroys the record and leaves no archive
+while reporting success, and one naming any existing file replaces it silently, which reaches outside
+this repository. Five Majors are fixed in the round: the writer keyed on the raw session name while
+the bridge keys turn ends on the trimmed one, losing every turn under a padded spelling; an append
+failure swallowed to the diagnostic stream while the prompt answers accepted; the stored record path
+admitted by the workspace guard alone rather than by the record module's own, so the directory
+refusal covers the wire and not the value the bridge opens; `MAX_PARTY_NAME` declared on the schema
+and enforced nowhere, with a blank party admitted through a nullish default and a newline able to
+forge a section header; and the remembered path read off disk rather than off the value the prompt
+will use, with a comment claiming an ordering the code does not have. One Major is justified and not
+fixed: the rotate's in-flight refusal reads liveness from this process's own map and cannot see a
+sibling bridge, which is the multi-bridge premise the operator's first ruling struck for section 2,
+so an on-disk marker would re-import it. What is owed instead is the qualification of the tool
+description's claim, which promises more than a process-local guard delivers, and that correction is
+in the round.
+
+**One security Major is routed rather than fixed here, and it is the item most worth the operator's
+attention.** The record path is any absolute local path by the section's own spec text, which states
+the path is the caller's choice and is not checked against the session's `cwd`. Composed with the
+rotate, that made an append-and-truncate primitive over any file the process can write, which no
+document prices. Fixing the rotate's clobber removes the truncate half and leaves the append half,
+which the spec authorized deliberately. What remains owed is the accepted-risk paragraph in
+`docs/security-model.md`, already section 6's work, naming this composed primitive explicitly, plus
+one observation for section 4: the security lens reads the plan's auto-allow list as placing
+`dsh_record_rotate` among the auto-allowed tools on the section's own reading rather than on the
+operator's ruling, a classification made when the rotate looked like bookkeeping.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T00:0xZ on NEO-CLAUDE, each exit
+code taken from the run itself and the count instrument controlled against the one failing suite,
+which spoke: type check exit 0, and the bridge suites at env 3/3/0, fake-dsh 2/2/0, harness 67/67/0,
+index 12/12/0, log 18/18/0, protocol 23/23/0, record 11/11/0 and redact 8/8/0, for 144 tests, 144
+passes and no failures once the folded pin was fixed. The pre-section figure on the same eight suites
+is 131, which reconciles the section's own arithmetic: this session's Chapter 2 baseline of 123 was
+taken over six suites and omitted `bridge/redact.test.ts`, whose eight tests are the difference. The
+whole-gate baseline is unchanged and still the 2026-09-08T23:07:38Z run recorded on Chapter 2's
+`Gate:` line, at tests 1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the present
+tree, and none can honestly run while a fix round is editing it.
+
+**A structural import check was run over the prospective commit set** rather than over a list of
+names, since section 2's close caught two shipping files by that method at the last moment. Eighteen
+sources under `bridge/` and forty relative imports resolve with none missing, under a control that
+withheld `bridge/record.ts`, a target no literal in the pattern names, and that reported the two
+importers referencing it.
+
+**The machine's heavy slot.** This session holds no claim. A foreign claim has stood throughout,
+`NEO: Worker` on repo `Neuro-Evolution-Operations`, session `44e999c1`, expecting 3600 seconds, and
+it was not written over. One anomaly is named rather than absorbed: its `Started:` line reads
+2026-09-08T23:35:00Z while the file's own modification time is 23:27:20Z, so that field names a
+moment later than the write that created it. The claim was aged from the modification time, which is
+the machine's stamp rather than its writer's composition.
+
+**Two instrument facts cost time here and are worth carrying.** `sed` in this shell strips CR in text
+mode, so `cat -A` behind a `sed` pipe reported every line of a CRLF region as LF, and a splice built
+on that reading was refused by its own guard; line endings are read in node from the raw bytes. And
+`find -printf %TH:%TM` prints local time while `date -u` prints UTC, so a growth reading that mixes
+the two on this box reads four hours stale.
+
+**Next action per section.** Section 3: await the fix round, verify every fix against the code rather
+than against its report, run one bounded review round on the fix delta where that delta earns one,
+then the targeted lane, then the heavy-process claim and the whole gate with the contention lane
+beside it, since the close pushes to a trunk consumers install from with no continuous integration
+gating the merge, then close with a Chapter and commit and push. Sections 4 through 6: unstarted, in
+order, with the plan's four standing rulings binding all of them, and section 4 additionally carrying
+the auto-allow observation above and the three dependency advisories.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the nineteen before it: main is
+an install surface that takes the whole gate, and a fix round is editing the tree.
+
+**Altered outside this repository.** Nothing at this boundary beyond three memory applied-stamps in
+the operator tier.
+
+### Interim board 21 - 2026-09-08
+
+Written at the compaction gate's signal, one hundred and four offers held over forty-one minutes,
+at the boundary between section 3's second review round and its second fix round. No section has
+closed since Chapter 2. This entry supplements Interim board 20 rather than repeating it: what is
+new is the fix round's return, this session's own verification of it against the code, the second
+review round's findings, and one finding routed to a consult rather than to a fix.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented and has been through two review rounds and one fix round; its second
+fix round is not yet dispatched, because one of that round's own inputs is under consultation.
+Sections 4 through 6 are unstarted. Section 3's files are uncommitted and commit at its close, per
+the plan's Commit-and-Push model. The plan-doc commit 1a09377 is committed and not pushed; the push
+rides with the section's close, on the same reasoning as the twenty boards before it.
+
+**The first fix round returned DONE and every fix was verified against the code rather than against
+its report.** Both Criticals are closed at their sites. The record writer now keys its pending turns
+on an opaque token a registration mints rather than on the session name, and refuses to mint a
+second token while a name holds one, so the second prompt's own discard is a no-op that cannot reach
+the first turn's entry. That fix rests on a premise this session checked rather than accepted: the
+harness refuses a second prompt for a name with a turn in flight, at two sites in
+`bridge/harness.ts`, so a prompt whose registration is refused is itself refused a moment later and
+no party section is lost. The rotate now refuses, before anything is touched, an archive path naming
+the record itself and one naming a file that already exists, both compared on a canonical form that
+resolves the path and folds case on Windows.
+
+All five Majors of the first round are closed and checked: the session name is trimmed once at the
+dispatch edge and used for every lookup below it; an append failure now reaches the model in the
+receipt text rather than only the diagnostic stream, and the whole turn is dropped rather than left
+holding the worker's answer; the shared path guard moved to `bridge/harness.ts` and is exported, so
+the wire, the stored value and the rotate all run through one predicate; `party` and `counterparty`
+are bounded, refused blank, refused a line break and refused the hidden class, by reusing the guard
+`bridge/protocol.ts` already exports rather than by matching its protections by hand; and the
+remembered path is read through a new `Bridge.remembered` that wraps the same lookup the prompt
+itself makes. The one Major left deliberately unfixed is unchanged and what was owed instead has
+landed: the rotate's tool description now says the refusal covers a session this bridge is running
+and names what it cannot see.
+
+**Three probes of this session's own against that delta all fell,** and one of them fell on evidence
+worth recording, because it is the answer to a hazard a later round would otherwise re-raise: the
+record writer's new rethrow cannot swallow the channel event the model waits on, because
+`bridge/harness.ts` already wraps the record delivery in its own catch, separate from the push's and
+after it, with a comment stating exactly that invariant. That is section 2's code rather than this
+round's, which is why the fix round's rethrow is safe.
+
+**The second review round ran three lenses at opus and effort high through the Workflow route,**
+since the writer tier is sonnet and a reviewer one tier above a sonnet writer takes an effort the
+Agent tool cannot set. The blind brief was authored as its own literal carrying the changed-file
+list alone, sharing no constant with the sighted two. All three were told no build and no suite run
+was available to them, because a foreign heavy-process claim holds the machine's one slot. The tree
+bracket was IDENTICAL across the round. The round was owed rather than optional under the fix-delta
+bar on two independent triggers: the delta writes outside the tree, at the rotate's rename and at a
+new recursive directory create in the append path, and it reaches input handling and path
+construction.
+
+**No lens returned a Critical,** so the tier ladder does not fire and section 3 stays at sonnet.
+Adversarial and blind returned CHANGES_REQUIRED and security returned CONCERNS. Every finding below
+was verified against the code by this session before anything was dispatched, and two verifications
+sharpened a finding past what any lens stated.
+
+**The Majors owed and going to the second fix round.** The rotate branch resolves both the record
+path and the busy-holder list from a fresh read of the shared state file, which is the exact lookup
+the first fix round deliberately moved the prompt path off, for the reason its own comment gives:
+that file lags this process's own copy whenever a state write has failed, which the code treats as
+an ordinary consequence. One class was fixed in one place and left in the other, which is the
+sharpened form of what the adversarial and blind lenses each raised; the consequence is a rename
+running between a live turn's party section and its counterparty section, splitting one exchange
+across the archive and the fresh file, which is precisely what the refusal exists to prevent. The
+rotate's failure exit is the one exit in the whole dispatch that returns an error's message raw,
+where every other refusal in the same block neutralizes and bounds its text, so a filesystem error
+hands the model both absolute paths verbatim and bypasses the forged-tag guard; all three lenses
+found it independently and it was also this session's own held observation, which is why it was
+withheld from the briefs rather than pre-rated. A killed or lost turn is recorded as though the
+worker had answered, because the turn-end wiring passes the text alone and discards the kind and the
+finish reason the harness supplies beside it, so `dsh_kill` mid-turn writes an empty counterparty
+section byte-indistinguishable from a worker that answered with nothing; the blind lens found this
+one alone. The rotate misreports a partial failure, telling the model nothing was archived when the
+rename has already happened, and never creates the record's own parent directory where the append
+path does. Two paths accept a prompt, append nothing and say nothing about it, while a third
+identical state is a hard refusal, so the three disagree about one condition. And the canonical-path
+rule is re-spelled in the record module byte-identically to the harness's own unexported one, which
+is the standing amendment on importing a guard rather than reimplementing it, with no cycle and no
+excuse: the harness is in this section's scope and the record module already imports from it.
+
+**One security Major is fixed rather than routed, per the rule that a security Major never takes the
+out-of-scope route.** The rotate is a move-and-truncate primitive over any caller-named path, and
+its reach exceeds the bound the operator's own recorded acceptance states, which is a dedicated
+worktree and git as a recovery path for tracked content; the rotate reaches untracked files outside
+any worktree, where neither half of that bound applies, and the lens supplied a worked input that
+renames an operator file out of the home directory. The available fix is orthogonal to the operator's
+ruling and does not reverse it: refuse a rotate whose target exists and carries no bridge-written
+section header, which is proof the target is a record before anything destroys it.
+
+**One security Major is under consultation rather than in the fix round,** and it is the item most
+worth the operator's attention. The record's own structure is forgeable by the party the record
+exists to hold accountable: the worker's answer is written verbatim by design, so an answer
+containing a section header and a `NEXT:` line produces a fabricated counterparty section
+byte-indistinguishable from a real one. It is not a fix-round item because every available repair
+collides with something the plan has already settled. Escaping the body is barred by the section's
+own acceptance criterion, which requires the appended body to be byte-identical to the input. A
+forge-resistant delimiter changes the record's published format, and that format is not private:
+section 6's runbook is a protocol amendment the operator pastes into the live record's own header,
+so a nonce would appear there and in front of every human reader. Accepting it and documenting the
+residual is available and section 6 already owns a neighbouring accepted-risk paragraph. The consult
+was convened on trigger (d), a load-bearing decision the spec does not cover, with this session's
+lean stated as an instinct to test rather than a conclusion: that a worker which can open the file
+directly makes the in-band vector no new capability, and the finding is therefore a truthfulness
+problem about what the document claims rather than an integrity boundary. The consult was asked
+specifically to test that lean, since single-writer is the property section 3 exists to create, so
+"the worker could just open the file" may describe the world this section ends rather than the world
+after it.
+
+**Fifteen Minors are batched into the same fix round per the operator's fourth ruling,** and a
+Minor-only diff earns no re-review. Two are worth naming here because of what they are rather than
+what they cost. One is a recurrence: a temp directory leak at a test site the previous round's own
+sweep of that exact class missed, which under the recurrence rule takes a mechanical check rather
+than a brief amendment, since an amendment steers the writer and the writer is the one who cannot
+see the class in a line just written. The other is a reversal, and the first on this passage: the
+previous round moved the party timestamp from flush time to registration time, and this round's
+blind lens argues registration time reads backwards once two session names share one file. It is
+resolved as a claim fix rather than by reversing the behaviour a second time, since the spec
+promises a real clock and never promises an ordering across names: the stamp stays where it is and
+the comment states the guarantee as per-session. Naming it is the point, because a second reversal
+on one passage would mandate a consult.
+
+**Three scope widenings are recorded as the approval drift they are,** and the section's
+`Files in scope:` line now names all three. The dispatch's own test file is folded on the section
+loop's fold predicate: the same directory as files already in scope, no acceptance criterion the
+section does not already carry, and covered by the gate the close will run. It is folded because the
+dispatch layer this section added ships with no test of its own, which the adversarial lens raised
+as a Major and the security lens as a Minor, and the section's own Tests line asks for cases that
+exist today only as unit tests of pure helpers with a hand-supplied busy-name array. The protocol
+test file is on the line at last, having been folded a round earlier for a stale tool-family pin.
+And `bridge/README.md` re-opens under the section loop's standing carve-out for a document an
+earlier section wrote whose describing passages this section's own change falsified: it is in
+section 2's scope, and it still counts five tools and omits three arguments of the prompt. That is
+the third consecutive section of this plan whose scope line has widened mid-run, which is a
+planning-stage lesson for the close-out rather than an implementer failure.
+
+**Live dispatches.** One: the consultant, at fable and effort high through the Agent tool, asked to
+rule on the forgeable-record question above, to test this session's lean rather than ratify it, and
+to return one of three implementable shapes: accept with the exact sentences owed to the security
+model and the runbook, a named delimiter change with what it costs the runbook and the human reader,
+or a fork that is genuinely the operator's with a recommendation attached. The second fix round is
+deliberately not dispatched beside it, because the ruling may touch the same two functions the fix
+round edits and two agents in one file is what turns one wrong guess into hours of damage.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T00:5xZ on NEO-CLAUDE, each exit
+code taken from the run itself and the counts parsed in node rather than by a one-character anchor:
+type check exit 0, and the bridge suites at env 3/3/0, fake-dsh 2/2/0, harness 69/69/0, index
+12/12/0, log 18/18/0, protocol 23/23/0, record 17/17/0 and redact 8/8/0, every suite exit 0, for 152
+tests, 152 passes and no failures. The pre-section figure on the same eight suites is 131, so the
+section stands at plus 21 tests. The fix round's own report gave its baseline as 143, which is the
+same tree read before this session's fix to the stale tool-family pin, so plus 9 passes on its
+reading and plus 8 new tests on this one, and the two reconcile rather than disagree. The whole-gate
+baseline is unchanged and is still the 2026-09-08T23:07:38Z run recorded on Chapter 2's `Gate:`
+line, at tests 1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the present tree, and
+none can honestly run while the machine's heavy slot is held.
+
+**The machine's heavy slot.** This session holds no claim. The foreign claim has been rewritten since
+board 20 and is live and fresh: `NEO: Worker` on repo `Neuro-Evolution-Operations`, session
+`44e999c1`, now expecting 5400 seconds, with its `Started:` line and the file's own modification time
+agreeing at 2026-09-09T00:46:05Z, so the anomaly board 20 named is gone. It was not written over. The
+contention is named rather than absorbed: the targeted lane above ran beside it, being a type check
+and eight small suites, and the whole gate the close owes waits for the slot.
+
+**Two dispatch-instrument facts from this round are worth carrying.** Only two of the three lenses
+started, and the workflow journal is what says so, which matters because a queued agent is
+indistinguishable from one that never started and a probe cannot tell them apart, a queued agent
+being unable to answer either; the concurrency reading is the discriminating one, and it said the
+third lens was waiting rather than dead. And the journal's own result records key their payload under
+a field named `result` rather than `value`, so a reader keyed on the wrong name reports every lens as
+having returned nothing, which reads exactly like a round that produced no findings.
+
+**Next action per section.** Section 3: adopt the consult's ruling against the code and write it to
+the plan where it changes what a dispatch is built from, then dispatch the second fix round carrying
+the eight owed Majors, the ruling, and the fifteen batched Minors; then the targeted lane, then the
+heavy-process claim and the whole gate with the contention lane beside it, since the close pushes to
+a trunk consumers install from with no continuous integration gating the merge; then close with a
+Chapter and commit and push. Sections 4 through 6: unstarted, in order, with the plan's four standing
+rulings binding all of them.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twenty boards before it:
+main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
+
+**Altered outside this repository.** Nothing at this boundary.
+
+### Interim board 22 - 2026-09-09
+
+Written at the compaction gate's signal, at the boundary between section 3's third review round and
+its third fix round. No section has closed since Chapter 2. This entry supplements Interim board 21
+rather than repeating it: what is new is the second fix round's return and this session's
+verification of it, a third review round whose central finding is a defect in the brief this session
+wrote, and a consult that corrected two premises this session had been briefing as settled.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented and has been through three review rounds and two fix rounds; its
+third fix round is not yet dispatched at this boundary. Sections 4 through 6 are unstarted. Section
+3's files are uncommitted and commit at its close, per the plan's Commit-and-Push model. Three
+plan-doc commits are committed and not pushed: 1a09377, cb6cde3, and the one this boundary lands.
+
+**The second fix round returned DONE and was verified against the code rather than against its
+report.** All nine owed items are closed at their sites and the eight bridge suites stand at 165
+tests, 165 passing, no failures, against a pre-round baseline of 152. Two things the verification
+caught are worth recording because the report alone would not have shown them. The report's prose
+about its own rotate guard said an absent record and a header-only record both refuse; the code
+refuses neither an absent one, which still takes the fresh-file branch the acceptance criterion
+requires, so the prose was wrong where the code was right. And the round left the wire's path bound
+declared twice, once in each module, on a cycle argument that was sound in the direction it tried and
+had a free direction available: this session moved the constant to the module the import already
+runs from, so the bound is now one value both surfaces read.
+
+**The third review round ran three lenses at opus and effort high through the Workflow route,** the
+tree bracket was IDENTICAL across it, and no lens returned a Critical, so the tier ladder does not
+fire and section 3 stays at sonnet. Adversarial returned CHANGES_REQUIRED with three Majors and
+thirteen Minors, blind CHANGES_REQUIRED with three Majors and ten Minors, security CONCERNS with two
+Majors and seven Minors. The round was owed rather than optional under the fix-delta bar: the delta
+writes outside the tree at the rotate's rename and at a directory create the fix round made
+unconditional, and it reaches input handling and path construction.
+
+**The round's central finding is a defect in the brief this session wrote, not in the work.** All
+three lenses independently found the rotate guard added by the second fix round inert. It tests for
+any Markdown second-level heading, so every ordinary document passes; and the append path defeats it
+outright, since a prompt writes a section into whatever file its record argument names, so one
+prompt makes every file on the machine pass a guard meant to tell a record from a document. This
+session specified that guard, translating a lens's phrase about a bridge-written section header into
+a pattern that matches no such thing. Its false refusal reaches the plan's own path in the same
+stroke, which this session confirmed at the file: a rotate writes the leading header alone into the
+fresh file, and the cutover record's own header is forty-five lines carrying no such heading, so the
+second rotate refuses a file the writer had just created. The guard's fixture could not have caught
+either half, its control having been drawn from the pattern's own literal.
+
+**The round's most serious finding is new, and this session rates it above the lenses.** The append
+path has no target guard at all: the record path is checked for shape and for not being an existing
+directory, and nothing else, so a prompt appends a section into any existing file that is not a
+directory. Confirmed end to end at the code: a record path naming the bridge's own session map
+appends a section into it, the map then fails its parse, a prompt refuses on a map it cannot read
+before any name is recalled or any runtime starts, and the write deliberately declines to replace a
+file it could not read, so every prompt in every scope for every bridge process on this machine is
+refused until the operator repairs the file by hand. The project's own threat model already treats
+this exact wedge as worth a dedicated bound, which is why the session name is length-capped. All
+three lenses rated it Major on one shared ceiling, that the calling session already holds
+pre-approved shell access so this is no escalation. This session rates it Critical on a different
+axis: that ceiling is about deliberate reach, and the wedge is reachable by a single mistyped path,
+which is the same accidental axis the session-name bound already guards. The rating changes no
+routing, since the finding is fixed in this section either way, and it does not fire the tier ladder,
+which turns on Criticals in consecutive rounds where the previous round carried none.
+
+**A consult was convened on two independent triggers and its ruling is adopted whole.** The triggers
+were a second failed attempt at one problem, the arbitrary-file rotate having now been answered once
+and answered wrongly, and a load-bearing decision the spec does not cover. The ruling adopts the
+split this session proposed and corrects the frame around it in two ways that matter more than the
+split does, both of which this session verified at the plan and at the file before adopting.
+
+The first correction is an error of this session's, and it ran for two rounds. Both the second and
+the third review round were briefed that the operator had ruled the record path shape-checked and
+not location-checked, and told in as many words not to re-litigate it. The operator's answer of that
+date was about auto-allowing the prompt tool, and the sentence in it about an allowlist speaks to
+where the worker starts rather than to what it reaches. The record's own rule is this plan's own
+recorded default assumption, carrying a stated reversal beside it. So a location check on the record
+was never barred by authority; it loses on the merits instead, since any allowlist refuses the
+cutover's own record. Two rounds of lenses were told a question was closed on an authority that did
+not cover it.
+
+The second correction retires this session's central argument for why no content guard can work. The
+cutover target already carries eight sections in the bridge's own header shape with eight matching
+NEXT lines, read from the file, so a header-shape guard does not collide with the cutover as this
+session claimed in the consult brief. The conclusion survives on other evidence the ruling supplied
+and this session confirmed: after a rotate the live record is its leading header alone with no
+section in it, so a header-shape guard on the append refuses the very next prompt. No content
+predicate separates a fresh record from an operator document, and the marker that would separate
+them is the published-format change the earlier consult already barred.
+
+**What the adopted ruling has section 3 build.** A refusal of any record or archive path resolving to
+the bridge's own state directory, at every site the record-path guard already runs, on a predicate
+exported beside it. Directory scope rather than file scope, because the state write stages a
+sibling temporary file in that directory and renames it over the map, so a record named there can be
+renamed over the map by a concurrent write, which this session confirmed at the write. The guard that
+failed is deleted rather than corrected, with its documentation claims and the bridge readme's
+version of them corrected in this section's own delta, since a guard that buys nothing while
+claiming to tell a document from a record is worse than none. The general reach is accepted and
+documented, on the same reasoning the earlier forgeability consult established, and the sentences
+owed to the security model and to the runbook are recorded for section 6 beside the forgeability
+bullet already written there. The ruling states, and this session adopts, that refusing the bridge's
+own state directory is not a location policy wearing another hat: it refuses one artifact this code
+reads as its own authority and admits every path an allowlist would have refused. That is recorded
+as a declared design fact rather than raised, and the ruling found no operator fork surviving.
+
+**The sixth standing brief amendment was written at this boundary,** before any dispatch, per the
+adoption trigger. It carries both halves of what this round taught: that a guard's discriminant has
+to be a property only the thing it admits can hold, so where the legitimate target and the refused
+class are content-identical the honest fix names the one artifact whose corruption the code cannot
+survive; and that a constraint is briefed with the authority it actually holds, so a default this
+plan assumed is never handed to a reviewer as a decision the operator made.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T01:58Z on NEO-CLAUDE, on the tree
+as the second fix round and this session's own constant change left it, every exit code taken from
+the run itself and the counts parsed in node: type check exit 0, and the bridge suites at env 3/3/0,
+fake-dsh 2/2/0, harness 70/70/0, index 21/21/0, log 18/18/0, protocol 23/23/0, record 20/20/0 and
+redact 8/8/0, every suite exit 0, for 165 tests, 165 passes and no failures. The pre-section figure
+on the same eight suites is 131, so the section stands at plus 34 tests. The whole-gate baseline is
+unchanged and is still the 2026-09-08T23:07:38Z run recorded on Chapter 2's Gate line, at tests
+1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the present tree, and none can
+honestly run while the machine's heavy slot is held.
+
+**An instrument fact worth carrying, because it produced a wrong reading twice in one boundary.** The
+count parser this session wrote for those eight suites returned zero for all of them while every
+exit code read 0, first because the runner's summary lines open with an information glyph rather than
+TAP's hash, which a banked memory records and which was applied here, and then a second time because
+a regular expression built by string concatenation inside a node one-liner lost its escapes in
+transit while the same pattern written as a literal matched at once. The exit codes were the gate
+throughout; the counts were a claim, and the claim's instrument was broken in two different ways
+before it spoke. Both are now banked.
+
+**The machine's heavy slot.** This session holds no claim. The foreign claim is live and has been
+refreshed since board 21: `NEO: Worker` on repo `Neuro-Evolution-Operations`, session `44e999c1`,
+expecting 5400 seconds, its modification time reading 2026-09-09T01:46:20Z. It was not written over
+and it was not deleted. The contention is named rather than absorbed: the targeted lane above ran
+beside it, being a type check and eight small suites, and the whole gate the close owes waits for the
+slot.
+
+**Live dispatches.** None at this boundary. The consult has returned and its ruling is adopted; the
+third fix round is dispatched immediately after this entry lands.
+
+**Next action per section.** Section 3: dispatch the third fix round carrying the adopted ruling's
+state-directory guard, the deletion of the failed guard with its documentation corrections, and the
+round's batched Minors; then the targeted lane, then the heavy-process claim and the whole gate with
+the contention lane beside it, since the close pushes to a trunk consumers install from with no
+continuous integration gating the merge; then close with a Chapter and commit and push. Sections 4
+through 6: unstarted, in order, with the plan's four standing rulings and now six standing
+amendments binding all of them. Section 6 additionally owes the two accepted-risk bullets this
+boundary and the previous one recorded for it.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twenty-one boards before it:
+main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
+
+**Altered outside this repository.** Five records added to the memory store's operator tier, which
+is shared by every project on this machine: the four instrument facts board 21 listed as owed, plus
+the regular-expression fact above. One of them was written beside an existing record on the same root
+cause and points at it as its companion rather than restating it. Nothing else.
+
+### Interim board 23 - 2026-09-09
+
+Written at the compaction gate's signal, sixty-four offers held over thirty-two minutes, at the
+boundary between section 3's fourth review round and the tier escalation that round earns. No
+section has closed since Chapter 2. This entry supplements Interim board 22 rather than repeating
+it: what is new is the third fix round's return and this session's verification of it, a fourth
+review round, and the escalation of section 3 off the tier that has now answered one Critical
+wrongly twice.
+
+**Section stages.** Sections 1 and 2 are closed and pushed, section 2 at commit d070f07. Section 3
+(Record writer) is implemented and has been through four review rounds and three fix rounds; its
+fourth fix round is dispatched at fable immediately after this entry lands. Sections 4 through 6 are
+unstarted. Section 3's files are uncommitted and commit at its close, per the plan's Commit-and-Push
+model. Four plan-doc commits are committed and not pushed: 1a09377, cb6cde3, 38a1c43, and the one
+this boundary lands.
+
+**The third fix round returned DONE and was verified against the code rather than against its
+report.** All four owed items are closed at their sites. The state-directory guard is exported from
+the harness beside the record-path guard and called at five sites, the failed content guard and both
+its fixtures are gone, the two false documentation claims are corrected, and the round declined to
+add the broader location check it was told not to add. This session re-ran the whole targeted lane
+itself: the type check exits 0 and the eight bridge suites stand at 169 tests, 169 passing, no
+failures, every exit code read from its own run and the counts parsed with literal patterns, against
+a pre-round baseline of 165. Three things the verification caught are worth recording. A Windows
+hazard this session suspected in the round's new exclusive-create claim, that renaming over a file
+whose handle is still open fails on that platform, falls: the claim is closed before the rename. A
+claim mismatch this session suspected in the rotate's documentation also falls, the doc having been
+written to state the conditional the code actually implements. And the round deviated from its brief
+in one place deliberately and said so: a remembered record path naming the state directory warns and
+appends nothing rather than refusing the prompt, which mirrors the sibling case immediately above it
+and is accepted here, since a remembered path is state the caller did not name on this call.
+
+**The fourth review round was owed rather than optional,** on two independent triggers of the
+fix-delta bar: the delta rewrote the append to a raw file descriptor and the rotate to an
+exclusive-create claim, both writes outside the tree, and it added a security guard at five call
+sites. Three lenses ran at opus and effort high through the Workflow route. The tree bracket was
+IDENTICAL across the round. Adversarial returned CHANGES_REQUIRED with two Majors and twelve Minors,
+blind CHANGES_REQUIRED with three Majors and nine Minors, security CONCERNS with two Majors and
+four Minors. Adversarial found no spec drift on its first pass.
+
+**The round's central finding is that the guard which answered round 3's Critical does not hold, and
+this session rates it Critical against the lenses' Major.** The state-directory refusal compares the
+output of a lexical canonical-path helper, a resolve plus a case fold on Windows, which resolves no
+link, no junction and no short name. The security lens confirmed on this host that Windows publishes
+the 8.3 short name SAPPLE~1 for the state directory, so a record path spelled through it names the
+same file and the guard admits it: one tool call, no privilege, no race, and the machine-wide wedge
+round 3 raised is open again. This session reproduced it independently before the round returned and
+then again at the guard's own arithmetic, reading the short name off the filesystem rather than
+guessing it: the long spelling is refused and the short spelling is admitted. The blind lens found
+the same defect at low confidence by the junction route. The lenses rated it Major on the standing
+ceiling that the calling session already holds pre-approved shell access; this session rates it
+Critical on the ground it used in round 3, that the ceiling speaks to deliberate reach while this
+route needs nothing deliberate at all, the short name being a default of the filesystem.
+
+**The tier ladder fires, and its earned check is what fires it.** Two consecutive rounds now carry a
+Critical surviving adjudication, and the ladder requires naming whether a finding class repeats
+before spending a bump. It repeats exactly: round 3's Critical was that the append path has no target
+guard, so the shared session map can be wedged, and round 4's is that the target guard added does not
+hold, so the shared session map can be wedged. Same class, same consequence, and the second failed
+attempt at one problem. That is the tier branch rather than the framing branch, which is what keeps
+this from being a fourth consult. Section 3 therefore escalates from sonnet to fable for its fourth
+fix round, carrying both rounds' evidence, at the implementer's own pinned effort rather than a
+raised one, since the compensation notch is a reviewer instrument. The same bump is owed
+independently by the bar against a third dispatch at one tier, which three sonnet fix rounds have
+now reached.
+
+**The other Major going to that round is a security Major, so it is fixed in this section or raised,
+never routed.** The security lens argues that the accepted general reach of the record path rests on
+a rationale that does not cover the act the code performs. The reach was accepted on the ground that
+a caller naming a document destroys one file the operator can restore, which is true of a
+destructive write and false of an append: the append creates parent directories and adds
+worker-controlled text verbatim, so a record path naming a shell profile or an instruction file the
+machine reads as authority plants content with nothing destroyed and nothing to restore. The lens
+supplies a discriminant that costs the cutover document nothing and takes the same form this plan
+already adopted for the state file, refusing the machine's own execution and instruction chain rather
+than policing where a caller's files may live. This session adopts it as a fix rather than a fork: it
+is additive, it reverses no part of the accepted reach, and it follows the adopted ruling's own
+logic, that the honest guard names the artifacts whose corruption the code cannot survive. The
+earlier consult's conclusion stands; what changes is that its list of such artifacts was short by the
+machine's own execution chain.
+
+**Two further Majors and the round's Minors go with them.** The append path's single unlooped write
+can report fewer bytes than the section holds, which silently truncates the record this section
+exists to make byte-exact, and both the adversarial and blind lenses found it independently from the
+API contract rather than from a run. The rotate leaves its zero-byte exclusive claim behind on any
+rename failure, so a retry with the same archive path is refused by the bridge's own leftover and the
+operator is left looking at an empty archive beside an intact record. Both are in the code the third
+fix round wrote, which is the fourth consecutive round whose Majors sit in the previous round's own
+repair, and that pattern is a close-out lesson rather than an implementer failure.
+
+**A house-rule violation this session found independently and all three lenses also raised:** two
+test names in the record suite narrate a guard that no longer exists. The em-dash sweep over the
+whole delta is clean, run with a control that spoke.
+
+**The seventh standing brief amendment was written at this boundary,** before the escalated dispatch,
+per the adoption trigger. It carries the lesson in the general form: a guard that compares spellings
+admits every other spelling of the same file, so a guard about identity resolves the path to the
+object it names or checks the object it actually opened, and its test is written against a second
+real spelling of one real object rather than against a string the guard's own code spells.
+
+**Gate baseline.** Read from this session's own runs of 2026-09-09T03:30Z on NEO-CLAUDE, on the tree
+as the third fix round left it, every exit code taken from the run itself: type check exit 0, and the
+bridge suites at env 3/3/0, fake-dsh 2/2/0, harness 72/72/0, index 23/23/0, log 18/18/0, protocol
+23/23/0, record 20/20/0 and redact 8/8/0, every suite exit 0, for 169 tests, 169 passes and no
+failures. The pre-section figure on the same eight suites is 131, so the section stands at plus 38
+tests. The whole-gate baseline is unchanged and is still the 2026-09-08T23:07:38Z run recorded on
+Chapter 2's Gate line, at tests 1705, pass 1704, fail 0 and skipped 1. No whole gate has run on the
+present tree, and none can honestly run while the machine's heavy slot is held.
+
+**An instrument fact that cost two readings at this boundary.** This session's first reproduction of
+the short-name bypass reported the guard refusing both spellings, which would have vindicated the
+guard. It was false: the paths were built inside a node one-liner from Git Bash, which strips the
+backslash escapes and collapsed every Windows path to a drive root, so the guard was being asked
+about a directory nobody named. Re-run from a script file it reproduced at once. Separately, a line
+ending read through a sed pipe reported the amendments block as bare LF where the raw bytes report it
+as CRLF, since git-bash sed strips CR in text mode. Both classes are already banked in the operator
+tier; both bit again here, which is the argument for reaching for the file-based form first rather
+than after a wrong reading.
+
+**The machine's heavy slot.** This session holds no claim and wrote none. The foreign claim is live
+and has been refreshed since board 22: `NEO: Worker` on repo `Neuro-Evolution-Operations`, session
+`44e999c1`, expecting 5400 seconds, its modification time reading 2026-09-09T02:32:06Z and agreeing
+with its own Started line. It was not written over and it was not deleted. The contention was named
+in every brief this boundary sent: the third fix round was told the whole-repository suite was
+off-limits and confirmed in its report that it ran only the type check and the eight targeted
+suites, and all three review lenses were told no build and no suite was available to them. The whole
+gate the close owes waits for the slot.
+
+**Live dispatches.** None at the moment this entry is written. The fourth fix round is dispatched at
+fable immediately after it lands, carrying the state-directory guard rebuilt on identity rather than
+spelling, the execution-chain refusal, the append's partial-write loop, the rotate's claim cleanup,
+and both rounds' batched Minors.
+
+**Next action per section.** Section 3: dispatch the fourth fix round at fable with both rounds'
+evidence; then the targeted lane; then, if that round's delta owes a round under the fix-delta bar,
+a fifth review round, which is also the round at which the loop's own upper bound is reached and the
+count goes to the operator at close-out; then the heavy-process claim and the whole gate with the
+contention lane beside it, since the close pushes to a trunk consumers install from with no
+continuous integration gating the merge; then close with a Chapter and commit and push. Sections 4
+through 6: unstarted, in order, with the plan's four standing rulings and now seven standing
+amendments binding all of them. Section 6 additionally owes the two accepted-risk bullets recorded
+for it at the previous two boundaries, and now a third, the execution-chain refusal's own entry in
+the security model.
+
+**Committed at this boundary, not pushed,** on the same reasoning as the twenty-two boards before it:
+main is an install surface that takes the whole gate, and the gate cannot run while the slot is held.
+
+**Altered outside this repository.** One line appended to the kit's kaizen inbox on this machine, on
+the compaction checkpoint's long-leg open dying with the deferral episode that was live when it
+opened, which this run has now reproduced three times. It is left uncommitted in that clone
+deliberately: the notes file there already carried an uncommitted line this session did not author,
+and that clone is four commits behind its origin, so committing would have swept a peer's work.
+Nothing else.
+
+### Close-out - Superseded - 2026-09-20
+
+This plan is superseded by the `agent_persona` supervisor, which does the same job with a Claude
+persona instead of a Qwen worker under DeepSeek Harness. The operator decided that on 2026-09-11 and
+confirmed it again on 2026-09-20. The plan is not to be finished.
+
+**Where the work lives.** Sections 1 and 2 shipped and are on `main` at `d070f07`. Section 3, the
+record writer, and the four plan-doc commits that carry its rulings (`1a09377`, `cb6cde3`, `38a1c43`,
+`b67b19f`) live only on branch `dsh-bridge-parked` and were never merged. That branch stands at 169
+tests passing across the eight bridge suites. One Critical is open on it: the state-directory guard
+compares path spellings, so it admits the Windows 8.3 short name of the directory it refuses. The
+fourth fix round was dispatched at fable to close that and never wrote. Sections 4 through 6 were
+never started. Resume from `dsh-bridge-parked` if the DeepSeek path is ever wanted again.
+
+**The premise is gone.** `D:\DeepSeekHarness`, the directory this plan's goal is built on and the
+target of its section 5 live run, no longer exists on this machine. Reviving this plan means
+re-planning sections 4 through 6 rather than resuming them.
+
+**Why this archival is nine days late.** The instruction to archive was issued on 2026-09-11 and
+declined the same day by commit `c40fbd5`, which reasoned that the plan had "a real commit landed on
+main since (d070f07)" and was therefore active rather than stale. That reasoning does not hold:
+`d070f07` is dated 2026-09-08, three days before the decision rather than after it. Because the
+decline left `Status: In Progress` standing, the session-start listing kept offering this plan and it
+was armed again on 2026-09-20, which is what surfaced the error. The same decline left the
+thread-rebinding plan's Related-plans line calling this effort "currently active", so two documents
+corroborated each other about a state neither had checked. That line is corrected in this changeset.
+
+**The lesson worth carrying.** A plan's `Status:` header is what the session-start listing reads, so
+a retirement recorded anywhere else does not retire the plan in practice. Landing the status change
+is the act that retires it; the decision alone is not.
