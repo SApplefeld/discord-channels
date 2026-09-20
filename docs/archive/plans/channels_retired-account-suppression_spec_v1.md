@@ -1,6 +1,6 @@
 # channels: the fleet card drops accounts claude-swap has retired, v1
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR. Work on branch `retired-account-suppression`, push to `origin`, open a PR against `main`, never push directly to `main`.
 Created: 2026-09-15
 Worker: the `dev` persona, after its process keeper plan (`agent_persona/docs/plans/agent_persona_process-keeper_v1.md`) closes. The coordinator persona hands it over then. No rush is attached.
@@ -44,7 +44,7 @@ Model: sonnet. One file of logic, one test file, a clear contract, an existing s
 
 ### Section 2: land it on the running broker
 
-Model: inline. The broker runs from this checkout as the scheduled task named in `docs/operations.md`, so the change takes effect only after the checkout carries the merged commit and the broker restarts. After the PR merges, run `install/Repair-Broker.ps1 -Pull` from the repository root, then read the fleet card in Discord and confirm accounts 2 and 3 are gone and the six live accounts remain. Record the observation in the Chapter, since a green suite cannot see a card.
+Model: inline. The broker runs from `D:\discord-channels` as the scheduled task named in `docs/operations.md`, never from a persona clone, so the change takes effect only after that checkout carries the merged commit and the broker restarts. After the PR merges, run `install/Repair-Broker.ps1 -Pull` from that checkout's root, then read the fleet card in Discord and confirm the accounts absent from `sequence.json`'s identity map are gone and the accounts it lists remain. Record the observation in the Chapter, since a green suite cannot see a card.
 
 ## Gate
 
@@ -61,7 +61,7 @@ Model: inline. The broker runs from this checkout as the scheduled task named in
 
 ## Operator Verification
 
-After Section 2, open the fleet card in Discord. The two retired accounts should be absent and the six remaining accounts should render as before, with the active marker on the current account.
+After Section 2, open the fleet card in Discord. The retired accounts should be absent and the accounts `sequence.json` still lists should render as before, with the active marker on the current account. At the time this plan closed that meant accounts 1, 2 and 3 absent and accounts 4 through 9 rendering, but the identity map is claude-swap's to change, so the rule is the check rather than the numbers.
 
 ## Chapters
 
@@ -127,3 +127,64 @@ session's.
 
 **Commit Model:** Branch-and-PR. Work on branch `retired-account-suppression`, push to `origin`,
 open a PR against `main`, never push directly to `main`.
+
+### Chapter 2 - Section 2: land it on the running broker - 2026-09-20
+
+**What shipped.** No code. This section carried Section 1's merged commit onto the machine that
+actually runs the broker, and confirmed the card.
+
+**The checkout the section named was the wrong one, and the plan contradicted itself about it.** The
+header's `Checkout:` line had it right: the live broker runs from `D:\discord-channels`. Section 2's
+own text said "this checkout", which would have sent a worker to pull in a persona clone the broker
+never loads, watch nothing change, and have no way to tell a failed fix from a fix that never
+arrived. The scheduled task settles it: `SapplefeldChannelsBroker` runs
+`D:\discord-channels\install\Start-Broker.ps1`. Section 2's text is corrected to match its own
+header.
+
+**What the pull actually needed.** That checkout was not on `main`. It sat on `broker-task-at-startup`
+at `19275c6`, a branch left over from an earlier merge. `git log origin/main..HEAD` was empty and its
+head was an ancestor of `origin/main`, so nothing was stranded; it was switched to `main` and
+fast-forwarded to `fa2029c`, clean. Two things that would have made a bare pull insufficient were
+checked and ruled out. No dependency install is owed: no package manifest changed in the range,
+established against a control, `broker/usage/cache.ts`, which reported 49 changed lines on the same
+instrument, with both manifests confirmed tracked, so the silence is a real absence rather than a
+mistyped path. No build step exists: `install/Start-Broker.ps1` states in its own header comment that
+the broker is invoked as `node broker/index.ts`, so the pulled source is the code that runs.
+
+**The restart was the operator's, because the task needs elevation.** The broker came back as a new
+process and logged `listening on http://127.0.0.1:8787` at 15:03:12Z. Its `/sessions` endpoint
+answers 200, which is the working check rather than the existence check a process listing gives. The
+log carries no usage or card failure after the restart.
+
+**The observation, which is what closes this section.** The operator read the rendered fleet card and
+confirmed the retired accounts are gone. That is an observation of the card, not a suite result, as
+this plan's Gate requires. Beside it, and separately, the reader's inputs were read directly:
+`cache/usage.json` holds accounts 1 through 9, `sequence.json`'s identity map holds 4 through 9, and
+`activeAccountNumber` is 9. So the membership rule drops 1, 2 and 3 and admits six.
+
+**The plan predicted the wrong casualties and the right survivor count, and could not have been both.**
+Section 2 said to confirm "accounts 2 and 3 are gone and the six live accounts remain". Nine accounts
+less two is seven. The identity map settles it at three dropped and six remaining. Both the section
+and the Operator Verification section are corrected, and are now written against the membership rule
+rather than against a snapshot of claude-swap's numbers, which are claude-swap's to change.
+
+**Decisions / Surprises:** the two corrections above were made under the intake gap check's
+declare-and-proceed route, being factual repairs to a document with no alternative reading. Nothing
+about the shipped behavior changed.
+
+**Assumptions:** none (2026-09-20).
+
+**Review Findings:** no reviewer pair was dispatched. This section changed no code, so the review
+step's trivial-section clause leaves the pair optional, and Section 1's delta already carried its own
+pair before it merged.
+
+**Stamps:** none.
+
+**Gate:** this repository's own, run over the documentation delta because tests here read the docs
+tree. Counts and exit codes are recorded in the commit that carries this Chapter, each read from the
+run's own exit-marker file rather than grepped from output.
+
+**Next:** none. Both sections are delivered and the plan is complete.
+
+**Commit Model:** Branch-and-PR. PR #3 carried Section 1 and is merged, so this close-out lands on a
+new branch cut from `main` rather than on the merged branch.

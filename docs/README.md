@@ -18,6 +18,7 @@ All of it is built and installable.
 
 | Document | What it is |
 |---|---|
+| [`archive/plans/channels_retired-account-suppression_spec_v1.md`](archive/plans/channels_retired-account-suppression_spec_v1.md) | Complete | The fleet card stops rendering accounts claude-swap has retired, so it shows what claude-swap shows. The usage reader kept every account the usage cache still remembered, including ones removed from rotation, because nothing told it which accounts still exist. It now takes membership from `sequence.json`'s `accounts` identity map: the map decides which accounts exist, the cache supplies their numbers, and the rotation array is still not read. The membership test sits inside the cap loop, so a retired account is dropped before it can spend a `MAX_USAGE_ACCOUNTS` slot and the cap counts survivors. When the identity map cannot be read the reader keeps every cached entry exactly as before, which is the fallback that keeps a missing or malformed file from blanking the card. A pre-existing cap test had to be repaired rather than weakened: its fixture listed one account in the map while the cache held twenty-two, so the membership rule left one survivor and the cap was no longer the thing under test. Landed on the running broker and confirmed by reading the rendered card, since a green suite cannot see one. The plan's own Section 2 had named the wrong checkout and predicted the wrong number of retired accounts; both are corrected in the close-out Chapter. |
 | [`architecture.md`](architecture.md) | The system in one page: the four components per host, the split between hooks (which carry identity, activity, and the conversation outward) and the channel (which is the only path carrying a message in), the data flow across the three route groups, the external integrations, and the no-build-step runtime model. Read this first. |
 | [`install.md`](install.md) | Standing a host up: creating the Discord application, provisioning the host, registering the broker's scheduled task, and launching a session. |
 | [`operations.md`](operations.md) | Running a host: where state and logs live, how to read a thread, how a session's `/rename` reaches its thread title, how to answer a permission prompt, the tunables, and what to do when something is wrong. |
@@ -26,7 +27,7 @@ All of it is built and installable.
 
 ## Plans
 
-One plan is parked in [`plans/`](plans/) and heads the table; everything delivered, shelved or declined is archived below it, most recent first.
+No plan is open. Everything delivered, shelved or declined is archived in [`archive/plans/`](archive/plans/) and listed below, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
