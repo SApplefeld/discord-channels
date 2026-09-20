@@ -3,14 +3,14 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-One plan is open: [`channels_thread-rebinding_spec_v1.md`](channels_thread-rebinding_spec_v1.md), one Discord thread across a long-running supervisor's restarts. One plan is parked at `Status: Ready`: [`channels_retired-account-suppression_spec_v1.md`](channels_retired-account-suppression_spec_v1.md), the fleet card dropping accounts claude-swap has retired. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
+No plan is open. One plan is parked at `Status: Ready`: [`channels_retired-account-suppression_spec_v1.md`](channels_retired-account-suppression_spec_v1.md), the fleet card dropping accounts claude-swap has retired. Everything delivered, shelved or declined is in [`../archive/plans/`](../archive/plans/), listed newest
 first in [`../README.md`](../README.md).
 
 ## Rules
 
-- A plan lives here while it is being worked. When it reaches `Status: Complete` or is abandoned, it
-  moves to `../archive/plans/` in the same close-out that finished it, via `git mv`, so history is
-  preserved and the Chapters travel with the file.
+- A plan lives here while it is being worked. When it reaches `Status: Complete`, or is abandoned,
+  shelved or declined, it moves to `../archive/plans/` in the same close-out that finished it, via
+  `git mv`, so history is preserved and the Chapters travel with the file.
 - Naming: `<project>_<content-type>_v<n>.md`. Increment the version rather than overwriting a prior
   one.
 - The `Status` header drives the lifecycle. `In Progress` plans are surfaced for resume; a
