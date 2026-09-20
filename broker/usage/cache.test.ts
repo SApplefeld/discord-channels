@@ -97,6 +97,86 @@ test("both files read into accounts ordered by number, with the active one marke
   }
 });
 
+test("an account absent from the identity map does not render, however long the cache remembers it", () => {
+  const held = scratch();
+  try {
+    held.writeUsage({
+      schemaVersion: 2,
+      accounts: { "1": account(), "2": account(), "3": account() },
+    });
+    held.writeSequence(sequence([1, 3], 1));
+
+    const reading = readUsage({ root: held.root });
+    assert.ok(reading.available);
+    assert.deepEqual(
+      reading.accounts.map((entry) => entry.number),
+      [1, 3],
+      "account 2 is not in the identity map and does not render",
+    );
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("an absent identity file keeps every cached account, unlabelled", () => {
+  const held = scratch();
+  try {
+    held.writeUsage({ schemaVersion: 2, accounts: { "1": account(), "2": account() } });
+    // No sequence.json at all: the identity map was never read, so the fallback is every cached
+    // account standing, unlabelled.
+
+    const reading = readUsage({ root: held.root });
+    assert.ok(reading.available);
+    assert.deepEqual(
+      reading.accounts.map((entry) => entry.number),
+      [1, 2],
+    );
+    assert.deepEqual(
+      reading.accounts.map((entry) => entry.email),
+      [null, null],
+    );
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("an identity file carrying no accounts map at all keeps every cached account", () => {
+  const held = scratch();
+  try {
+    held.writeUsage({ schemaVersion: 2, accounts: { "1": account(), "2": account() } });
+    // The file parses and carries an active marker, but no `accounts` map, so the membership
+    // authority was never read and the fallback stands. This is the branch a present-but-shapeless
+    // identity file takes, distinct from the file being absent.
+    held.writeSequence({ activeAccountNumber: 1, lastUpdated: "2026-08-09T13:59:07Z" });
+
+    const reading = readUsage({ root: held.root });
+    assert.ok(reading.available);
+    assert.deepEqual(
+      reading.accounts.map((entry) => entry.number),
+      [1, 2],
+    );
+  } finally {
+    held.cleanup();
+  }
+});
+
+test("an identity map that reads cleanly and holds no accounts renders no accounts", () => {
+  const held = scratch();
+  try {
+    held.writeUsage({ schemaVersion: 2, accounts: { "1": account(), "2": account() } });
+    // An empty map is a read map, not a failed one: claude-swap is stating it holds no accounts, and
+    // this reader's contract is to show what claude-swap shows. The reading stays available, so the
+    // card names an empty fleet rather than an unreadable one.
+    held.writeSequence({ activeAccountNumber: 1, lastUpdated: "2026-08-09T13:59:07Z", accounts: {} });
+
+    const reading = readUsage({ root: held.root });
+    assert.ok(reading.available);
+    assert.deepEqual(reading.accounts, []);
+  } finally {
+    held.cleanup();
+  }
+});
+
 test("claude-swap's epoch-seconds timestamps are read as milliseconds", () => {
   const held = scratch();
   try {
@@ -397,11 +477,15 @@ test("wrong-shaped fields contribute nothing and the account count is capped", (
         },
       }),
     };
+    const numbers = [9];
     for (let number = 10; number < 10 + MAX_USAGE_ACCOUNTS + 5; number += 1) {
       accounts[String(number)] = account();
+      numbers.push(number);
     }
     held.writeUsage({ schemaVersion: 2, accounts });
-    held.writeSequence(sequence([9], 9));
+    // The identity map lists every numeric account the cache holds, so more than MAX_USAGE_ACCOUNTS
+    // survive the membership filter and the cap, not the filter, is what this test pins.
+    held.writeSequence(sequence(numbers, 9));
 
     const reading = readUsage({ root: held.root });
     assert.ok(reading.available);

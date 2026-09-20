@@ -3,14 +3,16 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-Two plans are open: [`sapplefeld-channels_dsh-bridge_spec_v1.md`](sapplefeld-channels_dsh-bridge_spec_v1.md), the DSH bridge channel plugin, and [`channels_thread-rebinding_spec_v1.md`](channels_thread-rebinding_spec_v1.md), one Discord thread across a long-running supervisor's restarts. Two plans are parked at `Status: Ready`: [`channels_retired-account-suppression_spec_v1.md`](channels_retired-account-suppression_spec_v1.md), the fleet card dropping accounts claude-swap has retired, and [`channels_stale-after-restart_spec_v1.md`](channels_stale-after-restart_spec_v1.md), ending a session that died during a broker outage so its deleted thread stays deleted. Everything delivered is in [`../archive/plans/`](../archive/plans/), listed newest
-first in [`../README.md`](../README.md).
+No plan is open. One is parked at `Status: Ready`:
+[`channels_stale-after-restart_spec_v1.md`](channels_stale-after-restart_spec_v1.md), which ends a session lost in a broker
+outage and keeps its deleted thread deleted. Everything delivered, shelved or declined is in
+[`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
 
 ## Rules
 
-- A plan lives here while it is being worked. When it reaches `Status: Complete` or is abandoned, it
-  moves to `../archive/plans/` in the same close-out that finished it, via `git mv`, so history is
-  preserved and the Chapters travel with the file.
+- A plan lives here while it is being worked. When it reaches `Status: Complete`, or is abandoned,
+  shelved or declined, it moves to `../archive/plans/` in the same close-out that finished it, via
+  `git mv`, so history is preserved and the Chapters travel with the file.
 - Naming: `<project>_<content-type>_v<n>.md`. Increment the version rather than overwriting a prior
   one.
 - The `Status` header drives the lifecycle. `In Progress` plans are surfaced for resume; a

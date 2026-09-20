@@ -43,7 +43,7 @@ Four other records went `stale` in the same sweep and never resurfaced, because 
 
 ## Related plans
 
-- [channels_thread-rebinding_spec_v1.md](channels_thread-rebinding_spec_v1.md): one Discord thread across a supervisor's restarts. Its lineage takeover is why only sessions with no running successor showed the symptom. Unchanged by this round.
+- [channels_thread-rebinding_spec_v1.md](../archive/plans/channels_thread-rebinding_spec_v1.md) (Shelved): one Discord thread across a supervisor's restarts. Its lineage takeover is why only sessions with no running successor showed the symptom. Unchanged by this round.
 
 ## Approach
 

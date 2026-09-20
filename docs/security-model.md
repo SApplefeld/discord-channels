@@ -1112,6 +1112,41 @@ authenticated account or a non-administrative service account.
   a single steering message, and a process running as the operator can rewrite the session-start
   hooks outright. The instruction text changes what a forged message is worth, not who can forge
   one or what they could already do.
+- **A lineage's thread can be taken over by a process holding the session's process token.** A
+  session declares a lineage with the `x-channel-lineage` header at registration, and the broker
+  records the value verbatim without asking whether the session declaring it has any claim to that
+  name. Lineage is published by `GET /sessions` on purpose, as session identity of the same class as
+  `name`, so a lineage in use need not be guessed. Of the conditions at the takeover site, only one
+  bears on *who* may take a thread: the claimant's `startedAt` must be strictly newer than the
+  incumbent's. The others bound which threads are eligible rather than which claimants are, skipping
+  a thread that was never posted to and one already given up on, and both of those describe exactly
+  the thread a claimant would want. The ordering test is not an authorization check and does not read
+  as one. The broker stamps `startedAt` itself at registration, so an arriving claimant is always the
+  newer of the two by construction; what the test prevents is an *older* record, such as a superseded
+  session's still-reappearing roster entry, reclaiming a thread it already lost.
+  The direct route is closed and the indirect one is not. A subprocess announcing `source: "startup"`
+  under a token whose session is live and relay-attached is declined as a subprocess rather than
+  registered. The same process announcing any other source falls through to the supersession path,
+  which ends the genuine session's record and creates the claimant's, so the reachable form of this
+  is also the more destructive one. Anyone hardening this should start there rather than at the
+  startup branch.
+  What the claimant then reaches depends on whether it attaches a relay pipe. One that does receives
+  the operator's steering typed into that thread. One that does not holds the thread while delivery
+  fails, since the router resolves the thread to whichever session the binding now names and finds no
+  connection under its token.
+  Accepted because it stands behind the process-token wall the sections above describe rather than
+  beside it. Registration without a token is dropped as unwatched traffic, the token is inherited by
+  every process a wrapped session spawns, and a process already holding one can put words in the
+  operator's mouth through the transcript and answer that session's tool approvals. This is a further
+  door through that wall, not a capability the wall did not already admit.
+  Two signals surface a takeover, and neither is an alarm. Every takeover posts a `↻ supervisor
+  restarted` notice into the thread it took, which is the same line a legitimate restart posts and
+  distinguishes the two in no way. A claimant holding no pipe additionally draws the standing
+  unreachable notice on each message the operator sends, which reports that the session has no
+  channel connected and names a missing relay as the likely cause rather than a stolen thread. The
+  takeover path itself writes nothing to the broker log. So what is actually being relied on is the
+  operator noticing a thread whose worker answers wrongly, or does not answer at all.
+
 - **One allowlisted Discord user per host.** There is no multi-user model and no per-user
   permissions.
 - **A session cannot be started or restarted remotely.** A channel injects into a running session; it
