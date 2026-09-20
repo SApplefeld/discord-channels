@@ -3,7 +3,9 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open. One is parked at `Status: Ready`:
+No plan is open. Two are parked at `Status: Ready`:
+[`channels_board-worker-queues_spec_v1.md`](channels_board-worker-queues_spec_v1.md), which draws each worker
+persona's queue and real plan progress on the `Fleet: Board` card, and
 [`channels_stale-after-restart_spec_v1.md`](channels_stale-after-restart_spec_v1.md), which ends a session lost in a broker
 outage and keeps its deleted thread deleted. Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
