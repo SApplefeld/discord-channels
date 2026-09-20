@@ -1,6 +1,6 @@
 # Fleet board over worker queues
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-20
 
@@ -217,3 +217,54 @@ Tests: lock the build gate in both directions, because a card that silently fail
 None.
 
 ## Chapters
+
+### Interim board 1 - 2026-09-20
+
+Written on the compaction gate's deferral nudge, at the adjudication of section 1's first review
+round. Not a Chapter: section 1 is still open.
+
+**Section stages.** Section 1 is built, reviewed once, and in fix round 1. Sections 2 to 5 are not
+started.
+
+**Live dispatches.** One `implementer-sonnet` holds `broker/config.ts`, `broker/config.test.ts`,
+`broker/board/roster.ts` and `broker/board/roster.test.ts`, applying the seven adjudicated fixes
+listed below. Round 1's three reviewers have all returned.
+
+**Gate baseline.** Measured on this branch at `4152f79` with a clean worktree, before section 1's
+first round: whole suite 1721 tests, 1720 pass, 0 fail, 1 skipped, exit code 0, 34.1 s wall clock;
+lint (`tsc --noEmit`) exit code 0. After section 1's first round, reported by its implementer and
+not yet re-run here: 1733 tests, 1732 pass, 0 fail, 1 skipped. The targeted lane over
+`roster.test.ts` alone, run here: 11 tests, 11 pass, exit code 0.
+
+**Header normalization.** This run set `Status:` from `Ready` to `In Progress` at its start. Carried
+into chapter 1 when section 1 closes.
+
+**Scope drift so far.** Section 1's `Files in scope:` is widened by two files, `broker/index.test.ts`
+and `broker/intake.test.ts`. Each builds a whole `BrokerConfig` object literal, so the new required
+field broke the type check until each gained one line. Folded rather than made a section of its own:
+same directory as a file the section already changed, no acceptance criterion of its own, and covered
+by the gate the section was going to run.
+
+**Rulings adopted since the last boundary.** Round 1 returned no Critical, seven owed Majors and ten
+Minors across three lenses. All seven Majors enter fix round 1: the non-array roster returning the
+held reading rather than none; a byte-cap test that passes with the cap deleted; a doc comment
+asserting a path-safety property the plan's own join contradicts; a config refusal message
+byte-identical to the events-path refusal, so a failed start names no setting; read and parse
+failures logged nowhere, making a mistyped roster path indistinguishable from an empty fleet; an
+untrimmed and uncapped persona name held across ticks; and a `workdir` naming a UNC root.
+
+The UNC refusal is the one ruling worth flagging. It narrows a trust this plan's Approach states in
+the sentence "A roster `workdir` is trusted the way a configured project root is trusted". The
+narrowing was taken rather than referred, on three grounds: the guard already exists in this
+repository at `broker/intake.ts:321-331` for a file-supplied path, so this is reuse rather than a new
+mechanism; the live roster's five entries all use drive-letter paths, so nothing in use breaks; and
+the Intent's own sizing paragraph keeps a guard that is nearly free. Reversing it is one predicate.
+Named to the operator rather than left in this document alone.
+
+The security lens's dependency advisory is not a finding against this section. `docs/backlog.md:444`
+already carries that item, parked 2026-09-07. That entry says two advisories where `npm audit`
+now reports three, so its count is stale; amending it belongs to section 5, which already opens that
+file.
+
+**Next action per section.** Section 1: read the fix round's diff, run the close gate, run the one
+lens the fix delta owes, take the Minor close pass, write chapter 1. Sections 2 to 5: not started.
