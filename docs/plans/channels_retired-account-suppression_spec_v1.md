@@ -1,6 +1,6 @@
 # channels: the fleet card drops accounts claude-swap has retired, v1
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR. Work on branch `retired-account-suppression`, push to `origin`, open a PR against `main`, never push directly to `main`.
 Created: 2026-09-15
 Worker: the `dev` persona, after its process keeper plan (`agent_persona/docs/plans/agent_persona_process-keeper_v1.md`) closes. The coordinator persona hands it over then. No rush is attached.
@@ -64,3 +64,66 @@ Model: inline. The broker runs from this checkout as the scheduled task named in
 After Section 2, open the fleet card in Discord. The two retired accounts should be absent and the six remaining accounts should render as before, with the active marker on the current account.
 
 ## Chapters
+
+### Chapter 1 - Section 1: filter the reading by the identity map - 2026-09-20
+
+**What shipped.** `broker/usage/cache.ts` now takes account membership from `sequence.json`'s
+`accounts` identity map. An account the cache still remembers but the map no longer lists does not
+render. `accountEntries` gained an `isMember` predicate and applies it inside the cap loop, so a
+retired account is dropped before it can spend a `MAX_USAGE_ACCOUNTS` slot and the cap counts
+survivors, as the section required. The module header, the `accountEntries` doc and the `readUsage`
+doc state the membership rule as current fact, and all three keep the standing sentence that the
+`sequence` rotation array is not read.
+
+**Red then green.** The regression test was written first and watched fail before `cache.ts` was
+touched. Its failure was `actual: [ 1, 2, 3 ]` against `expected: [ 1, 3 ]` on
+"an account absent from the identity map does not render, however long the cache remembers it".
+That red is reported from the implementer's own run and quoted in its report; the mechanism is
+confirmed independently by reading the pre-change `accountEntries`, which carried no membership
+test at all, so all three accounts necessarily rendered.
+
+**A pre-existing test had to be repaired, which the section did not anticipate.** "wrong-shaped
+fields contribute nothing and the account count is capped" built an identity map holding only
+account 9 while the cache held twenty-two, then asserted the cap yielded `MAX_USAGE_ACCOUNTS`.
+Under the membership rule only account 9 survived and the assertion failed. The fixture was widened
+so the map lists every numeric account the cache holds, which restores the cap rather than the
+filter as the thing under test. No assertion was weakened. The non-numeric key stays excluded by the
+key round-trip rule, which membership does not touch.
+
+**Review findings addressed.** The fresh-context pair ran over the delta, both read-only, neither
+permitted to run a suite. Adversarial returned APPROVED_WITH_CONCERNS with four Minors; blind
+returned APPROVED_WITH_CONCERNS with one Major and three Minors. Both independently confirmed the
+cap-counts-survivors ordering and the unreadable-file fallback are correct.
+
+Accepted and fixed: `key in identities` became `Object.hasOwn(identities, key)`, matching the three
+sibling sites at `broker/intake.ts:671`, `broker/tail.ts:1742` and
+`broker/discord/question-message.ts:917`, each of which carries the same comment and a test pinning
+the inherited-key case. The old form was not reachable, since the key filter upstream admits digits
+only, but the guard making it safe lives in another function. A test title reading "exactly as
+today" was rewritten as present fact per the house rule against change-narrative. Two branches the
+pair found unpinned gained tests: an identity file that parses with no `accounts` map at all, and an
+identity map that reads cleanly and holds none.
+
+**Declined, and raised instead.** Blind rated a Major on the case where `sequence.json` parses with
+an empty identity map: every cached account is filtered out and the card renders an empty fleet. The
+behavior is left as the section specifies it. The section's Goal is parity with what `cswap watch`
+shows, and an empty identity map is claude-swap stating it holds no accounts, so rendering none is
+parity rather than loss. The section's first scoping decision also directs a worker who finds an
+edge case around this rule to raise it rather than widen the rule. The consequence is now documented
+in the `readUsage` doc and pinned by a test, and it is carried to the operator in this round's
+close-out rather than decided here.
+
+**Gate.** Every exit code read from its own run rather than from a grep over output. Baseline,
+captured on a clean tree at the base commit `93f2c6d` before anything was touched: `npm test` exit 0,
+tests 1717, pass 1716, fail 0, skipped 1. At this close: `npm run lint` exit 0; targeted lane
+`node --test broker/usage/cache.test.ts` exit 0 at 24 tests, 24 pass, 0 fail; whole gate `npm test`
+exit 0 at tests 1721, pass 1720, fail 0, skipped 1. The delta is plus four tests and plus four
+passes, which is exactly the four tests this section added, with no other count moved. The machine's
+heavy-process slot was claimed for the duration of these runs and released after them.
+
+**Next:** 2. Land it on the running broker. That section cannot start until this branch's pull
+request merges, and it then restarts the live broker, which is the operator's call rather than this
+session's.
+
+**Commit Model:** Branch-and-PR. Work on branch `retired-account-suppression`, push to `origin`,
+open a PR against `main`, never push directly to `main`.
