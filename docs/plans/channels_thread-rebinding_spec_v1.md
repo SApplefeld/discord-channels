@@ -13,7 +13,7 @@ The fix: a session that carries a stable "lineage name" (set by the supervisor, 
 
 ## Related plans
 
-`sapplefeld-channels_dsh-bridge_spec_v1.md` is a separate, currently active effort in this repository (Status: In Progress, `bridge/` in flight). This plan does not touch `bridge/` and has no dependency on it.
+[`../archive/plans/sapplefeld-channels_dsh-bridge_spec_v1.md`](../archive/plans/sapplefeld-channels_dsh-bridge_spec_v1.md) is superseded by the `agent_persona` supervisor and parked on branch `dsh-bridge-parked`. Its shipped sections left `bridge/` on `main`. This plan does not touch `bridge/` and has no dependency on it.
 
 ## Roadmap
 
