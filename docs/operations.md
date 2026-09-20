@@ -10,7 +10,7 @@
 | Bot token | `%LOCALAPPDATA%\sapplefeld-channels\discord-token.txt`, or wherever `CHANNEL_DISCORD_TOKEN_FILE` points inside the state root |
 | Relay registration, rewritten per launch | `%LOCALAPPDATA%\sapplefeld-channels\relay-mcp.json` |
 | Log file | `CHANNEL_BROKER_LOG_FILE` in `broker.env`, by default `%LOCALAPPDATA%\sapplefeld-channels\broker.log`, rotated at 5 MB with 5 files kept |
-| Scheduled task | `SapplefeldChannelsBroker`, at logon, restarting every minute on failure |
+| Scheduled task | `SapplefeldChannelsBroker`, at system startup and again at logon, restarting every minute on failure |
 
 The log is the first place to look when anything is wrong. Several failures here are deliberately
 silent everywhere else: the `SessionStart` hook swallows every error so it can never slow or block a

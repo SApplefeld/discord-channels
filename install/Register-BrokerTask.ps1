@@ -1,4 +1,5 @@
-# Registers the broker as a Windows scheduled task that starts at logon and restarts on failure.
+# Registers the broker as a Windows scheduled task that starts at system startup, again at the
+# operator's logon, and restarts on failure.
 #
 #   .\install\Register-BrokerTask.ps1
 #
@@ -78,10 +79,30 @@ function Register-BrokerScheduledTask {
     $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`""
     if ($EnvFile) { $arguments += " -EnvFile `"$EnvFile`"" }
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+    # Two triggers, and the boot one is the primary path. A task that only fired at logon left the
+    # relay down from a reboot until someone signed in, which is the window the operator is away and
+    # most wants the thread answering. Nothing about the broker needed a logon: the principal below
+    # is S4U, so it already runs with no profile loaded, and every path it reads is absolute and
+    # pinned (the env file into the action here, and the node binary, log, state and token file
+    # inside broker.env). A machine that boots unattended now comes back with its relay up.
+    $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+    # The broker awaits its Discord login as part of starting, so that a login failure is reported
+    # at startup rather than surfacing later as messages that silently never arrive. That makes an
+    # unreachable network at boot an exit rather than a wait. The restart settings below would
+    # recover it a minute later, so this delay buys no correctness; it buys not spending a restart
+    # and a minute of dead thread on every single boot.
+    $bootTrigger.Delay = 'PT30S'
+    # Kept behind the boot trigger rather than replaced by it, as the second chance a boot-only task
+    # would not have: a broker that died with its restart budget spent comes back at the next logon
+    # instead of waiting for the next reboot. Both firing on one boot costs nothing, because the
+    # settings below leave MultipleInstances at IgnoreNew and a task already running ignores the
+    # second start.
+    #
     # Scoped to $User rather than every logon: an unscoped AtLogOn trigger fires for any account
     # that logs onto the machine, and a second broker started under a second account's logon cannot
     # bind the port the first one already holds.
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+    $trigger = @($bootTrigger, $logonTrigger)
     # S4U runs the broker as $User without a stored password and without an interactive desktop, so
     # it starts in session 0 and no console window is ever drawn on the operator's screen. It runs
     # as the same account either way, which is what the ACL model requires: Install-Host.ps1 grants
@@ -127,5 +148,5 @@ function Register-BrokerScheduledTask {
 if ($MyInvocation.InvocationName -ne '.') {
     if (-not $EnvFile) { $EnvFile = Join-Path (Get-ChannelStateRoot) 'broker.env' }
     Register-BrokerScheduledTask -TaskName $TaskName -ScriptPath $ScriptPath -User $User -EnvFile $EnvFile
-    Write-Host "Registered scheduled task '$TaskName' running '$ScriptPath' at logon for '$User', reading '$EnvFile'."
+    Write-Host "Registered scheduled task '$TaskName' running '$ScriptPath' at system startup and at logon for '$User', reading '$EnvFile'."
 }

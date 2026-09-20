@@ -130,8 +130,8 @@ The installer:
 Directories are hardened as containers rather than file by file, because a hardened file in a
 directory that permits delete-child can be deleted and re-created with a clean access control list.
 The reasoning is in [`security-model.md`](security-model.md); the short version is that every one of
-those paths is executed automatically, either by the scheduled task at logon or by Claude Code at the
-start of every session on the machine.
+those paths is executed automatically, either by the scheduled task at startup or by Claude Code at
+the start of every session on the machine.
 
 The hooks belong in the **user-level** settings file rather than a project one, because the sessions
 being watched live in arbitrary repositories. That is also why the `SessionStart` hook names its
@@ -196,8 +196,12 @@ the ACLs from step 2 grant the account that ran it, so a task registered under a
 starts a broker that cannot read its own token file. It also scopes the logon trigger, since an
 unscoped one fires on any account's logon and a second broker cannot bind the port the first holds.
 
-The task starts the broker at logon and restarts it every minute on failure, up to 999 times, with no
-execution time limit. Running the script again updates the existing task in place rather than
+The task starts the broker at system startup, thirty seconds in, and restarts it every minute on
+failure, up to 999 times, with no execution time limit. Starting at boot rather than at logon is what
+keeps a reboot from leaving the relay down until somebody signs in; the delay keeps the broker from
+racing the network stack, since it awaits its Discord login as part of starting and exits when that
+fails. A second trigger at the operator's logon is kept behind it, so a broker that died with its
+restart budget spent comes back without waiting for the next reboot. Running the script again updates the existing task in place rather than
 creating a second one. It refuses to run unelevated with a message saying so, rather than failing
 with an access error further in.
 

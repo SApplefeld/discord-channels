@@ -509,7 +509,8 @@ test("a reply against a broker that accepts and then goes silent settles rather 
 });
 
 test("the relay reconnects after the broker drops its pipe", async (t) => {
-  // The broker is a scheduled task restarted at logon and can go down for any part of a
+  // The broker is a scheduled task, restarted at boot and on failure, and can go down for any part
+  // of a
   // twelve-hour session. A relay that did not come back would leave the session running and
   // permanently unreachable while its status card kept ticking.
   const context = await broker(t);

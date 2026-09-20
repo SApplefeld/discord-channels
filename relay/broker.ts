@@ -202,7 +202,8 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
   function reconnect(): void {
     if (stopped || retry !== null) return;
     replyKey = null;
-    // The broker is restarted at logon and can be down for any part of a twelve-hour session. A
+    // The broker is restarted by its scheduled task and can be down for any part of a twelve-hour
+    // session. A
     // relay that gave up would leave the session running and permanently unreachable, with its
     // status card still ticking, which is the exact failure the card exists to make visible.
     retry = setTimeout(() => {

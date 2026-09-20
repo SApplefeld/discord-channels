@@ -89,7 +89,8 @@ export type RelayHubOptions = {
   registry: Registry;
   /**
    * How long a closed pipe is given to come back before its session is called dead. The relay
-   * reconnects by design (the broker restarts at logon, and a read timeout drops a wedged stream),
+   * reconnects by design (the broker restarts with its scheduled task, and a read timeout drops a
+   * wedged stream),
    * so ending a session the instant a pipe closed would tombstone a working session permanently:
    * `ended` is terminal, and a re-attach goes through a lookup that skips ended records.
    */
