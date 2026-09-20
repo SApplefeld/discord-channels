@@ -82,7 +82,8 @@ Four pieces per host, plus an installer.
   connection, the session registry, the thread bindings, every Discord surface (a session's thread
   name, its status card, the messages written into it, the fleet usage and board cards' own threads,
   and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live session's own
-  transcript file for mid-turn narration. It runs as a scheduled task at logon.
+  transcript file for mid-turn narration. It runs as a scheduled task at system startup, so an
+  unattended reboot brings it back without waiting for anyone to sign in.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
   and the scheduled task. The same directory holds the operator's repair path, `Repair-Broker.ps1`,
@@ -140,7 +141,7 @@ listener.
    follows.
 
 The registry persists to a JSON file on every mutation, and the thread bindings persist beside it,
-so a restart at logon rebinds existing threads rather than opening duplicates. Two fields do not
+so a restart rebinds existing threads rather than opening duplicates. Two fields do not
 survive that round trip, and for the same reason: a live reading restored from a snapshot would draw
 as current. The goal is never written at all, since only the card reads it and nothing restores it;
 the context size is written and dropped on load, so a woken card carries the model without a figure

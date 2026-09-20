@@ -128,7 +128,8 @@ function Install-ChannelProfileBlock {
 Bounces the broker so it runs the code and config this install just wrote.
 
 .DESCRIPTION
-Nothing else restarts a running broker: the scheduled task only fires at logon, so without this a
+Nothing else restarts a running broker: the scheduled task only fires at boot and at logon, so
+without this a
 re-install leaves the old broker serving from memory indefinitely. Stops the task, then clears a
 broker that is still holding the port anyway (one started by hand rather than by the task; only a
 node.exe listener is killed, anything else on the port fails the install for a human to look at),

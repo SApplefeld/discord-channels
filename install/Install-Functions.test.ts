@@ -975,6 +975,78 @@ describe("Install-Functions", { concurrency: 8 }, () => {
     assert.equal(listed, "", "the -WhatIf path must never reach the real Task Scheduler");
   });
 
+  /**
+   * The CIM class names the ScheduledTasks module gives a boot trigger and a logon trigger. Named
+   * rather than matched inline, because which kind of trigger is which is the whole subject of the
+   * test below, and a bare class string in an assertion says nothing about what it stands for.
+   */
+  const BOOT_TRIGGER_CLASS = "MSFT_TaskBootTrigger";
+  const LOGON_TRIGGER_CLASS = "MSFT_TaskLogonTrigger";
+
+  it("Register-BrokerTask's task starts the broker at boot, not only at the operator's logon", async (t) => {
+    const dir = tmpDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const registerScript = path.join(path.dirname(FUNCTIONS_PATH), "Register-BrokerTask.ps1");
+
+    type Trigger = { Class: string; Delay: string; UserId: string };
+    const built = await runFunctions<{ Triggers: Trigger[] | Trigger }>(
+      [
+        `. "${registerScript}"`,
+        `$definition = Register-BrokerScheduledTask -TaskName "ProbeTaskTriggers" -ScriptPath "C:\\repo\\install\\Start-Broker.ps1" -User "TESTDOMAIN\\TestUser" -EnvFile "C:\\fixture\\state\\broker.env" -IsElevated:$true -WhatIf`,
+        `$triggers = @($definition.Trigger | ForEach-Object { @{ Class = [string]$_.CimClass.CimClassName; Delay = [string]$_.Delay; UserId = [string]$_.UserId } })`,
+        `(@{ Triggers = $triggers } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $OutPath -Encoding UTF8`,
+      ].join("\n"),
+      dir,
+    );
+    // Windows PowerShell 5.1 has no ConvertTo-Json -AsArray, so a one-trigger regression would
+    // serialize as a bare object rather than a one-element array. Normalizing here is what lets
+    // that regression fail on the count assertion below, which names it, rather than on a parse.
+    const triggers = Array.isArray(built.Triggers) ? built.Triggers : [built.Triggers];
+
+    assert.equal(
+      triggers.length,
+      2,
+      `the task must carry both a boot and a logon trigger: ${JSON.stringify(triggers)}`,
+    );
+
+    // The regression this test exists for. Before the boot trigger, a reboot left the relay down
+    // until somebody signed in, which is precisely the stretch the operator is away from the
+    // machine and steering from Discord instead.
+    const boot = triggers.find((trigger) => trigger.Class === BOOT_TRIGGER_CLASS);
+    assert.ok(boot, `no boot trigger in ${JSON.stringify(triggers)}`);
+    // The broker awaits its Discord login as part of starting and exits when it fails, so a boot
+    // that outruns the network stack costs a restart cycle and a minute of dead thread. The task's
+    // restart settings recover that on their own; the delay is what keeps it off every boot.
+    assert.ok(
+      boot.Delay,
+      "the boot trigger must carry a delay, or the broker races the network stack on every boot",
+    );
+
+    // Kept, not replaced: a broker that died with its restart budget spent comes back at the next
+    // logon rather than waiting for the next reboot. Still scoped to one account, because an
+    // unscoped logon trigger fires for every account and the second broker cannot bind the port.
+    const logon = triggers.find((trigger) => trigger.Class === LOGON_TRIGGER_CLASS);
+    assert.ok(logon, `no logon trigger in ${JSON.stringify(triggers)}`);
+    assert.equal(
+      logon.UserId,
+      "TESTDOMAIN\\TestUser",
+      "an unscoped logon trigger starts a second broker on a second account's logon",
+    );
+
+    // Same guard as the sibling test above, and the name is this test's alone for the same reason:
+    // the -WhatIf path must never have reached the real Task Scheduler.
+    const listed = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        "(Get-ScheduledTask -TaskName 'ProbeTaskTriggers' -ErrorAction SilentlyContinue).TaskName",
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    assert.equal(listed, "", "the -WhatIf path must never reach the real Task Scheduler");
+  });
+
   it(
     "Protect-ChannelPath hardens a real Windows ACL to the same allowlist the broker enforces",
     { skip: process.platform !== "win32" },

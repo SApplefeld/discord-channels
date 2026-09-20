@@ -249,7 +249,8 @@ test("the heartbeat persists a revival and nothing else", () => {
 });
 
 test("closing every pipe for a broker shutdown ends no session", () => {
-  // The broker is restarted at logon. A restart that ended every session it was watching would
+  // The broker is restarted by its scheduled task. A restart that ended every session it was
+  // watching would
   // report a fleet of deaths that did not happen.
   let now = 1_000;
   const { registry, relays } = harness({ now: () => now });
