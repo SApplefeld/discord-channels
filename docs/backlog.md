@@ -483,6 +483,23 @@ and none carries a date of its own. An item added from here on carries `(parked 
   of the two is right is unestablished and wants one read of both call sites, since the stricter
   bridge rules may or may not be safe to impose on the broker's own payload path.
 
+- Give the capped file read one owner, and fix the copy that does not loop (parked 2026-09-20,
+  surfaced by the Fleet Board worker queues plan and routed here because that plan serves the board
+  card rather than this family). Four modules now read a size-capped file into a buffer one byte
+  larger so an oversized file is refused whole rather than truncated. Three of them loop the read
+  until the descriptor is drained and say in a comment why. The fourth, `broker/usage/cache.ts:270-281`,
+  performs a single `readSync` with no loop, so a short read hands the parser a prefix of the file
+  under the name of the whole. That one is a confirmed defect rather than a style divergence, read
+  against its three siblings. It fails closed, since a truncated JSON document does not parse, so
+  the symptom is a usage card that reports itself unavailable rather than one that reports wrong
+  numbers, which is why it is parked rather than fixed in flight. What it costs to leave is that the
+  next author copies whichever of the four they happen to open. The shape of the fix is one module
+  owning a parameterised capped read that the four call, with the cap and the subject as arguments.
+  A smaller piece of the same convergence: `broker/board/plans.ts` keeps `planStem`, `isReadmeStem`
+  and `statPlanFile` unexported, so `broker/board/queues.ts` carries a hand-written copy of each. The
+  queue reader was written that way deliberately, to keep its section inside its own files, and the
+  three exports are the cheap half of this item.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

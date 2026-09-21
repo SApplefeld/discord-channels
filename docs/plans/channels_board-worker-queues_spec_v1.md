@@ -48,7 +48,7 @@ He approved the sketch, its Assumptions and its addendum the same day with "Yes,
 
 The store is written whole with no rename and no lock, so a read can land mid-write. A store or heartbeat that fails to read or parse keeps its last good reading, as the card already does for a plan document mid-write, and the group's label says so. The store is held on mtime and size like a plan document, so an unchanged file is not parsed again.
 
-**The join from a queue entry to its plan.** The persona's store is writable by the persona, so its text never becomes a path. The broker takes a file name only. From `planPath`, when the entry has one, it keeps the final path segment. Otherwise it searches the entry's `title` and then its `objective` with the expression `docs/plans/([A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-Za-z0-9_-])` and keeps the first capture. Live entries write the path followed by a comma or a full stop, which that expression leaves outside the name. In both cases the kept name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,250}\.md$` and must not be `README.md` in any case. The broker then looks for that name in exactly four places under that persona's own `workdir`, in this order: `docs/plans/`, `docs/archive/plans/`, `docs/archive/`, `docs/plans/archive/`. A name found only in an archive folder marks the entry done. An entry with no usable name, or whose name is found in none of the places, has no plan reading and draws from its store fields alone. The set of places is closed at those four.
+**The join from a queue entry to its plan.** The persona's store is writable by the persona, so its text never becomes a path. The broker takes a file name only. From `planPath`, when the entry has one, it keeps the final path segment. Otherwise it searches the entry's `title` and then its `objective` with the expression `docs/plans/([A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-Za-z0-9_-])` and keeps the first capture. Live entries write the path followed by a comma or a full stop, which that expression leaves outside the name. In both cases the kept name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,250}\.md$`, whose suffix folds case so that the join and the folder sweep agree on what a plan file is called, and must not be `README.md` in any case. The text expression above does not fold, so a plan whose name carries an upper case suffix joins through `planPath` and not through the text search. The broker then looks for that name in exactly four places under that persona's own `workdir`, in this order: `docs/plans/`, `docs/archive/plans/`, `docs/archive/`, `docs/plans/archive/`. A name found only in an archive folder marks the entry done. An entry with no usable name, or whose name is found in none of the places, has no plan reading and draws from its store fields alone. The set of places is closed at those four.
 
 **Blocked events.** The card's existing rule decides whether a kit `goal-blocked` event is outstanding for a plan: the latest event for a root and a plan name, cleared by a later `goal-complete` or by the plan document's mtime moving past the event. That rule lives in `card.ts` as `blockedAt`, with `eventIndex` building the index it reads and the helpers `planName` and `eventPlanName`. Section 3 exports those four unchanged and applies the rule to an entry that has a parsed plan reading. An entry with no plan reading takes no event. The event reader is called with the configured roots first and the enabled personas' working folders after them. Because the reader keeps the first spelling that claims a folder, the status function first finds the root spelling the event state holds whose `comparablePath` equals `comparablePath(workdir)`. It then calls `blockedAt` with a reading whose `root` is that spelling. When no held spelling matches, the entry takes no event.
 
@@ -589,3 +589,159 @@ shared file is touched once.
 the one lens that delta owes, then the Minor close pass over the thirteen Minors now listed, then
 the close gate, chapter 2, the routed-out backlog entry, and the commit. Sections 3 to 5: not
 started.
+
+### Chapter 2 - 2026-09-20
+Completed: 2. The queue, heartbeat and plan readers, and the join
+Implemented By: implementer-opus, no escalation
+Metrics: review rounds 3, closed clean; provenance 7 spec-traceable, 3 fix-introduced, 0
+new-requirement, rulings (0 refused, 0 declared, 0 asked); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+
+- Builds `broker/board/queues.ts`, the reader turning one persona's store, heartbeat and plan
+  documents into that persona's queue, and exports `readPlanFile` from `plans.ts` for it. Serves the
+  Goal sentence "Each group lists that worker's queued plans in running order" and section 2's own
+  acceptance bullets. Adds no mechanism the spec does not name. Size: the section as specified,
+  roughly 520 lines of module and 60 tests. Not building it leaves the card with personas and no
+  queues.
+- A plan document's parse is held when a tick fails to read or parse it. Serves the Approach's
+  "keeps its last good reading, as the card already does for a plan document mid-write". Adds no
+  mechanism: the hold map already existed and this reads it on one more branch. Size: about 6 lines.
+  Not fixing it blanks an entry's sections count and next step every time a worker saves the plan
+  doc it is working from, which is precisely when the card is worth reading.
+- A store or heartbeat failure is held on the stat it failed at. Serves the Approach's "holds each
+  on mtime and size like a plan document, so an unchanged file is not parsed again". Adds a
+  mechanism, a failure stat, mirroring `heldFailure` in `plans.ts`. Size: about 8 lines and one
+  field. Not fixing it makes a broker pointed at a missing or oversized store read up to 2 MiB per
+  persona per tick for as long as it runs.
+- The join consults this tick's own parse map before the previous tick's. Serves the same hold
+  sentence and the join's own docstring. Adds no mechanism: the map was already built and written.
+  Size: 1 line. Not fixing it re-reads and re-parses one document once per entry naming it, up to
+  200 times per persona, on the broker's only event loop.
+- An empty or whitespace `planPath` is treated as absent so the text search runs. Serves the
+  Approach's "From `planPath`, when the entry has one". Adds no mechanism: it narrows an existing
+  branch. Size: 1 line. Not fixing it silently costs an entry its progress whenever the plugin
+  writes the key before the value.
+- The search order and the no-fallback rule gained tests that can fail. Serves the Approach's stated
+  order and its "in both cases the kept name must match". Adds no mechanism. Size: 2 tests. Not
+  fixing it leaves both rules green under a reversal.
+- The README refusal gained cases that reach it. Serves the Approach's "must not be `README.md` in
+  any case". Adds no mechanism. Size: 2 cases and a withheld control. Not fixing it is the same
+  defect class as section 1's Critical.
+- A plan document's failure is held on its stat, in-tick and across ticks. Serves the same Approach
+  hold sentence read at what the card actually does: `broker/board/thread.ts:220-228` states this
+  cost as the reason its own `HeldFailure` exists. Adds no mechanism no clause names, the clause
+  naming the card's behaviour as the model. Size: about 15 lines and one map. Not fixing it costs a
+  256 KiB read every tick forever for a plan doc with a malformed header, multiplied by every entry
+  naming it.
+- A held parse is handed back under the stat it was parsed at. Serves the same clause, read against
+  `broker/board/thread.ts:497-507`. Adds no mechanism: two values change. Size: 2 lines. Not fixing
+  it lets a stale parse wearing a fresh timestamp outrank a genuinely newer document under section
+  3's in-flight rule, so the wrong entry draws as running with the wrong sections count.
+- A failure stat is recorded only for the classes the bytes at that stat decide. Serves the Goal's
+  "The operator can tell from a phone what is running". Adds no mechanism: it narrows a branch.
+  Size: 1 predicate. Not fixing it lets one transient open failure on a resting store, a scanner's
+  sharing violation being the live Windows shape, freeze a whole persona group forever.
+- The store and heartbeat read is injectable, as `statPlan` and `readPlan` already were. Serves the
+  acceptance that a refused open is retried on the next tick. Adds no mechanism that runs: absent
+  the option the default is the function called directly before. Size: 5 lines and one `export`.
+  Not building it ships that branch unexercised, because an open the operating system refuses cannot
+  be staged from a Node test on Windows.
+- The plan-name pattern's suffix folds case, matching the folder sweep. Serves the Goal's single
+  card by removing a contradiction between its two views. Adds no mechanism. Size: one regular
+  expression flag. **This departs from the Approach's verbatim pattern** and the Approach sentence is
+  amended to match. Not fixing it leaves the folder view drawing a file the join refuses.
+- A duplicate goal id no longer lends its plan to another entry. Serves section 2's "a plan reading
+  or none for each entry". Adds no mechanism. Size: one set. Not fixing it silently gives the second
+  entry the first one's plan.
+
+Four surprises beyond those lines. Three of review round 2's four Majors were introduced by fix
+round 1, and the worst of them by an acceptance clause this session wrote rather than by anything
+the implementer chose: both of that round's load-bearing answers were already sitting in
+`broker/board/thread.ts`, three lines each, in the file this module was written to follow. The
+recurring defect class of this plan surfaced a third time, a guard tested only against the literal
+it already matches, this time the refusal of a directory standing at a plan's name, where every test
+that pins which paths are opened injects a seam that reimplements the guard instead of running it.
+One acceptance clause this session wrote for the close pass could not fail, and the implementer
+proved it by deleting the guard and watching the test stay green, then replaced the assertion with
+one that does fail. And the failure hold needed a durability axis to satisfy two clauses that looked
+independent and were not: opening a failing document once per tick wants the failure remembered,
+while never freezing on a transient failure wants it forgotten.
+
+Assumptions: none beyond the plan's own `## Assumptions` section. Every gap this section met was
+answered by an acceptance bullet or by the Approach.
+Review Findings: `review: code pair + security at fable, Agent tool` for round 1 over an opus
+writer; `review: adversarial at opus, Workflow` for rounds 2 and 3. Round 1: no Critical, 5 Majors
+raised and 6 owed after two Minor upgrades, 16 Minors across three lenses; the security lens
+returned CLEAR. Round 2: no Critical, 4 Majors, 6 Minors, CHANGES_REQUIRED. Round 3: no Critical, no
+Major, 5 Minors, APPROVED_WITH_CONCERNS. All 10 owed Majors fixed. No finding was held and no judge
+was convened: no finding traced outside the Goal, the Intent or the acceptance bullets, so none was
+new-requirement. No design stop fired. Two Minors were upgraded to Major at round 1's adjudication on
+a stated consequence, one of them corroborated independently by a second lens. Minors: 18 banked, 5
+fixed in the close pass, 9 left with the reason, 2 upgraded, 2 confirmed dead against the code. The
+nine left: the text expression's forward-slash-only spelling, which the Approach states verbatim;
+Windows reserved device stems passing the name pattern, where round 3 probed `CON.md`, `NUL.md`,
+`COM1.md`, `LPT1.md` and bare `NUL` on this machine and all threw ENOENT, so the route is closed by
+the operating system and a pattern-layer refusal would be a mechanism no clause names; `statSync`
+following symbolic links, whose docstring was corrected while the behaviour stands, since whoever
+can plant the link can plant the content; the 2 MiB buffer on the heartbeat read, the Approach
+naming 2 MiB as the cap for both files and the fix reaching the capped-read helper four copies
+share; length bounds on `title`, `objective`, `blockedReason` and `lead.reason`, which the renderer
+cuts per the layout paragraph, carried to section 4; per-file rather than per-entry stat caching
+inside one tick, carried to section 3 where the rule it affects is built; a store parsing to valid
+non-object JSON clearing rather than holding, settled by chapter 1's second decision line; a
+per-plan-reading held marker, declined because the layout paragraph puts that marker at the group
+label and sources it from the store's reading, carried to section 4; and the null-stat early return
+leaving an earlier failure stat standing, which is the accepted granularity of a stat-keyed hold
+rather than a defect, the good-reading hold two lines above having the same property. The close pass
+changed four production lines and five comment blocks and so owed no round; it took the author
+re-read in its place, over the full production delta against a pre-pass copy, which confirmed those
+four lines are the whole of it. Three surfaces were routed out rather than fixed and are now one
+`docs/backlog.md` entry: the single-read capped read at `broker/usage/cache.ts:270-281`, a confirmed
+defect that fails closed; the capped-read loop standing in four copies; and three `plans.ts` helpers
+left unexported.
+Stamps: adjudicated 5, stamped 4. Stamped `forward-resource-arrangements-into-dispatch-briefs`,
+which is why every brief carried the box-claim protocol and the machine's state at dispatch;
+`fan-out-runs-through-workflow-under-a-session-wide-cap`, which is why rounds 2 and 3 named model and
+effort explicitly on the Workflow route; `a-trace-target-you-composed-cannot-check-your-own-work`,
+which is why each reviewer was pointed at the plan's own Goal and bullets rather than a summary; and
+`git-credential-manager-hangs-headless-on-scott-claude`, which is why every push was bound with a
+timeout. The fifth was read and did not apply.
+Gate: targeted lane owed at this close; the whole gate run instead, since it covers the targeted
+lane, the box allowed it, and this section exported two names other modules can now reach. No
+contention lane: the section's delta touches file readers and a join, none of it machine-shared
+state. Measured on SCOTT-CLAUDE at 2026-09-21T02:03-0400, on this branch at `c592dbb` with the
+section's four files dirty. Whole gate 1771 tests, 1770 pass, 0 fail, 1 skipped, exit code 0; lint
+(`tsc --noEmit`) exit code 0; 37 s wall clock for both together. Against the branch baseline at
+`4152f79` on a clean worktree, 1721 tests, 1720 pass, 0 fail, 1 skipped, exit 0, 34.1 s: 50 tests
+added across both sections and 0 failing to 0 failing. Against section 1's close at `854adba`, 1737
+tests, 1736 pass, 0 fail, 1 skipped: this section added 34 tests and broke nothing. Contention
+reading: uncontended. The claims directory was empty at the read immediately before the run, this
+session wrote its own claim with its own id, and deleted it after confirming that id, having also
+read the file's modification time rather than its `Started:` line. An empty claims directory means
+nobody has claimed the box rather than that the box is free, so this reading rests on the wall clock
+landing within 3 s of two earlier baselines as well. Test delta: 34 added, 0 retired, 2 edited to
+stay green on this section's own change, so no retire class applies. The 2 edited both pinned the
+held-parse stat this section reversed, and each was strengthened rather than widened: one replaced a
+single modification-time assertion with a two-axis assertion plus a fixture guard proving the
+document really moved, and the other gained an assertion on the opened-path list that did not exist
+before. Of the 34 added, 30 in `broker/board/queues.test.ts` pin the reader's contract, one per
+acceptance bullet plus the hold machinery: the live-shaped text join with trailing punctuation, the
+archive fold, `planPath` winning over text, the four refusal classes opening nothing, the crafted
+name that leaves nothing outside the four places, the torn store, the store with no key for the
+persona, the title-before-objective order with both documents on disk, the no-fallback rule, the
+README refusal across every case the pattern admits with a withheld control, the held plan parse in
+both failure classes, the held store failure with its clearing, the one-read-per-document fold over
+two entries and the one-read-per-failing-document fold over three, the transient-versus-durable
+failure split at one instrument, the upper-case suffix, the padded `planPath`, the duplicate goal
+id, and a directory standing at a plan's name refused by `statFile` without the seam that would have
+hidden it. The other 4 are in `broker/board/plans.test.ts`, pinning the newly exported
+`readPlanFile` at its cap and its failure classes. Added tests that spawn a process, directly or
+through a shared helper: 0.
+Next: 3. The status word
+Commit Model: Branch-and-PR
+Delta: measured on SCOTT-CLAUDE at 2026-09-21T02:06-0400, worktree at `c592dbb` with the section's
+four files and two documents dirty.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

@@ -420,8 +420,11 @@ function statPlanFile(file: string): { mtimeMs: number; sizeBytes: number } | nu
  * The close carries its own guard rather than riding a bare `finally`: a close that throws there
  * replaces whatever the read produced, so a healthy read would surface as a failure and a failed
  * one would surface with the wrong reason.
+ *
+ * It is exported because the queue reader opens a plan doc through it too, so a document a persona's
+ * queue names takes the same cap and the same failure classes as a swept one.
  */
-function readPlanFile(file: string): PlanRead {
+export function readPlanFile(file: string): PlanRead {
   let handle: number;
   try {
     handle = openSync(file, "r");
