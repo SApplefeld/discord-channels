@@ -206,7 +206,7 @@ function lastSegment(value: string): string {
  * the filesystems this runs on, and on the one where they are not, the cost is a marker attributed
  * to the first of the two rather than a marker that never draws at all.
  */
-function planName(stem: string): string {
+export function planName(stem: string): string {
   return stem.toLowerCase();
 }
 
@@ -220,7 +220,7 @@ function planName(stem: string): string {
  * a root the name identifies it, and building a path out of an event's text to compare against is
  * the one thing this card's readers never do.
  */
-function eventPlanName(value: string): string {
+export function eventPlanName(value: string): string {
   return planName(lastSegment(value).replace(MARKDOWN_SUFFIX, ""));
 }
 
@@ -234,7 +234,7 @@ function eventPlanName(value: string): string {
  * A timestamp that does not parse loses to every one that does, so an event the card can place on a
  * timeline is never displaced by one it cannot.
  */
-function eventIndex(latest: ReadonlyMap<string, BoardEvent>): Map<string, BoardEvent> {
+export function eventIndex(latest: ReadonlyMap<string, BoardEvent>): Map<string, BoardEvent> {
   const index = new Map<string, BoardEvent>();
   for (const event of latest.values()) {
     const key = eventKey(event.root, eventPlanName(event.plan));
@@ -268,7 +268,7 @@ function instant(event: BoardEvent): number {
  * modification time the doc has, which is the mtime rule answering false about a doc that has
  * already moved.
  */
-function blockedAt(
+export function blockedAt(
   plan: BoardPlan,
   events: ReadonlyMap<string, BoardEvent>,
   now: number,

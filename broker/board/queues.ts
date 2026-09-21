@@ -332,7 +332,7 @@ function entryOf(value: unknown): QueueEntry | null {
  * The standing-in key is the largest safe integer rather than an infinity, because two infinities
  * subtract to a comparator result of `NaN` and a comparator that returns one orders nothing.
  */
-function queueKey(entry: QueueEntry): number {
+export function queueKey(entry: QueueEntry): number {
   return entry.sortKey ?? entry.createdAt ?? Number.MAX_SAFE_INTEGER;
 }
 
