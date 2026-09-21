@@ -442,11 +442,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   and a shared-escape change wants its own gate. The fix shape already exists in the tree,
   `withoutPipes` counting its run and evening it up.
 
-- Decide what to do about the two `npm audit` advisories the root tree carries (parked 2026-09-07,
-  found during the DSH bridge plan's section 1 security review). One high, `fast-uri` 3.1.5, an SSRF
-  through URI normalization; one moderate, `qs` 6.15.3. Both trace to `@modelcontextprotocol/sdk`
-  1.30.0 rather than to anything the bridge added: `ajv` reaches `fast-uri` and `express` reaches
-  `qs`. The review that surfaced them assumed they arrived with the DeepSeek Harness packages, and
+- Decide what to do about the three `npm audit` advisories the root tree carries (parked
+  2026-09-07, found during the DSH bridge plan's section 1 security review). One high, `fast-uri`
+  3.1.5, an SSRF through URI normalization; two moderate, `qs` 6.15.3 and `hono` 4.13.0, whose
+  advisories name `parseBody` nesting, the query parser and `toSSG`. Inside the SDK only a shipped
+  example server imports `hono`, and this project imports the SDK's stdio transport alone. All
+  three trace to `@modelcontextprotocol/sdk` 1.30.0 rather than to anything the bridge added:
+  `ajv` reaches `fast-uri`, `express` reaches `qs` and `@hono/node-server` reaches `hono`.
+  The review that surfaced them assumed they arrived with the DeepSeek Harness packages, and
   that premise is wrong, which is why this is parked rather than fixed in that section: the fix
   moves the MCP SDK's transitive tree, which no open plan's scope covers, and nothing the bridge does
   makes it worse. Whether `fast-uri`'s SSRF is reachable from any path this project actually runs is
@@ -498,11 +501,11 @@ and none carries a date of its own. An item added from here on carries `(parked 
   owning a parameterised capped read that the four call, with the cap and the subject as arguments.
   A smaller piece of the same convergence: `broker/board/queues.ts` carries hand-written copies of
   five helpers `broker/board/plans.ts` keeps unexported. They are `planStem`, the README-stem check,
-  `bounded`, the capped read inside `readPlanFile`, and `statPlanFile`. The queue reader's copy of
-  the last also refuses anything that is not a regular file, which the sweep settles from its own
-  listing instead, so a shared stat must keep that refusal for the reader. The queue reader was written that way
-  deliberately, to keep its section inside its own files, and the exports are the cheap half of this
-  item.
+  `bounded` with its `WHITESPACE_RUN` constant, the capped read inside `readPlanFile`, and
+  `statPlanFile`. The queue reader's copy of the last also refuses anything that is not a regular
+  file, which the sweep settles from its own listing instead, so a shared stat must keep that
+  refusal for the reader. The queue reader was written that way deliberately, to keep its section
+  inside its own files, and the exports are the cheap half of this item.
 
 - Give the non-finite modification time guard one owner (parked 2026-09-20, surfaced by the Fleet
   Board worker queues plan's section 3 and routed here because that section's spec bounds

@@ -480,7 +480,9 @@ entry whose plan the card can read also shows sections done out of total, such a
 
 The store is written whole with no lock, so a read can land mid-write. A store that fails to read
 keeps its last good reading, and the label ends `held 5m`, with an age that climbs. The card's
-closing freshness line ages with it.
+closing freshness line ages with it. An entry's plan document that fails to read or parse keeps its
+last parse the same way, and the closing line ages with the instant that parse was last read. The
+entry itself carries no marker.
 
 ### The folder view
 

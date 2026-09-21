@@ -1035,6 +1035,106 @@ test("a persona enabled since the last tick widens the event roots and resets th
   assert.deepEqual(offsets, [0, 1, 0], "the third call sees offset 0, the reset rather than 2");
 });
 
+test("a goal-blocked event read on a tick before a persona was enabled marks that persona's entry on the first tick after it is enabled", async (t) => {
+  // The offsets test above proves the reset only through an injected reader's counters. This one
+  // drives the real reader end to end, so the reset is shown actually surfacing a dropped event.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-events-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workdir = path.join(dir, "worker-one");
+  const eventsPath = path.join(dir, "kit-events.jsonl");
+  writeFileSync(
+    eventsPath,
+    `${JSON.stringify({
+      ts: "2024-01-01T00:00:00.000Z",
+      event: "goal-blocked",
+      project: workdir,
+      plan: "docs/plans/first_spec_v1.md",
+      session: null,
+    })}\n`,
+    "utf8",
+  );
+
+  const worker = { name: "worker-one", workdir };
+  const queueFor = (persona: { name: string; workdir: string }) => ({
+    name: persona.name,
+    workdir: persona.workdir,
+    entries: [{ id: "g1", title: "First plan", status: "paused" }],
+    activeGoalId: null,
+    lastTurnComplete: null,
+    turnStartedAt: null,
+    readings: new Map([
+      [
+        "g1",
+        {
+          archived: false as const,
+          status: "Ready",
+          terminal: false,
+          sections: 2,
+          completed: 0,
+          next: null,
+          root: persona.workdir,
+          path: path.join(persona.workdir, "docs", "plans", "first_spec_v1.md"),
+          stem: "first_spec_v1",
+          mtimeMs: START - 60 * 60_000,
+          sizeBytes: 1_024,
+          heldSince: null,
+        },
+      ],
+    ]),
+    heldSince: null,
+  });
+
+  let personas: { name: string; workdir: string }[] = [];
+  const { calls, card } = board({
+    roots: [],
+    rosterPath: "D:\\personas\\fleet.json",
+    sweep: () => swept([]),
+    readEvents: undefined,
+    eventsPath,
+    readRoster: () => personas,
+    readQueues: (ps) => ps.map(queueFor),
+  });
+
+  await card.tick();
+  const firstBody = calls.posts[0] ?? "";
+  assert.doesNotMatch(
+    firstBody,
+    /blocked/,
+    "no persona is enabled on the first tick, so nothing the card drew can carry the word",
+  );
+
+  personas = [worker];
+  await card.tick();
+  const secondBody = calls.edits.at(-1)?.card ?? "";
+  assert.match(secondBody, /worker-one/);
+  assert.match(secondBody, /First plan/);
+  assert.match(
+    secondBody,
+    /blocked/,
+    "the widened roots reset the reader, so the event dropped on tick one is read again and lands on this entry",
+  );
+
+  // The withheld control: the same file and the same persona enabled from the first tick draws
+  // `blocked` on tick one too. That is what proves the fixture itself can produce the word, so the
+  // assertion above is not green for a reason unrelated to the reset.
+  const control = board({
+    roots: [],
+    rosterPath: "D:\\personas\\fleet.json",
+    sweep: () => swept([]),
+    readEvents: undefined,
+    eventsPath,
+    readRoster: () => [worker],
+    readQueues: (ps) => ps.map(queueFor),
+  });
+  await control.card.tick();
+  const controlBody = control.calls.posts[0] ?? "";
+  assert.match(
+    controlBody,
+    /blocked/,
+    "the control: enabled from the first tick, the same event marks the entry with no reset needed",
+  );
+});
+
 test("start runs its first pass at once rather than one interval later", async () => {
   // Creating or rebinding the thread is what starting is for. Waiting on the interval leaves the card
   // absent from the channel for a whole refresh, which at the configured ceiling is an hour.
