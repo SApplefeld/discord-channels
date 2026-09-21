@@ -151,6 +151,7 @@ function board(overrides: Partial<BoardCardOptions> = {}) {
     enabled: true,
     transport: calls.transport,
     roots: [ROOT],
+    rosterPath: "",
     eventsPath: path.join(ROOT, "kit-events.jsonl"),
     binding: () => null,
     refreshMs: 60_000,
@@ -804,10 +805,13 @@ test("the knob off constructs nothing: no thread, no timer, and no file read of 
   let eventReads = 0;
   let bindingReads = 0;
   let timers = 0;
+  let rosterReads = 0;
+  let queueReads = 0;
   const built = createBoardCard({
     enabled: false,
     transport: calls.transport,
     roots: [ROOT],
+    rosterPath: "D:\\personas\\fleet.json",
     eventsPath: path.join(ROOT, "kit-events.jsonl"),
     binding: () => {
       bindingReads += 1;
@@ -818,6 +822,23 @@ test("the knob off constructs nothing: no thread, no timer, and no file read of 
     sweep: () => {
       sweeps += 1;
       return swept([reading()]);
+    },
+    readRoster: () => {
+      rosterReads += 1;
+      return [];
+    },
+    readQueues: (personas) => {
+      queueReads += 1;
+      return personas.map(() => ({
+        name: "",
+        workdir: "",
+        entries: [],
+        activeGoalId: null,
+        lastTurnComplete: null,
+        turnStartedAt: null,
+        readings: new Map(),
+        heldSince: null,
+      }));
     },
     readEvents: (previous) => {
       eventReads += 1;
@@ -834,6 +855,8 @@ test("the knob off constructs nothing: no thread, no timer, and no file read of 
   assert.equal(eventReads, 0, "and the goal event stream is not opened either");
   assert.equal(bindingReads, 0, "no state file is read on a card's account");
   assert.equal(timers, 0);
+  assert.equal(rosterReads, 0, "and the roster is not read either");
+  assert.equal(queueReads, 0, "nor is any persona's store or heartbeat");
   assert.equal(calls.posts.length + calls.opens.length + calls.edits.length, 0);
 });
 
@@ -847,6 +870,7 @@ test("no Discord configured constructs nothing even with the knob on, and says w
     transport: null,
     log: (message) => logged.push(message),
     roots: [ROOT],
+    rosterPath: "",
     eventsPath: path.join(ROOT, "kit-events.jsonl"),
     binding: () => {
       bindingReads += 1;
@@ -880,6 +904,7 @@ test("the knob off says nothing at all, since nothing was asked for", () => {
     enabled: false,
     transport: null,
     roots: [],
+    rosterPath: "",
     eventsPath: path.join(ROOT, "kit-events.jsonl"),
     binding: () => null,
     refreshMs: 60_000,
@@ -892,15 +917,17 @@ test("the knob off says nothing at all, since nothing was asked for", () => {
   assert.deepEqual(logged, []);
 });
 
-test("the knob on with no project roots builds nothing and says why, once", () => {
+test("the knob on with neither project roots nor a roster builds nothing and says why, once", () => {
   const calls = recorder();
   const logged: string[] = [];
   let sweeps = 0;
   let bindingReads = 0;
+  let rosterReads = 0;
   const built = createBoardCard({
     enabled: true,
     transport: calls.transport,
     roots: [],
+    rosterPath: "",
     eventsPath: path.join(ROOT, "kit-events.jsonl"),
     binding: () => {
       bindingReads += 1;
@@ -913,13 +940,80 @@ test("the knob on with no project roots builds nothing and says why, once", () =
       sweeps += 1;
       return swept([]);
     },
+    readRoster: () => {
+      rosterReads += 1;
+      return [];
+    },
     readEvents: NO_EVENTS,
   });
 
   assert.equal(built, null);
   assert.equal(sweeps, 0, "there is nothing to sweep and nothing is opened looking for it");
   assert.equal(bindingReads, 0);
-  assert.deepEqual(logged, ["board card: no project roots are configured, the card is not built"]);
+  assert.equal(rosterReads, 0, "and the roster is not read either, since neither source is set");
+  assert.deepEqual(logged, [
+    "board card: neither project roots nor a roster is configured, the card is not built",
+  ]);
+});
+
+test("the roster alone, with no project roots, builds the card and draws persona groups only", async () => {
+  const { calls, card } = board({
+    roots: [],
+    rosterPath: "D:\\personas\\fleet.json",
+    sweep: () => swept([]),
+    readRoster: () => [{ name: "worker-one", workdir: path.join(ROOT, "worker-one") }],
+    readQueues: (personas) =>
+      personas.map((persona) => ({
+        name: persona.name,
+        workdir: persona.workdir,
+        entries: [{ id: "g1", title: "First plan", status: "paused" }],
+        activeGoalId: null,
+        lastTurnComplete: null,
+        turnStartedAt: null,
+        readings: new Map(),
+        heldSince: null,
+      })),
+  });
+
+  await card.tick();
+
+  const body = calls.posts[0] ?? "";
+  assert.match(body, /worker-one/);
+  assert.match(body, /First plan/);
+  assert.doesNotMatch(body, /No open plans in the configured projects/);
+});
+
+test("a persona enabled since the last tick widens the event roots and resets the reader", async () => {
+  // The event reader drops a line whose project matches no root it was handed at the moment that
+  // line was read, so a persona enabled after that moment needs the stream read again from its
+  // start under the wider list, or its own events are gone for good.
+  const offsets: number[] = [];
+  let personas: { name: string; workdir: string }[] = [];
+  const { card } = board({
+    readRoster: () => personas,
+    readQueues: (ps) =>
+      ps.map((persona) => ({
+        name: persona.name,
+        workdir: persona.workdir,
+        entries: [],
+        activeGoalId: null,
+        lastTurnComplete: null,
+        turnStartedAt: null,
+        readings: new Map(),
+        heldSince: null,
+      })),
+    readEvents: (previous) => {
+      offsets.push(previous.offset);
+      return { state: { ...previous, offset: previous.offset + 1 }, unreadable: false };
+    },
+  });
+
+  await card.tick();
+  await card.tick();
+  personas = [{ name: "worker-one", workdir: path.join(ROOT, "worker-one") }];
+  await card.tick();
+
+  assert.deepEqual(offsets, [0, 1, 0], "the third call sees offset 0, the reset rather than 2");
 });
 
 test("start runs its first pass at once rather than one interval later", async () => {

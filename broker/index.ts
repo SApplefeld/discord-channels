@@ -639,8 +639,8 @@ export function usageCardWiring(options: {
 }
 
 /**
- * What the fleet board card is built from: the three conditions it exists under, the two feeds it
- * reads on every pass, and where the thread it owns is persisted.
+ * What the fleet board card is built from: the three conditions it exists under, the feeds it reads
+ * on every pass, and where the thread it owns is persisted.
  *
  * Assembled here rather than inline for the reason the usage card's wiring is: it is the seam between
  * this broker and the card, and `startBroker` builds its card from this function and from nothing
@@ -652,7 +652,12 @@ export function usageCardWiring(options: {
 export function boardCardWiring(options: {
   config: Pick<
     BrokerConfig,
-    "stateFile" | "boardCard" | "boardProjects" | "boardCardRefreshMs" | "boardEventsPath"
+    | "stateFile"
+    | "boardCard"
+    | "boardProjects"
+    | "boardCardRefreshMs"
+    | "boardEventsPath"
+    | "boardRosterPath"
   >;
   /** Null when no Discord is configured, which is one of the three ways the card is not built. */
   transport: DiscordTransport | null;
@@ -664,6 +669,7 @@ export function boardCardWiring(options: {
     enabled: options.config.boardCard,
     transport: options.transport,
     roots: options.config.boardProjects,
+    rosterPath: options.config.boardRosterPath,
     eventsPath: options.config.boardEventsPath,
     binding: () => loadBoardBinding(file, { log: options.log }),
     onBind: (binding) => {
@@ -1471,8 +1477,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   }
 
   // The board card, under all three of its conditions: the knob, a configured channel, and at least
-  // one project root. Off any of those ways means the machinery is absent rather than idle, so
-  // nothing opens a thread, nothing runs on a timer, and no plan doc or event stream is read.
+  // one project root or a roster naming an enabled persona. Off any of those ways means the machinery
+  // is absent rather than idle, so nothing opens a thread, nothing runs on a timer, and no plan doc,
+  // store file or event stream is read.
   const boardCard = createBoardCard(
     boardCardWiring({
       config,

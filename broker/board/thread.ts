@@ -38,7 +38,7 @@ import { createBudget } from "../discord/budget.ts";
 import type { Budget } from "../discord/budget.ts";
 import type { CallOutcome, DiscordTransport } from "../discord/transport.ts";
 import { renderBoardCard } from "./card.ts";
-import type { BoardPlan } from "./card.ts";
+import type { BoardPersona, BoardPersonaEntry, BoardPlan } from "./card.ts";
 import { initialEventState, readEvents } from "./events.ts";
 import type { EventReaderState, ReadEventsResult } from "./events.ts";
 import { sweepPlans } from "./plans.ts";
@@ -50,6 +50,12 @@ import type {
   PlanSweep,
   SweepPlansOptions,
 } from "./plans.ts";
+import { createQueueReader } from "./queues.ts";
+import type { PersonaQueue } from "./queues.ts";
+import { createRosterReader } from "./roster.ts";
+import type { RosterPersona } from "./roster.ts";
+import { personaStatus } from "./status.ts";
+import type { PersonaStatus } from "./status.ts";
 import type { BoardCardBinding } from "./binding.ts";
 
 /**
@@ -124,11 +130,16 @@ export type BoardCardOptions = {
   transport: DiscordTransport | null;
   /**
    * The configured project roots: the order the sweep walks them in, and the card's tie-break
-   * beneath its own newest-touch-first order. Empty is the third way the card is not built: there is
-   * nothing to sweep, and a card that could only ever say so is not worth a thread in the operator's
-   * channel.
+   * beneath its own newest-touch-first order. One of the card's two sources: empty roots draws no
+   * project group, and the card still builds so long as the roster names an enabled persona.
    */
   roots: readonly string[];
+  /**
+   * The fleet roster's path, or empty when no roster is configured. The card's other source: a
+   * roster naming at least one enabled persona lets the card build with no project roots at all.
+   * Empty is never itself opened, by `readRoster`'s default or by anything else here.
+   */
+  rosterPath: string;
   /** The resolved path of the kit's goal event stream. Absent on disk is not an error. */
   eventsPath: string;
   /**
@@ -145,6 +156,11 @@ export type BoardCardOptions = {
   log?: (message: string) => void;
   /** The plan sweep, injected so a test drives readings without a tree of plan docs on disk. */
   sweep?: (options: SweepPlansOptions) => PlanSweep;
+  /** The roster read, injected so a test drives personas without a roster file on disk. */
+  readRoster?: () => readonly RosterPersona[];
+  /** The persona queue read, injected so a test drives queues without a store or heartbeat file on
+   * disk. */
+  readQueues?: (personas: readonly RosterPersona[]) => readonly PersonaQueue[];
   /** The event read, injected so a test drives blocked markers without the kit's own file. */
   readEvents?: (previous: EventReaderState) => ReadEventsResult;
   /** Injected so a test drives the refresh without waiting on a real interval. */
@@ -207,6 +223,24 @@ function accumulate(count: number, last: number | null, at: number, windowMs: nu
 }
 
 /**
+ * Whether this tick is handing the event reader the same root list, in the same order, as the last
+ * tick did. `null` never matches, which is what makes the first tick's own reset a no-op: the reader
+ * already starts at `initialEventState()`.
+ *
+ * The event reader is incremental and drops an event whose project matches none of the roots it was
+ * handed at the moment that event's line was read, so a persona enabled after that line was consumed
+ * would never see its own events again without this reset: `initialEventState()` sends the stream
+ * back to its start, and the reader's own root match runs over every line again under the wider list.
+ */
+function sameRoots(current: readonly string[], last: readonly string[] | null): boolean {
+  return (
+    last !== null &&
+    current.length === last.length &&
+    current.every((root, index) => root === last[index])
+  );
+}
+
+/**
  * One plan doc's last good parse, with the stat it was read at and when that reading was last known
  * to describe the file.
  *
@@ -230,9 +264,10 @@ type HeldFailure = { reason: PlanFailureReason; mtimeMs: number; sizeBytes: numb
 /**
  * The card's thread, or null when this broker is not to have one.
  *
- * All three refusals are here rather than at the call site so that none can be half-applied: with the
- * knob off, with no Discord configured, or with no project roots to sweep, no thread is created, no
- * timer has anything to drive, and no plan doc or event stream is ever opened.
+ * All refusals are here rather than at the call site so that none can be half-applied: with the knob
+ * off, with no Discord configured, or with neither project roots nor a roster to draw a group from,
+ * no thread is created, no timer has anything to drive, and no plan doc, store file or event stream
+ * is ever opened.
  */
 export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   const log = options.log ?? ((): void => {});
@@ -243,12 +278,12 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
     log("board card: Discord is not configured, the card is not built");
     return null;
   }
-  if (options.roots.length === 0) {
+  if (options.roots.length === 0 && options.rosterPath === "") {
     // Said once, at the one moment it can be said: the knob is on and there is a channel to draw in,
-    // so an operator who enabled the card and left the project list empty gets the reason rather than
-    // a missing card. The roots themselves are never named, here or anywhere else this module logs:
-    // a configured root typically embeds the operator's OS username.
-    log("board card: no project roots are configured, the card is not built");
+    // so an operator who enabled the card with neither source configured gets the reason rather than
+    // a missing card. Neither the roots nor the roster's path is named, here or anywhere else this
+    // module logs: each typically embeds the operator's OS username.
+    log("board card: neither project roots nor a roster is configured, the card is not built");
     return null;
   }
   const transport = options.transport;
@@ -258,9 +293,28 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   const eventsPath = options.eventsPath;
   const sweep =
     options.sweep ?? ((sweepOptions: SweepPlansOptions): PlanSweep => sweepPlans(roots, sweepOptions));
-  const readEventStream =
-    options.readEvents ??
-    ((previous: EventReaderState): ReadEventsResult => readEvents(previous, roots, { path: eventsPath }));
+  // The default reads nothing when no roster is configured, so a card built on project roots alone
+  // never opens the roster file the operator has not set.
+  const readRoster =
+    options.readRoster ??
+    (options.rosterPath === ""
+      ? (): readonly RosterPersona[] => []
+      : createRosterReader(options.rosterPath, { log }).read);
+  const readQueues = options.readQueues ?? createQueueReader({ log, now }).read;
+  /**
+   * One tick's event read, over the roots this tick is handing it: the configured project roots
+   * first, then the enabled personas' working folders. The seam a test overrides takes only the
+   * previous state, as it always has, so `eventRoots` is a parameter of this wrapper rather than of
+   * the option itself.
+   */
+  function readEventStream(
+    previous: EventReaderState,
+    eventRoots: readonly string[],
+  ): ReadEventsResult {
+    return options.readEvents !== undefined
+      ? options.readEvents(previous)
+      : readEvents(previous, eventRoots, { path: eventsPath });
+  }
   const setTimer = options.setTimer ?? setInterval;
   const clearTimer = options.clearTimer ?? clearInterval;
 
@@ -296,6 +350,10 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   // stays bounded by the roots this card is configured with.
   let listingHolds = new Map<string, PlanDirectoryListing>();
   let events = initialEventState();
+  // The root list the last tick handed the event reader, or null before the first tick. Compared
+  // against this tick's own list to decide whether `events` is reset, since the reader keeps only
+  // the offset it consumed and no record of which roots it consumed it under.
+  let lastEventRoots: readonly string[] | null = null;
   let rebuilds = 0;
   let rebuiltAt: number | null = null;
   // Set only by the two failures that end the whole card: a rejected token, and a card being rebuilt
@@ -511,11 +569,62 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
     return { plans, failures, sweep: swept };
   }
 
+  /**
+   * One persona's group as the renderer draws it: the entries the status rule judged, each carrying
+   * the title and the plan reading's raw counts the rule itself does not read, beside the word and
+   * reason it already decided.
+   *
+   * `status.entries` holds the drawn order and every word and reason there is; a queue entry's title
+   * and its plan reading, both read off the same queue the status rule was handed, are the only two
+   * things this adds. A reading that is archived, or that the join found none for, draws null: such
+   * an entry has already been called done or has nothing behind it to show a count or a next step for.
+   */
+  function personaView(
+    persona: RosterPersona,
+    queue: PersonaQueue,
+    status: PersonaStatus,
+  ): BoardPersona {
+    const titles = new Map(queue.entries.map((entry): [string, string] => [entry.id, entry.title]));
+    const entries: BoardPersonaEntry[] = status.entries.map((entry) => {
+      const reading = queue.readings.get(entry.id);
+      return {
+        title: titles.get(entry.id) ?? "",
+        word: entry.word,
+        reason: entry.reason,
+        reading:
+          reading !== undefined && !reading.archived
+            ? { sections: reading.sections, completed: reading.completed, next: reading.next }
+            : null,
+      };
+    });
+    return {
+      name: persona.name,
+      entries,
+      done: status.done,
+      total: status.total,
+      worker: status.worker,
+      heldSince: queue.heldSince,
+    };
+  }
+
   async function run(): Promise<void> {
     const at = now();
-    const fleet = readFleet(at);
 
-    const read = readEventStream(events);
+    // Roster, then queues, then events, then the status rule per persona, then the project sweep:
+    // each later step reads what the one before it produced, and the status rule needs the events
+    // this tick read to know which entry a kit block is outstanding for.
+    const personas = readRoster();
+    const queues = readQueues(personas);
+
+    const eventRoots = [...roots, ...personas.map((persona) => persona.workdir)];
+    // A persona enabled since the last tick widens the root list the event reader is handed, and an
+    // event for its folder already stepped over under the narrower list would otherwise never be
+    // seen again: the reset sends the stream back to its start so every line is matched against the
+    // wider list.
+    if (!sameRoots(eventRoots, lastEventRoots)) events = initialEventState();
+    lastEventRoots = eventRoots;
+
+    const read = readEventStream(events, eventRoots);
     events = read.state;
     if (read.unreadable) {
       // Not fatal to the card: the blocked markers are one field of it, and every row beside them is
@@ -523,9 +632,19 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
       repeats("the goal event stream could not be read", "the markers it feeds are not drawn");
     }
 
+    // `readQueues` answers one queue per persona it was handed, in that same order, as the default
+    // reader does and as any injected one is expected to.
+    const personaViews = personas.map((persona, index) => {
+      const queue = queues[index];
+      return personaView(persona, queue, personaStatus(queue, events, at));
+    });
+
+    const fleet = readFleet(at);
+
     const card = renderBoardCard({
       roots,
       plans: fleet.plans,
+      personas: personaViews,
       failures: fleet.failures,
       truncated: fleet.sweep.truncated,
       events,

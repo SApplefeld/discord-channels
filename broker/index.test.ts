@@ -724,6 +724,7 @@ test("the board card's wiring reads this broker's configured projects and bindin
         boardCardRefreshMs: 60_000,
         // Absent on disk, which is the ordinary case: the card then draws no blocked markers.
         boardEventsPath: path.join(dir, "kit-events.jsonl"),
+        boardRosterPath: "",
       },
       transport,
       log: () => {},
@@ -751,6 +752,81 @@ test("the board card's wiring reads this broker's configured projects and bindin
     { messageId: "111111111111111111", threadId: "222222222222222222" },
     "and the thread it opened is persisted beside the registry snapshot",
   );
+});
+
+test("the board card's wiring draws a persona group and never the store's own bookkeeping words", async (t) => {
+  // The real wiring seam, `boardCardWiring`, over a fake store: three entries carrying the exact
+  // words the operator ruled off the card, `paused`, `pending` and the round-limit's own reason. The
+  // card draws a plain status word for each, computed by the real status function, and never the raw
+  // string the store wrote.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-queue-wiring-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const posts: string[] = [];
+  const transport: DiscordTransport = {
+    postCard: async ({ card }) => {
+      posts.push(card);
+      return { status: "ok", value: { messageId: "111111111111111111" }, rate: NO_RATE_INFO };
+    },
+    openThread: async () => ({
+      status: "ok",
+      value: { threadId: "222222222222222222" },
+      rate: NO_RATE_INFO,
+    }),
+    editCard: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    renameThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+    archiveThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+
+  const wiring = boardCardWiring({
+    config: {
+      stateFile: path.join(dir, "state.json"),
+      boardCard: true,
+      boardProjects: [],
+      boardCardRefreshMs: 60_000,
+      boardEventsPath: path.join(dir, "kit-events.jsonl"),
+      // Never opened: the reader below is injected, but the gate still needs a non-empty value to
+      // build with no project roots configured.
+      boardRosterPath: path.join(dir, "fleet.json"),
+    },
+    transport,
+    log: () => {},
+    onError: () => {},
+  });
+
+  const card = createBoardCard({
+    ...wiring,
+    readRoster: () => [{ name: "worker-one", workdir: path.join(dir, "worker-one") }],
+    readQueues: (personas) =>
+      personas.map((persona) => ({
+        name: persona.name,
+        workdir: persona.workdir,
+        entries: [
+          { id: "g1", title: "Fleet coordinator seat", status: "paused" },
+          { id: "g2", title: "Test-requirement axis", status: "pending" },
+          {
+            id: "g3",
+            title: "Memory database",
+            status: "blocked",
+            blockedReason: "Max rounds reached",
+          },
+        ],
+        activeGoalId: null,
+        lastTurnComplete: null,
+        turnStartedAt: null,
+        readings: new Map(),
+        heldSince: null,
+      })),
+  });
+  assert.ok(card !== null, "the roster alone, with no project roots, still builds the card");
+  await card.tick();
+
+  const body = posts[0] ?? "";
+  assert.equal(posts.length, 1);
+  assert.match(body, /worker-one/, "the persona group draws under its own name");
+  assert.doesNotMatch(body, /paused/i, "the plugin's own pause word never reaches the card");
+  assert.doesNotMatch(body, /pending/i, "nor does an arbitrary store status");
+  assert.doesNotMatch(body, /Max rounds/, "nor the round-limit's own bookkeeping reason");
 });
 
 test("a terminal hold rewrites its own message and strips the components that answered it", async () => {
