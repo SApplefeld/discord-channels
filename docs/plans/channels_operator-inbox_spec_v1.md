@@ -81,7 +81,11 @@ colon included) and which sits outside a fenced code block marks an ask. A block
 line and a bulleted `- ASK:` line do not, since their first non-space character is the marker. The rest of that line,
 whitespace-collapsed and cut to 200 code points, is the item's excerpt. A reply carrying at least
 one such line opens or refreshes the session's item with source `marked`, and the judge is not
-called for it. The kit already uses `ASK:` as a stop-shape line beside `BLOCKED:` and `WAITING:`.
+called for it. The kit has no `ASK:` convention today. The persona plugin does: `agent_persona`'s
+`hooks/index.ts` matches a worker's turn-final answer against a line of the form
+`ASK: <question>? Recommend: <choice>` and opens an ask record that a reader or the steward
+answers. The inbox parser admits that line as it admits any `ASK:` line, so a persona worker's ask
+opens a marked item from the first day.
 
 **The judge.** Jev is a hosted classifier from the vendor TypeSafe. A caller posts a JSON state and
 a set of named questions, and each answer comes back with a number. For a yes-or-no question (type
@@ -126,7 +130,10 @@ three prompt paths) is one source. A Discord message the inbound router delivere
 (`broker/routing/inbound.ts:287`, the `delivered` branch) is the other, because a channel message
 that lands mid-turn may fire no prompt hook. The instant the clear receives is the clamped stamp the registry computes on the first path, and
 the broker's clock at delivery on the second. A Discord message the router could not deliver to a
-live session clears nothing, and the ended-session case is stated below. `SessionStart` and `PostToolUse` do not clear an item,
+live session clears nothing, and the ended-session case is stated below. An answer from anyone other than the operator clears nothing, by design. A persona worker's ask
+that the steward answers stays on the card until the operator prompts that session, because the
+broker cannot see the persona plugin's ask records and a missed ask costs more than a stale line.
+`SessionStart` and `PostToolUse` do not clear an item,
 which is the deliberate difference from the blocked desk: a session that asks and keeps working
 makes tool calls all the while. A message the inbound router consumed as a permission verdict or a
 held-question answer does not clear an item. A stale record keeps its item, since a stale session can revive. An ended record keeps its item
@@ -161,6 +168,10 @@ tests, and the architecture document. The surfaces it returned, each confirmed b
 `broker/board/card.ts`, `broker/usage/*`, `install/Install-Functions.ps1`
 (`$script:ChannelBrokerEnvAllowlist`), `hooks/settings-fragment.json`, `docs/architecture.md`,
 `docs/operations.md`, `docs/install.md`, `docs/security-model.md`, and their sibling test files.
+
+## Dispatch Authorization
+
+The operator approved this design on 2026-09-21 and gave its scheduling to the Architect seat, so the grant covers the session the Architect's schedule assigns and no other. His words to the Expert seat, at the keyboard: "I'm fine with you skecthing out the plan and handing it off to the Architect to review and schedule." On the sketch and the day-one judge ruling: "I'm good with the Inbox on Jev from Day 1. I love this. Let's go forward!" The section is written by the Expert seat's session, which commits under the machine's one git identity, so a receiver records the trace as the sending seat's report of the operator's word.
 
 ## Sections of Work
 
@@ -275,7 +286,10 @@ Voice: company. Fact base: the as-built modules of sections 1 to 4.
 The surfaces this plan changes are closed at the sections' Files in scope. Named exclusions:
 
 - The kit rule telling sessions to write an `ASK:` line. It is a separate plan in the claude-kit
-  repository.
+  repository. The compatible shape for it is an `ASK:` line without `Recommend:`, which the persona
+  plugin's matcher does not read as a worker's ask record.
+- Reading the persona plugin's ask records so a steward-answered ask clears. It would couple this
+  broker to a sibling repository's state.
 - Any glasses screen, voice reply path, or non-loopback listener. A later plan reads this inbox.
 - A mention or phone ping when an item opens.
 - Per-ask items within one session, and any excerpt for a judge-opened item.
@@ -295,6 +309,7 @@ The surfaces this plan changes are closed at the sections' Files in scope. Named
 - assumed 2026-09-21 (default): sections 1 to 3 ship dark, and nothing is visible to the operator until section 4's card; reversal: none needed, the card is off by default.
 - assumed 2026-09-21 (default, the operator's to overrule): an ended session's item stays until an operator message in its thread or the record's prune; reversal: one store rule, section 1.
 - assumed 2026-09-21 (default, the operator's to overrule): a mirror-off session is never sent to the judge; reversal: one condition, section 3.
+- assumed 2026-09-21 (default, the operator's to overrule): a marked item answered by the steward or any other session stays until an operator prompt; reversal: a second clearing source, which needs a signal the broker does not hold today.
 - assumed 2026-09-21 (the repository's own rule): Branch-and-PR, since `main` refuses a direct push; reversal: none available.
 
 ## Operator Verification
