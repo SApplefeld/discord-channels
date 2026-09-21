@@ -11,12 +11,19 @@ import {
   parsePlan,
 } from "./plans.ts";
 import {
+  MAX_BLOCKED_REASON_LENGTH,
   MAX_DRAWN_SECTIONS,
+  MAX_ENTRY_TITLE_LENGTH,
+  MAX_FOLDED_TITLE_LENGTH,
   MAX_NEXT_LENGTH,
+  MAX_PERSONA_NAME_LENGTH,
   fieldUnitsNeutralized,
   renderBoardCard,
 } from "./card.ts";
-import type { BoardPlan } from "./card.ts";
+import type { BoardPersona, BoardPersonaEntry, BoardPlan } from "./card.ts";
+import { personaStatus } from "./status.ts";
+import type { PersonaStatus } from "./status.ts";
+import type { PersonaQueue, QueueEntry, QueuePlanReading } from "./queues.ts";
 
 const NOW = 1_786_300_000_000;
 const MINUTE = 60_000;
@@ -68,12 +75,14 @@ function event(overrides: Partial<BoardEvent> = {}): BoardEvent {
 function card(input: {
   roots?: readonly string[];
   plans?: readonly BoardPlan[];
+  personas?: readonly BoardPersona[];
   failures?: readonly PlanFailure[];
   truncated?: readonly PlanTruncation[];
   events?: EventReaderState;
   now?: number;
 }): string {
   return renderBoardCard({
+    personas: input.personas ?? [],
     // Empty unless a test names the configured list, which leaves the projects ordered entirely by
     // their newest plan's mtime, and a tie between two of them broken by the order the card first
     // places their roots in: the plans first, newest mtime then stem, then the failures, then the
@@ -775,13 +784,478 @@ test("the blank lines the list shape needs are charged against the budget like a
         reason: "malformed" as const,
       })),
     });
+    // The third fill is the persona view at the same widths, which spends the budget ahead of the
+    // projects and so is where an uncharged line first pushes the card past the ceiling.
+    const fleet = card({
+      personas: Array.from({ length: count }, (_, index) =>
+        persona({
+          name: `worker-${String(index).padStart(2, "0")}`,
+          total: 3,
+          worker: "idle 12m",
+          entries: [
+            entry({
+              title: `a queue entry title long enough to fill its own bullet ${index}`,
+              word: "in flight",
+              reading: { sections: 7, completed: 2, next: "the next section of this plan" },
+            }),
+            entry({ title: `a blocked entry of worker ${index}`, word: "blocked", reason: "Waiting on an operator fork" }),
+            entry({ title: `a queued entry of worker ${index}` }),
+          ],
+        }),
+      ),
+    });
     overflowed = walk(card({ plans }), `${count} projects`) || overflowed;
     overflowed = walk(thin, `${count * 8} one-bullet projects`) || overflowed;
+    overflowed = walk(fleet, `${count} persona groups`) || overflowed;
   }
   assert.ok(
     overflowed,
     "a card that ran out of room has to be among them, or the tail's own blank line is unpinned",
   );
+});
+
+// The persona view: one group per worker, its queue under a label saying what the worker is doing.
+//
+// The fixtures below are the plan's own reference fixture, and the first test drives it through the
+// status rule rather than hand-writing the words, because the acceptance the layout was approved
+// under is what that rule's answer renders as. The adapter here stands in for the tick's, which
+// Section 5 builds: it is what proves the rule's vocabulary and this renderer's are one vocabulary.
+
+const DEV_PLUGIN = "D:/personas/dev-plugin/repo";
+
+function queueEntry(overrides: Partial<QueueEntry> & { id: string; title: string }): QueueEntry {
+  return { status: "paused", ...overrides };
+}
+
+function queueReading(
+  stem: string,
+  overrides: Partial<Extract<QueuePlanReading, { archived: false }>> = {},
+): QueuePlanReading {
+  return {
+    archived: false,
+    status: "Ready",
+    terminal: false,
+    sections: 2,
+    completed: 0,
+    next: null,
+    root: DEV_PLUGIN,
+    path: `${DEV_PLUGIN}/docs/plans/${stem}.md`,
+    stem,
+    mtimeMs: NOW - 3 * HOUR,
+    sizeBytes: 4_096,
+    ...overrides,
+  };
+}
+
+/** The plan's reference fixture: one persona, six entries in queue order, idle for twelve minutes. */
+function referenceQueue(overrides: Partial<PersonaQueue> = {}): PersonaQueue {
+  const entries: QueueEntry[] = [
+    queueEntry({ id: "e1", title: "Fleet coordinator seat", sortKey: 1 }),
+    queueEntry({
+      id: "e2",
+      title: "Test-requirement axis",
+      sortKey: 2,
+      status: "blocked",
+      blockedReason: "Max rounds reached",
+    }),
+    queueEntry({ id: "e3", title: "Memory database", sortKey: 3 }),
+    queueEntry({ id: "e4", title: "Kaizen: messages wait too long", sortKey: 4, status: "complete" }),
+    queueEntry({
+      id: "e5",
+      title: "Reviewer re-ranking",
+      sortKey: 5,
+      status: "blocked",
+      blockedReason: "Waiting on two operator forks",
+    }),
+    queueEntry({ id: "e6", title: "Prose register", sortKey: 6 }),
+  ];
+  return {
+    name: "dev-plugin",
+    workdir: DEV_PLUGIN,
+    entries,
+    activeGoalId: null,
+    lastTurnComplete: NOW - 12 * MINUTE,
+    turnStartedAt: null,
+    readings: new Map<string, QueuePlanReading>([
+      ["e1", queueReading("fleet-coordinator", { sections: 2, completed: 0 })],
+      [
+        "e2",
+        queueReading("test-requirement", {
+          status: "In Progress",
+          sections: 3,
+          completed: 2,
+          next: "Section 3, the reviewer charters",
+          mtimeMs: NOW - 1 * HOUR,
+        }),
+      ],
+      [
+        "e3",
+        queueReading("memory-database", {
+          status: "In Progress",
+          sections: 7,
+          completed: 4,
+          mtimeMs: NOW - 5 * HOUR,
+        }),
+      ],
+      ["e5", queueReading("reviewer-re-ranking", { sections: 8, completed: 3 })],
+      ["e6", queueReading("prose-register", { sections: 4, completed: 0 })],
+    ]),
+    heldSince: null,
+    ...overrides,
+  };
+}
+
+/**
+ * One persona group as the tick composes it: the rule's answer per entry, joined back to the title
+ * and the plan reading the queue reader took them from.
+ *
+ * Section 5 builds this adapter for the broker itself. It stands here because the acceptance is
+ * about what the rule's answer renders as, and because a hand-written word list would pin this
+ * renderer against a vocabulary nothing else speaks.
+ */
+function personaGroup(queue: PersonaQueue, status: PersonaStatus): BoardPersona {
+  const titles = new Map(queue.entries.map((entry) => [entry.id, entry.title]));
+  return {
+    name: queue.name,
+    done: status.done,
+    total: status.total,
+    worker: status.worker,
+    heldSince: queue.heldSince,
+    entries: status.entries.map((entry) => {
+      const reading = queue.readings.get(entry.id);
+      return {
+        title: titles.get(entry.id) ?? "",
+        word: entry.word,
+        reason: entry.reason,
+        reading: reading === undefined || reading.archived ? null : reading,
+      };
+    }),
+  };
+}
+
+/** The reference fixture judged and adapted, which is what the layout was approved over. */
+function reference(overrides: Partial<PersonaQueue> = {}): BoardPersona {
+  const queue = referenceQueue(overrides);
+  return personaGroup(queue, personaStatus(queue, initialEventState(), NOW));
+}
+
+/** One queue entry as the renderer takes it, with no plan document behind it unless named. */
+function entry(overrides: Partial<BoardPersonaEntry> & { title: string }): BoardPersonaEntry {
+  return { word: "queued", reason: null, reading: null, ...overrides };
+}
+
+/** One persona group with nothing but the fields a test names. */
+function persona(overrides: Partial<BoardPersona> & { name: string }): BoardPersona {
+  return { entries: [], done: 0, total: 0, worker: "idle", heldSince: null, ...overrides };
+}
+
+/** Every fenced label on the card paired with the bullets drawn under it, in card order. */
+function groups(rendered: string): { label: string; lines: string[] }[] {
+  const lines = rendered.split("\n");
+  const found: { label: string; lines: string[] }[] = [];
+  for (const [at, line] of lines.entries()) {
+    if (line !== "```" || lines[at + 2] !== "```") continue;
+    const drawnLines: string[] = [];
+    for (let read = at + 3; read < lines.length; read += 1) {
+      const line = lines[read] ?? "";
+      if (!line.startsWith("- ") && !line.startsWith("  - ")) break;
+      drawnLines.push(line);
+    }
+    found.push({ label: lines[at + 1] ?? "", lines: drawnLines });
+  }
+  return found;
+}
+
+test("the reference fixture renders the layout the operator approved, line for line", () => {
+  const body = card({ personas: [reference()] });
+
+  assert.equal(
+    body,
+    [
+      "📋 **Fleet: Board**",
+      "# 📋 Fleet: Board",
+      "",
+      "```",
+      "dev-plugin · 1 of 6 done · idle 12m",
+      "```",
+      "- **Test-requirement axis**",
+      "  - in progress · 2/3",
+      "  - next: Section 3, the reviewer charters",
+      "- **Fleet coordinator seat**",
+      "  - up next · 0/2",
+      "- **Memory database**",
+      "  - started, parked · 4/7",
+      "- **Reviewer re-ranking**",
+      "  - blocked · 3/8 · Waiting on two operator forks",
+      "- then: Prose register",
+      "",
+      "card as of just now",
+    ].join("\n"),
+  );
+});
+
+test("the label says the worker is running while the heartbeat is inside a turn", () => {
+  const body = card({ personas: [reference({ turnStartedAt: NOW - 2 * MINUTE })] });
+
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · running now");
+});
+
+test("a store reading the tick is holding draws a marker whose age climbs", () => {
+  const body = card({ personas: [reference({ heldSince: NOW - 5 * MINUTE })] });
+
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m · held 5m");
+  assert.doesNotMatch(
+    card({ personas: [reference()] }),
+    /held /,
+    "a store read this tick draws no marker",
+  );
+});
+
+test("a held marker on a store instant that names no time is left off rather than drawn as NaN", () => {
+  const body = card({ personas: [reference({ heldSince: Number.NaN })] });
+
+  assert.doesNotMatch(body, /NaN/);
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m");
+});
+
+test("the next line draws on the entry in flight and on no other", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 2,
+        entries: [
+          entry({
+            title: "running",
+            word: "in flight",
+            reading: { sections: 3, completed: 1, next: "the renderer and its tests" },
+          }),
+          entry({
+            title: "parked",
+            word: "started, parked",
+            reading: { sections: 3, completed: 2, next: "a next value no parked entry draws" },
+          }),
+        ],
+      }),
+    ],
+  });
+
+  assert.deepEqual(groups(body)[0]?.lines, [
+    "- **running**",
+    "  - in progress · 1/3",
+    "  - next: the renderer and its tests",
+    "- **parked**",
+    "  - started, parked · 2/3",
+  ]);
+});
+
+test("a done entry draws no line of its own, and the label's count is where it is reported", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        done: 2,
+        total: 3,
+        entries: [
+          entry({ title: "finished", word: "done", reading: { sections: 4, completed: 4, next: null } }),
+          entry({ title: "archived", word: "done" }),
+          entry({ title: "running", word: "in flight" }),
+        ],
+      }),
+    ],
+  });
+
+  assert.deepEqual(groups(body)[0]?.lines, ["- **running**", "  - in progress"]);
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 2 of 3 done · idle");
+});
+
+test("an entry whose plan declares no sections draws its word alone", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 1,
+        entries: [
+          entry({ title: "unsectioned", word: "up next", reading: { sections: 0, completed: 0, next: null } }),
+        ],
+      }),
+    ],
+  });
+
+  assert.deepEqual(groups(body)[0]?.lines, ["- **unsectioned**", "  - up next"]);
+});
+
+test("a reason draws on a blocked entry and nowhere else", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 2,
+        entries: [
+          entry({ title: "stopped", word: "blocked", reason: "Waiting on two operator forks" }),
+          entry({ title: "waiting", word: "up next", reason: "a reason no other word draws" }),
+        ],
+      }),
+    ],
+  });
+
+  // The up-next entry draws above the blocked one whatever order they arrive in, which is the
+  // layout's own running order: what is next, then what is stopped.
+  assert.deepEqual(groups(body)[0]?.lines, [
+    "- **waiting**",
+    "  - up next",
+    "- **stopped**",
+    "  - blocked · Waiting on two operator forks",
+  ]);
+});
+
+test("the closing line names as many queued titles as fit and counts the rest", () => {
+  const titles = Array.from({ length: 12 }, (_, at) => `queued plan number ${at} of this worker's`);
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: titles.length,
+        entries: titles.map((title) => entry({ title })),
+      }),
+    ],
+  });
+
+  const [line] = groups(body)[0]?.lines ?? [];
+  assert.ok((line ?? "").startsWith("- then: queued plan number 0"), line);
+  const named = (line ?? "").replace("- then: ", "").split(", ");
+  const left = Number(/^\+(\d+)$/.exec(named[named.length - 1] ?? "")?.[1]);
+  assert.ok(left > 0, `the fixture has to overrun the closing line's own budget: ${line}`);
+  assert.equal(named.length - 1 + left, titles.length, `every queued entry is named or counted: ${line}`);
+  assert.ok((line ?? "").length <= 240, `the closing line stays one line's worth: ${(line ?? "").length}`);
+});
+
+test("a title and a reason out of a worker's store are cut with a mark rather than drawn whole", () => {
+  const title = "t".repeat(MAX_ENTRY_TITLE_LENGTH + 40);
+  const reason = "r".repeat(MAX_BLOCKED_REASON_LENGTH + 40);
+  const body = card({
+    personas: [
+      persona({
+        name: "n".repeat(MAX_PERSONA_NAME_LENGTH + 40),
+        total: 2,
+        entries: [entry({ title, word: "blocked", reason }), entry({ title })],
+      }),
+    ],
+  });
+
+  const [label] = projects(body);
+  assert.equal((label ?? "").split(" ")[0], `${"n".repeat(MAX_PERSONA_NAME_LENGTH - 1)}…`);
+  assert.deepEqual(groups(body)[0]?.lines, [
+    `- **${"t".repeat(MAX_ENTRY_TITLE_LENGTH - 1)}…**`,
+    `  - blocked · ${"r".repeat(MAX_BLOCKED_REASON_LENGTH - 1)}…`,
+    `- then: ${"t".repeat(MAX_FOLDED_TITLE_LENGTH - 1)}…`,
+  ]);
+});
+
+test("a persona with nothing left to draw takes no label at all", () => {
+  const body = card({
+    plans: [plan()],
+    personas: [
+      persona({ name: "empty" }),
+      persona({
+        name: "finished",
+        done: 2,
+        total: 2,
+        entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
+      }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["sapplefeld-channels"]);
+});
+
+test("persona groups draw ahead of every project group", () => {
+  const body = card({
+    roots: [CHANNELS],
+    plans: [plan()],
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 1,
+        entries: [entry({ title: "running", word: "in flight" })],
+      }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["dev-plugin · 0 of 1 done · idle", "sapplefeld-channels"]);
+});
+
+test("a persona name that neutralizes to nothing is named by its position in the roster", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "\u200b\u200b",
+        total: 1,
+        entries: [entry({ title: "running", word: "in flight" })],
+      }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["persona 1 · 0 of 1 done · idle"]);
+});
+
+test("the counts on a label are bounded before they take the line", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        done: 1e9,
+        total: 1e9,
+        entries: [entry({ title: "running", word: "in flight" })],
+      }),
+    ],
+  });
+
+  assert.equal(
+    groups(body)[0]?.label,
+    `dev-plugin · ${MAX_DRAWN_SECTIONS} of ${MAX_DRAWN_SECTIONS} done · idle`,
+  );
+});
+
+test("a fleet too large for one message ends in the tail counting entries and whole groups", () => {
+  const PERSONAS = 12;
+  const ENTRIES = 8;
+  const personas = Array.from({ length: PERSONAS }, (_, at) =>
+    persona({
+      name: `worker-${String(at).padStart(2, "0")}`,
+      total: ENTRIES,
+      worker: "idle 12m",
+      entries: Array.from({ length: ENTRIES }, (_, index) =>
+        entry({
+          title: `a queue entry title long enough to fill its own bullet ${at}-${index}`,
+          word: index === 0 ? "in flight" : "blocked",
+          reason: "Waiting on an operator fork that has not been answered yet",
+          reading: { sections: 7, completed: index, next: "the next section of this plan" },
+        }),
+      ),
+    }),
+  );
+  const body = card({ personas });
+
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  const tail = body.split("\n").find((line) => line.includes("not shown")) ?? "";
+  assert.match(tail, /^\(\+\d+ plans, \+\d+ projects not shown\)$/, body);
+
+  const entriesLeft = Number(/\+(\d+) plans/.exec(tail)?.[1]);
+  const groupsLeft = Number(/\+(\d+) projects/.exec(tail)?.[1]);
+  const shown = bullets(body).filter((line) => line.startsWith("- **")).length;
+  assert.ok(entriesLeft > 0, `the fixture has to be one that overflows: ${body}`);
+  assert.equal(
+    shown + entriesLeft,
+    PERSONAS * ENTRIES,
+    `every queue entry is either drawn or counted as a plan: ${body}`,
+  );
+  assert.equal(
+    groups(body).length + groupsLeft,
+    PERSONAS,
+    `every group is either drawn or counted as a project: ${body}`,
+  );
+  assert.match(body, /^card as of just now$/m, "the footer survives a card that ran out of room");
 });
 
 // Filenames, statuses and `Next:` prose are model-written text out of another program's files, and
@@ -844,6 +1318,28 @@ function adversarialCards(): string[] {
         plans: [
           plan({ root: hostile, stem: hostile, status: hostile, next: hostile }),
           plan({ root: CHANNELS, stem: `plan_${index}`, status: "Draft", next: hostile }),
+        ],
+        // A persona's name, its worker phrase, every entry title and every blocked reason are text
+        // out of a worker's own store, on the same footing as a plan doc's prose: the group is
+        // composed around all of them at once so the properties below cover the persona view too.
+        personas: [
+          persona({
+            name: hostile,
+            done: 1,
+            total: 4,
+            worker: hostile,
+            heldSince: NOW - 5 * MINUTE,
+            entries: [
+              entry({
+                title: hostile,
+                word: "in flight",
+                reading: { sections: 3, completed: 1, next: hostile },
+              }),
+              entry({ title: hostile, word: "blocked", reason: hostile }),
+              entry({ title: hostile, word: "done" }),
+              entry({ title: hostile }),
+            ],
+          }),
         ],
         failures: [{ root: hostile, path: hostile, stem: hostile, reason: "malformed" }],
         truncated: [{ root: hostile, dropped: 3 }],

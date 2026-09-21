@@ -1,28 +1,33 @@
-// The board card: one bounded message body listing every open plan across this host's configured
-// project roots, grouped by project.
+// The board card: one bounded message body over two views of the same fleet. The persona view lists
+// each worker persona's queue in running order, a group per worker; the project view lists every
+// open plan across this host's configured project roots, a group per project. The persona groups
+// draw first, so a fleet large enough to fill the card spends it on what somebody is working on.
 //
 // Pure rendering, the fleet usage card's shape. Everything it draws arrives as arguments, the
 // current time included, so the same inputs always compose the same body: the thread this card
 // lives in is edited only when its text changes, and a clock read inside the renderer would be a
 // difference on every refresh.
 //
-// Membership is every non-terminal plan. Only `Status: Complete` is hidden, so a Draft is visible,
-// and a status spelled some other way surfaces as that spelling rather than vanishing into a filter
-// it did not match. The one status drawn as no clause at all is the ordinary in-progress one, which
-// is what most of a fleet carries: a word spent on every plan tells two of them apart from nothing.
+// In the project view, membership is every non-terminal plan. Only `Status: Complete` is hidden, so
+// a Draft is visible, and a status spelled some other way surfaces as that spelling rather than
+// vanishing into a filter it did not match. The one status drawn as no clause at all is the ordinary
+// in-progress one, which is what most of a fleet carries: a word spent on every plan tells two of
+// them apart from nothing. In the persona view the caller has already decided membership, and what
+// this file decides is what each word draws and in what order.
 //
-// The body is a markdown list rather than a table: a fenced label per project, a bullet per plan,
-// and the plan's facts on sub-bullets under it. Discord wraps a list item at its own word
+// The body is a markdown list rather than a table: a fenced label per group, a bullet per plan or
+// per queue entry, and its facts on sub-bullets under it. Discord wraps a list item at its own word
 // boundaries and indents the wrap under the bullet, so a sentence-length status or a whole `Next:`
 // phrase costs a wrapped line here. A column of fixed width could only cut one, and it would cut it
-// exactly where the information is. So no field on this card is held to a display width, and there
+// exactly where the information is. So no field on this card is held to a column's width, and there
 // is no grid for a field of emoji or of wide CJK to break.
 //
 // Every string it draws is untrusted. A plan's filename, its `Status:` value and its `Next:` prose
-// are model-written text out of another program's files, and an event's fields are that program's
-// own. All of them land on live markdown, so all of them take `../discord/render.ts`'s `inertField`,
-// the full escape, which reaches every metacharacter including the angle brackets Discord's chip
-// syntax lives inside: this is the neutralization the question messages and the permission prompt
+// are model-written text out of another program's files, an event's fields are that program's own,
+// and a persona's name, entry titles and block reasons are a worker's own store. All of them land
+// on live markdown, so all of them take `../discord/render.ts`'s `inertField`, the full escape,
+// which reaches every metacharacter including the angle brackets Discord's chip syntax lives
+// inside: this is the neutralization the question messages and the permission prompt
 // already render untrusted text under. An `@everyone` surviving as text pings nobody, because the
 // transport names an empty `allowed_mentions` parse list, and that is the half of the job this
 // renderer does not do.
@@ -31,10 +36,16 @@
 // them carries: one pass to index the events, one pass to group the plans, one map lookup per plan,
 // and two sorts, one over the open plans and one over the projects, where a comparison is a number
 // or at most a pair of filename stems the filesystem's own name limit bounds. Every untrusted field
-// is bounded before it arrives, each by whichever reader took it in: the two free-form plan values
-// by `./plans.ts`'s intake caps, an event's fields by `./events.ts`'s, and a filename by the name
-// limit the filesystem itself enforces. So the escaping here walks a bounded string per field, and
-// nothing walks a product of two quantities that both come from another program's files.
+// is bounded before it arrives: the two free-form plan values by `./plans.ts`'s intake caps, an
+// event's fields by `./events.ts`'s, and a filename by the name limit the filesystem itself
+// enforces. So the escaping on that path walks a bounded string per field, and nothing walks a
+// product of two quantities that both come from another program's files.
+//
+// A persona group's own free text is the exception, and its bound is coarser. An entry title and a
+// block reason are cut here, which is the only limit on what either draws, and the cut is itself a
+// walk over the value as it arrived. What holds that walk down is `./queues.ts`'s cap on the store
+// file those values were read out of, so one group costs at most that file's worth of walking per
+// tick rather than a length either field carries its own bound for.
 import {
   MAX_CARD_LENGTH,
   fenced,
@@ -63,8 +74,68 @@ export type BoardPlan = {
 };
 
 /**
+ * What one entry in a worker's queue is doing, in the word the card draws under its title.
+ *
+ * Declared here rather than imported from the rule that decides it, so this renderer depends on
+ * nothing but what it is handed and the rule stays free to change without a render change. The
+ * words are the rule's own, and three of them change what is drawn rather than only what is said:
+ * `in flight` is the entry the worker is on, which draws as `in progress` and is the one entry
+ * carrying a `next:` line; `done` draws no line at all and is reported in the group's count alone;
+ * `queued` folds into the closing line with the rest of the queue.
+ */
+export type BoardPersonaWord =
+  | "done"
+  | "blocked"
+  | "stalled"
+  | "in flight"
+  | "started, parked"
+  | "up next"
+  | "queued";
+
+/**
+ * One queue entry as the card draws it: what the worker calls it, what it is doing, why it stopped
+ * where it did, and the plan document behind it.
+ *
+ * `reason` draws on a blocked entry alone, which is the one word that has one. `reading` is null for
+ * an entry whose plan document the join found nothing for, and for one found only in an archive
+ * folder and never opened: such an entry draws its word and nothing else.
+ */
+export type BoardPersonaEntry = {
+  title: string;
+  word: BoardPersonaWord;
+  reason: string | null;
+  reading: { sections: number; completed: number; next: string | null } | null;
+};
+
+/**
+ * One worker persona's group: what its label says, and its queue in queue order.
+ *
+ * `done` and `total` count the whole queue, the done entries this view draws no line for included,
+ * so the label reports work the list below it does not show. `worker` is the phrase saying what the
+ * worker itself is doing, which no entry can say: a queue full of blocked plans and a worker that
+ * has stopped look identical from the entries alone.
+ *
+ * `heldSince` is the instant the store reading behind this group was last known good, or null for
+ * one read this tick. It draws the same climbing marker a held plan parse draws, and for the same
+ * reason: the persona store is written whole with no lock, so a read landing mid-write redraws the
+ * last good reading and the marker is what keeps that from passing for a fresh one.
+ */
+export type BoardPersona = {
+  name: string;
+  entries: readonly BoardPersonaEntry[];
+  done: number;
+  total: number;
+  worker: string;
+  heldSince: number | null;
+};
+
+/**
  * The largest section count the card draws. The counts come out of a plan doc's own headings, so a
  * file full of them is bounded here rather than allowed to render a figure that takes the line.
+ *
+ * A persona group's done and total counts are held to it too. They are counted over a queue the
+ * reader already caps, so the bound never fires on a queue that reader produced; it is here because
+ * `renderBoardCard` is exported and draws the counts it is handed.
  */
 export const MAX_DRAWN_SECTIONS = 999;
 
@@ -115,6 +186,41 @@ export const MAX_NEXT_LENGTH = 120;
 export const MAX_PROJECT_LABEL_LENGTH = 60;
 
 /**
+ * Room for the fields a persona group draws, every one of them free text out of a worker's own
+ * store rather than a filename the filesystem bounds.
+ *
+ * A persona name and an entry title are each the line a reader scans a group by, so they take the
+ * project label's width: wide enough for a name written to be read, and not so wide that one entry
+ * takes the room the rest of the queue needs. Inside the closing line a title is cut harder, since
+ * that line names several at once and shares one budget between them.
+ *
+ * A blocked reason is the group's one sentence-shaped field, held to what the plan reader already
+ * holds a plan's `Status:` to, which is the other sentence this card draws.
+ *
+ * The worker's phrase is this broker's own words rather than another program's, and it is bounded
+ * anyway: `renderBoardCard` is exported and draws what it is handed. Its width is what the longest
+ * phrase this card composes runs to with room to spare.
+ *
+ * Each binds in code points and in UTF-16 units alike, whichever runs out first, since that is what
+ * `fit` holds a string to.
+ */
+export const MAX_PERSONA_NAME_LENGTH = 60;
+export const MAX_ENTRY_TITLE_LENGTH = 60;
+export const MAX_FOLDED_TITLE_LENGTH = 40;
+export const MAX_BLOCKED_REASON_LENGTH = 120;
+const MAX_WORKER_STATE_LENGTH = 40;
+
+/**
+ * How much of the closing line the queued titles it names may take, in the units they escape to.
+ *
+ * The line stands for the whole tail of a worker's queue, which can run to the reader's per-persona
+ * cap, so what bounds it is this width rather than the number of entries behind it. Past the width
+ * the rest are a count, which is the honest thing to say about titles there was no room to name:
+ * roughly two wrapped lines on a phone, against a card that has other workers to draw.
+ */
+const MAX_FOLDED_TITLES_LENGTH = 200;
+
+/**
  * The bound a filename stem is escaped under, in code points.
  *
  * Above the longest name component any filesystem this runs on accepts, so it never shortens a stem
@@ -129,6 +235,30 @@ const MAX_STEM_LENGTH = 255;
  * value. Every other non-terminal status is drawn as written.
  */
 const IN_PROGRESS = "in progress";
+
+/**
+ * What the entry a worker is on is called on the card.
+ *
+ * The rule that decides it calls that entry `in flight`, which says which entry it picked out of
+ * the queue. The card says what the operator is looking at, and `in progress` is the phrase the
+ * plan documents behind these entries carry in their own headers.
+ */
+const IN_FLIGHT_DRAWN = IN_PROGRESS;
+
+/**
+ * The words that draw a full entry beneath the two the layout leads with.
+ *
+ * What they have in common is that the worker is not on them and will not simply pick the next one
+ * up: each is a plan the operator may have to do something about, so each earns its own bullet
+ * rather than a place in the closing line.
+ */
+const STOPPED_WORDS: readonly BoardPersonaWord[] = ["blocked", "stalled", "started, parked"];
+
+/** How the closing line opens: the rest of the queue, in the running order it will be picked up in. */
+const FOLDED_PREFIX = "then:";
+
+/** What sits between two titles on that line. */
+const FOLDED_SEPARATOR = ", ";
 
 /** The card's name where Discord draws a message's first line, inline beside the bot's own name.
  * That position reads as chrome rather than as the card's heading, which is why the title below
@@ -178,6 +308,17 @@ const UNREADABLE_STATUS = "(unreadable status)";
  */
 function unnamedProject(index: number): string {
   return `project ${index + 1}`;
+}
+
+/**
+ * What a persona is called when its roster name neutralizes to nothing.
+ *
+ * The number is the persona's own position in the roster, not its position on the drawn card, for
+ * the reason `unnamedProject` numbers a root that way: a number taken from the card would rename the
+ * worker every time an unrelated group appeared or dropped off.
+ */
+function unnamedPersona(index: number): string {
+  return `persona ${index + 1}`;
 }
 
 // A path is split on either separator, because the configured roots and the plan paths the kit
@@ -299,10 +440,15 @@ function drawnCount(value: number): number {
   return Math.min(Math.max(Math.trunc(value), 0), MAX_DRAWN_SECTIONS);
 }
 
-/** `3/5`, with the completed half never drawn above the total it is counted out of. */
-function sectionCount(reading: PlanReading): string {
-  const sections = drawnCount(reading.sections);
-  return `${Math.min(drawnCount(reading.completed), sections)}/${sections}`;
+/**
+ * `3/5`, with the completed half never drawn above the total it is counted out of.
+ *
+ * Takes the two counts rather than a whole reading, because both views draw this figure and the
+ * persona view's entries carry a plan document's counts without the rest of a sweep's reading.
+ */
+function sectionCount(counts: { sections: number; completed: number }): string {
+  const sections = drawnCount(counts.sections);
+  return `${Math.min(drawnCount(counts.completed), sections)}/${sections}`;
 }
 
 /**
@@ -499,7 +645,13 @@ function spent(lines: readonly string[]): number {
  */
 type BlockItem = { lines: string[]; plans: number };
 
-/** One project's section: the fenced label naming it, and the items its list draws. */
+/**
+ * One group on the card: the fenced label naming it, and the items its list draws.
+ *
+ * Both views compose into this, which is what lets one budget loop spend the card on the persona
+ * groups and the project groups in turn, and what makes the overflow tail count an undrawn queue
+ * entry as a plan and an undrawn persona group as a project without arithmetic of its own.
+ */
 type ProjectSection = { label: string; items: BlockItem[]; plans: number };
 
 /**
@@ -625,6 +777,136 @@ function sections(
 }
 
 /**
+ * One persona group's label: who the worker is, how much of its queue is behind it, what the worker
+ * itself is doing, and how old the reading all of that came from is.
+ *
+ * The counts lead with the worker's name because that pair is what the operator reads the group by
+ * from across a phone screen. A store reading the tick is holding says so last, where the plan
+ * bullets put the same marker, so a group redrawn from a held reading never passes for a fresh one.
+ */
+function personaLabel(group: BoardPersona, index: number, now: number): string {
+  const named = cutBlockField(group.name, MAX_PERSONA_NAME_LENGTH);
+  const total = drawnCount(group.total);
+  const parts = [
+    named === "" ? unnamedPersona(index) : named,
+    `${Math.min(drawnCount(group.done), total)} of ${total} done`,
+  ];
+  // The worker's phrase is this broker's own text, so a value that neutralizes to nothing is a
+  // caller with nothing to say rather than a field to report unusable: the clause is left off.
+  const worker = cutBlockField(group.worker, MAX_WORKER_STATE_LENGTH);
+  if (worker !== "") parts.push(worker);
+  // Through a finite guard, so a hold instant that names no time draws no clause rather than an age
+  // composed of `NaN`. The group is still drawn: what is lost is how old its reading is.
+  if (group.heldSince !== null && Number.isFinite(group.heldSince)) {
+    parts.push(`held ${span(Math.max(now - group.heldSince, 0))}`);
+  }
+  return parts.join(` ${SEPARATOR} `);
+}
+
+/**
+ * One queue entry's lines: its title in bold on a bullet of its own, what it is doing under that,
+ * and what the plan document says comes next under those.
+ *
+ * The shape is the project view's plan bullet, for the reason that view gives: the title is the
+ * handle, and a line carrying nothing else is the line a reader scans the queue by. The facts are
+ * the word first, because the word is why the entry is drawn where it is, then how far through its
+ * sections the plan document is, then what the block is waiting on.
+ *
+ * A plan document declaring no sections draws no count, as a swept plan's bullet does: `0/0` is what
+ * a doc with no `## Sections of Work` block yields, and a fraction of nothing measures nothing.
+ *
+ * `next:` draws on the entry in flight alone. It is the sentence saying what is happening right now,
+ * and on an entry nobody is working it would be the sentence saying what was happening when the
+ * worker left it.
+ */
+function entryLines(item: BoardPersonaEntry): string[] {
+  const titled = cutField(item.title, MAX_ENTRY_TITLE_LENGTH);
+  const lines = [`${BULLET} **${titled === "" ? UNNAMED_PLAN : titled}**`];
+  const parts = [item.word === "in flight" ? IN_FLIGHT_DRAWN : item.word];
+  if (item.reading !== null && drawnCount(item.reading.sections) > 0) {
+    parts.push(sectionCount(item.reading));
+  }
+  if (item.word === "blocked" && item.reason !== null) {
+    const reason = cutField(item.reason, MAX_BLOCKED_REASON_LENGTH);
+    if (reason !== "") parts.push(reason);
+  }
+  lines.push(`${SUB_BULLET} ${parts.join(` ${SEPARATOR} `)}`);
+  const next =
+    item.word === "in flight" && item.reading !== null && item.reading.next !== null
+      ? cutField(item.reading.next, MAX_NEXT_LENGTH)
+      : "";
+  if (next !== "") lines.push(`${SUB_BULLET} next: ${next}`);
+  return lines;
+}
+
+/**
+ * The one bullet the rest of a worker's queue draws: the titles that fit on it, and a count of the
+ * ones that did not.
+ *
+ * A queue runs to the reader's per-persona cap, and every entry past the few a worker is actually
+ * between is the same fact stated many times. So the queued entries are one line, in running order,
+ * and the line's own width decides how many of them are named. The count stands for exactly the
+ * entries it left unnamed, and it is what the overflow tail spends if the card stops before this
+ * line: a queued entry is represented here or nowhere.
+ */
+function foldedLine(queued: readonly BoardPersonaEntry[]): BlockItem | null {
+  if (queued.length === 0) return null;
+  const named: string[] = [];
+  let used = 0;
+  for (const item of queued) {
+    const titled = cutField(item.title, MAX_FOLDED_TITLE_LENGTH);
+    const drawn = titled === "" ? UNNAMED_PLAN : titled;
+    const cost = drawn.length + (named.length === 0 ? 0 : FOLDED_SEPARATOR.length);
+    if (used + cost > MAX_FOLDED_TITLES_LENGTH) break;
+    named.push(drawn);
+    used += cost;
+  }
+  const left = queued.length - named.length;
+  const parts = left > 0 ? [...named, `+${left}`] : named;
+  return {
+    lines: [`${BULLET} ${FOLDED_PREFIX} ${parts.join(FOLDED_SEPARATOR)}`],
+    plans: queued.length,
+  };
+}
+
+/**
+ * The card's persona groups, one per worker in roster order, each holding its queue in the order the
+ * layout draws it: the entry in flight, the entry up next, then everything stopped or parked, in
+ * queue order, and the rest of the queue folded onto one closing line.
+ *
+ * The order is by what the operator does with it rather than by the queue's own key: what is running
+ * and what is next are the two answers the card exists to give, and everything under them is
+ * context. Within the third run the queue's order is kept, because that is the order the worker will
+ * reach them in.
+ *
+ * A done entry draws no line. It is counted in the label, which is where a finished plan is worth a
+ * figure and not a bullet, and a group of nothing but done entries draws nothing at all: this card
+ * does not stand a label over an empty list, the same rule that leaves a configured root whose plans
+ * are all terminal undrawn.
+ */
+function personaSections(groups: readonly BoardPersona[], now: number): ProjectSection[] {
+  return groups.flatMap((group, index) => {
+    const entries = group.entries;
+    const full = [
+      ...entries.filter((item) => item.word === "in flight"),
+      ...entries.filter((item) => item.word === "up next"),
+      ...entries.filter((item) => STOPPED_WORDS.includes(item.word)),
+    ];
+    const items: BlockItem[] = full.map((item) => ({ lines: entryLines(item), plans: 1 }));
+    const folded = foldedLine(entries.filter((item) => item.word === "queued"));
+    if (folded !== null) items.push(folded);
+    if (items.length === 0) return [];
+    return [
+      {
+        label: fenced([personaLabel(group, index, now)]),
+        items,
+        plans: items.reduce((sum, item) => sum + item.plans, 0),
+      },
+    ];
+  });
+}
+
+/**
  * The card's closing line: how old the information on it is.
  *
  * Anchored to the oldest parse behind the card's plans rather than to the current time, which is the
@@ -648,10 +930,14 @@ function footerLine(plans: readonly BoardPlan[], now: number): string {
 }
 
 /**
- * The whole card, bounded to one message: a title heading, then a fenced label and a list of plans
- * per project, then the footer.
+ * The whole card, bounded to one message: a title heading, then a fenced label and a list under it
+ * per worker persona, then the same per project, then the footer.
  *
- * Composed project by project against a running budget rather than assembled whole and cut, because
+ * The persona groups draw first and spend the budget first, so a fleet large enough to fill the card
+ * spends it on the queues somebody is working through rather than on a folder sweep. A large enough
+ * fleet can push the project groups into the tail whole, which the tail says.
+ *
+ * Composed group by group against a running budget rather than assembled whole and cut, because
  * a card truncated at the end would drop the last projects silently and read as a fleet with fewer
  * of them. The title and the footer are taken out of the budget before the first list is measured,
  * so both survive a card that ran out of room, and every stop draws the tail naming how many plans
@@ -675,6 +961,10 @@ export function renderBoardCard(input: {
    * truncation notes. */
   roots: readonly string[];
   plans: readonly BoardPlan[];
+  /** The worker personas, in roster order, each already judged: the caller decides every word and
+   * every count, and this renderer decides only what a word draws and where. Absent or empty is the
+   * project view alone, which is the card with no roster configured. */
+  personas?: readonly BoardPersona[];
   /** The plans this tick could not read and the caller holds no parse for. One the caller does hold
    * a parse for belongs in `plans` marked held, where it draws its last good bullets. */
   failures: readonly PlanFailure[];
@@ -690,31 +980,36 @@ export function renderBoardCard(input: {
     return lines.join("\n");
   };
 
-  const projects = sections(
-    input.roots,
-    input.plans,
-    input.failures,
-    input.truncated,
-    eventIndex(input.events.latest),
-    input.now,
-  );
-  if (projects.length === 0) {
+  // The two views in one list, personas first. Everything below is the budget, which reads a group's
+  // label and items and asks nothing about which view composed it.
+  const groups = [
+    ...personaSections(input.personas ?? [], input.now),
+    ...sections(
+      input.roots,
+      input.plans,
+      input.failures,
+      input.truncated,
+      eventIndex(input.events.latest),
+      input.now,
+    ),
+  ];
+  if (groups.length === 0) {
     lines.push(NOTHING_OPEN);
     return finish();
   }
 
-  let plansLeft = projects.reduce((sum, project) => sum + project.plans, 0);
-  for (const [index, project] of projects.entries()) {
+  let plansLeft = groups.reduce((sum, group) => sum + group.plans, 0);
+  for (const [index, group] of groups.entries()) {
     const shown: string[] = [];
     let stopped = false;
-    for (const item of project.items) {
-      const opening = shown.length === 0 ? [PROJECT_GAP, project.label] : [];
+    for (const item of group.items) {
+      const opening = shown.length === 0 ? [PROJECT_GAP, group.label] : [];
       const cost = spent([...opening, ...item.lines]);
       // The tail's room is reserved against every item, the last included: one rule with no branch
       // to get wrong, at the price of at most one tail's width of unused room on a full card. Its
       // own blank line is reserved with it, because the tail closes the list above it the way the
       // footer and every project label do.
-      const tail = overflowTail(plansLeft, projects.length - index - (shown.length === 0 ? 0 : 1));
+      const tail = overflowTail(plansLeft, groups.length - index - (shown.length === 0 ? 0 : 1));
       if (used + cost + spent([PROJECT_GAP, tail]) > MAX_CARD_LENGTH) {
         stopped = true;
         break;
@@ -725,7 +1020,7 @@ export function renderBoardCard(input: {
     }
     if (shown.length > 0) lines.push(...shown);
     if (stopped) {
-      const missing = projects.length - index - (shown.length === 0 ? 0 : 1);
+      const missing = groups.length - index - (shown.length === 0 ? 0 : 1);
       lines.push(PROJECT_GAP, overflowTail(plansLeft, missing));
       return finish();
     }
