@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { MAX_CARD_LENGTH } from "../discord/render.ts";
 import { eventKey, initialEventState } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
@@ -23,6 +26,7 @@ import {
 import type { BoardPersona, BoardPersonaEntry, BoardPlan } from "./card.ts";
 import { personaStatus } from "./status.ts";
 import type { PersonaStatus } from "./status.ts";
+import { STORE_FILE_NAME, createQueueReader } from "./queues.ts";
 import type { PersonaQueue, QueueEntry, QueuePlanReading } from "./queues.ts";
 
 const NOW = 1_786_300_000_000;
@@ -764,7 +768,11 @@ test("the blank lines the list shape needs are charged against the budget like a
     return lines.some((line) => line.startsWith("(+"));
   };
 
+  // The persona fill's own reading, kept apart from the two project fills. Or'd into one flag it
+  // would be satisfied by either of them, and the persona view is the one that spends the budget
+  // first, so it is where an uncharged line reaches the tail soonest and is worth its own answer.
   let overflowed = false;
+  let fleetOverflowed = false;
   for (let count = 1; count <= 40; count += 1) {
     const plans = Array.from({ length: count }, (_, index) =>
       plan({
@@ -806,11 +814,15 @@ test("the blank lines the list shape needs are charged against the budget like a
     });
     overflowed = walk(card({ plans }), `${count} projects`) || overflowed;
     overflowed = walk(thin, `${count * 8} one-bullet projects`) || overflowed;
-    overflowed = walk(fleet, `${count} persona groups`) || overflowed;
+    fleetOverflowed = walk(fleet, `${count} persona groups`) || fleetOverflowed;
   }
   assert.ok(
     overflowed,
     "a card that ran out of room has to be among them, or the tail's own blank line is unpinned",
+  );
+  assert.ok(
+    fleetOverflowed,
+    "a persona fill that ran out of room has to be among them too, or the view that spends the budget first never reached the tail here",
   );
 });
 
@@ -1018,6 +1030,64 @@ test("a held marker on a store instant that names no time is left off rather tha
   assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m");
 });
 
+test("the footer is as old as a held store reading, so no group reads older than the card", () => {
+  const store = card({ personas: [reference({ heldSince: NOW - 3 * HOUR })] });
+  const both = card({
+    personas: [reference({ heldSince: NOW - 5 * MINUTE })],
+    plans: [plan({}, NOW - 3 * HOUR)],
+    roots: [CHANNELS],
+  });
+
+  assert.equal(groups(store)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m · held 3h 0m");
+  assert.match(store, /^card as of 3h ago$/m, "a group's held reading is what the footer reports");
+  assert.match(both, /^card as of 3h ago$/m, "the footer is the oldest reading of either view");
+});
+
+test("a store instant that names no time leaves the footer an age rather than NaN", () => {
+  const body = card({
+    personas: [reference({ heldSince: Number.NaN })],
+    plans: [plan({}, NOW - 4 * MINUTE)],
+    roots: [CHANNELS],
+  });
+
+  assert.doesNotMatch(body, /NaN/);
+  assert.match(body, /^card as of 4m ago$/m, "an instant naming no time ages the footer by nothing");
+});
+
+test("a persona group that draws nothing ages the footer no more than a hidden plan does", () => {
+  const body = card({
+    personas: [
+      persona({ name: "empty", heldSince: NOW - 3 * HOUR }),
+      persona({
+        name: "finished",
+        done: 2,
+        total: 2,
+        heldSince: NOW - 3 * HOUR,
+        entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
+      }),
+    ],
+    plans: [plan()],
+    roots: [CHANNELS],
+  });
+
+  assert.match(body, /^card as of just now$/m);
+});
+
+test("a card carrying no persona group is anchored to its plans alone", () => {
+  const empty = card({ roots: [CHANNELS], plans: [plan({}, NOW - 3 * HOUR)] });
+  const absent = renderBoardCard({
+    roots: [CHANNELS],
+    plans: [plan({}, NOW - 3 * HOUR)],
+    failures: [],
+    truncated: [],
+    events: initialEventState(),
+    now: NOW,
+  });
+
+  assert.match(empty, /^card as of 3h ago$/m);
+  assert.equal(absent, empty, "an absent persona list composes the same bytes as an empty one");
+});
+
 test("the next line draws on the entry in flight and on no other", () => {
   const body = card({
     personas: [
@@ -1090,22 +1160,27 @@ test("a reason draws on a blocked entry and nowhere else", () => {
     personas: [
       persona({
         name: "dev-plugin",
-        total: 2,
+        total: 3,
         entries: [
           entry({ title: "stopped", word: "blocked", reason: "Waiting on two operator forks" }),
+          // A worker the nudge cap stopped. It earns a bullet of its own rather than a place in the
+          // closing line, because the operator is the one who restarts it.
+          entry({ title: "gone quiet", word: "stalled", reason: "a reason no other word draws" }),
           entry({ title: "waiting", word: "up next", reason: "a reason no other word draws" }),
         ],
       }),
     ],
   });
 
-  // The up-next entry draws above the blocked one whatever order they arrive in, which is the
-  // layout's own running order: what is next, then what is stopped.
+  // The up-next entry draws above the stopped ones whatever order they arrive in, which is the
+  // layout's own running order: what is next, then what is stopped, in queue order among themselves.
   assert.deepEqual(groups(body)[0]?.lines, [
     "- **waiting**",
     "  - up next",
     "- **stopped**",
     "  - blocked · Waiting on two operator forks",
+    "- **gone quiet**",
+    "  - stalled",
   ]);
 });
 
@@ -1169,6 +1244,27 @@ test("a persona with nothing left to draw takes no label at all", () => {
   assert.deepEqual(projects(body), ["sapplefeld-channels"]);
 });
 
+test("a card built with no persona input at all is the project view on its own", () => {
+  // The helper above fills the key in every other test, so this is the one call where the
+  // renderer's optional input is genuinely absent. That is the shape a broker with a project list
+  // and no roster configured passes, and the branch it takes is reached from nowhere else here.
+  const body = renderBoardCard({
+    roots: [CHANNELS],
+    plans: [plan()],
+    failures: [],
+    truncated: [],
+    events: initialEventState(),
+    now: NOW,
+  });
+
+  assert.equal(
+    body,
+    card({ roots: [CHANNELS], plans: [plan()] }),
+    "an absent persona list composes the same bytes as an empty one",
+  );
+  assert.deepEqual(projects(body), ["sapplefeld-channels"]);
+});
+
 test("persona groups draw ahead of every project group", () => {
   const body = card({
     roots: [CHANNELS],
@@ -1219,20 +1315,30 @@ test("the counts on a label are bounded before they take the line", () => {
 
 test("a fleet too large for one message ends in the tail counting entries and whole groups", () => {
   const PERSONAS = 12;
-  const ENTRIES = 8;
+  const DRAWN = 5;
+  const QUEUED = 4;
+  const ENTRIES = DRAWN + QUEUED;
   const personas = Array.from({ length: PERSONAS }, (_, at) =>
     persona({
       name: `worker-${String(at).padStart(2, "0")}`,
       total: ENTRIES,
       worker: "idle 12m",
-      entries: Array.from({ length: ENTRIES }, (_, index) =>
-        entry({
-          title: `a queue entry title long enough to fill its own bullet ${at}-${index}`,
-          word: index === 0 ? "in flight" : "blocked",
-          reason: "Waiting on an operator fork that has not been answered yet",
-          reading: { sections: 7, completed: index, next: "the next section of this plan" },
-        }),
-      ),
+      entries: [
+        ...Array.from({ length: DRAWN }, (_, index) =>
+          entry({
+            title: `a queue entry title long enough to fill its own bullet ${at}-${index}`,
+            word: index === 0 ? "in flight" : "blocked",
+            reason: "Waiting on an operator fork that has not been answered yet",
+            reading: { sections: 7, completed: index, next: "the next section of this plan" },
+          }),
+        ),
+        // Every group carries a queued tail, so its closing fold is one item standing for several
+        // entries. That fold is the only place this view charges more than one entry to one budget
+        // item, which makes it the one item whose own count the tail has to spend in full.
+        ...Array.from({ length: QUEUED }, (_, index) =>
+          entry({ title: `a queued entry of worker ${at}, number ${index}` }),
+        ),
+      ],
     }),
   );
   const body = card({ personas });
@@ -1243,8 +1349,15 @@ test("a fleet too large for one message ends in the tail counting entries and wh
 
   const entriesLeft = Number(/\+(\d+) plans/.exec(tail)?.[1]);
   const groupsLeft = Number(/\+(\d+) projects/.exec(tail)?.[1]);
-  const shown = bullets(body).filter((line) => line.startsWith("- **")).length;
+  // A fold carries no bullet of its own, so each one drawn stands here for the whole queued tail
+  // behind it, and each one the card stopped short of has to reach the tail as that many plans.
+  const folds = body.split("\n").filter((line) => line.startsWith("- then: ")).length;
+  const shown = bullets(body).filter((line) => line.startsWith("- **")).length + folds * QUEUED;
   assert.ok(entriesLeft > 0, `the fixture has to be one that overflows: ${body}`);
+  assert.ok(
+    folds < PERSONAS,
+    `a fold has to go undrawn, or the count a fold carries is never what the tail spends: ${body}`,
+  );
   assert.equal(
     shown + entriesLeft,
     PERSONAS * ENTRIES,
@@ -1407,7 +1520,7 @@ test("a card stays inside one message however hostile its fields are", () => {
   }
 });
 
-test("what one render neutralizes is bounded by the intake caps, not by a plan file's size", () => {
+test("what one render neutralizes is bounded by the intake caps, not by a file's size", (t) => {
   // The card runs on a refresh timer on the broker's one event loop, and a plan doc's `Status:` and
   // `Next:` are single lines that can each carry the whole 256 KiB the reader's read cap allows. A
   // render whose cost followed those bytes would stall hook intake, heartbeats and the permission
@@ -1447,6 +1560,44 @@ test("what one render neutralizes is bounded by the intake caps, not by a plan f
     63 * 1_024,
     "what the cut walks is measured before the cut, so the gate above can see it",
   );
+
+  // The persona view takes the same reading, against the other reader's caps. A queue entry's title
+  // is a value out of a worker's own store, and nothing this card does bounds it: the bound is the
+  // queue reader's, applied once when the store file moves, where this render runs on every tick.
+  // So the fixture is driven through that reader rather than hand-written, because a group assembled
+  // around a title the reader never bounded would assert this against a shape the broker never
+  // renders.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-card-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fleetUnits = (size: number): number => {
+    writeFileSync(
+      path.join(dir, STORE_FILE_NAME),
+      JSON.stringify({
+        "dev-plugin": {
+          goals: [
+            { id: "e1", kind: "plan", title: "t".repeat(size), status: "paused", sortKey: 1 },
+          ],
+          activeGoalId: "e1",
+        },
+      }),
+      "utf8",
+    );
+    // A reader of its own per call, so the store's own hold never hands the second call the first
+    // call's reading, and the join stats nothing.
+    const [queue] = createQueueReader({ statPlan: () => null }).read([
+      { name: "dev-plugin", workdir: dir },
+    ]);
+    assert.ok(queue, "the reader returns a queue for the persona the store is keyed by");
+    fieldUnitsNeutralized.count = 0;
+    card({ personas: [personaGroup(queue, personaStatus(queue, initialEventState(), NOW))] });
+    return fieldUnitsNeutralized.count;
+  };
+
+  const narrow = fleetUnits(64 * 1024);
+  const wide = fleetUnits(512 * 1024);
+
+  assert.ok(narrow > 0, "the counter has to be reached on the persona path too");
+  assert.equal(wide, narrow, `${narrow} units at a 64 KiB title, ${wide} at a 512 KiB one`);
 });
 
 test("a Next: value past the card's own cap is cut with a mark rather than silently shortened", () => {

@@ -870,6 +870,19 @@ function foldedLine(queued: readonly BoardPersonaEntry[]): BlockItem | null {
 }
 
 /**
+ * Whether a worker's group puts anything on the card.
+ *
+ * Every word but `done` draws a line, as a full entry or as a name on the closing fold, so a group
+ * whose queue is empty or finished is the one that draws nothing: this card does not stand a label
+ * over an empty list. Asked here rather than counted off the composed lines, because the footer
+ * needs the same answer before a line is composed and two spellings of it would let the card report
+ * an age for a group nobody can see.
+ */
+function drawsGroup(group: BoardPersona): boolean {
+  return group.entries.some((item) => item.word !== "done");
+}
+
+/**
  * The card's persona groups, one per worker in roster order, each holding its queue in the order the
  * layout draws it: the entry in flight, the entry up next, then everything stopped or parked, in
  * queue order, and the rest of the queue folded onto one closing line.
@@ -886,6 +899,7 @@ function foldedLine(queued: readonly BoardPersonaEntry[]): BlockItem | null {
  */
 function personaSections(groups: readonly BoardPersona[], now: number): ProjectSection[] {
   return groups.flatMap((group, index) => {
+    if (!drawsGroup(group)) return [];
     const entries = group.entries;
     const full = [
       ...entries.filter((item) => item.word === "in flight"),
@@ -895,7 +909,6 @@ function personaSections(groups: readonly BoardPersona[], now: number): ProjectS
     const items: BlockItem[] = full.map((item) => ({ lines: entryLines(item), plans: 1 }));
     const folded = foldedLine(entries.filter((item) => item.word === "queued"));
     if (folded !== null) items.push(folded);
-    if (items.length === 0) return [];
     return [
       {
         label: fenced([personaLabel(group, index, now)]),
@@ -909,23 +922,37 @@ function personaSections(groups: readonly BoardPersona[], now: number): ProjectS
 /**
  * The card's closing line: how old the information on it is.
  *
- * Anchored to the oldest parse behind the card's plans rather than to the current time, which is the
+ * Anchored to the oldest reading behind the card rather than to the current time, which is the
  * sibling card's discipline and load-bearing for the same reason: this card is edited only when its
  * text changes, and a footer carrying a clock would rewrite the message on every refresh. A card
- * whose plans were all read this tick is as of just now, and one redrawing a held parse says how old
- * that parse is, which is the whole of what a reader cannot see from the list.
+ * every reading of which was taken this tick is as of just now, and one redrawing a held reading
+ * says how old that reading is, which is the whole of what a reader cannot see from the list.
  *
- * The plans counted are the non-terminal ones, which is the set the list is composed from. A
- * terminal plan draws nothing, so a held parse of one is information no reader is looking at, and
- * letting it age the footer would put an hours-old stamp under a card every visible line of which
- * was read this tick.
+ * Both views age it, a project's plan parses and a worker's store reading alike, so the footer is
+ * never fresher than a group drawn above it: a card closing as of just now over a label reading
+ * `held 5m` states two ages for one card, and the footer's is the false one.
+ *
+ * Only what is drawn counts. A terminal plan and a group of nothing but done entries each draw
+ * nothing, so a held reading of one is information no reader is looking at, and letting it age the
+ * footer would put an hours-old stamp under a card every visible line of which was read this tick.
+ * A hold instant that names no time counts as nothing too, which keeps the line an age rather than
+ * a figure of `NaN`, and costs only the marker the group's own label already leaves off.
  */
-function footerLine(plans: readonly BoardPlan[], now: number): string {
-  const oldest = plans.reduce(
+function footerLine(
+  plans: readonly BoardPlan[],
+  personas: readonly BoardPersona[],
+  now: number,
+): string {
+  const oldestPlan = plans.reduce(
     (at, plan) =>
       plan.heldSince === null || plan.reading.terminal ? at : Math.min(at, plan.heldSince),
     now,
   );
+  const oldest = personas.reduce((at, group) => {
+    const since = group.heldSince;
+    if (since === null || !Number.isFinite(since) || !drawsGroup(group)) return at;
+    return Math.min(at, since);
+  }, oldestPlan);
   return `card as of ${heartbeat(Math.max(now - oldest, 0))}`;
 }
 
@@ -972,7 +999,7 @@ export function renderBoardCard(input: {
   events: EventReaderState;
   now: number;
 }): string {
-  const footer = footerLine(input.plans, input.now);
+  const footer = footerLine(input.plans, input.personas ?? [], input.now);
   const lines: string[] = [PREVIEW, TITLE];
   let used = spent([PREVIEW, TITLE, PROJECT_GAP, footer]);
   const finish = (): string => {

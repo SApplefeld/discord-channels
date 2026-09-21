@@ -523,6 +523,19 @@ and none carries a date of its own. An item added from here on carries `(parked 
   stale, plus the question of what a stamp dated in the future should mean. Both are product calls
   rather than code ones.
 
+- Move the queue reader's per-tick walk of an entry `id` behind the store's mtime hold (parked
+  2026-09-21, surfaced by the Fleet Board worker queues plan's section 4 fix round). A persona's
+  store file is read whole and then held across ticks, but `broker/board/queues.ts` builds a fresh
+  dedup `Set` from every entry's `id` on every refresh, outside that hold, so an `id` is hashed in
+  full each tick. Every other free-text field that entry carries is now capped at intake, and the
+  entry's `planPath` reduction moved behind the hold in the same section. `id` could not join them:
+  a prefix cut fuses two distinct identities into one, and a refusal drops the entry, which a scope
+  ruling refused on the ground that a store whose `activeGoalId` names the dropped entry would then
+  read as nothing in flight and draw the worker's queue short. So the remaining shape is a
+  restructure rather than a bound: compute the dedup and the readings map once per parse and hold
+  them with the reading, rather than rebuilding them per tick. The bound today is the 2 MiB store
+  file cap times sixteen personas, on the broker's only event loop.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

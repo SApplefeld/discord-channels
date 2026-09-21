@@ -15,6 +15,10 @@ import { readPlanFile } from "./plans.ts";
 import type { PlanReading } from "./plans.ts";
 import {
   HEARTBEAT_FILE_NAME,
+  MAX_INTAKE_OBJECTIVE_LENGTH,
+  MAX_INTAKE_REASON_LENGTH,
+  MAX_INTAKE_TITLE_LENGTH,
+  MAX_INTAKE_WORD_LENGTH,
   MAX_QUEUE_ENTRIES,
   MAX_STORE_FILE_BYTES,
   STORE_FILE_NAME,
@@ -554,6 +558,76 @@ test("a field of the wrong type draws as absent, and an entry with no id is no e
   assert.deepEqual(entry.lead, { state: "blocked", reason: undefined });
 });
 
+// The intake caps. A store field can arrive as the whole of what the file cap allows, and everything
+// downstream of this reader walks those values on every refresh tick while this reader parses them
+// only when the file moves. The two tests below pin the bound at the one place it is applied.
+
+test("a store field arrives collapsed, trimmed and cut at its own intake cap", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const over = 500;
+  work.store(
+    store([
+      goal({
+        id: "wide",
+        title: "t".repeat(MAX_INTAKE_TITLE_LENGTH + over),
+        objective: "o".repeat(MAX_INTAKE_OBJECTIVE_LENGTH + over),
+        status: "s".repeat(MAX_INTAKE_WORD_LENGTH + over),
+        blockedReason: "r".repeat(MAX_INTAKE_REASON_LENGTH + over),
+        lead: { state: "blocked", reason: "l".repeat(MAX_INTAKE_REASON_LENGTH + over) },
+      }),
+      goal({
+        id: "ordinary",
+        title: "  Reviewer\n\tre-ranking  ",
+        blockedReason: "Waiting on  two operator forks",
+      }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const wide = queue?.entries.find((entry) => entry.id === "wide");
+  assert.equal(wide?.title, "t".repeat(MAX_INTAKE_TITLE_LENGTH));
+  assert.equal(wide.objective, "o".repeat(MAX_INTAKE_OBJECTIVE_LENGTH));
+  assert.equal(wide.status, "s".repeat(MAX_INTAKE_WORD_LENGTH));
+  assert.equal(wide.blockedReason, "r".repeat(MAX_INTAKE_REASON_LENGTH));
+  assert.equal(wide.lead?.reason, "l".repeat(MAX_INTAKE_REASON_LENGTH));
+
+  const ordinary = queue?.entries.find((entry) => entry.id === "ordinary");
+  assert.equal(
+    ordinary?.title,
+    "Reviewer re-ranking",
+    "a run of whitespace collapses to one space and the ends are trimmed",
+  );
+  assert.equal(
+    ordinary.blockedReason,
+    "Waiting on two operator forks",
+    "a value inside its cap is otherwise the value the store wrote",
+  );
+});
+
+test("an oversized field is cut on code points, and a field the store left out stays out", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.store(
+    store([
+      // An astral character takes two UTF-16 units, so a cut made on units would leave the last one
+      // as half of itself and hand the card a lone surrogate.
+      goal({ id: "astral", title: "\u{1f4a5}".repeat(MAX_INTAKE_TITLE_LENGTH + 100) }),
+      goal({ id: "sparse", title: "", objective: "   " }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const astral = queue?.entries.find((entry) => entry.id === "astral");
+  assert.equal(astral?.title, "\u{1f4a5}".repeat(MAX_INTAKE_TITLE_LENGTH));
+  assert.doesNotMatch(astral.title, /[\ud800-\udfff]/u, "no character is left as half of itself");
+
+  const sparse = queue?.entries.find((entry) => entry.id === "sparse");
+  assert.equal(sparse?.title, "", "a field the store wrote empty is present and empty still");
+  assert.equal(sparse.objective, "", "a field of nothing but whitespace says nothing and is there");
+  assert.equal(sparse.blockedReason, undefined, "a field the store never wrote stays absent");
+});
+
 test("two goals sharing an id take one reading between them, and it is the first goal's", (t) => {
   const work = workdir();
   t.after(work.cleanup);
@@ -963,6 +1037,44 @@ test("a planPath whose last segment fails the pattern falls back to nothing at a
   assert.equal(queue?.readings.size, 0, "one field is the answer, and it is not a usable name");
   assert.deepEqual(seam.statted, []);
   assert.deepEqual(seam.opened, []);
+});
+
+test("a planPath that names no last segment falls back to nothing at all", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  // The document the text names exists, so a reading appearing below is the text search running
+  // for an entry that carries the field, which is the state this case exists to refuse. A value
+  // that reduces to no segment is a field that is there and names nothing, which is not the same
+  // as a field that is absent, and only the absent one is searched for a second name.
+  work.file(["docs", "plans"], "a_b_v1.md", planDoc());
+
+  const unreducible = [
+    "..\\..\\",
+    // Withheld members, matched on the class's shape rather than on a spelling the reduction was
+    // written against: the other separator, a single climb, a bare root, and a real folder path.
+    "../../",
+    "..\\",
+    "/",
+    "docs/plans/",
+  ];
+
+  for (const planPath of unreducible) {
+    const seam = seams();
+    work.store(store([goal({ planPath, title: "Ship docs/plans/a_b_v1.md, then stop" })]));
+    const [queue] = createQueueReader(seam.options).read([work.persona]);
+
+    assert.equal(queue?.readings.size, 0, `${planPath} must yield no reading and search no text`);
+    assert.deepEqual(seam.statted, [], `${planPath} must build no path`);
+    assert.deepEqual(seam.opened, [], `${planPath} must open nothing`);
+  }
+
+  // Control: the same entry with no field at all does search its text and finds that document, so
+  // the refusals above are the field being present and naming nothing rather than the text search
+  // being broken for every entry in this fixture.
+  const seam = seams();
+  work.store(store([goal({ title: "Ship docs/plans/a_b_v1.md, then stop" })]));
+  const [queue] = createQueueReader(seam.options).read([work.persona]);
+  assert.equal(live(queue?.readings.get("goal-1")).stem, "a_b_v1");
 });
 
 test("a README name is refused in every case the name pattern admits", (t) => {

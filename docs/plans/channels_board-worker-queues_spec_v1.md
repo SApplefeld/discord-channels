@@ -102,6 +102,10 @@ The first line above is the content of the fenced label. The group composes agai
 
 **The sweep.** Searches run on trunk `0d97205`: the four `CHANNEL_BOARD_*` names, `boardCard|BoardPlan|PlanReading|BoardCardOptions|renderBoardCard`, `comparablePath|inertField|inertBlockField|MAX_CARD_LENGTH`, `Fleet: Board|NOTHING_OPEN|boardCardWiring|permanentCards`, and `board|plan doc|trust|path` in the security model. Surfaces found: `broker/config.ts` and its test; `install/Install-Functions.ps1:588-591`, the installer's setting allowlist, pinned by `install/Install-Functions.test.ts:875-878`; `broker/board/card.ts`, `plans.ts`, `thread.ts`, `events.ts` and their tests; `broker/index.ts:652-680` and `:1476-1498` with `broker/index.test.ts`; `docs/architecture.md:505-620`; `docs/operations.md:430-473` and `:897-900`; `docs/install.md:56-62`; `docs/security-model.md:619-660` and `:688-692`; `docs/backlog.md:142-160` and `:193-216`. The root `README.md` and `docs/operator-checks.md` name nothing about the card. No env template exists.
 
+## Standing Brief Amendments
+
+- The card's closing freshness line ages with a held persona store reading as well as with a held plan parse, so the card never reports itself as current while a group above it says how old that group's reading is.
+
 ## Sections of Work
 
 ### 1. The roster setting and the roster reader
@@ -929,3 +933,79 @@ surfaces above under the out-of-scope route, the close gate, chapter 4, and the 
 5: not started, and it inherits from section 3 that a block reason rides out of the rule module uncut
 because the layout paragraph puts the 120-character cut on the renderer, which section 4 has now
 applied.
+
+### Interim board 7 - 2026-09-21
+
+Written on the compaction gate's deferral nudge, with section 4 in its second round of fixes and one
+implementer still in flight. Not a Chapter: section 4 is still open.
+
+**Section stages.** Sections 1, 2 and 3 are closed, committed at `44aa3e8`, `69c57b7` and `fb1db63`,
+and pushed. Section 4 is committed at first green as `3354a21`, has had review round 1 adjudicated in
+full, and carries two fix rounds: the first accepted and verified, the second with one implementer
+still working. Section 5 is not started.
+
+**Live dispatches.** None. The last, an implementer at opus, returned while this entry was being
+written. It was asked to move the reduction of `planPath` to its final path segment out of the
+per-tick read and into intake, where every other bound in that module now sits. Its brief names the trap that makes the change non-trivial: `planNameFor` today
+distinguishes an absent path, a reducible one, and one present but reducing to nothing, and only the
+third yields no name without falling back to the entry's prose. Collapsing the third into the first
+would break section 2's bullet that a carried `planPath` displaces the text search. Three dispatches
+returned since the last boundary and are adjudicated below.
+
+**Gate baseline.** The last reading this session measured itself: targeted lane over
+`card.test.ts`, `queues.test.ts` and `status.test.ts`, 122 tests, 122 pass, 0 fail, exit code 0, on
+2026-09-21 at the tree carrying fix round 1 and nothing else; `tsc --noEmit` exit 0. The claims
+directory was empty before that run, this session wrote and released its own claim around it, and the
+declared `test(` count across the three paths equalled the reporter's `tests` number, which is what
+rules out a silently ignored path. A later reading of 126 tests, 126 pass, 0 fail, exit 0 is the
+footer implementer's rather than this session's, taken on a tree a second implementer was editing, so
+it is recorded as reported and is not the baseline.
+
+**Rulings adopted since the last boundary.** Three, two of them from a judge.
+
+The first is the card's closing freshness line. A blind lens found that the footer read "as of just
+now" under a group label reading `held 5m`, two ages for one card. No acceptance bullet speaks to the
+footer, so the finding was held as new-requirement and went to a scope judge, which ruled
+accept-and-declare on the Goal sentence about what the operator can tell from a phone. It is adopted,
+recorded as this plan's first `## Standing Brief Amendments` bullet, and now built.
+
+The second is the uncapped identity and path residual, raised by the fix-round implementer rather
+than by a lens. Every other free-text field a queue entry carries is now bounded at intake, but `id`
+and `planPath` are still walked in full on every tick. The proposed fix paired a refusal on an
+over-length `id` with a reduction of `planPath` to its final segment. The judge refused it as a pair
+and ordered the work written within the form the plan names. The path half is that form already:
+section 2's bullets state the reduction, so moving it earlier changes nothing they name. The `id`
+half departs from it, because a refusal drops the entry, and a store whose `activeGoalId` names the
+dropped entry then reads as nothing in flight and draws the worker's queue short, against the
+Intent's "Show each worker's queue in its running order." So `id` leaves the reader as the store
+wrote it. Its per-tick cost is routed to `docs/backlog.md` as a restructure rather than a bound.
+
+The third is that the intake caps cover every other free-text field, sized as multiples of the bound
+the card draws each value at, so a value a worker really wrote is cut by the card alone.
+
+**Two defects in this session's own briefs, both caught by the seat rather than by the author.** The
+first scope-adjudicator dispatch carried the plan's Approach, which that charter forbids, and the
+orchestrator's own lean; it returned NEEDS_CONTEXT and was rebuilt. Both of that seat's briefs then
+stated the plan carries no `## Intent` section, which is false. The omission was checked afterwards
+against all three negative-half surfaces and could not have changed either ruling, but the judge
+never saw Intent, so the orchestrator rather than a fresh seat is what stands behind that half.
+
+**A correction to a standing claim in this run's dispatch briefs.** Three briefs told implementers
+that this repository's worktree is CRLF. That holds for `docs/*.md` and is false for the TypeScript
+sources, which are LF in the worktree and LF in git. There is no `.gitattributes` and `core.autocrlf`
+is true, so the two diverge by file rather than by repository. No file was corrupted by the wrong
+claim, which was redundant rather than harmful on the source files. It is now a project memory.
+
+**Scope drift since the last boundary.** One, deliberate and recorded. Section 4's `Files in scope:`
+line is widened by `broker/board/queues.ts` and `broker/board/queues.test.ts`. The ground is the
+carve-out that a security finding of Major weight is fixed before its section closes or raised to the
+operator, and is never parked for scope: two independent lenses found that a persona-written store
+field reaches the renderer with no intake bound, costing a full walk of that value on the broker's
+only event loop every tick, for as long as the file stays as written.
+
+**Next action per section.** Section 4: read the path implementer's diff against the three states its
+brief names, run the close gate, run the Minor close pass over the six recorded Minors, dispatch the
+one review round the fix delta owes under the fix-delta bar, then chapter 4 and the close commit.
+Section 5: not started. It must amend `docs/backlog.md:444`, whose advisory count says two where
+`npm audit` now reports three, and rewrite `docs/security-model.md:619-660`, which predates the
+roster and store readers entirely.

@@ -17,6 +17,14 @@
 // the store. `path.join` is fed a name the pattern has already proved holds no separator and no
 // parent segment, so no reading can reach outside `workdir` whatever the store says.
 //
+// That text is bounded here as well as distrusted. Every free-text field a queue entry carries is
+// held to an intake cap on the way out of this module, because everything downstream of it walks
+// those values in full on every refresh tick while this module parses them only when the file moves.
+// Without the caps one store's oversized title costs the join a scan, the status rule several folds
+// and the renderer a spread of the whole value, on the broker's only event loop, for as long as the
+// file stays as written. Neutralizing the same values stays the renderer's job, as it is for a plan
+// document's own prose: nothing is escaped here.
+//
 // Nothing here is logged but a static failure-class word. A `workdir`, a store path and a plan path
 // all embed the operator's OS account name, and the log is a lower-trust surface than the card.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
@@ -48,6 +56,35 @@ export const MAX_STORE_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_QUEUE_ENTRIES = 200;
 
 /**
+ * What the free-text values one queue entry carries are held to before they leave this reader.
+ *
+ * Each is a single value out of a file this module reads whole, so any of them can arrive as the
+ * whole of what `MAX_STORE_FILE_BYTES` allows. They sit far below what a consumer could afford to
+ * hold: a store reading is kept across ticks and folded back into every refresh, so a cap-sized
+ * value reaching one is re-walked on every tick by everything downstream of here. The join walks
+ * `title` and `objective` with its own expression on every tick, the status rule trims and
+ * case-folds `status`, `kind` and `lead.state` several times per entry per tick, and the card
+ * measures `title` and a block reason in full before it cuts either.
+ *
+ * Every cap is a multiple of the bound the card draws that value at, so a value a worker really
+ * wrote arrives here whole and is cut by the card alone. `objective` is the exception with no
+ * drawn bound at all: it is read for the plan name its prose may carry and never rendered, so its
+ * cap is sized to hold a sentence or two of prose around a plan path rather than to a display.
+ */
+export const MAX_INTAKE_TITLE_LENGTH = 240;
+export const MAX_INTAKE_OBJECTIVE_LENGTH = 400;
+export const MAX_INTAKE_REASON_LENGTH = 480;
+
+/**
+ * What the identifier-shaped values are held to: a store status, an entry kind and a lead state.
+ *
+ * Each is compared on its trimmed, case-folded value against a short word and is never drawn, so a
+ * prefix cut here cannot change any comparison's answer: a value longer than this cap differed from
+ * every word it is compared against before the cut and still does after it.
+ */
+export const MAX_INTAKE_WORD_LENGTH = 60;
+
+/**
  * One queue entry as the store holds it, with every field validated on its own.
  *
  * Only `id` is required: it is the handle `activeGoalId` names and the key a plan reading is filed
@@ -57,7 +94,8 @@ export const MAX_QUEUE_ENTRIES = 200;
  *
  * `title` and `objective` are free text a harness seeded, not operator-written labels: they carry
  * newlines and markup, and neutralizing them is the renderer's job, as it already is for a plan
- * doc's own `Next:` value.
+ * doc's own `Next:` value. Every string below arrives whitespace-collapsed and held to its own cap
+ * above, which is a bound on what this reader hands on and not a claim about what it holds.
  */
 export type QueueEntry = {
   readonly id: string;
@@ -69,7 +107,13 @@ export type QueueEntry = {
   readonly pausedByNudgeCap?: boolean;
   readonly sortKey?: number;
   readonly createdAt?: number;
-  readonly planPath?: string;
+  /**
+   * What the store's `planPath` reduced to: its final path segment, a string. Null when the store
+   * wrote a value that names no final segment, and absent when it wrote none, wrote something other
+   * than a string, or wrote one that is empty or nothing but whitespace. The join reads all three
+   * and searches the entry's text under the absent state alone.
+   */
+  readonly planSegment?: string | null;
   readonly lead?: { readonly state?: string; readonly reason?: string };
 };
 
@@ -245,6 +289,42 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+const WHITESPACE_RUN = /\s+/g;
+
+/**
+ * One store string held to a cap: whitespace runs collapsed to single spaces, trimmed, then cut to
+ * `limit` code points.
+ *
+ * That order is the whole of it, and it is `bounded` in `./plans.ts` by the same reasoning. A reader
+ * of this value collapses whitespace before it draws or compares, so cutting the raw text first
+ * would keep a prefix that is whitespace and hand on a value whose meaningful text was dropped for
+ * spaces. Collapsing first makes what is kept a prefix of what a reader would have seen.
+ *
+ * The collapse walks the whole value once, which is `MAX_STORE_FILE_BYTES` at worst. That cost is
+ * paid here rather than downstream because this runs behind the store's own hold: a file that has
+ * not moved is never read or parsed again, where the join and the renderer run on every refresh tick
+ * over whatever the last parse held.
+ */
+function bounded(value: string, limit: number): string {
+  const collapsed = value.replace(WHITESPACE_RUN, " ").trim();
+  // A code point takes at most two UTF-16 units, so this prefix holds at least `limit` of them and
+  // the array the cut is made on stays small whatever the value's size. Cutting on code points is
+  // what keeps an astral character from being left as half of itself.
+  return [...collapsed.slice(0, limit * 2)].slice(0, limit).join("");
+}
+
+/**
+ * One store field held to a cap, or `undefined` when the store wrote something other than a string.
+ *
+ * A field that is absent stays absent and a field that is present stays present: a value of nothing
+ * but whitespace bounds to the empty string, which is the field still being there and saying
+ * nothing, and is what a reader testing it for blankness already treated it as.
+ */
+function boundedField(value: unknown, limit: number): string | undefined {
+  const text = stringField(value);
+  return text === undefined ? undefined : bounded(text, limit);
+}
+
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -257,26 +337,24 @@ function planStem(name: string): string {
 /**
  * The plan file name one queue entry names, or null when it names none this module will act on.
  *
- * `planPath` wins outright when the entry carries one, and only its final path segment is kept: the
- * field is the persona plugin's own record of the plan, so an entry that has one is not searched for
- * a second name in its prose. A `planPath` whose final segment fails the pattern therefore yields no
- * name at all rather than falling back to the text, which is what keeps one field the answer.
+ * `planSegment` wins outright when the entry carries one: it is what the persona plugin's own record
+ * of the plan reduced to, so an entry that has one is not searched for a second name in its prose. A
+ * segment that fails the pattern therefore yields no name at all rather than falling back to the
+ * text, which is what keeps one field the answer.
  *
- * Both spellings of the separator are cut, because a store written on this platform carries both,
- * and a value like `..\..\secret.md` reduces to `secret.md` before anything else looks at it. That
- * reduction is belt to the pattern's braces: the pattern below refuses a separator and a bare parent
- * segment outright, so neither route can produce a name that leaves `workdir`.
+ * The field's three states are all read here. A segment is the record naming something. Null is the
+ * record naming nothing, which a value of `..\..\` or one ending in a separator leaves behind, and
+ * it yields no name and no text search: the entry has a record either way. Absent is no record at
+ * all, and only that state is searched for a name in the entry's text.
  *
- * The field is read with the space around it cut away, and an entry carrying it as an empty or
- * whitespace-only string has no `planPath` at all: a field that names nothing is not the record
- * that displaces the text search.
+ * The reduction to a segment is belt to the pattern's braces: the pattern below refuses a separator
+ * and a bare parent segment outright, so neither route can produce a name that leaves `workdir`.
  */
 function planNameFor(entry: QueueEntry): string | null {
-  const field = entry.planPath?.trim();
+  const segment = entry.planSegment;
+  if (segment === null) return null;
   const candidate =
-    field === undefined || field.length === 0
-      ? textPlanName(entry.title) ?? textPlanName(entry.objective)
-      : lastSegment(field);
+    segment === undefined ? textPlanName(entry.title) ?? textPlanName(entry.objective) : segment;
   if (candidate === null || !PLAN_NAME.test(candidate)) return null;
   if (planStem(candidate).toLowerCase() === EXCLUDED_README_STEM) return null;
   return candidate;
@@ -288,6 +366,26 @@ function lastSegment(value: string): string | null {
   return last === undefined || last.length === 0 ? null : last;
 }
 
+/**
+ * One store `planPath` reduced to its final path segment, in the three states `QueueEntry` carries.
+ *
+ * Both spellings of the separator are cut, because a store written on this platform carries both,
+ * so a value like `..\..\secret.md` reduces to `secret.md` here and nothing downstream sees the
+ * rest of it. The reduction sits beside the other intake bounds for the same reason they do: it
+ * runs once per store read, behind the store's own hold, where the join runs over every entry on
+ * every refresh tick.
+ *
+ * A value that is not a string, and one that is empty or nothing but whitespace, are all the absent
+ * state: a field that names nothing is not the record that displaces the text search. A value that
+ * is there and reduces to no segment is null rather than absent, because collapsing those two
+ * states would send an entry carrying the field off to find a plan named in its prose.
+ */
+function planSegmentField(value: unknown): string | null | undefined {
+  const text = stringField(value)?.trim();
+  if (text === undefined || text.length === 0) return undefined;
+  return lastSegment(text);
+}
+
 function textPlanName(text: string | undefined): string | null {
   if (text === undefined) return null;
   return PLAN_IN_TEXT.exec(text)?.[1] ?? null;
@@ -296,7 +394,14 @@ function textPlanName(text: string | undefined): string | null {
 /**
  * One queue entry, or null when the value is not one this module can file a reading under. Every
  * field is taken only when it holds the type the card reads it at, so a store that writes a number
- * where a string belongs draws as a missing field rather than as itself.
+ * where a string belongs draws as a missing field rather than as itself. Every string is held to
+ * its own intake cap here, which is the only place any of them is bounded: past this point a value
+ * is walked by the join, by the status rule and by the renderer on every refresh tick.
+ *
+ * `id` is the one string that leaves here as the store wrote it. A prefix cut is the wrong shape
+ * for it: two distinct ids sharing a cut's worth of prefix would become one identity. `planPath` is
+ * bounded by a reduction rather than by a cut, because the only part of it this module reads is its
+ * final segment.
  */
 function entryOf(value: unknown): QueueEntry | null {
   if (!isRecord(value)) return null;
@@ -304,21 +409,24 @@ function entryOf(value: unknown): QueueEntry | null {
   if (id === undefined || id.length === 0) return null;
 
   const lead = isRecord(value.lead)
-    ? { state: stringField(value.lead.state), reason: stringField(value.lead.reason) }
+    ? {
+        state: boundedField(value.lead.state, MAX_INTAKE_WORD_LENGTH),
+        reason: boundedField(value.lead.reason, MAX_INTAKE_REASON_LENGTH),
+      }
     : undefined;
 
   return {
     id,
-    kind: stringField(value.kind),
-    title: stringField(value.title) ?? "",
-    objective: stringField(value.objective),
-    status: stringField(value.status),
-    blockedReason: stringField(value.blockedReason),
+    kind: boundedField(value.kind, MAX_INTAKE_WORD_LENGTH),
+    title: boundedField(value.title, MAX_INTAKE_TITLE_LENGTH) ?? "",
+    objective: boundedField(value.objective, MAX_INTAKE_OBJECTIVE_LENGTH),
+    status: boundedField(value.status, MAX_INTAKE_WORD_LENGTH),
+    blockedReason: boundedField(value.blockedReason, MAX_INTAKE_REASON_LENGTH),
     pausedByNudgeCap:
       typeof value.pausedByNudgeCap === "boolean" ? value.pausedByNudgeCap : undefined,
     sortKey: numberField(value.sortKey),
     createdAt: numberField(value.createdAt),
-    planPath: stringField(value.planPath),
+    planSegment: planSegmentField(value.planPath),
     lead,
   };
 }
