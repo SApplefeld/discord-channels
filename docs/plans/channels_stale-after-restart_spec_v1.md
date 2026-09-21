@@ -1,6 +1,6 @@
 # channels: a session that died during a broker outage is ended, and a deleted thread stays deleted, v1
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR. Work on branch `stale-after-restart`, push to `origin`, open a PR against `main`, never push directly to `main`.
 Created: 2026-09-20
 Worker: a dev persona, handed over by the coordinator persona. The architect persona wrote this plan and does not execute it.
@@ -132,6 +132,7 @@ Tests: lock the decline and the wake. A guard that also swallowed `blocked` woul
 ### 3. State the two rules in the solution docs
 
 Model: sonnet
+Locus: inline
 
 Update the about-the-solution docs so they describe both rules in the present tense, with no account of how they were found: the restart window and its derivation from the reconnect ceiling, and the surface declining to build for a silent record. Every doc site the sweep returned that states the old rule is brought into line.
 
@@ -193,3 +194,24 @@ After Section 4, with the broker on the new code: start a wrapped session, stop 
 None.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-21
+Completed: 2. Decline to build a surface for a silent record
+Implemented By: implementer-sonnet, close pass in the main session
+Metrics: review rounds 1, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 2 open (2026-09-21): changes `open` in `broker/discord/surface.ts` to decline building a card or thread for a view whose lifecycle is `stale` and whose derived state is `idle`, without abandoning the entry; serves the Goal's third sentence (a deleted card or thread is not rebuilt for a session the broker has heard nothing from for the staleness window) and section 2's bullets; adds a guard, which that Goal sentence names; size about 6 lines of code plus a comment and five tests; not building it leaves every deleted thread of a silent session rebuilt within a minute.
+- Run start: this Chapter records the header normalization `Status: Ready` to `Status: In Progress`, made when the run began. Section 3 gained `Locus: inline` under its `Model:` line, since it writes under `docs/` and a docs write is the main thread's; its tier stays sonnet. Both edits sit above `## Chapters` and are recorded here as deliberate.
+- Sections 1 and 2 ran concurrently on disjoint files; section 3's prose was written in the main thread during their run.
+- The worktree's line endings on this freshly cut branch are CRLF for every file, sources included, because git wrote them under `core.autocrlf=true`. The brief said the sources were LF, and the implementer converted `surface.ts` and `surface.test.ts` to LF on that premise. Both endings store as LF, so the files were left as they are and the project memory record was corrected.
+Assumptions:
+- assumed 2026-09-21 (source: the plan's Approach, "a view whose lifecycle is `stale` and whose derived state is `idle` builds nothing", section 2): a surface never built, or left half built when a pass ran out of budget, is declined by the same guard as a deleted one; the guard's comment states all three.
+Review Findings: review: adversarial + blind at opus, Workflow at effort high (writer sonnet); resolved models claude-opus-5 on both (18 and 23 turns). No Critical, no Major. Minors: 4 fixed in the close pass, 0 upgraded, 0 left. The four: a test comment claiming a seeding shape the exited case does not use (deleted with the rewrite); the thread test seeded a null thread rather than having the transport report one missing (rewritten to open under `needs you`, go stale, and meet a rename 404); the guard's comment reasoned from deletion alone (now names the never-built and half-built cases); a test that passes with or without the guard titled as coverage of it (retitled as a pin on the reconcile path). Close-pass delta read by its author against section 2's bullets rather than by a round, since it changes test code and a comment only.
+Stamps: adjudicated 5, stamped 0. The five are operator records read by the decay pass and by the implementer, none applied to this section's work.
+Gate: targeted lane `node --test broker/discord/surface.test.ts broker/discord/state.test.ts`: tests 75, pass 75, fail 0, exit 0; `npm run lint` exit 0 (2026-09-21T11:47:32Z to 11:47:35Z, SCOTT-CLAUDE, working tree on branch stale-after-restart at 4152f79 with sections 1 to 3 uncommitted, uncontended under this session's claim). No run on this lane at 4152f79 was recorded; 71 tests there is inferred (75 less the 4 added), with 0 fail read from the whole-gate baseline; whole-gate baseline 1721 tests, 1720 pass, 0 fail, 1 skipped, exit 0 (11:38:43Z). Delta: +4 tests, 0 retired, 0 edited. Added: "a stale idle session's deleted card waits, and its revival rebuilds it" pins bullets 1 and 2; "a deleted card for a stale session is rebuilt when it needs the operator, is blocked, or holds background work" pins bullet 3; "a stale idle session whose thread is deleted does not reopen it, and its card stays maintained" pins bullet 4; "the reconcile path repaints a stale session's existing card and keeps its thread" pins bullet 5. Tests spawning a process: 0. Red record: against the guard removed (a detached worktree under `.kit/`), the first and third fail and the rest pass; against an over-wide guard (`lifecycle === "stale"` alone) the third fails at needs you, per the implementer's report. Wall clock: lane duration_ms 134.
+Next: 1. Open a reconnect window at startup for every restored record that held a relay (in review)
+Commit Model: Branch-and-PR
+Delta: 2026-09-21T11:47:52Z, SCOTT-CLAUDE, working tree as the Gate line names, uncontended.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

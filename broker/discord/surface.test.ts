@@ -1068,6 +1068,92 @@ test("a presumed-dead session's deleted card waits, and its revival rebuilds it"
   assert.equal(calls.opens.length, 2, "and its thread");
 });
 
+test("a stale idle session's deleted card waits, and its revival rebuilds it", async () => {
+  // The same decline-and-wake shape as the backstop's exited above, starting at staleness rather
+  // than at the four hour backstop: a silent record's deleted surface is declined, never
+  // abandoned, so a hook or a relay that revives it still finds a card and a thread waiting to be
+  // rebuilt.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  const stale = view({ lifecycle: "stale" });
+  calls.nextEdit = GONE;
+  await surface.tick([stale]);
+  await surface.tick([stale]);
+  assert.equal(calls.posts.length, 1, "nothing is rebuilt while the session stays stale and idle");
+  assert.equal(calls.opens.length, 1);
+
+  await surface.tick([view({ lastHookAt: time.now() })]);
+  assert.equal(calls.posts.length, 2, "the session waking rebuilds its card");
+  assert.equal(calls.opens.length, 2, "and its thread");
+});
+
+test("a deleted card for a stale session is rebuilt when it needs the operator, is blocked, or holds background work", async () => {
+  // The guard reads idle alone. A guard that also swallowed blocked would hide the one thread the
+  // operator must answer in, so that direction is pinned beside needs-you and working.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  calls.nextEdit = GONE;
+  await surface.tick([view({ lifecycle: "stale", needsAttention: true })]);
+  assert.equal(calls.posts.length, 2, "needs-you is rebuilt");
+  assert.equal(calls.opens.length, 2);
+
+  calls.nextEdit = GONE;
+  await surface.tick([view({ lifecycle: "stale", blocked: true })]);
+  assert.equal(calls.posts.length, 3, "blocked is rebuilt");
+  assert.equal(calls.opens.length, 3);
+
+  calls.nextEdit = GONE;
+  const task = { id: "agent-0", kind: "subagent" as const, description: null, agentType: null, since: START };
+  await surface.tick([view({ lifecycle: "stale", backgroundTasks: [task] })]);
+  assert.equal(calls.posts.length, 4, "working, held open by a background task, is rebuilt");
+  assert.equal(calls.opens.length, 4);
+});
+
+test("a stale idle session whose thread is deleted does not reopen it, and its card stays maintained", async () => {
+  // The card half of this rule is the decline test above; this is the thread half. A rename that
+  // 404s is how a deleted thread is reported, and a stale idle title reads the same `active` a
+  // working one does, so the thread opens under needs you and the rename to active finds it gone.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view({ needsAttention: true })]);
+  assert.equal(calls.opens.length, 1);
+
+  const stale = view({ lifecycle: "stale" });
+  calls.nextRename = GONE;
+  for (let pass = 0; pass < 4; pass += 1) {
+    time.advance(DWELL_MS);
+    await surface.tick([stale]);
+  }
+
+  assert.equal(calls.nextRename, null, "the rename ran and found the thread gone");
+  assert.equal(calls.opens.length, 1, "the thread is not opened again while the session stays stale and idle");
+  assert.equal(calls.posts.length, 1, "the surviving card is not reposted");
+  assert.match(calls.cards.at(-1) ?? "", /^State {5}idle$/m, "and it is repainted for the idle state");
+});
+
+test("the reconcile path repaints a stale session's existing card and keeps its thread", async () => {
+  // A pin on the reconcile path rather than on the guard, which it passes with or without:
+  // reconcile reaches open() only when the thread is missing, so an existing card and thread keep
+  // being driven to the session's current state whatever its lifecycle.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  await surface.tick([view({ lifecycle: "stale" })]);
+
+  assert.match(calls.cards.at(-1) ?? "", /^State {5}idle$/m, "the card is repainted for the idle state");
+  assert.equal(calls.opens.length, 1, "the existing thread is kept, not reopened");
+});
+
 test("a dead session's surviving card is painted before its surface is let go", async () => {
   // The abandonment wait mirrors archive()'s: give up only once the card carries the final state,
   // or a busy tick's rate limit would freeze a dead session's card saying working forever.
