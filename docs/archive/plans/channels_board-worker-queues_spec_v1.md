@@ -1,6 +1,6 @@
 # Fleet board over worker queues
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-20
 
@@ -108,6 +108,11 @@ The first line above is the content of the fenced label. The group composes agai
 
 - The card's closing freshness line ages with a held persona store reading as well as with a held plan parse, so the card never reports itself as current while a group above it says how old that group's reading is.
 - The card's closing freshness line ages with a held plan parse behind a drawn, not-done persona entry, stamped at the instant that parse was last read, as the project view stamps a held row, and no marker is drawn on the entry itself.
+- On a tick whose root list changed, the event reader restarts at the stream's start with the markers it already holds kept, and reads up to nine windows in that tick, so a persona's block recorded before it was enabled is drawn on the first tick after.
+- Every free-text field a queue entry or a roster entry contributes to the card is cut at a fixed length at intake or at render, so the card's length bound holds whatever a store writes.
+- The join searches the entry's title for a plan name before its objective, over the same pattern and the same four places.
+- A worker whose every entry is done draws its label, with its count and its state, and nothing beneath it; a worker with no entries draws nothing.
+- Mechanisms this plan's reviews deferred are recorded as backlog items rather than built.
 
 ## Sections of Work
 
@@ -193,8 +198,9 @@ Tests: lock the build gate in both directions, because a card that silently fail
 ## Related plans
 
 - `agent_persona` repository, `docs/plans/agent_persona_plan-health-from-the-record_v1.md`: makes the persona plugin itself judge a plan from its document, and adds the `planPath` and `lead` fields this card reads when present. Neither plan waits on the other. Until that one lands, the join uses the text match and no entry carries a `lead`.
-- [channels_board-card_spec_v1.md](../archive/plans/channels_board-card_spec_v1.md): the card's first plan. It listed a session-to-plan join as a non-goal, which this plan reverses for persona queues, and it set the no-model rule this plan keeps.
-- [channels_board-markdown_spec_v1.md](../archive/plans/channels_board-markdown_spec_v1.md): the card's live-markdown layout, which the persona groups follow.
+- [channels_board-card_spec_v1.md](channels_board-card_spec_v1.md): the card's first plan. It listed a session-to-plan join as a non-goal, which this plan reverses for persona queues, and it set the no-model rule this plan keeps.
+- [channels_board-markdown_spec_v1.md](channels_board-markdown_spec_v1.md): the card's live-markdown layout, which the persona groups follow.
+- [channels_blocked-state_spec_v1.md](channels_blocked-state_spec_v1.md): the kit event stream reader this plan hands more roots to. That plan built the reader; this one keeps it unchanged and gives it a reset with kept markers and a nine-window drain on the tick the root list changes.
 
 ## Out of Scope
 
@@ -218,6 +224,8 @@ Tests: lock the build gate in both directions, because a card that silently fail
 ## Operator Verification
 
 - Set `CHANNEL_BOARD_ROSTER` to the fleet roster's path, leave `CHANNEL_BOARD_PROJECTS` as you prefer, and restart the broker. Read the card on a phone. Ask each worker what it is on and what is next. The work reopens if a worker's answer and its group disagree, or if the words `paused` or `Max rounds` appear anywhere on the card.
+- Decide whether `docs/security-model.md` gets a `## Threat model` section as its own effort. The finishing security review opened `threat model: absent`; the document carries each surface's accepted-risk sizing in prose and the board-card passage stood in for a model. The item is at `docs/backlog.md` under the same words. A no keeps the prose as it stands.
+- Rule on three scope items the goal read raised, each carried in the close-out status with a recommendation: whether the roster `workdir` UNC refusal stays (recommended: keep); whether the shared `UNC_ROOT` rewrite of the intake transcript-path check stays (recommended: keep); whether the `hono` line in the backlog's audit item stays (recommended: keep). A different answer on any reopens the work as a new round.
 
 ## Open Questions
 
@@ -1251,3 +1259,106 @@ Gate: targeted lane (`node --test` over `thread.test.ts` and `index.test.ts`) 82
 Next: none. Every section is complete. Finishing-work: the whole gate with the contention lane, the finishing reviews over the whole changeset (`107836c` is section 5's base; the plan's base is the branch point from `main`), docs curation with the `card.ts` NOTHING_OPEN wording in its drift read, then the pull request under Branch-and-PR. At the plan's close, `goal_resume` the paused stale-after-restart node.
 Commit Model: Branch-and-PR
 Delta: read on SCOTT-CLAUDE at 2026-09-21T10:17Z, against the worktree at `645cd4f` with the close pass's one file dirty.
+
+### Interim board 11 - 2026-09-21
+
+Written by the session running the finishing pass. Not a Chapter: every section is closed and the
+pass has no Chapter until its close. This entry carries the pass's add-decision lines and its
+advisory dispositions, which the finishing-work skill places here.
+
+**Base ref.** `4152f79`, the merge-base with `main`; 22 commits and 26 changed files, every one
+inside the union of the sections' Files in scope lines but the plan document itself.
+
+**Step 1, QA.** `qa-verifier` at the charter's tier: build exit 0; suite 1832 tests, 1831 pass, 0
+fail, 1 skipped (a POSIX-only token-file permissions test), exit 0. One FAIL: `docs/security-model.md`
+never named `CHANNEL_BOARD_ROSTER`, against section 5's fourth bullet. Fixed in the main thread by
+naming both board settings beside their paths at the passage's first sentence; the whole gate re-run
+here under a claim read the same counts at exit 0.
+
+**Steps 2 and 3, one wave at fable effort high through Workflow.** All three transcripts resolved
+wholly to `claude-fable-5-1` (48, 40 and 34 assistant turns). Security: CLEAR, `threat model:
+absent`, 5 Minors, disclosure sweep no hit (the lens ran its grep without a control; the main thread
+re-ran it over the changeset with a withheld file as the control, 0 against 3). Performance: CLEAR, 5
+advisory Minors with measured figures, three folded into the backlog's tick item. Adversarial:
+APPROVED_WITH_CONCERNS, 2 Majors, 8 Minors, no debris.
+
+**Add-decisions for the owed Majors, both spec-traceable, fixed in this pass's fix round 1.**
+- A worker whose every entry is done draws its label with nothing beneath it (adversarial, `trace:`
+  the Goal's "one group per worker persona" and the Approach's layout sentence "A persona with no
+  entries left after rule 1 draws nothing" read with "the total is every entry that rule 1 does not
+  remove"). Changes: `drawsGroup` answers on any entry rather than on a not-done one, and the render
+  budget charges a label-only group as one empty item so the label, the tail reserve and the blank
+  line fall out of the existing arithmetic. Serves the Goal's "what is running" for a finished
+  worker, which otherwise vanishes indistinguishably from one dropped off the roster. Adds no
+  mechanism: one predicate and one carry. Size: 2 production lines, 4 docstrings, 2 tests added, 1
+  absence pin retired, 2 tests reshaped, the walk test's shape rule widened to admit a fence followed
+  by a blank line. This reverses interim board 6's choice, which hid the group on the ground that the
+  card stands no label over an empty list; the spec's layout never said so and the operator never
+  ruled on it. One line reverts it. `docs/operations.md` states the drawn case.
+- The relative `workdir` refusal is pinned on shape (adversarial, `trace:` section 1's "A relative
+  `workdir` ... yield no persona"). Changes: `roster.test.ts` loops the four members, `relative\path`,
+  `personas/worker`, `\personas\worker` and `/personas/worker`, the last two being what
+  `path.isAbsolute` accepts and `WINDOWS_ROOT` refuses, with `namesOneLocalDirectory` as the control.
+  Serves the same bullet. Adds no mechanism. Size: 19 test lines. The probe reduced the guard to
+  `path.isAbsolute` and the test went red on `\personas\worker`.
+- The implementer's own, marked in its report: the empty-item carry above; a capitalised control on
+  `assertNoBannedWords` beside the `i` flag; the `projects()` and `groups()` test helpers anchored on
+  the blank line before an opening fence, since a label-only group's closing fence read as a spurious
+  label; `footerLine`'s stale all-done sentence corrected. None adds a mechanism.
+
+**Advisory dispositions.** Security Minors: the deleted-roster hold and the two security-model
+precision sentences fixed as prose in the main thread; the per-tick drain under a roster rewritten
+every tick left as bounded and same-account; the copied helpers already at the backlog. `threat
+model: absent` is a handoff: an item at `docs/backlog.md` and one under `## Operator Verification`
+at the final Chapter. Performance Minors: the stat term (about 0.13 s at the caps), the moved-file
+parse term (about 6 ms per 2 MiB store, about 0.35 s for a tick at every cap with every file
+moving, against the 5 s floor) and the per-persona index rebuild written into the backlog's tick
+item, now a trim rather than a measurement; the roster's per-tick read and its UNC-accepting
+setting left as the same class the project roots accept. No advisory Critical, no fix-now lean.
+The figures are the performance lens's own `node -e` microbenchmarks, taken on SCOTT-CLAUDE between
+2026-09-21T10:30Z and 10:40Z during its review dispatch (`statSync` 5.0 µs present, 10.4 µs absent;
+`JSON.parse` of a 2,093,270-byte store 1.1 ms; field bounding over it 4.2 ms; open plus capped read
+0.7 ms), with no claim written and no contention read, so each is a single uncontended sample rather
+than a gate reading; the raw report is at
+`.kit/scratch/channels_board-worker-queues/finishing/r-agent2.md`.
+
+**Fix round 1 gate.** Targeted lane over `card.test.ts`, `roster.test.ts`, `thread.test.ts`: `tsc
+--noEmit` exit 0; 125 tests, 125 pass, 0 fail, exit 0, measured on SCOTT-CLAUDE at
+2026-09-21T11:02Z under this session's claim, against the implementer's baseline of 124 on the
+unedited tree (+2 added, 1 retired). Declared `test(` count 70, 15 and 40 equals 125. The
+implementer waited out two foreign claims (`DEV-PLUGIN`, then `dev`) before its runs.
+
+**Tree state.** HEAD `35ea88a`, pushed. Dirty and uncommitted until step 7, all this pass's: six
+`broker/` files from fix round 1, `docs/security-model.md`, `docs/operations.md`, `docs/backlog.md`
+and this entry. Fix delta captured at
+`.kit/scratch/channels_board-worker-queues/finishing/fix-round-1.diff`; Minors at `finishing/minors.md`.
+
+**Next action.** Review round 2, the adversarial lens alone at fable effort high over the fix delta.
+Then step 4 (the goal read), step 3's Minor pass, step 5 (docs curation), step 6 (the final Chapter,
+archive, whole gate), step 7 (the pull request).
+
+### Chapter 6 - 2026-09-21
+Completed: finishing-work; every section closed in Chapters 1 to 5
+Implemented By: main session for the pass; fix round 1 by implementer-opus; the Minor pass by implementer-sonnet; the document edits in the main thread
+Metrics: review rounds 2, closed claim-exit; provenance 2 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (2 refused, 5 declared, 1 asked); advisory: 10 findings, 6 fixed, 1 deferred, 3 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: "When this is done, the pinned `Fleet: Board` card can draw one group per worker persona on this machine. Each group lists that worker's queued plans in running order, with a plain status word and the real progress of the plan document behind each entry. The operator can tell from a phone what is running, what is next, what is blocked, and how far along each plan is. The existing folder view is unchanged and is switched off by leaving its folder list empty. It matters because the fleet now runs as personas working through queues, and a sweep of plan folders no longer says what anybody is doing."; what the tree does now: the broker's pinned status card in Discord reads a fleet roster file named by one new setting, and for each enabled worker persona in it reads that worker's queue file, heartbeat and the plan documents its queue names, then draws one group per worker: the worker's name, how many of its queued plans are done, whether it is running now or how long it has been idle, and under that the plan in flight with its sections done out of total and its next step, the plan up next, every blocked or parked plan with the reason a worker wrote, and the rest of the queue folded onto one line; a worker's block reaches the card through the kit's own event stream, the lead field or a real store block, never through the persona plugin's own status words, which are withheld; the card runs no model, writes to no persona's file, and holds its last good reading when a file fails to read, aging its closing freshness line; the old folder view still draws behind its own setting and is off when that list is empty; Refinements during the run: the closing freshness line ages with a held persona store reading; the closing freshness line ages with a held plan parse behind a drawn not-done entry, stamped at that parse's last read, with no marker on the entry (operator decision, option (a), 2026-09-21); the event reader's reset keeps the markers it holds and drains nine windows on that tick; every free-text field a queue or roster entry contributes is cut at a fixed length; the join searches the entry's title before its objective; a worker whose every entry is done draws its label with nothing beneath it, reversing interim board 6's choice to hide it; mechanisms the reviews deferred are backlog items rather than built; three section 3 rulings recorded in the Approach (the store's block reason draws only where the store's own block is the block, the round-limit reason compares trimmed and case-folded, `queueKey` has one owner); the roster `workdir` refusal narrowed to a local folder (chapter 1, deliberate, a UNC share refused); Operator-pending: set `CHANNEL_BOARD_ROSTER` and restart the broker, then read the card on a phone against what each worker says it is on; decide whether the security model gets a `## Threat model` section; rule on the three scope items in the close-out (roster UNC refusal, intake `UNC_ROOT` rewrite, `hono` backlog line)
+Decisions / Surprises:
+- Base ref `4152f79`, the merge-base with `main`; 22 commits, 26 files, every one inside the scope union but the plan document.
+- QA found one unmet bullet: `docs/security-model.md` never spelled `CHANNEL_BOARD_ROSTER`. Fixed by naming both board settings at the passage's first sentence. The rest of the suite and every other bullet verified.
+- The two owed Majors from the finishing adversarial lens, fixed in fix round 1 and recorded on interim board 11: a finished worker draws its label (spec-traceable to the layout paragraph read with the worker-state paragraph; interim board 6's hidden group reversed), and the relative `workdir` refusal pinned on shape with `\personas\worker` as the withheld member.
+- Round 2's one arrived Major was a claim finding on interim board 11's own unpinned figures, rated Minor and fixed by pinning them.
+- The goal read (scope-adjudicator at fable, RULED): five items accept-and-declared, now the last five `## Standing Brief Amendments` bullets; two refused (the intake `UNC_ROOT` rewrite, the `hono` line), presented to the operator with their undo lines rather than reverted, since single-sourcing a guard is the doctrine's own rule and both were recorded at the time; one asked (the roster `workdir` UNC refusal), carried with a keep recommendation; one narrowed promise (a `then:`-folded entry shows no sections count, by the approved layout).
+- Docs curation returned seven deviations and no mistake: the local-folder narrowing (D1), the empty-card text naming the configured projects on a roster-only card (D2), the `then:` fold's missing count (D3), four exclusivity claims about the card's one fence, now naming both group kinds (D4), the event reader reset's kept markers and drain (D5), two stale line references in a backlog item (D6), the in-flight fallback firing when no unplaced entry has a started plan (D7). Each is documented as built. Every literal the curator wrote (the config refusal message, the once-per-change log lines, the empty-card text) was checked against the code here.
+- The `heldRoot` re-spelling edge and the duplicate-id double draw (round 1 adversarial Minors) are left as named edges: the first needs the operator to re-spell a working folder in the roster while a block stands under the old spelling, and clears on the plan's next write; the second draws what a store carrying two goals under one id holds, which is the persona plugin's defect.
+- Surprises. Two peers held the machine's heavy-process slot during this pass (`DEV-PLUGIN` for 400 s, `dev` for 180 s twice); every lane here and in the dispatches waited them out, and one of my own leftover claims (a test-only implementer's, 20 s stated, 4.5 min old) was reported by DEV-PLUGIN and deleted under my own session id. The brief's suggested red probe for the stop-position tail test did not perturb it, since a group dropped whole never reaches the carry; the implementer added a drawn-label-first test that does go red on it. Chapter 5 omitted the `Delta:` reading; it is taken here.
+Assumptions: the status function returns the table's word `in flight` rather than the layout paragraph's `in progress`, which is section 4's renderer substitution, since collapsing them would put renderer vocabulary inside a pure function (declared 2026-09-20, section 3). Two entries joined to one plan document tie by `path` so that queue order breaks the tie, because the reader stats per entry rather than per file within one tick, so a mid-tick save hands one file two timestamps and a time-only tie-break never reaches queue order (declared 2026-09-20, section 3). The close-pass items that asked for a guard no clause names (an inner empty-list guard beside `drawsGroup`, a finite guard on the project-plan fold, a refusal of a word outside the closed union) are left with the reason and their docstrings narrowed instead (declared 2026-09-21, section 4). The overflow tail keeps its `(+N plans, +M projects not shown)` wording over persona groups because the Approach states that form (declared 2026-09-21, section 4). The section's Files in scope line names `broker/board/thread.ts` (the adapter hunk), `broker/board/thread.test.ts` (one assertion) and `broker/board/status.test.ts` (one fixture line), widened at fix round 4 because the required `heldSince` field forced each (declared 2026-09-21, section 4). The `hono` advisory is recorded as parked with the other two on the same ground, its only import inside the SDK being a shipped example server (declared 2026-09-21, section 5). The copied-helper count in `docs/backlog.md` stays five with `WHITESPACE_RUN` named as `bounded`'s constant rather than a sixth helper (declared 2026-09-21, section 5). The section's Files in scope line names `broker/config.ts` for one comment, folded because it sits beside `index.ts`, needs no acceptance and `tsc` covers it (declared 2026-09-21, section 5). Round 2 ran one adversarial lens at sonnet rather than a pair, because the fix touched the reader reset at the event-stream boundary and round 1's other three lenses had no finding left open (declared 2026-09-21, section 5). The intake `UNC_ROOT` rewrite and the `hono` backlog line stay in the changeset pending the operator's word, each with a one-line undo (declared 2026-09-21, finishing). The twenty undated backlog items carry their introducing commit's date as `(parked YYYY-MM-DD, backfilled)`, all between 2026-08-07 and 2026-08-26, so none is past the 90-day threshold and no promote/retire/keep call is owed (declared 2026-09-21, finishing). Chapters 1 and 2 declared none beyond the plan's own `## Assumptions` section.
+Review Findings: `review: security + performance + adversarial at fable, Workflow` at effort high for round 1, all three transcripts wholly `claude-fable-5-1`: security CLEAR with `threat model: absent` and 5 Minors, disclosure sweep no hit with the control run here; performance CLEAR with 5 advisory Minors and measured figures; adversarial APPROVED_WITH_CONCERNS, 2 Majors, 8 Minors, no debris. `review: adversarial at fable, Workflow` at effort high for round 2 over the fix delta: APPROVED_WITH_CONCERNS, both Majors confirmed fixed, 1 claim Major rated Minor, 4 Minors. Goal read: `scope-adjudicator at fable, Agent tool`, RULED, BUILT-BUT-UNASKED 9 (2 refuse, 6 accept-and-declare, 1 ask), ASKED-BUT-UNBUILT 1 (narrowed by the approved layout). Minors: 23 recorded; 5 fixed in fix round 1 (three comments, the `i` flag with its capitalised control, the empty-item carry's docstrings); 3 fixed in the Minor pass (the walk rule narrowed to the finished worker's label, three label-only shapes pinned, +3 tests); 8 fixed as prose in the main thread (two security-model sentences, the deleted-roster hold and its clear route, the backlog tick item's figures and its wording, the interim board pin); 1 deferred (the threat-model handoff); 6 left with the reason (the `heldRoot` re-spelling edge, the replay past 1,152 KiB, the duplicate-id double draw, the reserved device names probed in chapter 2, the roster's unheld per-tick read, the UNC-accepting roster setting). The drift read's D1 is the adversarial lens's `namesOneLocalDirectory` Minor, routed there.
+Stamps: adjudicated 4, all operator tier, over the stretch since chapter 5 (`--since 2h`, the tighter window returning the same four); stamped 2, `a-trace-target-you-composed-cannot-check-your-own-work` (both trace targets were cut from the spec by line range) and `proceeding-past-an-aged-claim-is-not-taking-it` (the peer exchange over my leftover claim). The other two were read by dispatches and did not change what was built.
+Gate: whole gate (`npm run lint`, then `npm test` over every `*.test.ts`) exit code 0 and exit code 0: 1836 tests, 1835 pass, 0 fail, 1 skipped (a POSIX-only token-file permissions test, skipped on Windows), 34.5 s. Measured on SCOTT-CLAUDE at 2026-09-21T11:25Z on this branch at `35ea88a` with the whole finishing pass dirty (the six `broker/` files, the four documents, the two indexes, this archived plan), under this session's claim with the claim directory otherwise empty and no foreign runner in the process list, so uncontended. Contention lane: this repository defines none. Against the pass's first whole gate (the QA verifier's at about 10:25Z and this session's re-run under a claim at 10:31Z, both 1832 tests, 1831 pass, 1 skipped, exit 0): plus 4, all this pass's. Test delta this pass: 6 added (the finished worker's label alone and its empty-persona control, in fix round 1; the lone finished worker ending the card, the label-only group at the stop position, and the drawn label-only item spending no plan count, in the Minor pass; the roster test reshaped in place over four members), 1 retired (the absence pin on the hidden all-done group, whose subject the empty-persona control covers), 2 edited to stay green (the footer-age test split into its empty and all-done cases; the held-parse-behind-undrawn-entry test retitled, assertion unchanged), and the `assertNoBannedWords` helper gained a capitalised control. Added tests that spawn a process: 0. Declared `test(` count over the three files the pass touched, 73, 15 and 40, equals the targeted lane's 128 at 11:14Z.
+Next: none. The plan is complete and archived. Its pull request is what remains, under Branch-and-PR, and the operator-pending items above.
+Commit Model: Branch-and-PR
+Delta: read on SCOTT-CLAUDE at 2026-09-21T11:20Z against the worktree at `35ea88a` with the finishing pass's files dirty; the reading below is the verb's own non-output line, unchanged since chapter 4.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
