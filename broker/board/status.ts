@@ -99,9 +99,13 @@ const PAUSED = "paused";
  * is judged by the later rules like any other, and the string itself never leaves this module: it is
  * the plugin's bookkeeping, and on a card it reads as a worker that has hit a wall.
  *
- * Compared on the trimmed value, because a reason that differs from this one by a trailing space is
- * the same bookkeeping and drawing it as a block is the misreading this whole module exists to
- * remove.
+ * Compared on the trimmed and case-folded value, the way every store string here is compared,
+ * because a reason differing from this one by a trailing space or a capital is the same bookkeeping
+ * and drawing it as a block is the misreading this whole module exists to remove.
+ *
+ * The comparison is on the whole value rather than a prefix, which is the spec's word. So a reason
+ * that merely opens with this string, one carrying a round count after it, is a block by that rule.
+ * `reason` below is what keeps the string itself off the card in that case.
  */
 const MAX_ROUNDS_REACHED = "Max rounds reached";
 
@@ -213,15 +217,24 @@ function blockOf(
 ): { reason: string | null } | null {
   const lead = plain(entry.lead?.state) === LEAD_BLOCKED;
   const stored =
-    plain(entry.status) === BLOCKED && (entry.blockedReason ?? "").trim() !== MAX_ROUNDS_REACHED;
+    plain(entry.status) === BLOCKED && plain(entry.blockedReason) !== plain(MAX_ROUNDS_REACHED);
   if (lead) return { reason: reason(entry.lead?.reason) };
   if (stored) return { reason: reason(entry.blockedReason) };
   return eventBlocked(reading, root, events, now) ? { reason: null } : null;
 }
 
-/** A reason as it rides out: the text as written, or null where there is no text in it. */
+/**
+ * A reason as it rides out: the text as written, or null where there is no text in it.
+ *
+ * Text carrying the round limit's own string draws nothing, whatever else it says. The block rule
+ * above matches that string whole, so a store writing a round count after it, `Max rounds reached
+ * (3/3)`, is a block by that rule and would otherwise hand the card the one phrase the operator
+ * reopens this work over. Withholding the text costs a real reason nothing: the entry still draws
+ * blocked, with no reason under it, which is what an event-found block already draws.
+ */
 function reason(value: string | undefined): string | null {
-  return value !== undefined && value.trim() !== "" ? value : null;
+  if (value === undefined || value.trim() === "") return null;
+  return plain(value).includes(plain(MAX_ROUNDS_REACHED)) ? null : value;
 }
 
 /**
@@ -322,10 +335,13 @@ export function personaStatus(
   now: number,
 ): PersonaStatus {
   // The reader hands its entries over in queue order already. They are ordered again here, under the
-  // reader's own key rule rather than a second copy of it, because this function is exported and its
-  // answer must be the same whatever order a caller passes. Two of the rules below are about
-  // position: the in-flight tie goes to the earlier entry, and the up-next word goes to the first
-  // unmatched one.
+  // reader's own key rule rather than a second copy of it, because this function is exported and two
+  // of the rules below are about position: the in-flight tie goes to the earlier entry, and the
+  // up-next word goes to the first unmatched one.
+  //
+  // The order is total for every key the reader can produce, its field parser dropping a key that is
+  // not a finite number. An entry built by hand with a non-finite key makes the comparator answer
+  // NaN, and where such an entry lands is unspecified.
   const drawn = [...queue.entries]
     .sort((left, right) => queueKey(left) - queueKey(right))
     .filter((entry) => plain(entry.kind) !== ROOT_KIND && plain(entry.status) !== ABANDONED);

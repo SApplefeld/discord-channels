@@ -20,7 +20,12 @@ const HOUR = 60 * MINUTE;
 const WORKDIR = "D:/personas/dev";
 
 /** The same folder as a configured project root spells it, which is the spelling the event reader
- * keeps when that root was handed to it first. */
+ * keeps when that root was handed to it first.
+ *
+ * Used by the root-spelling test alone, which is guarded to Windows. `comparablePath` folds
+ * separators only there, so an event built under this spelling matches the roster's `WORKDIR` on
+ * Windows and nowhere else. Every other case here builds its event under `WORKDIR`, which is what
+ * keeps the rules those cases pin readable on any platform. */
 const EVENT_ROOT = "D:\\personas\\dev";
 
 const PLAN_STEM = "dev_a-plan_v1";
@@ -67,7 +72,7 @@ function events(...held: readonly BoardEvent[]): EventReaderState {
 
 function event(overrides: Partial<BoardEvent> = {}): BoardEvent {
   return {
-    root: EVENT_ROOT,
+    root: WORKDIR,
     plan: `docs/plans/${PLAN_STEM}.md`,
     event: "goal-blocked",
     ts: new Date(NOW - 3 * HOUR).toISOString(),
@@ -482,7 +487,9 @@ test("an entry with no parsed plan reading takes no event", () => {
     readings: [["filed", archived()]],
     events: events(event()),
   });
-  assert.equal(found(stored, "filed").word, "done", "an archived reading is not a parsed one");
+  // Rule 2 takes this entry before any block is looked for, so what it pins is that precedence
+  // rather than the event refusal: done outranks blocked, whatever the event state holds.
+  assert.equal(found(stored, "filed").word, "done", "an archived reading is done before it is judged");
 });
 
 test("an event cleared by a document that moved past it leaves the entry unblocked", () => {
@@ -547,6 +554,36 @@ test("nothing throws on values another program wrote absurdly", () => {
   assert.equal(found(result, "undated").word, "started, parked");
   assert.equal(result.entries.length, 3, "and an entry with no usable key still draws");
   assert.equal(result.worker, "idle", "a heartbeat stamp that is not an instant is not a turn");
+  // Where the non-finite key sorts is deliberately not pinned, and is genuinely unspecified rather
+  // than merely unasserted: the comparator answers NaN for it, so the position depends on the input
+  // length and the engine's sort. The reader's own field parser is what keeps every key the product
+  // can produce a finite number.
+});
+
+test("a round-limit reason is bookkeeping in any case or padding the plugin writes it in", () => {
+  const result = judge({
+    entries: [
+      goal({ id: "lower", createdAt: 1, status: "blocked", blockedReason: "max rounds reached" }),
+      goal({ id: "padded", createdAt: 2, status: "blocked", blockedReason: "  Max rounds reached " }),
+    ],
+    readings: [["lower", reading()], ["padded", reading({ stem: "dev_b_v1" })]],
+  });
+  assert.deepEqual(words(result), { lower: "in flight", padded: "started, parked" });
+  assert.equal(found(result, "lower").reason, null, "and neither draws the plugin's own string");
+  assert.equal(found(result, "padded").reason, null);
+});
+
+test("a block reason that carries the round limit and more is blocked, and draws nothing", () => {
+  // The block rule matches the round limit whole, which is the spec's word, so a store writing a
+  // count after it is a block by that rule. What must not happen is the string reaching the card:
+  // the operator reopens this work if `Max rounds` appears on it at all.
+  const result = judge({
+    entries: [
+      goal({ id: "counted", status: "blocked", blockedReason: "Max rounds reached (3/3)" }),
+    ],
+  });
+  assert.equal(found(result, "counted").word, "blocked", "a whole-value match, so this is a block");
+  assert.equal(found(result, "counted").reason, null, "but its text never reaches the card");
 });
 
 /**
@@ -559,6 +596,11 @@ test("nothing throws on values another program wrote absurdly", () => {
 function strings(value: unknown, into: string[] = []): string[] {
   if (typeof value === "string") into.push(value);
   else if (Array.isArray(value)) for (const item of value) strings(item, into);
+  // A `Map` and a `Set` are walked by their own entries. `Object.values` returns nothing for either,
+  // so a future field of that shape would be swept as empty and the check would go quiet for the
+  // wrong reason, which is the failure this walk exists to avoid.
+  else if (value instanceof Map) for (const [key, item] of value) strings([key, item], into);
+  else if (value instanceof Set) for (const item of value) strings(item, into);
   else if (value !== null && typeof value === "object") {
     for (const item of Object.values(value)) strings(item, into);
   }
@@ -586,17 +628,17 @@ test("no word and no reason this suite produced carries the plugin's own bookkee
     rolling: "in flight",
   });
 
-  assert.ok(produced.length > 20, `the sweep ran over ${String(produced.length)} results`);
-  for (const result of produced) {
-    for (const value of strings(result)) {
-      assert.doesNotMatch(value, PLUGIN_WORDS, `a result carried ${value}`);
-    }
-  }
-
-  // The control, and the one case in this file where a banned word legitimately rides out: a real
-  // block whose own reason names a pending review. The sweep speaks over the same walk, from the
-  // same production path, which is what says its silence above is a clean result rather than a
-  // predicate that reaches no field the answer carries.
+  // Two controls, because the walk and the predicate are separate things to witness.
+  //
+  // The first is the one case in this file whose drawn reason legitimately carries a banned word: a
+  // real block whose own text names a pending review. An operator's free text is not the plugin's
+  // bookkeeping, and passing it through is the behaviour the Approach asks for, so this case is the
+  // acceptance bullet's one carve-out rather than a violation of it. It is judged before the sweep
+  // runs and sits in the same `produced` collection, so the sweep would speak on it and is removed
+  // by identity alone. What it proves is reach: the walk arrives at `reason`, the one field of a
+  // judged result that can carry store text. What it does not prove is the predicate's coverage,
+  // since `pending` is one of the three literals `PLUGIN_WORDS` was handed. The swept class is those
+  // three words rather than the plugin's whole vocabulary, and nothing here claims otherwise.
   const control = judge({
     entries: [goal({ id: "held", status: "blocked", blockedReason: "Waiting on a pending review" })],
   });
@@ -605,4 +647,19 @@ test("no word and no reason this suite produced carries the plugin's own bookkee
     strings(control).some((value) => PLUGIN_WORDS.test(value)),
     "the sweep's predicate reaches the fields the answer carries",
   );
+
+  // The second control witnesses the two arms no judged result can reach. `PersonaStatus` carries
+  // no `Map` and no `Set` today, so those arms sit in the walk against a field a later change adds.
+  // An arm nothing exercises is exactly the silence this walk exists to prevent, so each is driven
+  // here directly rather than left to read correct on inspection.
+  assert.deepEqual(strings(new Map([["key", "paused"]])), ["key", "paused"], "a Map is walked");
+  assert.deepEqual(strings(new Set(["pending"])), ["pending"], "and so is a Set");
+
+  const swept = produced.filter((result) => result !== control);
+  assert.ok(swept.length > 20, `the sweep ran over ${String(swept.length)} results`);
+  for (const result of swept) {
+    for (const value of strings(result)) {
+      assert.doesNotMatch(value, PLUGIN_WORDS, `a result carried ${value}`);
+    }
+  }
 });

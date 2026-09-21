@@ -500,6 +500,29 @@ and none carries a date of its own. An item added from here on carries `(parked 
   queue reader was written that way deliberately, to keep its section inside its own files, and the
   three exports are the cheap half of this item.
 
+- Give the non-finite modification time guard one owner (parked 2026-09-20, surfaced by the Fleet
+  Board worker queues plan's section 3 and routed here because that section's spec bounds
+  `broker/board/card.ts` to four exports). Two modules now carry the same three-line clamp that turns
+  a modification time which is not a finite number into negative infinity before a comparator sorts
+  by it: `broker/board/card.ts:293` and `broker/board/status.ts:136`. The guard exists because a
+  comparator handed a value that is neither above, below nor equal to another orders nothing, so the
+  word it decides lands wherever the loop happens to leave it. Neither copy is wrong today. What it
+  costs to leave is that a writer and a reader hold one rule in two places, which is the shape
+  through which a later edit to either moves a word with neither side's tests noticing. The fix is
+  one exported clamp the two call. It was not taken in section 3 because exporting a fifth name from
+  the card renderer would contradict a section line the operator approved.
+
+- Decide whether the board card's `running now` should be bounded by the heartbeat stamp's age
+  (parked 2026-09-20, surfaced by the Fleet Board worker queues plan's section 3 blind review).
+  `broker/board/status.ts` reports a worker as running now for any finite `turnStartedAt`, with no
+  comparison against the current time, and that reading outranks everything the queue says. A worker
+  that dies mid-turn leaves its stamp in place, so the card reads it as running indefinitely and the
+  operator cannot tell a live worker from a dead one. The plan's Approach states the rule exactly as
+  built, so a ceiling is a mechanism no clause in it names, which is why this is parked rather than
+  fixed in that section. The shape of the fix is a turn ceiling above which the stamp is read as
+  stale, plus the question of what a stamp dated in the future should mean. Both are product calls
+  rather than code ones.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
