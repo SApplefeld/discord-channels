@@ -1092,3 +1092,51 @@ fix-introduced one, then the round that fix delta owes, the Minor close pass, th
 and the close commit. Section 5: not started. It must amend `docs/backlog.md:444`, whose advisory count
 says two where `npm audit` now reports three, and rewrite `docs/security-model.md:619-660`, which
 predates the roster and store readers entirely.
+
+### Interim board 9 - 2026-09-21
+
+Written after the restart, by the session that resumed this plan on the operator's word on the relay
+channel ("please resume the plan and continue"), with no kit goal armed at the operator's choice. The
+goal record in `.kit/goal-state.json` still names the session that parked at interim board 8 and is
+left as it is. Not a Chapter: section 4 is still open.
+
+**Section stages.** Sections 1, 2 and 3 are closed and pushed. Section 4 carries three fix rounds.
+Round 3's fix is committed with this entry. Section 4 holds on one question put to the operator,
+below. Section 5 is not started.
+
+**Live dispatches.** None.
+
+**Gate baseline.** Measured on SCOTT-CLAUDE at 2026-09-21T04:34Z, on this branch at `e5f8928` with
+`broker/board/queues.ts` and `broker/board/queues.test.ts` dirty, while session DEV-PLUGIN held the
+machine's heavy-process claim for a whole-gate sequence in another repository, so contended:
+targeted lane over `queues.test.ts`, `card.test.ts` and `status.test.ts`, 130 tests, 130 pass, 0
+fail, 0 skipped, exit code 0; `tsc --noEmit` exit code 0. The declared `test(` count across the three
+files is 39, 67 and 24, which equals the reporter's 130. Against interim board 8's 127 on the same
+lane: 3 tests added, none failing. No whole gate has run since `3354a21`.
+
+**The first Major, fixed.** The name search now runs once at intake over the uncut `title` and then
+the uncut `objective`, and the entry carries the matched name on `textPlanName`. The join reads that
+name where `planSegment` is absent, with the three `planSegment` states unchanged. `objective` had no
+other reader, so it and its cap constant are gone from `QueueEntry`. The title cap narrowed the same
+search and is covered by the same move. Two tests were watched red on the old code first: a plan path
+past the title cap and one deep in a long objective. `kind` joined the cap test, closing a recorded
+Minor. Review round 3, one adversarial lens at opus through Workflow at effort high, returned
+APPROVED_WITH_CONCERNS: no Critical, no Major, four claim Minors, all docstring sentences, now on the
+section's Minor list.
+
+**The second Major, held for the operator.** The finding is that a held plan parse behind a persona
+entry ages neither the footer nor anything drawn. The scope adjudicator, dispatched on its fixed
+brief, ruled ASK. Its grounds: carrying a hold instant on a queue plan reading is named by no
+acceptance bullet, Goal sentence or Intent clause, and a recorded decision it could not read is in
+play. The pre-BLOCKED consult then ruled option (a) alone, on facts. The footer should age with a held
+plan parse behind a drawn, not-done persona entry, stamped at the parse instant as the project view
+stamps `readAt`, with no per-entry marker. Its ground is that `footerLine`'s own docstring, written by
+this section, says a card redrawing a held reading says how old that reading is, and the code leaves
+this reading out. That docstring was confirmed at `broker/board/card.ts:922-929`. The ask went to the
+operator on the relay channel as a decision with option (a) recommended, rather than as a BLOCKED,
+because the run is attended. The section does not close until it is answered.
+
+**Next action per section.** Section 4: on the operator's answer, build option (a) or whichever option
+is chosen, run the round that fix owes, then the Minor close pass over the eighteen Minors now listed,
+the close gate, chapter 4 and the close commit. Section 5: not started, with interim board 8's two
+document duties still owed.

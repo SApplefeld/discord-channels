@@ -20,9 +20,10 @@
 // That text is bounded here as well as distrusted. Every free-text field a queue entry carries is
 // held to an intake cap on the way out of this module, because everything downstream of it walks
 // those values in full on every refresh tick while this module parses them only when the file moves.
-// Without the caps one store's oversized title costs the join a scan, the status rule several folds
-// and the renderer a spread of the whole value, on the broker's only event loop, for as long as the
-// file stays as written. Neutralizing the same values stays the renderer's job, as it is for a plan
+// Without the caps one store's oversized value costs the status rule several folds and the renderer
+// a spread of the whole value, on the broker's only event loop, for as long as the file stays as
+// written. The join's search for a plan name runs at intake over the uncut text instead, so no cap
+// narrows it and no tick repeats it. Neutralizing the same values stays the renderer's job, as it is for a plan
 // document's own prose: nothing is escaped here.
 //
 // Nothing here is logged but a static failure-class word. A `workdir`, a store path and a plan path
@@ -61,18 +62,15 @@ export const MAX_QUEUE_ENTRIES = 200;
  * Each is a single value out of a file this module reads whole, so any of them can arrive as the
  * whole of what `MAX_STORE_FILE_BYTES` allows. They sit far below what a consumer could afford to
  * hold: a store reading is kept across ticks and folded back into every refresh, so a cap-sized
- * value reaching one is re-walked on every tick by everything downstream of here. The join walks
- * `title` and `objective` with its own expression on every tick, the status rule trims and
- * case-folds `status`, `kind` and `lead.state` several times per entry per tick, and the card
- * measures `title` and a block reason in full before it cuts either.
+ * value reaching one is re-walked on every tick by everything downstream of here. The status rule
+ * trims and case-folds `status`, `kind` and `lead.state` several times per entry per tick, and the
+ * card measures `title` and a block reason in full before it cuts either.
  *
  * Every cap is a multiple of the bound the card draws that value at, so a value a worker really
- * wrote arrives here whole and is cut by the card alone. `objective` is the exception with no
- * drawn bound at all: it is read for the plan name its prose may carry and never rendered, so its
- * cap is sized to hold a sentence or two of prose around a plan path rather than to a display.
+ * wrote arrives here whole and is cut by the card alone. The plan name an entry's text carries is
+ * taken before any cap applies, so a cap never decides whether an entry joins to its plan.
  */
 export const MAX_INTAKE_TITLE_LENGTH = 240;
-export const MAX_INTAKE_OBJECTIVE_LENGTH = 400;
 export const MAX_INTAKE_REASON_LENGTH = 480;
 
 /**
@@ -89,19 +87,22 @@ export const MAX_INTAKE_WORD_LENGTH = 60;
  *
  * Only `id` is required: it is the handle `activeGoalId` names and the key a plan reading is filed
  * under, and an entry the controller wrote always carries one. Every other field is absent from real
- * stores today except `title`, `objective`, `status`, `kind` and `createdAt`, so each is read as
- * optional and a value of the wrong type is dropped rather than carried on as itself.
+ * stores today except `title`, `status`, `kind` and `createdAt`, so each is read as optional and a
+ * value of the wrong type is dropped rather than carried on as itself.
  *
- * `title` and `objective` are free text a harness seeded, not operator-written labels: they carry
- * newlines and markup, and neutralizing them is the renderer's job, as it already is for a plan
- * doc's own `Next:` value. Every string below arrives whitespace-collapsed and held to its own cap
- * above, which is a bound on what this reader hands on and not a claim about what it holds.
+ * `title` is free text a harness seeded, not an operator-written label: it carries newlines and
+ * markup, and neutralizing it is the renderer's job, as it already is for a plan doc's own `Next:`
+ * value. The store's `objective` is free text too, and it is read at intake for the plan name it
+ * may carry and not carried on at all. `kind`, `title`, `status`, `blockedReason` and both `lead`
+ * strings arrive whitespace-collapsed and held to their own caps above, which is a bound on what
+ * this reader hands on and not a claim about what the store holds. `id` arrives as the store wrote
+ * it, and `planSegment` and `textPlanName` are names reduced out of the store's values rather than
+ * cut from them.
  */
 export type QueueEntry = {
   readonly id: string;
   readonly kind?: string;
   readonly title: string;
-  readonly objective?: string;
   readonly status?: string;
   readonly blockedReason?: string;
   readonly pausedByNudgeCap?: boolean;
@@ -114,6 +115,12 @@ export type QueueEntry = {
    * and searches the entry's text under the absent state alone.
    */
   readonly planSegment?: string | null;
+  /**
+   * The first plan name the store's `title` names, else the first its `objective` names, searched
+   * in the values as the store wrote them before either is cut. Absent when neither is a string
+   * naming one. The join reads it only when `planSegment` is absent.
+   */
+  readonly textPlanName?: string;
   readonly lead?: { readonly state?: string; readonly reason?: string };
 };
 
@@ -345,7 +352,7 @@ function planStem(name: string): string {
  * The field's three states are all read here. A segment is the record naming something. Null is the
  * record naming nothing, which a value of `..\..\` or one ending in a separator leaves behind, and
  * it yields no name and no text search: the entry has a record either way. Absent is no record at
- * all, and only that state is searched for a name in the entry's text.
+ * all, and only that state takes the name intake found in the entry's text, `textPlanName`.
  *
  * The reduction to a segment is belt to the pattern's braces: the pattern below refuses a separator
  * and a bare parent segment outright, so neither route can produce a name that leaves `workdir`.
@@ -353,9 +360,8 @@ function planStem(name: string): string {
 function planNameFor(entry: QueueEntry): string | null {
   const segment = entry.planSegment;
   if (segment === null) return null;
-  const candidate =
-    segment === undefined ? textPlanName(entry.title) ?? textPlanName(entry.objective) : segment;
-  if (candidate === null || !PLAN_NAME.test(candidate)) return null;
+  const candidate = segment === undefined ? entry.textPlanName : segment;
+  if (candidate === undefined || !PLAN_NAME.test(candidate)) return null;
   if (planStem(candidate).toLowerCase() === EXCLUDED_README_STEM) return null;
   return candidate;
 }
@@ -386,22 +392,35 @@ function planSegmentField(value: unknown): string | null | undefined {
   return lastSegment(text);
 }
 
-function textPlanName(text: string | undefined): string | null {
-  if (text === undefined) return null;
-  return PLAN_IN_TEXT.exec(text)?.[1] ?? null;
+/**
+ * The plan name one store value names in its prose, or undefined when the value is not a string or
+ * names none.
+ *
+ * This runs over the value as the store wrote it, before its intake cap cuts it, because a cap
+ * sized for display would otherwise decide which entries join: live objectives run to several
+ * hundred characters and name their plan near the end. The search sits beside the other intake
+ * reductions for the reason `planSegmentField` gives, once per store read behind the store's hold
+ * rather than on every refresh tick. Whitespace is left uncollapsed because neither the name nor the
+ * character after it can be whitespace, so collapsing first could not change what matches.
+ */
+function textPlanNameField(value: unknown): string | undefined {
+  const text = stringField(value);
+  return text === undefined ? undefined : PLAN_IN_TEXT.exec(text)?.[1];
 }
 
 /**
  * One queue entry, or null when the value is not one this module can file a reading under. Every
  * field is taken only when it holds the type the card reads it at, so a store that writes a number
- * where a string belongs draws as a missing field rather than as itself. Every string is held to
- * its own intake cap here, which is the only place any of them is bounded: past this point a value
- * is walked by the join, by the status rule and by the renderer on every refresh tick.
+ * where a string belongs draws as a missing field rather than as itself. Every free-text string the
+ * entry carries on is held to its own intake cap here, which is the only place any of them is
+ * bounded: past this point a value is walked by the status rule and by the renderer on every
+ * refresh tick.
  *
  * `id` is the one string that leaves here as the store wrote it. A prefix cut is the wrong shape
  * for it: two distinct ids sharing a cut's worth of prefix would become one identity. `planPath` is
  * bounded by a reduction rather than by a cut, because the only part of it this module reads is its
- * final segment.
+ * final segment. `title` and `objective` are searched for a plan name before `title` is cut, the
+ * title first, and `objective` is read for nothing else and so goes no further than this function.
  */
 function entryOf(value: unknown): QueueEntry | null {
   if (!isRecord(value)) return null;
@@ -419,7 +438,6 @@ function entryOf(value: unknown): QueueEntry | null {
     id,
     kind: boundedField(value.kind, MAX_INTAKE_WORD_LENGTH),
     title: boundedField(value.title, MAX_INTAKE_TITLE_LENGTH) ?? "",
-    objective: boundedField(value.objective, MAX_INTAKE_OBJECTIVE_LENGTH),
     status: boundedField(value.status, MAX_INTAKE_WORD_LENGTH),
     blockedReason: boundedField(value.blockedReason, MAX_INTAKE_REASON_LENGTH),
     pausedByNudgeCap:
@@ -427,6 +445,7 @@ function entryOf(value: unknown): QueueEntry | null {
     sortKey: numberField(value.sortKey),
     createdAt: numberField(value.createdAt),
     planSegment: planSegmentField(value.planPath),
+    textPlanName: textPlanNameField(value.title) ?? textPlanNameField(value.objective),
     lead,
   };
 }

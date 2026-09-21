@@ -15,7 +15,6 @@ import { readPlanFile } from "./plans.ts";
 import type { PlanReading } from "./plans.ts";
 import {
   HEARTBEAT_FILE_NAME,
-  MAX_INTAKE_OBJECTIVE_LENGTH,
   MAX_INTAKE_REASON_LENGTH,
   MAX_INTAKE_TITLE_LENGTH,
   MAX_INTAKE_WORD_LENGTH,
@@ -571,7 +570,7 @@ test("a store field arrives collapsed, trimmed and cut at its own intake cap", (
       goal({
         id: "wide",
         title: "t".repeat(MAX_INTAKE_TITLE_LENGTH + over),
-        objective: "o".repeat(MAX_INTAKE_OBJECTIVE_LENGTH + over),
+        kind: "k".repeat(MAX_INTAKE_WORD_LENGTH + over),
         status: "s".repeat(MAX_INTAKE_WORD_LENGTH + over),
         blockedReason: "r".repeat(MAX_INTAKE_REASON_LENGTH + over),
         lead: { state: "blocked", reason: "l".repeat(MAX_INTAKE_REASON_LENGTH + over) },
@@ -587,7 +586,7 @@ test("a store field arrives collapsed, trimmed and cut at its own intake cap", (
   const [queue] = createQueueReader().read([work.persona]);
   const wide = queue?.entries.find((entry) => entry.id === "wide");
   assert.equal(wide?.title, "t".repeat(MAX_INTAKE_TITLE_LENGTH));
-  assert.equal(wide.objective, "o".repeat(MAX_INTAKE_OBJECTIVE_LENGTH));
+  assert.equal(wide.kind, "k".repeat(MAX_INTAKE_WORD_LENGTH));
   assert.equal(wide.status, "s".repeat(MAX_INTAKE_WORD_LENGTH));
   assert.equal(wide.blockedReason, "r".repeat(MAX_INTAKE_REASON_LENGTH));
   assert.equal(wide.lead?.reason, "l".repeat(MAX_INTAKE_REASON_LENGTH));
@@ -613,7 +612,7 @@ test("an oversized field is cut on code points, and a field the store left out s
       // An astral character takes two UTF-16 units, so a cut made on units would leave the last one
       // as half of itself and hand the card a lone surrogate.
       goal({ id: "astral", title: "\u{1f4a5}".repeat(MAX_INTAKE_TITLE_LENGTH + 100) }),
-      goal({ id: "sparse", title: "", objective: "   " }),
+      goal({ id: "sparse", title: "", status: "   " }),
     ]),
   );
 
@@ -624,7 +623,7 @@ test("an oversized field is cut on code points, and a field the store left out s
 
   const sparse = queue?.entries.find((entry) => entry.id === "sparse");
   assert.equal(sparse?.title, "", "a field the store wrote empty is present and empty still");
-  assert.equal(sparse.objective, "", "a field of nothing but whitespace says nothing and is there");
+  assert.equal(sparse.status, "", "a field of nothing but whitespace says nothing and is there");
   assert.equal(sparse.blockedReason, undefined, "a field the store never wrote stays absent");
 });
 
@@ -1020,6 +1019,56 @@ test("the title is searched before the objective, with both documents on disk", 
   assert.ok(reading !== undefined && !reading.archived);
   assert.equal(reading.path, fromTitle);
   assert.equal(reading.status, "Ready", "the objective's document is the Complete one");
+});
+
+test("a plan path past where the title's intake cap cuts still joins", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const file = work.file(["docs", "plans"], "a_b_v1.md", planDoc());
+  const title = `${"t".repeat(MAX_INTAKE_TITLE_LENGTH + 10)} docs/plans/a_b_v1.md, then stop`;
+  work.store(store([goal({ title })]));
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const reading = live(queue?.readings.get("goal-1"));
+  assert.equal(reading.path, file, "the name is searched for before the title is cut");
+  assert.equal(queue?.entries[0]?.title, "t".repeat(MAX_INTAKE_TITLE_LENGTH), "the card's copy is cut");
+});
+
+test("a plan path deep in a long objective still joins", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const file = work.file(["docs", "plans"], "a_b_v1.md", planDoc());
+  // Live stores carry objectives of several hundred characters with the plan path near the end and
+  // no planPath at all, so the text search is the only join such an entry has.
+  const objective = `${"Work through the queue. ".repeat(40)}Finish docs/plans/a_b_v1.md, then stop.`;
+  work.store(store([goal({ objective })]));
+
+  const reading = live(createQueueReader().read([work.persona])[0]?.readings.get("goal-1"));
+  assert.equal(reading.path, file);
+});
+
+test("a title or objective of the wrong type names no plan, and the other is still searched", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const file = work.file(["docs", "plans"], "a_b_v1.md", planDoc());
+  work.store(
+    store([
+      goal({ id: "numeric-title", title: 7, objective: "Finish docs/plans/a_b_v1.md, then stop" }),
+      goal({
+        id: "listed-objective",
+        createdAt: 2_000,
+        title: "Ship docs/plans/a_b_v1.md, then stop",
+        objective: ["docs/plans/other_v1.md"],
+      }),
+      goal({ id: "neither", createdAt: 3_000, title: 7, objective: { path: "docs/plans/a_b_v1.md" } }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.equal(live(queue?.readings.get("numeric-title")).path, file);
+  assert.equal(live(queue?.readings.get("listed-objective")).path, file);
+  assert.equal(queue?.readings.has("neither"), false, "a value that is not a string is not text");
+  assert.equal(queue?.entries.length, 3, "a field of the wrong type drops the field, not the entry");
 });
 
 test("a planPath whose last segment fails the pattern falls back to nothing at all", (t) => {
