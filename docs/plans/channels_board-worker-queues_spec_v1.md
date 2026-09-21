@@ -168,7 +168,7 @@ Acceptance:
 - A fixture large enough to overflow ends in the tail, counts undrawn entries as plans and undrawn groups as projects, and keeps the whole card at or under `MAX_CARD_LENGTH`.
 - With no persona input, every existing card test passes unchanged.
 
-Files in scope: `broker/board/card.ts`, `broker/board/card.test.ts`.
+Files in scope: `broker/board/card.ts`, `broker/board/card.test.ts`, `broker/board/queues.ts`, `broker/board/queues.test.ts`.
 Tests: lock the budget with persona groups present, because a card over Discord's limit fails to post at all. Lock the reference body, because it is the layout the operator approved.
 
 ### 5. Wiring, the build gate, and the documents
@@ -1009,3 +1009,86 @@ one review round the fix delta owes under the fix-delta bar, then chapter 4 and 
 Section 5: not started. It must amend `docs/backlog.md:444`, whose advisory count says two where
 `npm audit` now reports three, and rewrite `docs/security-model.md:619-660`, which predates the
 roster and store readers entirely.
+
+### Interim board 8 - 2026-09-21
+
+Written on a park: the coordinator relayed the operator's request to restart this machine to apply
+claude-kit fixes, and asked every session to make its state durable and stand down at its next safe
+boundary. Not a Chapter: section 4 is still open, and this entry is what a session resuming after the
+restart reads first.
+
+**Section stages.** Sections 1, 2 and 3 are closed, committed at `44aa3e8`, `69c57b7` and `fb1db63`,
+and pushed. Section 4 is committed at first green as `3354a21`, carries two fix rounds committed and
+pushed as `54f656b`, and has now had review round 2 returned and adjudicated. It does not close here:
+that round returned two Majors, both owed and neither fixed. Section 5 is not started.
+
+**Live dispatches.** None. The review round this boundary was waiting on returned before the park and
+is adjudicated below. Nothing was stopped, and nothing is in flight across the restart.
+
+**Gate baseline.** No gate ran at this boundary. The last reading this session measured itself stands:
+targeted lane over `card.test.ts`, `queues.test.ts` and `status.test.ts`, 127 tests, 127 pass, 0 fail,
+0 skipped, exit code 0, on 2026-09-21 at the tree carrying both fix rounds, which is the tree committed
+as `54f656b`; `tsc --noEmit` exit code 0. The declared `test(` count across the three paths equalled
+the reporter's `tests` number, which is what rules out a silently ignored path. The whole gate this
+branch last recorded, at `3354a21`, was 1810 tests, 1809 pass, 0 fail, 1 skipped, exit 0, 37 s.
+
+**Review round 2, and why section 4 does not close.** One adversarial lens at opus through Workflow at
+effort high, per the reviewer-effort table's later-round row over an opus writer. The round was owed
+under the fix-delta bar because the delta reaches a security surface. It returned CHANGES_REQUIRED,
+no Critical, two Majors and seven Minors. The Minors are recorded in the section's Minor list for the
+close pass. Neither Major is a security finding and neither is a Critical, so the carve-out that
+forbids parking one does not reach either, and the park is safe on that ground rather than on silence.
+
+The first Major is fix-introduced, and it is this session's own fix biting back. The intake cap on
+`objective` was added to bound a value the renderer walks every tick. But `objective` has exactly one
+consumer, the join that finds the plan document's name inside it, so capping it at 400 code points
+narrows the only window that search runs over. The Approach says the join searches the entry's
+`objective`, not a prefix of it. An entry whose `docs/plans/<name>.md` sits past that cut now yields no
+plan reading at all: no sections count, no next step, and the status rules that read a plan's status
+can no longer see it, so a running plan draws as `queued`. The lens measured the live fleet: every
+store entry on this box carries no `planPath`, so the text search is the sole join today, and objectives
+there run to 500 and 769 characters, already past the cap. Nothing breaks yet only because today's
+earliest `docs/plans/` offsets happen to be 0, 10 and 22. The remedy named is to run the name match over
+the raw field at intake and store the matched name alone, capping `objective` for memory rather than for
+the search, which also removes the per-tick regex. The defect is not live: this work sits on
+`board-worker-queues` with no pull request merged, and the running broker is on `main` from a different
+checkout.
+
+The second Major is held as new-requirement and owes a judge, which the park leaves undispatched. The
+finding is that the footer now ages with a held persona store reading while a held plan parse behind a
+persona entry ages nothing and is marked nowhere, so the card can draw an entry's stale sections count
+and next step under a footer reading `card as of just now`. The lens raised the fork itself rather than
+asserting past it, and asked for adjudication. This session's reading, recorded as this session's rather
+than a fresh seat's: the amendment's phrase "as well as with a held plan parse" names the project view's
+pre-existing behaviour, and the amendment's own rationale clause, that the card never reports itself as
+current while a group above it says how old that group's reading is, does not reach a per-entry parse,
+whose age the card never states anywhere. Interim board 4 already declined a per-entry held marker on
+the ground that the layout paragraph puts the held marker at the group label and sources it from the
+store's reading, so a per-entry marker is a mechanism no clause in this plan names. That is the reading
+that makes this new-requirement rather than spec-traceable. It is deliberately not ruled here: a scope
+ruling written in a hurry to clear a park is the failure mode, and the resuming session dispatches the
+judge on the fixed brief before it writes anything.
+
+**What is owed and unrun at this park.** Three things, in this order. The fix round over the first
+Major, whose own delta will owe a further round under the fix-delta bar because it moves work at the
+join. The judge on the second Major, on the scope-adjudicator's fixed brief, carrying the plan's what
+and neither this entry's reading nor any lean from it. Then the Minor close pass over the thirteen
+Minors now recorded, the close gate, chapter 4 and the close commit. Section 4's round count stands at
+two, well inside the review-round backstop.
+
+**Scope drift since the last boundary.** None beyond what interim board 7 already recorded. Section 4's
+`Files in scope:` line now names `broker/board/queues.ts` and `broker/board/queues.test.ts` in the
+document itself, which board 7 described in prose and left unwritten; that correction is in this
+commit.
+
+**The goal tree, updated at the coordinator's request.** It held one complete root and nothing else, so
+a resume would have read this persona as idle with two plans outstanding. It now carries both plans as
+nodes under the root, the Fleet Board plan active and the stale-after-restart plan queued behind it,
+each naming its plan document so the card's own join can find it. No other persona file was touched and
+nothing was written to any other worker.
+
+**Next action per section.** Section 4: dispatch the judge on the held Major and the fix round on the
+fix-introduced one, then the round that fix delta owes, the Minor close pass, the close gate, chapter 4
+and the close commit. Section 5: not started. It must amend `docs/backlog.md:444`, whose advisory count
+says two where `npm audit` now reports three, and rewrite `docs/security-model.md:619-660`, which
+predates the roster and store readers entirely.
