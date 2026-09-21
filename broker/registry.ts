@@ -206,9 +206,10 @@ export type SessionRecord = {
    * launches, so the field is also the registry's only evidence that a record belongs to a real
    * launch rather than to any local process that knows the token. A record restored at startup
    * that is not ended and carries a non-null value held a pipe the restart closed, so it is what
-   * opens a restart window in the relay hub. A null value proves less: the field is persisted only
-   * when a relay revives a record, so a record whose relay attached once and was never revived can
-   * restore with null. Such a record opens no window and is left to the staleness sweep.
+   * opens a restart window in the relay hub. A null value proves less: `relaySeen` itself persists
+   * only on a revival, and otherwise the value reaches disk on the next write from any cause, so a
+   * record whose relay attached shortly before a restart can restore with null. Such a record opens
+   * no window and is left to the staleness sweep.
    */
   lastRelayAt: number | null;
   endedAt: number | null;

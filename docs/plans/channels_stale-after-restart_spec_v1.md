@@ -43,7 +43,8 @@ Four other records went `stale` in the same sweep and never resurfaced, because 
 
 ## Related plans
 
-- [channels_thread-rebinding_spec_v1.md](../archive/plans/channels_thread-rebinding_spec_v1.md) (Shelved): one Discord thread across a supervisor's restarts. Its lineage takeover is why only sessions with no running successor showed the symptom. Unchanged by this round.
+- [channels_thread-rebinding_spec_v1.md](../archive/plans/channels_thread-rebinding_spec_v1.md) (Shelved): one Discord thread across a supervisor's restarts. Its lineage takeover is why only sessions with no running successor showed the symptom. Its round 3 recorded the defect this plan closes: the reconnect grace window did not cover a broker restart, because the hub's pending set starts empty. Unchanged by this round.
+- [channel-quality-and-plugin_spec_v1.md](../archive/plans/channel-quality-and-plugin_spec_v1.md) (Complete): built the rule that an exited session's deleted card or thread stays deleted, the `exited` decline in the surface's build path that section 2's guard sits beside and mirrors.
 
 ## Approach
 
@@ -74,6 +75,10 @@ Surfaces returned, by part of the contract.
 ## Standing Brief Amendments
 
 - Persisting `lastRelayAt` on a relay's first attach stays outside this plan, per its Out of Scope list. A restored record whose `lastRelayAt` is null opens no restart window and is left to the staleness sweep and to section 2's surface guard.
+- Each session given a restart window writes one broker log line naming its session ID and nothing else, beside the existing pipe-close line.
+- `broker/registry.ts` states, in comments only, that a restored non-null `lastRelayAt` opens a restart window and that a null one is weaker evidence.
+- `docs/operations.md` states the case of a restored session with no saved relay timestamp: it opens no window, is judged by silence alone, and while its process is gone a card or thread deleted for it is not rebuilt.
+- The section 2 guard declines a card or thread that is missing for any reason, whether deleted, never built, or left unopened for want of budget, for a view that is `stale` and renders `idle`.
 
 ## Sections of Work
 
@@ -254,3 +259,15 @@ Gate: no test lane covers these two documents, so none ran; the section's code g
 Next: 4. Land it on the running broker, after the finishing pass and the operator's merge of the pull request
 Commit Model: Branch-and-PR
 Delta: not taken for this section; the two prior readings reported an empty corpus for this repository.
+
+### Interim board 1 - 2026-09-21
+The finishing pass over sections 1 to 3, run before the pull request is marked ready. Section 4 lands the change on the running broker after the operator merges, so the plan stays In Progress here; its final Chapter, the Complete flip and the archive land on a second pull request after section 4, as section 4's own text says.
+Base ref: 4152f79, the merge-base of stale-after-restart with origin/main. The changeset listing matched the union of the three sections' Files in scope plus this plan doc; nothing untracked.
+QA (qa-verifier): PASS on every checkable bullet of sections 1 to 3. `npm run lint` exit 0; `npm test` exit 0, tests 1736, pass 1735, fail 0, skipped 1 (2026-09-21, SCOTT-CLAUDE, tree at e9ae29d clean, run beside an aged foreign heavy-process claim the verifier named, 215 s old against its stated 120 s). Delta against the 1721/1720/0/1 baseline: +15 tests, which are Chapter 1's 4 and Chapter 2's 11.
+Advisory lenses (Workflow at fable, effort high; claude-kit:security-reviewer 32 turns, claude-kit:performance-reviewer 31 turns, both wholly claude-fable-5-1): security CLEAR, performance CLEAR, 0 Critical, 0 Major. The security lens opened `threat model: absent`: `docs/security-model.md` has no threat model section. Dispositions: the security Minor (a broker restart opens the first-pipe race for every session at once) fixed in the Minor pass with one paragraph in `docs/security-model.md`, a fold into the `docs/` folder this changeset already edits; the performance Minor (a reap tick ending several sessions rewrites the whole snapshot once per session) left, since the incident's three sessions cost milliseconds, no requirement bounds it, and batching changes `relayClosed`'s persistence contract, which this plan does not open.
+Adversarial lens (claude-kit:adversarial-reviewer at fable, effort high, 44 turns, wholly claude-fable-5-1): APPROVED_WITH_CONCERNS, 0 Critical, 0 Major, 5 Minors. Fixed in the Minor pass: the `lastRelayAt` comment said the field is persisted only on a revival, when any write from any cause carries it; the operations paragraph on a session with no saved timestamp now holds only while its process is gone; the restart window's condition now names "not already ended"; the two-minute bound test now steps its heartbeat so one lands a millisecond before the window closes, the worst phase, and was shown red with the window raised to 100 s in a throwaway worktree. Left: the config comment arguing three ceilings beside a pin holding two, already left in Chapter 2.
+Goal read (claude-kit:scope-adjudicator at fable, 1 dispatch): RULED. 4 built-but-unasked, all accept-and-declare, each ground checked against the plan: the seeding log line, the registry comments, the null-timestamp paragraph in `docs/operations.md`, and the guard's reach over a surface never built. Declared as four bullets in Standing Brief Amendments. 0 asked-but-unbuilt.
+Minor pass checks: `node --test broker/routing/relays.test.ts broker/config.test.ts relay/broker.test.ts` tests 59, pass 59, fail 0, exit 0; `npm run lint` exit 0 (2026-09-21T12:12:27Z to 12:12:34Z, SCOTT-CLAUDE, uncontended under this session's claim).
+Docs curation (claude-kit:docs-curator): 3 drift items, all deviation, none a mistake, none resting on a pre-change claim. D1: the restart window and ceiling are constants, not `broker.env` settings, and the bound is the window plus one heartbeat, 105 s at the default and 110 s at the 20 s heartbeat ceiling; the curator stated both. D2: a restored session with no saved timestamp goes silent once the staleness window has passed since it was last heard from, not at the first sweep; the curator corrected the Minor pass's sentence. D3: the silent-session rule sits in its own paragraph after the state legend rather than inside the `exited` line, as Chapter 3 records. The curator also added a paragraph to `docs/architecture.md` stating the restart window, which that document did not describe. Hygiene: two cross-references added to Related plans, to the thread-rebinding plan's round 3 finding of this defect and to the channel-quality plan whose exited decline section 2 mirrors. The orchestrator read the curator's diff against the code: every figure and name checks, the heartbeat setting at `broker/config.ts:470`.
+Operator Verification additions for the final Chapter: the threat model is absent; the Fleet Board pull request's backlog already carries the item, so none is added to `docs/backlog.md` here, where it would conflict with that pull request.
+What follows: the whole gate over this tree, the commit, then the pull request opened, marked ready and auto-merge armed; then BLOCKED on the operator's merge and restart yes for section 4.

@@ -1067,16 +1067,22 @@ bound is up to two heartbeat intervals, roughly 30 seconds, rather than one. The
 opposite failure, which is worse: without the grace, a relay's own reconnect would strand a working
 session as exited, and ended is terminal with no way back.
 
-After a broker restart the wait is longer, up to about 105 seconds. No relay's pipe survives the
-broker, so when the broker starts listening it opens a restart window, 90 seconds by default, for
-every restored session whose saved record carries a relay timestamp. A session whose relay
-reconnects inside that window carries on; one whose relay never returns is ended when the window
-closes, on the next heartbeat. The window is three times the relay's reconnect ceiling, which is
-30 seconds: a relay that was backing off against a down broker can take that long to retry, so a
-shorter window would end sessions that are still running.
+After a broker restart the wait is longer, up to about 105 seconds at the default heartbeat. No
+relay's pipe survives the broker, so when the broker starts listening it opens a restart window of
+90 seconds for every restored session that is not already ended and whose saved record carries a
+relay timestamp. A session whose relay reconnects inside that window carries on. One whose relay
+never returns is ended on the first heartbeat after the window closes, which adds up to one
+heartbeat interval: 15 seconds by default, 20 at the ceiling `CHANNEL_RELAY_HEARTBEAT_MS` allows.
+The window is three times the relay's reconnect ceiling, which is 30 seconds: a relay that was
+backing off against a down broker can take that long to retry, so a shorter window would end
+sessions that are still running. For that reason both are constants in `broker/config.ts` rather
+than `broker.env` settings.
 
 A session whose saved record carries no relay timestamp opens no window and is judged by silence
 alone, as before any restart. That includes a session whose relay attached but was never saved:
 the timestamp reaches disk only when the record is saved for some other change, so a relay that
-attached shortly before the broker stopped can leave none behind. Such a session reads `idle`
-until the four hour backstop, and a card or thread you delete for it is not rebuilt.
+attached shortly before the broker stopped can leave none behind. If that session is still
+running, its relay reconnects and it reads and rebuilds as a live session. If its process is
+gone, the staleness sweep marks it silent once the staleness window has passed since it was last
+heard from. From then until the four hour backstop it reads `idle`, and a card or thread you
+delete for it is not rebuilt.

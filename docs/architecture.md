@@ -151,6 +151,17 @@ next `Stop` and dropping it would read a mid-fan-out restart as an idle session.
 is written and restored, on the opposite reasoning to the goal's: it is identity rather than intent,
 and a restart that dropped it would repaint a renamed thread back to its launch name.
 
+A restored record is weak evidence that its session survived the restart, because no relay pipe
+survives the broker process. When the listener binds, the relay hub (`openRestartWindows` in
+`broker/routing/relays.ts`) opens a restart window for every restored record that is not ended and
+carries a saved `lastRelayAt`. A relay that re-attaches inside the window cancels it, and a session
+whose relay never returns is ended on the heartbeat through the same path an ordinary pipe close
+takes. The window is `RELAY_RESTART_GRACE_MS`, three times the 30 second
+`RELAY_MAX_RECONNECT_DELAY_MS` that also caps the relay client's backoff, and both are constants in
+`broker/config.ts`. It opens at the bind rather than when the hub is built, since a window running
+down through a slow Discord login would end sessions whose relays had no way back. A record saved
+with no `lastRelayAt` opens no window and is left to the staleness sweep.
+
 ## Mid-turn narration
 
 The mirror above carries only the two moments a hook payload reaches: the prompt that opens a turn

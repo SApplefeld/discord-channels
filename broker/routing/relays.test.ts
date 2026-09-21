@@ -491,7 +491,10 @@ test("a token already holding a pipe when the windows open gets no window", () =
 
 test("a relay that never returns after a restart is ended inside the two minute bound", () => {
   // The Goal's bound, measured from the listener binding: the restart window plus the one heartbeat
-  // the reap waits for, which is 105 seconds at the defaults and inside two minutes.
+  // the reap waits for, which is 105 seconds at the defaults and inside two minutes. The heartbeat
+  // interval starts when the hub is built, before the bind, so its phase against the bind is
+  // arbitrary. The steps are placed so one lands a millisecond before the window closes, which is
+  // the worst phase: the reap then waits a whole heartbeat more.
   const heartbeatMs = loadConfig({}).relayHeartbeatMs;
   const bindAt = 1_000;
   let now = bindAt;
@@ -499,8 +502,10 @@ test("a relay that never returns after a restart is ended inside the two minute 
   relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
 
   let endedAfter: number | null = null;
+  let step = (RELAY_RESTART_GRACE_MS - 1) % heartbeatMs;
   while (now - bindAt < 120_000 && endedAfter === null) {
-    now += heartbeatMs;
+    now += step;
+    step = heartbeatMs;
     relays.heartbeat();
     if (registry.list()[0].state === "ended") endedAfter = now - bindAt;
   }
