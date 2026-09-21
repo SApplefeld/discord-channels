@@ -745,3 +745,79 @@ four files and two documents dirty.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 5 - 2026-09-20
+
+Written on the compaction gate's deferral nudge, with section 3 built, committed at first green and
+in review round 1. Not a Chapter: section 3 is still open.
+
+**Section stages.** Sections 1 and 2 are closed, committed at `44aa3e8` and `69c57b7`, and pushed.
+Section 3 is built, verified by this session's own whole-gate run, committed at first green as
+`246fe90` and pushed, and in review round 1. Sections 4 and 5 are not started.
+
+**Live dispatches.** Three reviewers over section 3's delta, all at fable on the Agent tool, none
+permitted to build or run the whole suite. The adversarial lens carries the spec, the base ref
+`69c57b7`, the section name, an `Amendments in effect: none` line and the trace target, and was asked
+in addition to judge four decisions named to it as decisions rather than as leans: the `in flight`
+word staying the table's rather than the layout's, the document fold by path, the narrowed reason
+rule, and the `queueKey` export. The blind lens carries the base ref and the changed-file list alone,
+plus the two standing repository properties. The security lens carries the same sighted fields and
+was pointed at the two properties worth testing here: whether the bookkeeping sweep reaches every
+string the answer carries, and whether any value another program wrote can make the module throw,
+loop or order nothing on the broker's only event loop.
+
+**Gate baseline.** Measured on SCOTT-CLAUDE at 2026-09-21T02:31Z, on this branch with section 3's
+four files dirty and no claim standing on the box: whole gate 1793 tests, 1792 pass, 0 fail, 1
+skipped, exit code 0, 37 s wall clock; lint (`tsc --noEmit`) exit code 0. Measured by this session
+rather than taken from the implementer's report. Against section 2's close at `c592dbb`, 1771 tests,
+1770 pass, 0 fail, 1 skipped, exit 0: section 3 has added 22 tests and broken nothing. Contention
+reading: uncontended by the claim, which this session wrote with its own id and deleted after
+confirming that id. An empty claims directory means nobody has claimed the box rather than that the
+box is free, so this reading rests on the wall clock landing within 3 s of the two preceding
+baselines as well.
+
+**Rulings adopted since the last boundary.** Three, all at the implementer's adjudication and before
+any review finding exists.
+
+The first is a spec conflict the implementer surfaced and this session confirmed against the code.
+The Approach's reason rule says a blocked entry draws the store's `blockedReason` when the store
+status is `blocked`. Section 3's acceptance sweep says no returned reason may carry the string
+`Max rounds`. An entry blocked by a kit event whose store happens to hold `blocked` with the reason
+`Max rounds reached` satisfies the first sentence by drawing exactly what the second forbids. The
+narrowing taken is that the store's reason draws only where the store's own block is the block, which
+is what the acceptance bullet requires and what the Intent's whole framing asks for: the round limit
+is the plugin's bookkeeping and never a stop. Recorded as a declared assumption rather than referred,
+because the acceptance bullet is absolute and the Intent names this exact misreading as one of the
+two the plan exists to remove.
+
+The second is the round-limit comparison being taken on the trimmed value where the Approach says
+`exactly`. A reason differing from the plugin's own string by a trailing space is the same
+bookkeeping, and drawing it as a block is the misreading. Declared rather than referred, since it
+widens a refusal rather than a permission and the string is the plugin's on both sides.
+
+The third is a fold, and it widens this section's file list. The implementer reported that
+`status.ts` had written a second copy of the queue-ordering key that `broker/board/queues.ts:336`
+already owns, and that the two differed in written form: the reader's leans on its field parser to
+drop a non-finite key, the copy carried its own finiteness guard. Confirmed here against
+`queues.ts:248`, where `numberField` gates both `sortKey` and `createdAt` on `Number.isFinite`, so the
+divergence is unreachable on anything the reader can produce. Folded rather than left, because queue
+order decides two of the eight words, the in-flight tie and the up-next place, and a writer and a
+reader holding two copies of one positional rule is the shape a later edit moves a word through with
+neither side's tests noticing. `queueKey` is now exported and called, and the copy is gone. The fold
+predicate holds on all three parts: same directory as a file this section changed, no acceptance
+criterion the section does not already carry, and covered by the gate that had to run anyway.
+
+**Scope drift since the last boundary.** Section 3's `Files in scope:` gains `broker/board/queues.ts`
+for the one exported name above. The spec's own bound on `broker/board/card.ts`, "the four exports
+only", is held rather than widened: a second duplicated helper there, the non-finite modification
+time guard at `card.ts:293`, was left duplicated in `status.ts` and routed to the backlog instead,
+because exporting a fifth name to buy a three-line clamp would contradict a section line the operator
+approved.
+
+**Next action per section.** Section 3: adjudicate round 1's three lenses, capture the provenance of
+every Major against `.kit/scratch/channels_board-worker-queues/section-3/fix-round-1.diff`, dispatch
+the fix round, then the lens any fix delta owes, the Minor close pass, the close gate, chapter 3, the
+`docs/backlog.md` entry for the duplicated modification time guard, and the close commit. Sections 4
+and 5: not started. Section 4 inherits two Minors carried from section 2, the per-plan-reading held
+marker and the length bounds on the free-text fields, and one from this section, that the reason rides
+out uncut because the layout paragraph puts the 120-character cut on the renderer.
