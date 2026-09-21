@@ -13,7 +13,7 @@
 // rule above, and is described at `hasStewardAsk`.
 //
 // Pure and synchronous, and it logs nothing, since what it reads is session-authored text.
-import { sliceCodePoints } from "../sanitize.ts";
+import { sliceCodePoints, visible } from "../sanitize.ts";
 
 /** The longest excerpt an item carries, counted in code points so a cut never splits a pair. */
 export const MAX_EXCERPT_CODE_POINTS = 200;
@@ -31,9 +31,12 @@ const FENCE_OPEN = /^(?:(`{3,})[^`]*$|(~{3,}))/;
 /**
  * The excerpt of the reply's first `ASK:` line, or null where the reply carries no mark.
  *
- * The excerpt is the rest of that line with every run of whitespace collapsed to one space, trimmed,
- * and cut to `MAX_EXCERPT_CODE_POINTS`. A mark with nothing after it still marks, and its excerpt is
- * the empty string, so a caller tells "marked" from "not marked" by null alone.
+ * The excerpt is the rest of that line with every run of whitespace collapsed to one space, then
+ * run through `visible` (the invisible class stripped, trimmed) and cut to `MAX_EXCERPT_CODE_POINTS`.
+ * The strip comes before the cut, the order every stored display string in this repo takes, so a
+ * hidden character can neither reach the operator's card nor spend the excerpt's budget. A mark with
+ * nothing after it still marks, and its excerpt is the empty string, so a caller tells "marked"
+ * from "not marked" by null alone.
  *
  * Fences follow CommonMark's opening and closing shape: a fence closes on a later line whose first
  * non-space characters are the same fence character, at least as many as opened it, followed only by
@@ -55,18 +58,25 @@ export function findAsk(text: string): string | null {
       continue;
     }
     if (content.startsWith(MARK)) {
-      const rest = content.slice(MARK.length).replace(/\s+/g, " ").trim();
-      return sliceCodePoints(rest, MAX_EXCERPT_CODE_POINTS);
+      // Whitespace collapses before the strip: a tab is in the invisible class, and stripped first
+      // it would join the two words it separated.
+      const rest = content.slice(MARK.length).replace(/\s+/g, " ");
+      return sliceCodePoints(visible(rest), MAX_EXCERPT_CODE_POINTS);
     }
   }
   return null;
 }
 
 /**
- * The persona plugin's own ask matcher, copied verbatim from `agent_persona`'s `hooks/index.ts`
- * (the `askMarkerMatch` read of a worker's turn-final answer, line 5597).
+ * The persona plugin's own ask matcher, the regular expression copied from the `askMarkerMatch`
+ * read of a worker's turn-final answer in `agent_persona`'s `hooks/index.ts`, with one addition
+ * for cost. The sibling's `\s*` and the lazy capture after it can both take a whitespace run, so
+ * on a long run the engine tries every split of it, which is quadratic in the run's length. The
+ * `(?=\S)` lookahead pins the capture to the first non-space character. It preserves the
+ * classification: any match whose capture opened on whitespace has an equivalent match with the
+ * `\s*` taking that whitespace instead, so the same lines match and the same lines do not.
  */
-const STEWARD_ASK = /^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im;
+const STEWARD_ASK = /^ASK:\s*(?=\S)(.+?\?\s*Recommend:\s*.+)$/im;
 
 /**
  * Whether the reply carries at least one line the persona plugin reads as a worker's ask of its
@@ -75,10 +85,14 @@ const STEWARD_ASK = /^ASK:\s*(.+?\?\s*Recommend:\s*.+)$/im;
  *
  * It deliberately differs from `findAsk`'s mark rule. The mark rule is the inbox's own and is
  * uppercase-only and fence-aware; this one copies the sibling's matcher as it stands, so it is
- * case-insensitive, anchored at the line's first character, and blind to fences. The copy is exact
- * so the inbox and the persona plugin classify the same line the same way: where the two disagreed,
- * a line the steward is answering could land on the operator's card, or the reverse. A
- * steward-shaped line is still an `ASK:` mark to `findAsk`.
+ * case-insensitive, anchored at the line's first character, and blind to fences. The regular
+ * expression is the whole of what is copied (with the lookahead noted at `STEWARD_ASK`, which
+ * changes its cost and not its language), so the two agree on the line's shape: where they
+ * disagreed, a line the steward is answering could land on the operator's card, or the reverse.
+ * The sibling then goes one step further than this reading does. It refuses a captured question
+ * that still carries a template placeholder (`<...>`), so a worker echoing the template shape
+ * opens no steward ask there, while the same line is steward-shaped here. A steward-shaped line
+ * is still an `ASK:` mark to `findAsk`.
  */
 export function hasStewardAsk(text: string): boolean {
   return STEWARD_ASK.test(text);

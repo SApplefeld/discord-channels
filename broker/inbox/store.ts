@@ -18,11 +18,51 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { clean } from "../sanitize.ts";
+import { clean, visible } from "../sanitize.ts";
 import { SNOWFLAKE } from "../security/senders.ts";
 import { MAX_EXCERPT_CODE_POINTS } from "./ask.ts";
 
 const FORMAT_VERSION = 1;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isInstant(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isScore(value: unknown): value is number {
+  return isInstant(value) && value >= 0 && value <= 1;
+}
+
+/**
+ * Whether a string is an excerpt this module would have written: already run through `visible`
+ * (the invisible class stripped, whitespace collapsed, trimmed) and inside the code-point bound.
+ * The rule that a stored display string is cleaned before it is bounded is checked rather than
+ * applied here, since a value that changes under the cleaning was not produced by `findAsk`.
+ */
+function isExcerpt(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    visible(value) === value &&
+    [...value].length <= MAX_EXCERPT_CODE_POINTS
+  );
+}
+
+function isWinner(value: unknown): value is JudgeWinner {
+  return value === "needs_reply" || value === "needs_act";
+}
+
+/**
+ * The message ID normalized and checked, or null where it is not a Discord snowflake. It is
+ * interpolated into a link, so what is checked has to be what will be used.
+ */
+function messageIdOf(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = clean(value);
+  return SNOWFLAKE.test(cleaned) ? cleaned : null;
+}
 
 export type InboxSource = "marked" | "judged";
 
@@ -71,18 +111,26 @@ export type InboxStoreOptions = {
 };
 
 export type InboxStore = {
-  /** Opens or refreshes the session's item. False where the flag was dropped as late. */
+  /**
+   * Opens or refreshes the session's item. False where the flag was dropped: posted at or before
+   * the session's latest prompt, or carrying a field the snapshot could not restore (an instant
+   * that is not a finite number, an excerpt the loader would refuse, a score outside 0 to 1). A
+   * message ID that is not a snowflake is treated as not supplied rather than dropping the flag.
+   */
   flag: (sessionId: string, flag: InboxFlag) => boolean;
   /**
    * Records an operator prompt to the session and removes its item where the prompt is later than
-   * the item's last refresh. True where an item left.
+   * the item's last refresh. True where an item left. An instant that is not a finite number is
+   * ignored: nothing is recorded and nothing leaves.
    */
   clear: (sessionId: string, promptAt: number) => boolean;
   /**
-   * Removes the session's item unconditionally and records nothing else: the operator posted in an
-   * ended session's thread, where no prompt reaches a session and so no prompt instant exists.
+   * Removes the session's item unconditionally and records `at`, the instant the operator posted
+   * in the ended session's thread, as a prompt instant. No prompt reaches an ended session, but a
+   * judge verdict on one of its earlier replies can still return after that post, and without the
+   * instant it would reopen the item just removed. True where an item left.
    */
-  clearEnded: (sessionId: string) => boolean;
+  clearEnded: (sessionId: string, at: number) => boolean;
   /** Drops every item, and every prompt instant, whose session is no longer in the registry. */
   reconcile: (liveSessionIds: ReadonlySet<string>) => boolean;
   /** Every item, oldest opened first and ties by session ID, as copies the caller may keep. */
@@ -100,7 +148,29 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
   const prompts = new Map<string, number>();
   const changed = options.onChange ?? (() => {});
 
+  /** Records a prompt instant as the maximum seen. A non-finite instant records nothing. */
+  function recordPrompt(sessionId: string, at: number): void {
+    if (!isInstant(at)) return;
+    prompts.set(sessionId, Math.max(prompts.get(sessionId) ?? at, at));
+  }
+
   function flag(sessionId: string, incoming: InboxFlag): boolean {
+    // Every check the loader makes on a restored item is made here on the way in. The loader
+    // refuses the whole snapshot on any of them, so a flag held unchecked would cost every item
+    // on the next boot.
+    if (!isInstant(incoming.postedAt)) return false;
+    if (incoming.source === "marked") {
+      if (!isExcerpt(incoming.excerpt)) return false;
+    } else if (
+      !isRecord(incoming.scores) ||
+      !isScore(incoming.scores.needsReply) ||
+      !isScore(incoming.scores.needsAct) ||
+      !isWinner(incoming.winner)
+    ) {
+      return false;
+    }
+    const messageId = incoming.messageId === undefined ? null : messageIdOf(incoming.messageId);
+
     const promptAt = prompts.get(sessionId);
     if (promptAt !== undefined && incoming.postedAt <= promptAt) return false;
 
@@ -115,16 +185,23 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
         scores: incoming.source === "judged" ? { ...incoming.scores } : null,
         winner: incoming.source === "judged" ? incoming.winner : null,
         count: 1,
-        messageId: incoming.messageId ?? null,
+        messageId,
       });
     } else {
+      // Flags can arrive out of posting order, since a judge verdict takes as long as the judge
+      // takes. What the item shows is the latest reply's, so an older flag counts and moves nothing
+      // it carries over what a newer one already wrote. The one exception is a field the item does
+      // not hold yet: a first excerpt, reading or message ID is taken whatever its instant.
+      const latest = incoming.postedAt >= item.refreshedAt;
       item.refreshedAt = Math.max(item.refreshedAt, incoming.postedAt);
       item.count += 1;
-      if (incoming.messageId !== undefined) item.messageId = incoming.messageId;
+      if (messageId !== null && (latest || item.messageId === null)) item.messageId = messageId;
       if (incoming.source === "marked") {
+        // The upgrade holds whatever the order: the session's own word outranks a classifier's
+        // reading of it, and a marked item is never without an excerpt.
+        if (latest || item.source !== "marked") item.excerpt = incoming.excerpt;
         item.source = "marked";
-        item.excerpt = incoming.excerpt;
-      } else {
+      } else if (latest || item.scores === null) {
         // The scores follow the latest judge reading on either source. The source and the excerpt
         // do not: a judged flag never takes a marked item back to judged.
         item.scores = { ...incoming.scores };
@@ -136,7 +213,8 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
   }
 
   function clear(sessionId: string, promptAt: number): boolean {
-    prompts.set(sessionId, Math.max(prompts.get(sessionId) ?? promptAt, promptAt));
+    if (!isInstant(promptAt)) return false;
+    recordPrompt(sessionId, promptAt);
     const item = held.get(sessionId);
     // Strictly later: a prompt at or before the last flagged reply was written before the operator
     // could have seen that reply, so it answers an older state of the session, not this ask.
@@ -146,7 +224,8 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
     return true;
   }
 
-  function clearEnded(sessionId: string): boolean {
+  function clearEnded(sessionId: string, at: number): boolean {
+    recordPrompt(sessionId, at);
     if (!held.delete(sessionId)) return false;
     changed();
     return true;
@@ -188,22 +267,12 @@ type Snapshot = {
   items: InboxItem[];
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isInstant(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isScore(value: unknown): value is number {
-  return isInstant(value) && value >= 0 && value <= 1;
-}
-
 /**
  * One restored item, checked field by field, or null where any field is not what this module
- * writes. The message ID is normalized before it is checked, the way the card bindings treat theirs,
- * because it is interpolated into a link and what is checked has to be what will be used.
+ * writes. The checks are the ones `flag` makes on the way in, so a flag the store held is an item
+ * the loader restores. The message ID is normalized before it is checked, the way the card
+ * bindings treat theirs; here a bad one refuses the item rather than reading as absent, since a
+ * snapshot wrong in one place is not one whose other fields can be trusted.
  */
 function restoreItem(value: unknown): InboxItem | null {
   if (!isRecord(value)) return null;
@@ -219,21 +288,22 @@ function restoreItem(value: unknown): InboxItem | null {
     if (!isRecord(scores) || !isScore(scores.needsReply) || !isScore(scores.needsAct)) return null;
     restoredScores = { needsReply: scores.needsReply, needsAct: scores.needsAct };
   }
-  if (winner !== null && winner !== "needs_reply" && winner !== "needs_act") return null;
+  if (winner !== null && !isWinner(winner)) return null;
   // A reading is its scores and its winner together, never one without the other.
   if ((restoredScores === null) !== (winner === null)) return null;
 
+  let restoredExcerpt: string | null = null;
   if (source === "marked") {
-    if (typeof excerpt !== "string" || [...excerpt].length > MAX_EXCERPT_CODE_POINTS) return null;
+    if (!isExcerpt(excerpt)) return null;
+    restoredExcerpt = excerpt;
   } else if (excerpt !== null || restoredScores === null) {
     return null;
   }
 
   let restoredMessageId: string | null = null;
   if (messageId !== null) {
-    if (typeof messageId !== "string") return null;
-    restoredMessageId = clean(messageId);
-    if (!SNOWFLAKE.test(restoredMessageId)) return null;
+    restoredMessageId = messageIdOf(messageId);
+    if (restoredMessageId === null) return null;
   }
 
   return {
@@ -241,9 +311,9 @@ function restoreItem(value: unknown): InboxItem | null {
     openedAt,
     refreshedAt,
     source,
-    excerpt: source === "marked" ? (excerpt as string) : null,
+    excerpt: restoredExcerpt,
     scores: restoredScores,
-    winner: winner as JudgeWinner | null,
+    winner,
     count,
     messageId: restoredMessageId,
   };
@@ -305,6 +375,11 @@ export function loadInboxSnapshot(file: string, options: LoadInboxSnapshotOption
   return restored;
 }
 
+/**
+ * Writes the items to the snapshot file, temp file then rename, so a reader never sees a partial
+ * write. Throws where the write or the rename fails, with the temp file removed first; the caller
+ * owns the catch, since what a lost save costs depends on where it is called from.
+ */
 export function saveInboxSnapshot(file: string, items: readonly InboxItem[]): void {
   const snapshot: Snapshot = { version: FORMAT_VERSION, items: [...items] };
   const temp = `${file}.${randomUUID()}.tmp`;

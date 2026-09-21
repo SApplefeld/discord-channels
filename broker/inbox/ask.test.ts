@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import { MAX_EXCERPT_CODE_POINTS, findAsk, hasStewardAsk } from "./ask.ts";
 
 test("an ASK: line outside a fence marks the reply, with the rest of the line as the excerpt", () => {
-  const reply = ["Merged the refactor.", "", "ASK: ship it   tonight\tor wait?", "Carrying on."].join(
+  const reply = ["Merged the refactor.", "", "ASK: ship it   tonight  or wait?", "Carrying on."].join(
     "\n",
   );
   assert.equal(findAsk(reply), "ship it tonight or wait?");
+  // A tab separates words: whitespace collapses to one space before the invisible class (which
+  // holds the tab) is stripped, so the strip never joins two words.
+  assert.equal(findAsk("ASK: ship it\ttonight"), "ship it tonight");
   // Leading indentation is not the marker, so it does not refuse the line.
   assert.equal(findAsk("  \tASK: indented"), "indented");
   assert.equal(findAsk("first\r\nASK: after a CRLF"), "after a CRLF");
@@ -50,6 +53,15 @@ test("a lowercase ask:, a mid-line ASK:, a quoted and a bulleted ASK: mark nothi
   assert.equal(findAsk(""), null);
 });
 
+test("the excerpt is stripped of the invisible class before it is cut", () => {
+  // A zero-width space and a bidirectional override: each shows the operator a text that is not
+  // what the line says, and the shared class in sanitize.ts is what removes them.
+  assert.equal(findAsk("ASK: ship\u200b it \u202eor wait?"), "ship it or wait?");
+  // A tag-block character costs nothing of the budget once it is gone.
+  const hidden = `${"x".repeat(MAX_EXCERPT_CODE_POINTS)}\u{e0041}`;
+  assert.equal(findAsk(`ASK: ${hidden}`), "x".repeat(MAX_EXCERPT_CODE_POINTS));
+});
+
 test("the first of several ASK: lines is the excerpt", () => {
   assert.equal(findAsk("ASK: first\nASK: second"), "first");
 });
@@ -84,4 +96,15 @@ test("a steward-shaped line is found on the persona plugin's own pattern", () =>
   assert.equal(findAsk("ASK: Should I merge?"), "Should I merge?");
   // Anchored at the line's first character, like the sibling's matcher.
   assert.equal(hasStewardAsk(" ASK: x? Recommend: y"), false);
+  // A run of spaces after the colon is still the persona form.
+  assert.equal(hasStewardAsk("ASK:     Ship it? Recommend:    yes"), true);
+});
+
+test("a long whitespace run after ASK: is refused in linear time", () => {
+  // The matcher's whitespace run and its lazy capture would otherwise share the run and backtrack
+  // over every split of it, which is quadratic in the run's length. The bound is generous: the
+  // quadratic shape measured in the hundreds of milliseconds at this length.
+  const started = performance.now();
+  assert.equal(hasStewardAsk(`ASK:${" ".repeat(40_000)}`), false);
+  assert.ok(performance.now() - started < 200, "well under 200 ms");
 });

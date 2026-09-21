@@ -78,6 +78,82 @@ test("a refresh never moves the last-refresh instant backwards", () => {
   assert.equal(store.items()[0]?.refreshedAt, 5000);
 });
 
+test("a flag that arrives out of order counts but never overwrites a newer reading", () => {
+  // An older judged flag after a newer marked one: the excerpt stays, the count moves, and the
+  // reading is taken because the item held none.
+  const store = createInboxStore();
+  store.flag("s1", marked(5000, "newer"));
+  assert.equal(store.flag("s1", judged(4000, 0.8, 0.2)), true);
+  let item = store.items()[0];
+  assert.equal(item?.excerpt, "newer");
+  assert.equal(item?.count, 2);
+  assert.deepEqual(item?.scores, { needsReply: 0.8, needsAct: 0.2 });
+
+  // An older marked flag leaves the newer excerpt.
+  store.flag("s1", marked(3000, "older"));
+  item = store.items()[0];
+  assert.equal(item?.excerpt, "newer");
+  assert.equal(item?.count, 3);
+  assert.equal(item?.refreshedAt, 5000);
+
+  // An older judged flag leaves the newer reading.
+  store.flag("s1", judged(3500, 0.1, 0.9));
+  item = store.items()[0];
+  assert.deepEqual(item?.scores, { needsReply: 0.8, needsAct: 0.2 });
+  assert.equal(item?.winner, "needs_reply");
+
+  // An equal instant is not older, so it replaces.
+  store.flag("s1", marked(5000, "same instant"));
+  assert.equal(store.items()[0]?.excerpt, "same instant");
+});
+
+test("the message ID held is the most recently posted, not the most recently arrived", () => {
+  const store = createInboxStore();
+  store.flag("s1", marked(5000, "newer", MESSAGE_A));
+  store.flag("s1", marked(4000, "older", MESSAGE_B));
+  assert.equal(store.items()[0]?.messageId, MESSAGE_A);
+  // A first message ID is taken whatever its instant, since the item held none.
+  const other = createInboxStore();
+  other.flag("s2", marked(5000, "newer"));
+  other.flag("s2", marked(4000, "older", MESSAGE_B));
+  assert.equal(other.items()[0]?.messageId, MESSAGE_B);
+});
+
+test("an older marked flag still upgrades a judged item, taking the excerpt it carries", () => {
+  // The upgrade rule outranks the order rule: a marked item without an excerpt is not a shape the
+  // snapshot restores.
+  const store = createInboxStore();
+  store.flag("s1", judged(5000, 0.9, 0.1));
+  store.flag("s1", marked(4000, "the session's own word"));
+  const item = store.items()[0];
+  assert.equal(item?.source, "marked");
+  assert.equal(item?.excerpt, "the session's own word");
+  assert.equal(item?.refreshedAt, 5000);
+});
+
+test("a flag the snapshot could not restore is dropped or normalized before it is held", () => {
+  // The loader refuses the whole snapshot on any of these, so an unchecked flag would cost every
+  // item on the next boot.
+  const store = createInboxStore();
+  assert.equal(store.flag("s1", marked(Number.NaN, "when?")), false);
+  assert.equal(store.flag("s1", marked(Number.POSITIVE_INFINITY, "when?")), false);
+  assert.equal(store.flag("s1", marked(1000, "y".repeat(MAX_EXCERPT_CODE_POINTS + 1))), false);
+  assert.equal(store.flag("s1", marked(1000, "zero\u200bwidth")), false);
+  assert.equal(store.flag("s1", judged(1000, 1.2, 0)), false);
+  assert.deepEqual(store.items(), []);
+
+  // A message ID that is not a snowflake is treated as not supplied: the item still opens.
+  assert.equal(store.flag("s1", marked(1000, "open", "../../channels/9")), true);
+  assert.equal(store.items()[0]?.messageId, null);
+  // A padded one is normalized before it is checked, the way the loader treats it.
+  assert.equal(store.flag("s1", marked(2000, "again", ` ${MESSAGE_A} `)), true);
+  assert.equal(store.items()[0]?.messageId, MESSAGE_A);
+  // And on a refresh, a bad one leaves the held one.
+  assert.equal(store.flag("s1", marked(3000, "again", "not-a-snowflake")), true);
+  assert.equal(store.items()[0]?.messageId, MESSAGE_A);
+  assert.equal(store.items()[0]?.count, 3);
+});
+
 test("a judged item upgrades to marked and never back", () => {
   const store = createInboxStore();
   store.flag("s1", judged(1000, 0.2, 0.8));
@@ -134,14 +210,32 @@ test("a flag posted at or before the session's latest prompt is dropped", () => 
   assert.equal(store.items()[0]?.count, 1);
 });
 
-test("an ended session's clear removes its item unconditionally", () => {
+test("a clear with an instant that is not a number leaves the item and records nothing", () => {
+  const store = createInboxStore();
+  store.flag("s1", marked(1000, "open"));
+  assert.equal(store.clear("s1", Number.NaN), false);
+  assert.equal(store.items().length, 1);
+  // Nothing was recorded: a flag older than the item still refreshes it.
+  assert.equal(store.flag("s1", marked(500, "older")), true);
+  assert.equal(store.items()[0]?.count, 2);
+});
+
+test("an ended session's clear removes its item unconditionally and records the instant", () => {
   const store = createInboxStore();
   store.flag("s1", marked(9000, "merge it"));
-  assert.equal(store.clearEnded("s1"), true);
+  assert.equal(store.clearEnded("s1", 9500), true);
   assert.deepEqual(store.items(), []);
-  assert.equal(store.clearEnded("s1"), false);
-  // It recorded no prompt instant, so an older flag still opens.
-  assert.equal(store.flag("s1", marked(1, "again")), true);
+  assert.equal(store.clearEnded("s1", 9500), false);
+  // A verdict on a reply posted before the operator's post in the thread opens nothing.
+  assert.equal(store.flag("s1", marked(9500, "again")), false);
+  assert.equal(store.flag("s1", judged(9000, 0.9, 0.1)), false);
+  assert.deepEqual(store.items(), []);
+  assert.equal(store.flag("s1", marked(9501, "later")), true);
+
+  // The instant held is the maximum seen, so an older ended-clear removes the item and lowers
+  // nothing.
+  assert.equal(store.clearEnded("s1", 9200), true);
+  assert.equal(store.flag("s1", marked(9400, "late")), false);
 });
 
 test("reconcile drops the items of sessions the registry no longer holds", () => {
@@ -182,8 +276,8 @@ test("onChange fires on every change to the item set and on nothing else", () =>
   store.clear("s1", 3000);
   assert.equal(changes, 3);
   store.flag("s1", marked(4000, "c"));
-  store.clearEnded("s1");
-  store.clearEnded("s1");
+  store.clearEnded("s1", 4500);
+  store.clearEnded("s1", 4500);
   store.reconcile(new Set());
   assert.equal(changes, 5);
 });
@@ -318,6 +412,11 @@ test("a corrupt, foreign or malformed inbox snapshot degrades to empty rather th
       { messageId: "../../channels/9" },
       { messageId: 111111111111111111 },
       { excerpt: "y".repeat(MAX_EXCERPT_CODE_POINTS + 1) },
+      // The invisible class and uncollapsed whitespace: a stored excerpt is cleaned before it is
+      // bounded, so one that changes under that cleaning was not written by this module.
+      { excerpt: "ship\u200bit?" },
+      { excerpt: "\u202eship it?" },
+      { excerpt: "ship  it?" },
       { excerpt: 7 },
       { excerpt: undefined },
     ];

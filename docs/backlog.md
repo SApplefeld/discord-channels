@@ -579,6 +579,16 @@ and none carries a date of its own. An item added from here on carries `(parked 
   them with the reading, rather than rebuilding them per tick. The bound today is the 2 MiB store
   file cap times sixteen personas, on the broker's only event loop.
 
+- Run `npm audit fix` for the three pre-existing transitive advisories (parked 2026-09-21, surfaced by
+  the operator inbox plan's section 1 and 2 security reviews). `npm audit` exits 1 on `main` at
+  32939cd with one high and two moderate findings, all transitive (hono, qs). Neither section adds a
+  dependency, so the fix is its own change, gated on the whole suite.
+
+- Walk `sliceCodePoints` in `broker/sanitize.ts` up to its limit instead of spreading the whole
+  string (parked 2026-09-21, surfaced by the operator inbox plan's section 2 performance review). It
+  spreads every code point into an array before comparing the length, which measures 17 ms at the
+  4 MB mirror ceiling and 1.2 ms at the 256 KB default, against 0 ms for a walk that stops at the
+  limit. Ten other callers share it, so the change lands in `sanitize.ts` with its own tests.
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
