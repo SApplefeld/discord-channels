@@ -204,7 +204,11 @@ export type SessionRecord = {
    * and on every heartbeat it answers. Null for a session no relay has ever attached to, which is
    * a session announced by hook posts alone: the wrapper starts a relay with every session it
    * launches, so the field is also the registry's only evidence that a record belongs to a real
-   * launch rather than to any local process that knows the token.
+   * launch rather than to any local process that knows the token. A record restored at startup
+   * that is not ended and carries a non-null value held a pipe the restart closed, so it is what
+   * opens a restart window in the relay hub. A null value proves less: the field is persisted only
+   * when a relay revives a record, so a record whose relay attached once and was never revived can
+   * restore with null. Such a record opens no window and is left to the staleness sweep.
    */
   lastRelayAt: number | null;
   endedAt: number | null;
@@ -965,7 +969,9 @@ export function createRegistry(options: RegistryOptions): Registry {
     // Persisted only on the transition. This runs on every heartbeat of every attached relay, and
     // the snapshot is written whole and synchronously, so persisting a timestamp each time would be
     // thousands of full rewrites a day to record something a restart invalidates anyway: the pipe
-    // it measures does not survive one, and the relay re-announces itself within a heartbeat.
+    // it measures does not survive one, and the relay re-announces itself within its reconnect
+    // ceiling of the broker answering again. What a restart does read is whether the value is
+    // null: a restored record that is not ended and carries one opens a restart window.
     if (revived) mutated();
     return record;
   }

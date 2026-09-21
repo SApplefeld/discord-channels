@@ -3,7 +3,12 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import path from "node:path";
 import { runDirectly } from "./entrypoint.ts";
-import { RELAY_READ_TIMEOUT_MS, REPLY_HEARTBEAT_MS, loadConfig } from "./config.ts";
+import {
+  RELAY_READ_TIMEOUT_MS,
+  RELAY_RESTART_GRACE_MS,
+  REPLY_HEARTBEAT_MS,
+  loadConfig,
+} from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import { createHandler } from "./intake.ts";
 import { createLogger } from "./log.ts";
@@ -1432,6 +1437,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.error(message);
         logger.error(message);
       });
+      // The first moment a relay can reach the broker, so the restart windows open here and not
+      // when the hub was built: a window running down through a slow Discord login would end
+      // sessions whose relays had no way to come back.
+      relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
       resolve();
     });
   });

@@ -196,6 +196,26 @@ const MAX_QUESTION_HOLD_MS = DEFAULT_QUESTION_HOLD_MS;
 export const RELAY_READ_TIMEOUT_MS = 60 * 1000;
 
 /**
+ * The ceiling on the relay's reconnect delay, which doubles from a second on each failed attempt.
+ *
+ * Exported because two processes derive from it: relay/broker.ts caps its backoff with it, and the
+ * broker's restart window below is sized from it. After a broker outage a healthy relay's next
+ * attempt can land up to this long after the broker is answering again.
+ */
+export const RELAY_MAX_RECONNECT_DELAY_MS = 30 * 1000;
+
+/**
+ * How long a session that held a relay before a broker restart is given to reconnect before it is
+ * called dead. No pipe survives the broker process, so at startup every such session's pipe is
+ * closed, and the window opens when the listener binds.
+ *
+ * Three reconnect ceilings, which spans two full retry cycles of a relay whose backoff doubled to
+ * its ceiling while the broker was down, with margin. A constant rather than an environment
+ * setting: a window shorter than the ceiling ends living sessions, and `ended` is terminal.
+ */
+export const RELAY_RESTART_GRACE_MS = 3 * RELAY_MAX_RECONNECT_DELAY_MS;
+
+/**
  * How long the relay waits with no byte at all on a reply's response before it presumes the broker
  * has stopped answering and reports the reply as failed.
  *

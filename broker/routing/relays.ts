@@ -18,6 +18,13 @@
 //   - Each attachment is issued a **reply key**, sent down the pipe and never stored anywhere the
 //     token holder can read. An outbound reply must carry it, so writing into the operator's thread
 //     as Claude requires holding the pipe, not merely knowing the token.
+//
+// A session is ended by its pipe staying gone past a window, and two things open one. A pipe that
+// closes while the broker is up opens the ordinary window, one heartbeat, since the relay's backoff
+// has just reset to a second. A broker restart opens the restart window for every restored session
+// that held a relay, because no pipe survives the broker process. It is longer because a relay that
+// was backing off against a down broker retries on its reconnect ceiling, and it opens when the
+// listener binds rather than when the hub is built, since no relay can reach the broker before then.
 import { randomUUID } from "node:crypto";
 import type { Registry } from "../registry.ts";
 
@@ -75,6 +82,14 @@ export type RelayHub = {
    * the ping is dropped, which runs the same path a stdio close does rather than a second one.
    */
   heartbeat: () => void;
+  /**
+   * Opens a window of `graceMs` for every session in the registry that is not ended and has held a
+   * relay, skipping any whose token already holds a pipe. For broker startup, called once the
+   * listener binds: no pipe survives the broker process, so each such session's pipe is closed, and
+   * one that is not back when its window closes is ended on the heartbeat. Seeds on the first call
+   * only, so a window is never reopened later.
+   */
+  openRestartWindows: (graceMs: number) => void;
   /** Closes every pipe without ending any session. For broker shutdown, which is not session death. */
   closeAll: () => void;
 };
@@ -88,11 +103,11 @@ const MAX_RELAYS = 32;
 export type RelayHubOptions = {
   registry: Registry;
   /**
-   * How long a closed pipe is given to come back before its session is called dead. The relay
-   * reconnects by design (the broker restarts with its scheduled task, and a read timeout drops a
-   * wedged stream),
-   * so ending a session the instant a pipe closed would tombstone a working session permanently:
-   * `ended` is terminal, and a re-attach goes through a lookup that skips ended records.
+   * How long a pipe that closes while the broker is up is given to come back before its session is
+   * called dead. The relay reconnects by design (a read timeout drops a wedged stream), so ending a
+   * session the instant a pipe closed would tombstone a working session permanently: `ended` is
+   * terminal, and a re-attach goes through a lookup that skips ended records. The window a broker
+   * restart opens is not this one: it is the argument to `openRestartWindows`.
    */
   graceMs: number;
   /** Injected so a test drives the grace window without sleeping. */
@@ -102,14 +117,18 @@ export type RelayHubOptions = {
 
 type Attachment = { connection: RelayConnection; replyKey: string };
 
-/** A pipe that has gone, and the session it was watching, until the grace window closes. */
-type Pending = { sessionId: string; since: number };
+/**
+ * A pipe that has gone, and the session it was watching, until the window it was opened with
+ * closes: the ordinary one for a close, the restart one for a session restored at startup.
+ */
+type Pending = { sessionId: string; since: number; graceMs: number };
 
 export function createRelayHub(options: RelayHubOptions): RelayHub {
   const connections = new Map<string, Attachment>();
   const pending = new Map<string, Pending>();
   const now = options.now ?? Date.now;
   const log = options.log ?? ((): void => {});
+  let restartWindowsOpened = false;
 
   /**
    * Drops a pipe and starts the grace window for the session it was watching, but only when that
@@ -124,7 +143,11 @@ export function createRelayHub(options: RelayHubOptions): RelayHub {
     // No announced session yet means nothing to end. The SessionStart hook has not arrived, or the
     // session it announced has already been superseded and ended.
     if (record === null) return;
-    pending.set(processToken, { sessionId: record.sessionId, since: now() });
+    pending.set(processToken, {
+      sessionId: record.sessionId,
+      since: now(),
+      graceMs: options.graceMs,
+    });
     log(`relay: the pipe for session ${record.sessionId} closed, ending it unless it comes back`);
   }
 
@@ -137,7 +160,7 @@ export function createRelayHub(options: RelayHubOptions): RelayHub {
         pending.delete(processToken);
         continue;
       }
-      if (at - entry.since < options.graceMs) continue;
+      if (at - entry.since < entry.graceMs) continue;
       pending.delete(processToken);
       const record = options.registry.relayClosed(processToken, entry.sessionId);
       if (record !== null) log(`relay: session ${record.sessionId} is ended, its pipe did not come back`);
@@ -200,6 +223,25 @@ export function createRelayHub(options: RelayHubOptions): RelayHub {
         options.registry.relaySeen(processToken);
       }
       reapPending();
+    },
+
+    openRestartWindows(graceMs) {
+      if (restartWindowsOpened) return;
+      restartWindowsOpened = true;
+      const at = now();
+      for (const record of options.registry.list()) {
+        // A record no relay ever attached to never held a pipe, so a closed one says nothing about
+        // it. The age of `lastRelayAt` is no condition: a record stale for days had a pipe too. Keyed
+        // by token because at most one record that is not ended holds a token: `start()` ends the
+        // previous holder whenever a new session takes it.
+        if (record.state === "ended" || record.lastRelayAt === null) continue;
+        if (connections.has(record.processToken)) continue;
+        pending.set(record.processToken, { sessionId: record.sessionId, since: at, graceMs });
+        log(
+          `relay: the pipe for session ${record.sessionId} did not survive the broker restart, ` +
+            "ending it unless it comes back",
+        );
+      }
     },
 
     closeAll() {

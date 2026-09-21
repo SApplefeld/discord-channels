@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import {
   DEFAULT_QUESTION_HOLD_MS,
+  RELAY_MAX_RECONNECT_DELAY_MS,
   RELAY_READ_TIMEOUT_MS,
+  RELAY_RESTART_GRACE_MS,
   RELAY_REPLY_IDLE_MS,
   REPLY_HEARTBEAT_MS,
   loadConfig,
@@ -43,6 +45,17 @@ test("a reply's heartbeat leaves room for a missed beat inside the relay's idle 
   assert.ok(
     REPLY_HEARTBEAT_MS * 2 < RELAY_REPLY_IDLE_MS,
     `a beat every ${REPLY_HEARTBEAT_MS}ms against a ${RELAY_REPLY_IDLE_MS}ms window`,
+  );
+});
+
+test("the restart window spans at least two of the relay's reconnect ceilings", () => {
+  // After a broker outage the relay's backoff has doubled to its ceiling, so its next attempt can
+  // land a full ceiling after the broker answers again. A window shorter than two ceilings leaves
+  // no room for one attempt that fails, and a living session ended by it stays ended.
+  assert.ok(RELAY_MAX_RECONNECT_DELAY_MS > 0);
+  assert.ok(
+    RELAY_RESTART_GRACE_MS >= 2 * RELAY_MAX_RECONNECT_DELAY_MS,
+    `a ${RELAY_RESTART_GRACE_MS}ms window against a ${RELAY_MAX_RECONNECT_DELAY_MS}ms ceiling`,
   );
 });
 
