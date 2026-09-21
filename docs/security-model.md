@@ -616,27 +616,58 @@ and `lastError`'s content is deliberately left unread, because an authentication
 where a token or a token-bearing URL would appear. What it takes from that field is that one
 exists.
 
-**The board card reads two foreign files and sends none of their paths.** It opens plan documents
-under the operator's configured project roots and the kit's goal event stream, both written by other
-programs, and renders their content into the channel where approvals are answered. Three properties
-bound what that content can do. No field of either file is ever used as a path: the configured roots
-are the only path input, and the single join is a root with a directory entry's own name, which
-cannot contain a separator, so nothing a plan document or an event says can steer a read outside the
-directory being swept. Roots are matched as strings, separator-normalized and case-folded on Windows,
+**The board card reads foreign files and sends none of their paths.** It opens plan documents under
+the operator's configured project roots, the kit's goal event stream, the fleet roster, and each
+roster persona's store and heartbeat, all written by other programs. It renders their content into
+the channel where approvals are answered. Four properties bound what that content can do.
+
+The first is that a path comes only from configuration, with one bounded exception. The configured
+roots (`CHANNEL_BOARD_PROJECTS`) and the roster's path (`CHANNEL_BOARD_ROSTER`) are path inputs,
+from the access-controlled `broker.env`. A roster entry's `workdir` is trusted as configuration too,
+because the operator writes the roster and its location comes from the broker's own settings. The
+roster is an ordinary file any process running as the operator can rewrite, though, so a `workdir`
+is held to a narrower rule than a configured root.
+It must be an absolute local folder, and a UNC share is refused, so a rewritten roster cannot name
+an SMB share outright. No field of a plan document or an event is ever used as a path. The
+sweep's single join is a root with a directory entry's own name, which cannot contain a
+separator.
+
+The exception is a persona's store, which the persona itself can write. It contributes a file name
+and nothing more. The join keeps the final segment of an entry's `planPath`, or the first
+`docs/plans/<name>.md` in its title and then its objective. That name must match
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,250}\.md$`, folding case, and must not be `README.md` in any case. It
+is then looked for in exactly four folders under that persona's own `workdir`: `docs/plans/`,
+`docs/archive/plans/`, `docs/archive/` and `docs/plans/archive/`. That pattern and those four places
+are the whole of the join. A crafted `planPath` such as `..\..\secret.md` reduces to `secret.md`
+inside those folders, and no path outside the `workdir` is ever named. The bound is on the name:
+the join's stat follows a symbolic link, so a link planted at one of those four places, or a
+`workdir` that is itself a link, opens whatever it points at, a share included: the UNC refusal
+bounds the roster's own text and not the filesystem beneath it. That is accepted rather than
+guarded, because whoever can plant the link in the persona's tree can plant the content there, and
+can open the share themselves. What a crafted name can reach is a plan-shaped file, drawn under the
+store's own title as a section count and, on the entry in flight, its next step. The operator sized
+that risk as small, since the card posts to a private server seen only by them. So the guard is kept
+because it is nearly free, and it carries no raised review on security grounds alone.
+
+The second is that roots are matched as strings, separator-normalized and case-folded on Windows,
 never by asking the filesystem whether two paths name the same place, and both readers fold through
-one shared normalizer so they cannot disagree about which root an event belongs to. And the event
-stream's `project` field, an absolute path that ordinarily embeds the operator's own account name, is
+one shared normalizer so they cannot disagree about which root an event belongs to. The third is that
+the event stream's `project` field, an absolute path that ordinarily embeds the operator's own account name, is
 matched and then dropped rather than carried: what the card holds is the configured root it matched,
-so that field reaches neither the log nor Discord. The refusal of a project root that is not a fixed
-directory names the entry's position and never its text, for the same reason.
+so that field reaches neither the log nor Discord. The fourth is that no path the card holds is
+logged. The refusal of a project root or a roster path that is not a fixed directory names the entry's
+position or the setting, never its text, and the roster and queue readers never log a `workdir`, a
+store path or a plan path, for the same reason.
 
-What does cross is the project label, which is the last segment of a configured root. A root placed
-at or one level under a home directory therefore draws the account name into the channel, and that is
-the operator's choice of root rather than a property the card can fix.
+What does cross is the project label, which is the last segment of a configured root, and each
+persona's name from the roster. A root placed at or one level under a home directory therefore draws
+the account name into the channel, and that is the operator's choice of root rather than a property
+the card can fix.
 
-The card's body is live markdown apart from the one-line fence naming each project, so a field takes
+The card's body is live markdown apart from the one-line fence naming each group, a persona's or a
+project's, so a field takes
 whichever of the two escapes matches where it lands. Every field on a body line, which is every
-filename, status and `Next:` value, takes the full markdown escape, the same control the question
+filename, status, `Next:` value, queue entry title and blocked reason, takes the full markdown escape, the same control the question
 messages and the downgrade notices render their text through. That escape covers every
 metacharacter including the angle brackets Discord's mention and timestamp syntax lives inside, and
 the card's routes send an empty `allowed_mentions` parse list, which is what keeps an `@everyone` in
@@ -645,8 +676,8 @@ crafted status or `Next:` value can draw a mention pill, a timestamp chip, a hea
 or a fence delimiter, and none of them is ever the first character of a line, since every body line
 this card emits opens with a literal prefix of the card's own.
 
-The project label is the one field drawn inside a fence, and a fence honors no backslash escape, so
-it takes the block escape instead: every backtick is substituted rather than escaped, which is what
+The group label, a project name or a persona's name and counts, is the one field drawn inside a
+fence, and a fence honors no backslash escape, so it takes the block escape instead: every backtick is substituted rather than escaped, which is what
 holds the fence closed. A crafted directory name therefore cannot close its own block and reach the
 markdown outside it, and it cannot open a second one. The property both escapes share is the one
 that keeps a field to the line it was given: the invisible class is stripped and whitespace runs
@@ -688,7 +719,7 @@ already has.
 What the operator's own configuration can still reach is worth stating, because these knobs sit in
 the access-controlled `broker.env` rather than in anything an attacker supplies. A project root may
 name a UNC share, in which case the sweep opens outbound SMB under the broker's own credentials once
-a tick, and the event stream path is taken as given. Both are the same trust class as any other value
+a tick, and the event stream path and the roster path are taken as given. Both are the same trust class as any other value
 in that file, which the model already treats as equivalent to code execution on the host.
 
 **A channel event reaches the model at the keyboard's standing.** The relay's instructions describe

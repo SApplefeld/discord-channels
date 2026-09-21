@@ -48,7 +48,7 @@
 //
 //   GET /sessions  -> the registry as JSON, for debugging.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { FLAG_FALSE } from "./config.ts";
+import { FLAG_FALSE, UNC_ROOT } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import type { Logger } from "./log.ts";
 import { MAX_BACKGROUND_TASKS, MAX_BACKGROUND_TASK_ID_LENGTH } from "./registry.ts";
@@ -323,9 +323,11 @@ function transcriptPathField(payload: Record<string, unknown>): string | null {
   if (typeof value !== "string") return null;
   const path = value.replace(PATH_CONTROL_CHARACTERS, "").trim();
   if (path === "" || path.length > MAX_TRANSCRIPT_PATH_LENGTH) return null;
-  // Both slash spellings: Windows opens //host/share and \\host\share alike, and \\?\ and \\.\
-  // prefixed paths begin the same way.
-  if (path.startsWith("\\\\") || path.startsWith("//")) return null;
+  // Any two leading separators, in either spelling or a mix of the two: Windows opens //host/share
+  // and \\host\share alike, and \\?\ and \\.\ prefixed paths begin the same way. The shared pattern
+  // rather than a local one, because this is the same share root the board's roster refuses and the
+  // two must not drift.
+  if (UNC_ROOT.test(path)) return null;
   if (!/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith("/")) return null;
   return path;
 }

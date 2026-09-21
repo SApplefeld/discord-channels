@@ -149,6 +149,7 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     // Named rather than defaulted, so nothing a test starts can reach the operator's own home.
     boardEventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
     boardCardRefreshMs: 60_000,
+    boardRosterPath: "",
     ...overrides,
   };
 }
@@ -2215,8 +2216,14 @@ test("a transcript path is refused rather than truncated, and never a UNC path",
   assert.ok(deep.length > 1024);
   assert.equal(parse(deep), null, "an over-long path is refused whole, never cut to a wrong one");
 
+  // Windows resolves any two leading separators as a share root, so the refusal is checked over
+  // that class. The mixed pair are the withheld members: matched on the class's shape rather than
+  // on a literal the guard was written against, they are what catches a guard that only names the
+  // two homogeneous spellings.
   assert.equal(parse("\\\\host\\share\\x.jsonl"), null, "a UNC path is never opened");
   assert.equal(parse("//host/share/x.jsonl"), null, "the forward-slash UNC spelling is refused too");
+  assert.equal(parse("/\\host\\share\\x.jsonl"), null, "a mixed-separator UNC path is refused too");
+  assert.equal(parse("\\/host/share/x.jsonl"), null, "and the other mixed spelling");
   assert.equal(parse("..\\x.jsonl"), null, "a relative path is refused");
   assert.equal(parse("transcripts\\x.jsonl"), null);
   assert.equal(parse("C:x.jsonl"), null, "a drive-relative path is refused");

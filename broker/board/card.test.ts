@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { MAX_CARD_LENGTH } from "../discord/render.ts";
 import { eventKey, initialEventState } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
@@ -11,12 +14,20 @@ import {
   parsePlan,
 } from "./plans.ts";
 import {
+  MAX_BLOCKED_REASON_LENGTH,
   MAX_DRAWN_SECTIONS,
+  MAX_ENTRY_TITLE_LENGTH,
+  MAX_FOLDED_TITLE_LENGTH,
   MAX_NEXT_LENGTH,
+  MAX_PERSONA_NAME_LENGTH,
   fieldUnitsNeutralized,
   renderBoardCard,
 } from "./card.ts";
-import type { BoardPlan } from "./card.ts";
+import type { BoardPersona, BoardPersonaEntry, BoardPlan } from "./card.ts";
+import { personaStatus } from "./status.ts";
+import type { PersonaStatus } from "./status.ts";
+import { STORE_FILE_NAME, createQueueReader } from "./queues.ts";
+import type { PersonaQueue, QueueEntry, QueuePlanReading } from "./queues.ts";
 
 const NOW = 1_786_300_000_000;
 const MINUTE = 60_000;
@@ -68,12 +79,14 @@ function event(overrides: Partial<BoardEvent> = {}): BoardEvent {
 function card(input: {
   roots?: readonly string[];
   plans?: readonly BoardPlan[];
+  personas?: readonly BoardPersona[];
   failures?: readonly PlanFailure[];
   truncated?: readonly PlanTruncation[];
   events?: EventReaderState;
   now?: number;
 }): string {
   return renderBoardCard({
+    personas: input.personas ?? [],
     // Empty unless a test names the configured list, which leaves the projects ordered entirely by
     // their newest plan's mtime, and a tie between two of them broken by the order the card first
     // places their roots in: the plans first, newest mtime then stem, then the failures, then the
@@ -115,12 +128,17 @@ function facts(rendered: string): string[] {
 }
 
 /** Every project's fenced label on the card, its one content line, in the order the card draws
- * them. A label is a fence exactly three lines wide, so its content sits between two delimiters. */
+ * them. A label is a fence exactly three lines wide, so its content sits between two delimiters, and
+ * its opening delimiter follows the blank line that closes whatever stands above it. That blank line
+ * is what tells an opening delimiter from the closing one of a label-only group, which is itself
+ * followed by a blank line and the next label's delimiter two lines on. */
 function projects(rendered: string): string[] {
   const lines = rendered.split("\n");
   const names: string[] = [];
   for (const [at, line] of lines.entries()) {
-    if (line === "```" && lines[at + 2] === "```") names.push(lines[at + 1] ?? "");
+    if (line === "```" && lines[at - 1] === "" && lines[at + 2] === "```") {
+      names.push(lines[at + 1] ?? "");
+    }
   }
   return names;
 }
@@ -719,22 +737,35 @@ test("the blank lines the list shape needs are charged against the budget like a
   // blank line before its footer. Budget arithmetic that measured only the lines carrying text
   // would run the card past the message ceiling at exactly the fill where it matters, so every
   // count of projects up to a card that overflows is walked here rather than one chosen fill.
-  // Every project the card draws is a label over at least one bullet; no blank line falls inside a
-  // project's list, where it would end the list and restart it; and every line that follows a list,
-  // the overflow tail included, is held off it by a blank line of its own. Answers whether this card
-  // is one that ran out of room, so the walk can be held to covering that shape too.
+  // Every project the card draws is a label over at least one bullet, and the one label that stands
+  // over no bullet is a finished worker's, whose group is its label alone; no blank line falls
+  // inside a project's list, where it would end the list and restart it; and every line that follows
+  // a list, the overflow tail included, is held off it by a blank line of its own. Answers whether
+  // this card is one that ran out of room, so the walk can be held to covering that shape too.
   const walk = (body: string, what: string): boolean => {
     assert.ok(body.length <= MAX_CARD_LENGTH, `${what} composes ${body.length} units`);
     const lines = body.split("\n");
     for (const [at, line] of lines.entries()) {
       // A project's label is a fence: its opening delimiter sits right after the blank line that
-      // closes the project above it, and its closing delimiter is followed by the first bullet.
+      // closes the project above it, and its closing delimiter is followed by the first bullet, or
+      // by the blank line that closes a label-only persona group.
       if (line === "```" && lines[at - 1] === "") {
         assert.equal(lines[at + 2], "```", `a project's fence is exactly three lines: ${body}`);
+        // The one label allowed to stand over nothing is a finished worker's: `drawsGroup` in
+        // card.ts draws every group with entries, and a done entry draws no line of its own, so a
+        // worker whose every entry is done draws a label with an empty list under it. That label
+        // reads `N of N done`, the one count pair no other group in this fill can carry: an ordinary
+        // worker here is mid-queue and so counts fewer done than total, and a project's label never
+        // carries a done count at all. A regression that let an ordinary label stand over nothing
+        // (a worker with entries left to draw, or a project) would pass a rule that only checked for
+        // any blank line, so the two shapes are told apart on the label's own text rather than on
+        // position.
+        const label = lines[at + 1] ?? "";
+        const finishedWorker = /(\d+) of \1 done/.test(label);
         assert.match(
           lines[at + 3] ?? "",
-          /^- /,
-          `no fence stands over an empty list: ${body}`,
+          finishedWorker ? /^(- |$)/ : /^- /,
+          `a fence is followed by its first bullet, or by nothing when its label (${label}) is a finished worker's: ${body}`,
         );
       }
       if (line === "") {
@@ -755,7 +786,11 @@ test("the blank lines the list shape needs are charged against the budget like a
     return lines.some((line) => line.startsWith("(+"));
   };
 
+  // The persona fill's own reading, kept apart from the two project fills. Or'd into one flag it
+  // would be satisfied by either of them, and the persona view is the one that spends the budget
+  // first, so it is where an uncharged line reaches the tail soonest and is worth its own answer.
   let overflowed = false;
+  let fleetOverflowed = false;
   for (let count = 1; count <= 40; count += 1) {
     const plans = Array.from({ length: count }, (_, index) =>
       plan({
@@ -775,12 +810,788 @@ test("the blank lines the list shape needs are charged against the budget like a
         reason: "malformed" as const,
       })),
     });
+    // The third fill is the persona view at the same widths, which spends the budget ahead of the
+    // projects and so is where an uncharged line first pushes the card past the ceiling. It opens
+    // on a finished worker, whose group is a label and nothing under it: the one group the budget
+    // charges with no item to carry the label, so its blank line is walked here too.
+    const fleet = card({
+      personas: [
+        persona({
+          name: "worker-finished",
+          done: 2,
+          total: 2,
+          worker: "idle 12m",
+          entries: [entry({ title: "a done entry", word: "done" }), entry({ title: "another", word: "done" })],
+        }),
+        ...Array.from({ length: count }, (_, index) =>
+          persona({
+            name: `worker-${String(index).padStart(2, "0")}`,
+            total: 3,
+            worker: "idle 12m",
+            entries: [
+              entry({
+                title: `a queue entry title long enough to fill its own bullet ${index}`,
+                word: "in flight",
+                reading: { sections: 7, completed: 2, next: "the next section of this plan", heldSince: null },
+              }),
+              entry({ title: `a blocked entry of worker ${index}`, word: "blocked", reason: "Waiting on an operator fork" }),
+              entry({ title: `a queued entry of worker ${index}` }),
+            ],
+          }),
+        ),
+      ],
+    });
     overflowed = walk(card({ plans }), `${count} projects`) || overflowed;
     overflowed = walk(thin, `${count * 8} one-bullet projects`) || overflowed;
+    fleetOverflowed = walk(fleet, `${count} persona groups`) || fleetOverflowed;
   }
   assert.ok(
     overflowed,
     "a card that ran out of room has to be among them, or the tail's own blank line is unpinned",
+  );
+  assert.ok(
+    fleetOverflowed,
+    "a persona fill that ran out of room has to be among them too, or the view that spends the budget first never reached the tail here",
+  );
+});
+
+// The persona view: one group per worker, its queue under a label saying what the worker is doing.
+//
+// The fixtures below are the plan's own reference fixture, and the first test drives it through the
+// status rule rather than hand-writing the words, because the acceptance the layout was approved
+// under is what that rule's answer renders as. The adapter here stands in for the tick's, which
+// Section 5 builds: it is what proves the rule's vocabulary and this renderer's are one vocabulary.
+
+const DEV_PLUGIN = "D:/personas/dev-plugin/repo";
+
+function queueEntry(overrides: Partial<QueueEntry> & { id: string; title: string }): QueueEntry {
+  return { status: "paused", ...overrides };
+}
+
+function queueReading(
+  stem: string,
+  overrides: Partial<Extract<QueuePlanReading, { archived: false }>> = {},
+): QueuePlanReading {
+  return {
+    archived: false,
+    status: "Ready",
+    terminal: false,
+    sections: 2,
+    completed: 0,
+    next: null,
+    root: DEV_PLUGIN,
+    path: `${DEV_PLUGIN}/docs/plans/${stem}.md`,
+    stem,
+    mtimeMs: NOW - 3 * HOUR,
+    sizeBytes: 4_096,
+    heldSince: null,
+    ...overrides,
+  };
+}
+
+/** The plan's reference fixture: one persona, six entries in queue order, idle for twelve minutes. */
+function referenceQueue(overrides: Partial<PersonaQueue> = {}): PersonaQueue {
+  const entries: QueueEntry[] = [
+    queueEntry({ id: "e1", title: "Fleet coordinator seat", sortKey: 1 }),
+    queueEntry({
+      id: "e2",
+      title: "Test-requirement axis",
+      sortKey: 2,
+      status: "blocked",
+      blockedReason: "Max rounds reached",
+    }),
+    queueEntry({ id: "e3", title: "Memory database", sortKey: 3 }),
+    queueEntry({ id: "e4", title: "Kaizen: messages wait too long", sortKey: 4, status: "complete" }),
+    queueEntry({
+      id: "e5",
+      title: "Reviewer re-ranking",
+      sortKey: 5,
+      status: "blocked",
+      blockedReason: "Waiting on two operator forks",
+    }),
+    queueEntry({ id: "e6", title: "Prose register", sortKey: 6 }),
+  ];
+  return {
+    name: "dev-plugin",
+    workdir: DEV_PLUGIN,
+    entries,
+    activeGoalId: null,
+    lastTurnComplete: NOW - 12 * MINUTE,
+    turnStartedAt: null,
+    readings: new Map<string, QueuePlanReading>([
+      ["e1", queueReading("fleet-coordinator", { sections: 2, completed: 0 })],
+      [
+        "e2",
+        queueReading("test-requirement", {
+          status: "In Progress",
+          sections: 3,
+          completed: 2,
+          next: "Section 3, the reviewer charters",
+          mtimeMs: NOW - 1 * HOUR,
+        }),
+      ],
+      [
+        "e3",
+        queueReading("memory-database", {
+          status: "In Progress",
+          sections: 7,
+          completed: 4,
+          mtimeMs: NOW - 5 * HOUR,
+        }),
+      ],
+      ["e5", queueReading("reviewer-re-ranking", { sections: 8, completed: 3 })],
+      ["e6", queueReading("prose-register", { sections: 4, completed: 0 })],
+    ]),
+    heldSince: null,
+    ...overrides,
+  };
+}
+
+/**
+ * One persona group as the tick composes it: the rule's answer per entry, joined back to the title
+ * and the plan reading the queue reader took them from.
+ *
+ * Section 5 builds this adapter for the broker itself. It stands here because the acceptance is
+ * about what the rule's answer renders as, and because a hand-written word list would pin this
+ * renderer against a vocabulary nothing else speaks.
+ */
+function personaGroup(queue: PersonaQueue, status: PersonaStatus): BoardPersona {
+  const titles = new Map(queue.entries.map((entry) => [entry.id, entry.title]));
+  return {
+    name: queue.name,
+    done: status.done,
+    total: status.total,
+    worker: status.worker,
+    heldSince: queue.heldSince,
+    entries: status.entries.map((entry) => {
+      const reading = queue.readings.get(entry.id);
+      return {
+        title: titles.get(entry.id) ?? "",
+        word: entry.word,
+        reason: entry.reason,
+        reading: reading === undefined || reading.archived ? null : reading,
+      };
+    }),
+  };
+}
+
+/** The reference fixture judged and adapted, which is what the layout was approved over. */
+function reference(overrides: Partial<PersonaQueue> = {}): BoardPersona {
+  const queue = referenceQueue(overrides);
+  return personaGroup(queue, personaStatus(queue, initialEventState(), NOW));
+}
+
+/** One queue entry as the renderer takes it, with no plan document behind it unless named. */
+function entry(overrides: Partial<BoardPersonaEntry> & { title: string }): BoardPersonaEntry {
+  return { word: "queued", reason: null, reading: null, ...overrides };
+}
+
+/** One persona group with nothing but the fields a test names. */
+function persona(overrides: Partial<BoardPersona> & { name: string }): BoardPersona {
+  return { entries: [], done: 0, total: 0, worker: "idle", heldSince: null, ...overrides };
+}
+
+/** Every fenced label on the card paired with the bullets drawn under it, in card order. A label
+ * opens on the delimiter that follows a blank line, as `projects` above reads it. */
+function groups(rendered: string): { label: string; lines: string[] }[] {
+  const lines = rendered.split("\n");
+  const found: { label: string; lines: string[] }[] = [];
+  for (const [at, line] of lines.entries()) {
+    if (line !== "```" || lines[at - 1] !== "" || lines[at + 2] !== "```") continue;
+    const drawnLines: string[] = [];
+    for (let read = at + 3; read < lines.length; read += 1) {
+      const line = lines[read] ?? "";
+      if (!line.startsWith("- ") && !line.startsWith("  - ")) break;
+      drawnLines.push(line);
+    }
+    found.push({ label: lines[at + 1] ?? "", lines: drawnLines });
+  }
+  return found;
+}
+
+test("the reference fixture renders the layout the operator approved, line for line", () => {
+  const body = card({ personas: [reference()] });
+
+  assert.equal(
+    body,
+    [
+      "📋 **Fleet: Board**",
+      "# 📋 Fleet: Board",
+      "",
+      "```",
+      "dev-plugin · 1 of 6 done · idle 12m",
+      "```",
+      "- **Test-requirement axis**",
+      "  - in progress · 2/3",
+      "  - next: Section 3, the reviewer charters",
+      "- **Fleet coordinator seat**",
+      "  - up next · 0/2",
+      "- **Memory database**",
+      "  - started, parked · 4/7",
+      "- **Reviewer re-ranking**",
+      "  - blocked · 3/8 · Waiting on two operator forks",
+      "- then: Prose register",
+      "",
+      "card as of just now",
+    ].join("\n"),
+  );
+});
+
+test("the label says the worker is running while the heartbeat is inside a turn", () => {
+  const body = card({ personas: [reference({ turnStartedAt: NOW - 2 * MINUTE })] });
+
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · running now");
+});
+
+test("a store reading the tick is holding draws a marker whose age climbs", () => {
+  const body = card({ personas: [reference({ heldSince: NOW - 5 * MINUTE })] });
+
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m · held 5m");
+  assert.doesNotMatch(
+    card({ personas: [reference()] }),
+    /held /,
+    "a store read this tick draws no marker",
+  );
+});
+
+test("a held marker on a store instant that names no time is left off rather than drawn as NaN", () => {
+  const body = card({ personas: [reference({ heldSince: Number.NaN })] });
+
+  assert.doesNotMatch(body, /NaN/);
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m");
+});
+
+test("the footer is as old as a held store reading, so no group reads older than the card", () => {
+  const store = card({ personas: [reference({ heldSince: NOW - 3 * HOUR })] });
+  const both = card({
+    personas: [reference({ heldSince: NOW - 5 * MINUTE })],
+    plans: [plan({}, NOW - 3 * HOUR)],
+    roots: [CHANNELS],
+  });
+
+  assert.equal(groups(store)[0]?.label, "dev-plugin · 1 of 6 done · idle 12m · held 3h 0m");
+  assert.match(store, /^card as of 3h ago$/m, "a group's held reading is what the footer reports");
+  assert.match(both, /^card as of 3h ago$/m, "the footer is the oldest reading of either view");
+});
+
+test("a store instant that names no time leaves the footer an age rather than NaN", () => {
+  const body = card({
+    personas: [reference({ heldSince: Number.NaN })],
+    plans: [plan({}, NOW - 4 * MINUTE)],
+    roots: [CHANNELS],
+  });
+
+  assert.doesNotMatch(body, /NaN/);
+  assert.match(body, /^card as of 4m ago$/m, "an instant naming no time ages the footer by nothing");
+});
+
+test("a held store reading ages the footer only through a group the card draws, a finished worker's label included", () => {
+  const empty = card({
+    personas: [persona({ name: "empty", heldSince: NOW - 3 * HOUR })],
+    plans: [plan()],
+    roots: [CHANNELS],
+  });
+  const finished = card({
+    personas: [
+      persona({
+        name: "finished",
+        done: 2,
+        total: 2,
+        heldSince: NOW - 3 * HOUR,
+        entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
+      }),
+    ],
+    plans: [plan()],
+    roots: [CHANNELS],
+  });
+
+  assert.match(empty, /^card as of just now$/m, "a group with no entries draws nothing and ages nothing");
+  assert.equal(groups(finished)[0]?.label, "finished · 2 of 2 done · idle · held 3h 0m");
+  assert.match(finished, /^card as of 3h ago$/m, "a drawn label reading held ages the footer to match");
+});
+
+/** The reference queue with one entry's plan reading replaced by a hold stamped at `heldSince`. */
+function referenceHolding(id: string, heldSince: number): PersonaQueue {
+  const fresh = referenceQueue();
+  const held = fresh.readings.get(id);
+  assert.ok(held !== undefined && !held.archived, `${id} must carry a parsed reading to hold`);
+  const readings = new Map(fresh.readings);
+  readings.set(id, { ...held, heldSince });
+  return { ...fresh, readings };
+}
+
+test("the footer is as old as a held plan parse behind a drawn entry, and the entry draws no marker", () => {
+  const fresh = card({ personas: [reference()] });
+  const held = card({ personas: [reference(referenceHolding("e2", NOW - 3 * HOUR))] });
+
+  assert.match(fresh, /^card as of just now$/m);
+  assert.match(held, /^card as of 3h ago$/m, "a drawn entry's held parse is what the footer reports");
+  assert.equal(
+    held.replace(/^card as of 3h ago$/m, "card as of just now"),
+    fresh,
+    "the footer is the only line the hold changes",
+  );
+});
+
+test("a held parse behind a done entry ages the footer by nothing, under a drawn label or not", () => {
+  const done = referenceQueue();
+  const doneReadings = new Map(done.readings);
+  doneReadings.set(
+    "e4",
+    queueReading("kaizen-messages", { status: "Complete", terminal: true, heldSince: NOW - 3 * HOUR }),
+  );
+  const onDone = card({ personas: [reference({ ...done, readings: doneReadings })] });
+  const onUndrawn = card({
+    personas: [
+      persona({
+        name: "finished",
+        done: 1,
+        total: 1,
+        entries: [
+          entry({
+            title: "one",
+            word: "done",
+            reading: { sections: 2, completed: 2, next: null, heldSince: NOW - 3 * HOUR },
+          }),
+        ],
+      }),
+    ],
+    plans: [plan()],
+    roots: [CHANNELS],
+  });
+
+  assert.match(onDone, /^card as of just now$/m, "a done entry's held parse ages nothing");
+  assert.match(onUndrawn, /^card as of just now$/m, "a done entry's held parse under a label-only group ages nothing");
+});
+
+test("a plan hold instant that names no time leaves the footer an age rather than NaN", () => {
+  const body = card({
+    personas: [reference(referenceHolding("e2", Number.NaN))],
+    plans: [plan({}, NOW - 4 * MINUTE)],
+    roots: [CHANNELS],
+  });
+
+  assert.doesNotMatch(body, /NaN/);
+  assert.match(body, /^card as of 4m ago$/m, "an instant naming no time ages the footer by nothing");
+});
+
+test("the next line draws on the entry in flight and on no other", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 2,
+        entries: [
+          entry({
+            title: "running",
+            word: "in flight",
+            reading: { sections: 3, completed: 1, next: "the renderer and its tests", heldSince: null },
+          }),
+          entry({
+            title: "parked",
+            word: "started, parked",
+            reading: { sections: 3, completed: 2, next: "a next value no parked entry draws", heldSince: null },
+          }),
+        ],
+      }),
+    ],
+  });
+
+  assert.deepEqual(groups(body)[0]?.lines, [
+    "- **running**",
+    "  - in progress · 1/3",
+    "  - next: the renderer and its tests",
+    "- **parked**",
+    "  - started, parked · 2/3",
+  ]);
+});
+
+test("a done entry draws no line of its own, and the label's count is where it is reported", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        done: 2,
+        total: 3,
+        entries: [
+          entry({ title: "finished", word: "done", reading: { sections: 4, completed: 4, next: null, heldSince: null } }),
+          entry({ title: "archived", word: "done" }),
+          entry({ title: "running", word: "in flight" }),
+        ],
+      }),
+    ],
+  });
+
+  assert.deepEqual(groups(body)[0]?.lines, ["- **running**", "  - in progress"]);
+  assert.equal(groups(body)[0]?.label, "dev-plugin · 2 of 3 done · idle");
+});
+
+test("an entry whose plan declares no sections draws its word alone", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 1,
+        entries: [
+          entry({ title: "unsectioned", word: "up next", reading: { sections: 0, completed: 0, next: null, heldSince: null } }),
+        ],
+      }),
+    ],
+  });
+
+  assert.deepEqual(groups(body)[0]?.lines, ["- **unsectioned**", "  - up next"]);
+});
+
+test("a reason draws on a blocked entry and nowhere else", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 3,
+        entries: [
+          entry({ title: "stopped", word: "blocked", reason: "Waiting on two operator forks" }),
+          // A worker the nudge cap stopped. It earns a bullet of its own rather than a place in the
+          // closing line, because the operator is the one who restarts it.
+          entry({ title: "gone quiet", word: "stalled", reason: "a reason no other word draws" }),
+          entry({ title: "waiting", word: "up next", reason: "a reason no other word draws" }),
+        ],
+      }),
+    ],
+  });
+
+  // The up-next entry draws above the stopped ones whatever order they arrive in, which is the
+  // layout's own running order: what is next, then what is stopped, in queue order among themselves.
+  assert.deepEqual(groups(body)[0]?.lines, [
+    "- **waiting**",
+    "  - up next",
+    "- **stopped**",
+    "  - blocked · Waiting on two operator forks",
+    "- **gone quiet**",
+    "  - stalled",
+  ]);
+});
+
+test("the closing line names as many queued titles as fit and counts the rest", () => {
+  const titles = Array.from({ length: 12 }, (_, at) => `queued plan number ${at} of this worker's`);
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: titles.length,
+        entries: titles.map((title) => entry({ title })),
+      }),
+    ],
+  });
+
+  const [line] = groups(body)[0]?.lines ?? [];
+  assert.ok((line ?? "").startsWith("- then: queued plan number 0"), line);
+  const named = (line ?? "").replace("- then: ", "").split(", ");
+  const left = Number(/^\+(\d+)$/.exec(named[named.length - 1] ?? "")?.[1]);
+  assert.ok(left > 0, `the fixture has to overrun the closing line's own budget: ${line}`);
+  assert.equal(named.length - 1 + left, titles.length, `every queued entry is named or counted: ${line}`);
+  assert.ok((line ?? "").length <= 240, `the closing line stays one line's worth: ${(line ?? "").length}`);
+});
+
+test("a title and a reason out of a worker's store are cut with a mark rather than drawn whole", () => {
+  const title = "t".repeat(MAX_ENTRY_TITLE_LENGTH + 40);
+  const reason = "r".repeat(MAX_BLOCKED_REASON_LENGTH + 40);
+  const body = card({
+    personas: [
+      persona({
+        name: "n".repeat(MAX_PERSONA_NAME_LENGTH + 40),
+        total: 2,
+        entries: [entry({ title, word: "blocked", reason }), entry({ title })],
+      }),
+    ],
+  });
+
+  const [label] = projects(body);
+  assert.equal((label ?? "").split(" ")[0], `${"n".repeat(MAX_PERSONA_NAME_LENGTH - 1)}…`);
+  assert.deepEqual(groups(body)[0]?.lines, [
+    `- **${"t".repeat(MAX_ENTRY_TITLE_LENGTH - 1)}…**`,
+    `  - blocked · ${"r".repeat(MAX_BLOCKED_REASON_LENGTH - 1)}…`,
+    `- then: ${"t".repeat(MAX_FOLDED_TITLE_LENGTH - 1)}…`,
+  ]);
+});
+
+test("a persona whose every entry is done draws its label alone, so the worker's own state stays readable", () => {
+  const body = card({
+    plans: [plan()],
+    personas: [
+      persona({
+        name: "finished",
+        done: 2,
+        total: 2,
+        worker: "idle 12m",
+        entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
+      }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["finished · 2 of 2 done · idle 12m", "sapplefeld-channels"]);
+  assert.deepEqual(groups(body)[0]?.lines, [], "no bullet stands under a finished worker's label");
+  const lines = body.split("\n");
+  const label = lines.indexOf("finished · 2 of 2 done · idle 12m");
+  assert.deepEqual(
+    lines.slice(label + 1, label + 4),
+    ["```", "", "```"],
+    "the next group opens right after the blank line that closes the label-only group",
+  );
+});
+
+test("a lone finished worker with nothing else configured ends the card on its own label, not the empty-card line", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "finished",
+        done: 2,
+        total: 2,
+        worker: "idle 12m",
+        entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
+      }),
+    ],
+  });
+
+  assert.doesNotMatch(
+    body,
+    /No open plans in the configured projects\./,
+    "a finished worker's label is something to draw, so the card is not the empty-projects one",
+  );
+  assert.deepEqual(
+    body.split("\n").slice(-3),
+    ["```", "", "card as of just now"],
+    "the body ends on the label's closing fence, one blank line, then the footer: no items, no other group",
+  );
+});
+
+test("a persona with no entries at all draws nothing, which is the control for the finished worker's label", () => {
+  const body = card({
+    plans: [plan()],
+    personas: [persona({ name: "empty", worker: "idle 12m" })],
+  });
+
+  assert.deepEqual(projects(body), ["sapplefeld-channels"]);
+});
+
+test("a card built with no persona input at all is the project view on its own", () => {
+  // The helper above fills the key in every other test, so this is the one call where the
+  // renderer's optional input is genuinely absent. That is the shape a broker with a project list
+  // and no roster configured passes, and the branch it takes is reached from nowhere else here.
+  const body = renderBoardCard({
+    roots: [CHANNELS],
+    plans: [plan()],
+    failures: [],
+    truncated: [],
+    events: initialEventState(),
+    now: NOW,
+  });
+
+  assert.equal(
+    body,
+    card({ roots: [CHANNELS], plans: [plan()] }),
+    "an absent persona list composes the same bytes as an empty one",
+  );
+  assert.deepEqual(projects(body), ["sapplefeld-channels"]);
+});
+
+test("persona groups draw ahead of every project group", () => {
+  const body = card({
+    roots: [CHANNELS],
+    plans: [plan()],
+    personas: [
+      persona({
+        name: "dev-plugin",
+        total: 1,
+        entries: [entry({ title: "running", word: "in flight" })],
+      }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["dev-plugin · 0 of 1 done · idle", "sapplefeld-channels"]);
+});
+
+test("a persona name that neutralizes to nothing is named by its position in the roster", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "\u200b\u200b",
+        total: 1,
+        entries: [entry({ title: "running", word: "in flight" })],
+      }),
+    ],
+  });
+
+  assert.deepEqual(projects(body), ["persona 1 · 0 of 1 done · idle"]);
+});
+
+test("the counts on a label are bounded before they take the line", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "dev-plugin",
+        done: 1e9,
+        total: 1e9,
+        entries: [entry({ title: "running", word: "in flight" })],
+      }),
+    ],
+  });
+
+  assert.equal(
+    groups(body)[0]?.label,
+    `dev-plugin · ${MAX_DRAWN_SECTIONS} of ${MAX_DRAWN_SECTIONS} done · idle`,
+  );
+});
+
+test("a fleet too large for one message ends in the tail counting entries and whole groups", () => {
+  const PERSONAS = 12;
+  const DRAWN = 5;
+  const QUEUED = 4;
+  const ENTRIES = DRAWN + QUEUED;
+  const personas = Array.from({ length: PERSONAS }, (_, at) =>
+    persona({
+      name: `worker-${String(at).padStart(2, "0")}`,
+      total: ENTRIES,
+      worker: "idle 12m",
+      entries: [
+        ...Array.from({ length: DRAWN }, (_, index) =>
+          entry({
+            title: `a queue entry title long enough to fill its own bullet ${at}-${index}`,
+            word: index === 0 ? "in flight" : "blocked",
+            reason: "Waiting on an operator fork that has not been answered yet",
+            reading: { sections: 7, completed: index, next: "the next section of this plan", heldSince: null },
+          }),
+        ),
+        // Every group carries a queued tail, so its closing fold is one item standing for several
+        // entries. That fold is the only place this view charges more than one entry to one budget
+        // item, which makes it the one item whose own count the tail has to spend in full.
+        ...Array.from({ length: QUEUED }, (_, index) =>
+          entry({ title: `a queued entry of worker ${at}, number ${index}` }),
+        ),
+      ],
+    }),
+  );
+  const body = card({ personas });
+
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  const tail = body.split("\n").find((line) => line.includes("not shown")) ?? "";
+  assert.match(tail, /^\(\+\d+ plans, \+\d+ projects not shown\)$/, body);
+
+  const entriesLeft = Number(/\+(\d+) plans/.exec(tail)?.[1]);
+  const groupsLeft = Number(/\+(\d+) projects/.exec(tail)?.[1]);
+  // A fold carries no bullet of its own, so each one drawn stands here for the whole queued tail
+  // behind it, and each one the card stopped short of has to reach the tail as that many plans.
+  const folds = body.split("\n").filter((line) => line.startsWith("- then: ")).length;
+  const shown = bullets(body).filter((line) => line.startsWith("- **")).length + folds * QUEUED;
+  assert.ok(entriesLeft > 0, `the fixture has to be one that overflows: ${body}`);
+  assert.ok(
+    folds < PERSONAS,
+    `a fold has to go undrawn, or the count a fold carries is never what the tail spends: ${body}`,
+  );
+  assert.equal(
+    shown + entriesLeft,
+    PERSONAS * ENTRIES,
+    `every queue entry is either drawn or counted as a plan: ${body}`,
+  );
+  assert.equal(
+    groups(body).length + groupsLeft,
+    PERSONAS,
+    `every group is either drawn or counted as a project: ${body}`,
+  );
+  assert.match(body, /^card as of just now$/m, "the footer survives a card that ran out of room");
+});
+
+test("a label-only group at the stop position counts as one project and no plans", () => {
+  // A finished worker last in the fleet, so it is the group the budget reaches only after every
+  // other group has drawn whole: dropping it whole is what the tail has to report as one project
+  // and no plans, since its own group carries no item to spend a plan on.
+  const WORKER_ONE_ENTRIES = 30;
+  const PAD = 42;
+  const filled = (pad: number): string =>
+    card({
+      personas: [
+        persona({
+          name: "worker-one",
+          total: WORKER_ONE_ENTRIES,
+          worker: "idle 12m",
+          entries: Array.from({ length: WORKER_ONE_ENTRIES }, (_, index) =>
+            entry({
+              title: `queue entry ${String(index).padStart(2, "0")}${index === WORKER_ONE_ENTRIES - 1 ? "z".repeat(pad) : ""}`,
+              word: "blocked",
+              reason: "waiting on something",
+            }),
+          ),
+        }),
+        persona({
+          name: "worker-finished",
+          done: 2,
+          total: 2,
+          worker: "idle 12m",
+          entries: [entry({ title: "a", word: "done" }), entry({ title: "b", word: "done" })],
+        }),
+      ],
+    });
+
+  assert.doesNotMatch(filled(PAD - 1), /not shown/, "one byte under the boundary, both groups draw whole");
+  const body = filled(PAD);
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  assert.equal(
+    bullets(body).filter((line) => line.startsWith("- **queue entry")).length,
+    WORKER_ONE_ENTRIES,
+    `worker-one draws every entry; only the label-only group behind it is missing: ${body}`,
+  );
+  assert.equal(
+    body.split("\n").find((line) => line.includes("not shown")),
+    "(+1 project not shown)",
+    `a label-only group dropped whole carries no plan of its own, so the tail names only the project: ${body}`,
+  );
+});
+
+test("a finished worker's label-only item that is drawn spends none of the tail's plan count", () => {
+  // A group with no items to draw is still charged a synthetic item to carry its label through the
+  // budget loop (`card.ts`'s composed items array around line 1061). Placed here, worker-finished, is
+  // drawn (it fits), and worker-two's queue is what overflows behind it. The synthetic item is a
+  // finished worker's stand-in for a real plan, and it must cost the tail nothing: a card where
+  // worker-finished's own draw quietly spent one of worker-two's plans would report one fewer plan
+  // left than worker-two's queue actually holds.
+  const WORKER_TWO_ENTRIES = 40;
+  const body = card({
+    personas: [
+      persona({
+        name: "worker-finished",
+        done: 2,
+        total: 2,
+        worker: "idle 12m",
+        entries: [entry({ title: "a", word: "done" }), entry({ title: "b", word: "done" })],
+      }),
+      persona({
+        name: "worker-two",
+        total: WORKER_TWO_ENTRIES,
+        worker: "idle 12m",
+        entries: Array.from({ length: WORKER_TWO_ENTRIES }, (_, index) =>
+          entry({
+            title: `queue entry ${String(index).padStart(2, "0")} long enough to matter here`,
+            word: "blocked",
+            reason: "waiting on something",
+          }),
+        ),
+      }),
+    ],
+  });
+
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  assert.match(
+    body,
+    /^```\nworker-finished · 2 of 2 done · idle 12m\n```$/m,
+    `worker-finished draws its label, so the case this pins is the drawn one: ${body}`,
+  );
+  const shown = bullets(body).filter((line) => line.startsWith("- **queue entry")).length;
+  const tail = body.split("\n").find((line) => line.includes("not shown")) ?? "";
+  const left = Number(/\+(\d+) plans/.exec(tail)?.[1]);
+  assert.ok(left > 0, `worker-two's queue has to overflow, or nothing here exercises the tail: ${body}`);
+  assert.equal(
+    shown + left,
+    WORKER_TWO_ENTRIES,
+    `every entry of worker-two's queue is drawn or counted; worker-finished's drawn label adds neither: ${body}`,
   );
 });
 
@@ -844,6 +1655,28 @@ function adversarialCards(): string[] {
         plans: [
           plan({ root: hostile, stem: hostile, status: hostile, next: hostile }),
           plan({ root: CHANNELS, stem: `plan_${index}`, status: "Draft", next: hostile }),
+        ],
+        // A persona's name, its worker phrase, every entry title and every blocked reason are text
+        // out of a worker's own store, on the same footing as a plan doc's prose: the group is
+        // composed around all of them at once so the properties below cover the persona view too.
+        personas: [
+          persona({
+            name: hostile,
+            done: 1,
+            total: 4,
+            worker: hostile,
+            heldSince: NOW - 5 * MINUTE,
+            entries: [
+              entry({
+                title: hostile,
+                word: "in flight",
+                reading: { sections: 3, completed: 1, next: hostile, heldSince: null },
+              }),
+              entry({ title: hostile, word: "blocked", reason: hostile }),
+              entry({ title: hostile, word: "done" }),
+              entry({ title: hostile }),
+            ],
+          }),
         ],
         failures: [{ root: hostile, path: hostile, stem: hostile, reason: "malformed" }],
         truncated: [{ root: hostile, dropped: 3 }],
@@ -911,7 +1744,7 @@ test("a card stays inside one message however hostile its fields are", () => {
   }
 });
 
-test("what one render neutralizes is bounded by the intake caps, not by a plan file's size", () => {
+test("what one render neutralizes is bounded by the intake caps, not by a file's size", (t) => {
   // The card runs on a refresh timer on the broker's one event loop, and a plan doc's `Status:` and
   // `Next:` are single lines that can each carry the whole 256 KiB the reader's read cap allows. A
   // render whose cost followed those bytes would stall hook intake, heartbeats and the permission
@@ -951,6 +1784,44 @@ test("what one render neutralizes is bounded by the intake caps, not by a plan f
     63 * 1_024,
     "what the cut walks is measured before the cut, so the gate above can see it",
   );
+
+  // The persona view takes the same reading, against the other reader's caps. A queue entry's title
+  // is a value out of a worker's own store, and nothing this card does bounds it: the bound is the
+  // queue reader's, applied once when the store file moves, where this render runs on every tick.
+  // So the fixture is driven through that reader rather than hand-written, because a group assembled
+  // around a title the reader never bounded would assert this against a shape the broker never
+  // renders.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-card-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fleetUnits = (size: number): number => {
+    writeFileSync(
+      path.join(dir, STORE_FILE_NAME),
+      JSON.stringify({
+        "dev-plugin": {
+          goals: [
+            { id: "e1", kind: "plan", title: "t".repeat(size), status: "paused", sortKey: 1 },
+          ],
+          activeGoalId: "e1",
+        },
+      }),
+      "utf8",
+    );
+    // A reader of its own per call, so the store's own hold never hands the second call the first
+    // call's reading, and the join stats nothing.
+    const [queue] = createQueueReader({ statPlan: () => null }).read([
+      { name: "dev-plugin", workdir: dir },
+    ]);
+    assert.ok(queue, "the reader returns a queue for the persona the store is keyed by");
+    fieldUnitsNeutralized.count = 0;
+    card({ personas: [personaGroup(queue, personaStatus(queue, initialEventState(), NOW))] });
+    return fieldUnitsNeutralized.count;
+  };
+
+  const narrow = fleetUnits(64 * 1024);
+  const wide = fleetUnits(512 * 1024);
+
+  assert.ok(narrow > 0, "the counter has to be reached on the persona path too");
+  assert.equal(wide, narrow, `${narrow} units at a 64 KiB title, ${wide} at a 512 KiB one`);
 });
 
 test("a Next: value past the card's own cap is cut with a mark rather than silently shortened", () => {
