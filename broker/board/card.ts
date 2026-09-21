@@ -883,14 +883,15 @@ function foldedLine(queued: readonly BoardPersonaEntry[]): BlockItem | null {
 /**
  * Whether a worker's group puts anything on the card.
  *
- * Every word but `done` draws a line, as a full entry or as a name on the closing fold, so a group
- * whose queue is empty or finished is the one that draws nothing: this card does not stand a label
- * over an empty list. Asked here rather than counted off the composed lines, because the footer
- * needs the same answer before a line is composed and two spellings of it would let the card report
- * an age for a group nobody can see.
+ * A group with any entry draws its label, and a group with none draws nothing. A done entry draws no
+ * line of its own, so a worker whose every entry is done draws its label and nothing under it: that
+ * label is the one place the operator can read whether a finished worker is idle, running, or
+ * holding a stale reading, which the count alone cannot say. Asked here rather than counted off the
+ * composed lines, because the footer needs the same answer before a line is composed and two
+ * spellings of it would let the card report an age for a group nobody can see.
  */
 function drawsGroup(group: BoardPersona): boolean {
-  return group.entries.some((item) => item.word !== "done");
+  return group.entries.length > 0;
 }
 
 /**
@@ -904,9 +905,9 @@ function drawsGroup(group: BoardPersona): boolean {
  * reach them in.
  *
  * A done entry draws no line. It is counted in the label, which is where a finished plan is worth a
- * figure and not a bullet, and a group of nothing but done entries draws nothing at all: this card
- * does not stand a label over an empty list, the same rule that leaves a configured root whose plans
- * are all terminal undrawn.
+ * figure and not a bullet. A group with entries always draws its label, so a worker whose every
+ * entry is done draws a label over no items: the counts and the worker's state are what that label
+ * still says. A group with no entries draws nothing.
  */
 function personaSections(groups: readonly BoardPersona[], now: number): ProjectSection[] {
   return groups.flatMap((group, index) => {
@@ -947,13 +948,14 @@ function personaSections(groups: readonly BoardPersona[], now: number): ProjectS
  * marker saying so: the footer is the one line on the card that can.
  *
  * What would draw under the layout counts, budget aside. A terminal plan, a done entry and a group
- * of nothing but done entries each draw nothing, so a held reading of one is information no reader
- * is looking at, and letting it age the footer would put an hours-old stamp under a card every
- * visible line of which was read this tick. The footer runs before composition, so an entry the
- * overflow tail swallows still ages it: what counts is what the layout would draw, not what the
- * budget left room for. In the two persona folds, a hold instant that names no time counts as
- * nothing too, which keeps the line an age rather than a figure of `NaN`, and costs only the marker
- * the group's own label already leaves off.
+ * with no entries each draw nothing, so a held reading of one is information no reader is looking
+ * at, and letting it age the footer would put an hours-old stamp under a card every visible line of
+ * which was read this tick. A group of nothing but done entries draws its label, so its held store
+ * reading counts while its done entries' held parses do not. The footer runs before composition,
+ * so an entry the overflow tail swallows still ages it: what counts is what the layout would draw,
+ * not what the budget left room for. In the two persona folds, a hold instant that names no time
+ * counts as nothing too, which keeps the line an age rather than a figure of `NaN`, and costs only
+ * the marker the group's own label already leaves off.
  */
 function footerLine(
   plans: readonly BoardPlan[],
@@ -994,8 +996,9 @@ function footerLine(
  * so both survive a card that ran out of room, and every stop draws the tail naming how many plans
  * and how many whole projects are missing. A project's label, and the blank line that closes the
  * list above it, are spent together with its first item: a label standing over an empty list is what
- * a budget spent line by line would leave behind. Every blank line the shape requires is charged the
- * same way, because a line the card emits costs its newline whether or not it carries text.
+ * a budget spent line by line would leave behind. The one label that stands alone by design, a
+ * finished worker's, is spent on its own. Every blank line the shape requires is charged the same
+ * way, because a line the card emits costs its newline whether or not it carries text.
  *
  * `events` is read for its `latest` map alone; the offset and the malformed tally are the reader's
  * own bookkeeping and nothing on the card is drawn from them.
@@ -1053,7 +1056,10 @@ export function renderBoardCard(input: {
   for (const [index, group] of groups.entries()) {
     const shown: string[] = [];
     let stopped = false;
-    for (const item of group.items) {
+    // A finished worker's group is its label and nothing under it, so an empty item carries the
+    // label through the same charge every other label rides in on with its first item.
+    const items = group.items.length === 0 ? [{ lines: [], plans: 0 }] : group.items;
+    for (const item of items) {
       const opening = shown.length === 0 ? [PROJECT_GAP, group.label] : [];
       const cost = spent([...opening, ...item.lines]);
       // The tail's room is reserved against every item, the last included: one rule with no branch

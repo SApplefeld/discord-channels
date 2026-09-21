@@ -622,10 +622,11 @@ roster persona's store and heartbeat, all written by other programs. It renders 
 the channel where approvals are answered. Four properties bound what that content can do.
 
 The first is that a path comes only from configuration, with one bounded exception. The configured
-roots and the roster's path are path inputs, from the access-controlled `broker.env`. A roster
-entry's `workdir` is trusted as configuration too, because the operator writes the roster and its
-location comes from the broker's own settings. The roster is an ordinary file any process running as
-the operator can rewrite, though, so a `workdir` is held to a narrower rule than a configured root.
+roots (`CHANNEL_BOARD_PROJECTS`) and the roster's path (`CHANNEL_BOARD_ROSTER`) are path inputs,
+from the access-controlled `broker.env`. A roster entry's `workdir` is trusted as configuration too,
+because the operator writes the roster and its location comes from the broker's own settings. The
+roster is an ordinary file any process running as the operator can rewrite, though, so a `workdir`
+is held to a narrower rule than a configured root.
 It must be an absolute local folder, and a UNC share is refused, so a rewritten roster cannot name
 an SMB share outright. No field of a plan document or an event is ever used as a path. The
 sweep's single join is a root with a directory entry's own name, which cannot contain a
@@ -640,12 +641,13 @@ is then looked for in exactly four folders under that persona's own `workdir`: `
 are the whole of the join. A crafted `planPath` such as `..\..\secret.md` reduces to `secret.md`
 inside those folders, and no path outside the `workdir` is ever named. The bound is on the name:
 the join's stat follows a symbolic link, so a link planted at one of those four places, or a
-`workdir` that is itself a link, opens whatever it points at. That is accepted rather than guarded,
-because whoever can plant the link in the persona's tree can plant the content there. What a
-crafted name can reach is a plan-shaped file, drawn as a title, a count and a next step. The
-operator sized that risk as small, since the card posts to a private server seen only by them. So
-the guard is kept because it is nearly free, and it carries no raised review on security grounds
-alone.
+`workdir` that is itself a link, opens whatever it points at, a share included: the UNC refusal
+bounds the roster's own text and not the filesystem beneath it. That is accepted rather than
+guarded, because whoever can plant the link in the persona's tree can plant the content there, and
+can open the share themselves. What a crafted name can reach is a plan-shaped file, drawn under the
+store's own title as a section count and, on the entry in flight, its next step. The operator sized
+that risk as small, since the card posts to a private server seen only by them. So the guard is kept
+because it is nearly free, and it carries no raised review on security grounds alone.
 
 The second is that roots are matched as strings, separator-normalized and case-folded on Windows,
 never by asking the filesystem whether two paths name the same place, and both readers fold through
@@ -662,7 +664,8 @@ persona's name from the roster. A root placed at or one level under a home direc
 the account name into the channel, and that is the operator's choice of root rather than a property
 the card can fix.
 
-The card's body is live markdown apart from the one-line fence naming each project, so a field takes
+The card's body is live markdown apart from the one-line fence naming each group, a persona's or a
+project's, so a field takes
 whichever of the two escapes matches where it lands. Every field on a body line, which is every
 filename, status, `Next:` value, queue entry title and blocked reason, takes the full markdown escape, the same control the question
 messages and the downgrade notices render their text through. That escape covers every

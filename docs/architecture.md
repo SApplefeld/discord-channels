@@ -552,8 +552,11 @@ then looked for in exactly four folders under that persona's `workdir`: `docs/pl
 `docs/archive/plans/`, `docs/archive/` and `docs/plans/archive/`. A name found only in an archive
 folder marks the entry done and is never opened. The event reader is handed the configured roots
 first and the personas' working folders after them. It drops an event whose project matches no root
-it holds, so a change in that set of roots resets the reader and the stream is read again from its
-start. Roots are compared as strings,
+it holds, so a change in that set of roots resets the reader's offset and the stream is read again
+from its start. The reset keeps the markers the reader already holds, since a line the kit has
+rotated out can be found nowhere else, and the reset tick drains up to nine 128 KiB windows in one
+pass, past the kit's 1 MB rotation point, so a persona's block recorded before it was enabled draws
+on the first tick after. Roots are compared as strings,
 separator-normalized and case-folded on Windows, never by asking the filesystem whether two paths name
 the same place, and the configured spelling and the folded form come from one shared normalizer so
 the two readers cannot disagree about which root an event belongs to.
@@ -606,13 +609,14 @@ Markdown wraps at word boundaries with a hanging indent instead, so a long fact 
 rather than an ellipsis, and the sections count carries progress on its own, where a bar renders as
 blank space at zero and tiles by font.
 
-Each project is named by a one-line fence rather than a heading, which is the one fenced thing on
-the card. A fence draws as a full-width shaded box, and that box is what makes one project's list
-stop and the next start at a glance, which is the boundary a reader scrolls the card by. Nothing is
-aligned inside it, so the width bound the tabular cards pad to does not apply: the label is free
-text in a box with no grid to break, and a name past the reader's window wraps inside the box rather
-than being cut. That is why `MAX_PROJECT_LABEL_LENGTH` (60) is the card's own cap and not
-`MAX_BLOCK_WIDTH`, since a truncated directory name is a project the operator cannot recognize.
+Each group, a persona's or a project's, is named by a one-line fence rather than a heading, and
+those labels are the only fenced lines on the card. A fence draws as a full-width shaded box, and
+that box is what makes one group's list stop and the next start at a glance, which is the boundary
+a reader scrolls the card by. Nothing is aligned inside it, so the width bound the tabular cards pad
+to does not apply: the label is free text in a box with no grid to break, and a name past the
+reader's window wraps inside the box rather than being cut. That is why `MAX_PROJECT_LABEL_LENGTH`
+(60) and `MAX_PERSONA_NAME_LENGTH` (60) are the card's own caps and not `MAX_BLOCK_WIDTH`, since a
+truncated directory name is a project the operator cannot recognize.
 
 The two positions take two different escapes. Every field on a body line takes the full markdown
 neutralization, and the bound handed to that escape is each field's own cap times two rather than
@@ -712,9 +716,9 @@ The board card's plan list is the exception, and the reason is what its content 
 aligned columns with a hard width, which is the right trade for numbers and the wrong one for prose:
 that card's fields are a plan's name and a sentence about its state, neither of which fits a phone's
 column bound, so a fence cuts them where a list wraps them. Those draw in live markdown, because the
-alternative is an ellipsis in the middle of every fact worth reading. The card's one fence is the
-project label, which aligns with nothing, so `MAX_BLOCK_WIDTH` is what the genuinely tabular cards
-pad to and it bounds nothing on the board.
+alternative is an ellipsis in the middle of every fact worth reading. The card's only fences are
+the group labels, a persona's or a project's, which align with nothing, so `MAX_BLOCK_WIDTH` is what
+the genuinely tabular cards pad to and it bounds nothing on the board.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it

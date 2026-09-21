@@ -233,8 +233,9 @@ function accumulate(count: number, last: number | null, at: number, windowMs: nu
 
 /**
  * Whether this tick is handing the event reader the same root list, in the same order, as the last
- * tick did. `null` never matches, which is what makes the first tick's own reset a no-op: the reader
- * already starts at `initialEventState()`.
+ * tick did. `null` never matches, so the first tick is a reset tick like any other: it drains up to
+ * `EVENT_DRAIN_WINDOWS` windows in one pass, and the reset itself costs nothing there since the
+ * reader already starts at `initialEventState()`.
  *
  * The event reader is incremental and drops an event whose project matches none of the roots it was
  * handed at the moment that event's line was read, so a persona enabled after that line was consumed

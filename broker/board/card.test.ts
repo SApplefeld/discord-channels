@@ -128,12 +128,17 @@ function facts(rendered: string): string[] {
 }
 
 /** Every project's fenced label on the card, its one content line, in the order the card draws
- * them. A label is a fence exactly three lines wide, so its content sits between two delimiters. */
+ * them. A label is a fence exactly three lines wide, so its content sits between two delimiters, and
+ * its opening delimiter follows the blank line that closes whatever stands above it. That blank line
+ * is what tells an opening delimiter from the closing one of a label-only group, which is itself
+ * followed by a blank line and the next label's delimiter two lines on. */
 function projects(rendered: string): string[] {
   const lines = rendered.split("\n");
   const names: string[] = [];
   for (const [at, line] of lines.entries()) {
-    if (line === "```" && lines[at + 2] === "```") names.push(lines[at + 1] ?? "");
+    if (line === "```" && lines[at - 1] === "" && lines[at + 2] === "```") {
+      names.push(lines[at + 1] ?? "");
+    }
   }
   return names;
 }
@@ -732,22 +737,35 @@ test("the blank lines the list shape needs are charged against the budget like a
   // blank line before its footer. Budget arithmetic that measured only the lines carrying text
   // would run the card past the message ceiling at exactly the fill where it matters, so every
   // count of projects up to a card that overflows is walked here rather than one chosen fill.
-  // Every project the card draws is a label over at least one bullet; no blank line falls inside a
-  // project's list, where it would end the list and restart it; and every line that follows a list,
-  // the overflow tail included, is held off it by a blank line of its own. Answers whether this card
-  // is one that ran out of room, so the walk can be held to covering that shape too.
+  // Every project the card draws is a label over at least one bullet, and the one label that stands
+  // over no bullet is a finished worker's, whose group is its label alone; no blank line falls
+  // inside a project's list, where it would end the list and restart it; and every line that follows
+  // a list, the overflow tail included, is held off it by a blank line of its own. Answers whether
+  // this card is one that ran out of room, so the walk can be held to covering that shape too.
   const walk = (body: string, what: string): boolean => {
     assert.ok(body.length <= MAX_CARD_LENGTH, `${what} composes ${body.length} units`);
     const lines = body.split("\n");
     for (const [at, line] of lines.entries()) {
       // A project's label is a fence: its opening delimiter sits right after the blank line that
-      // closes the project above it, and its closing delimiter is followed by the first bullet.
+      // closes the project above it, and its closing delimiter is followed by the first bullet, or
+      // by the blank line that closes a label-only persona group.
       if (line === "```" && lines[at - 1] === "") {
         assert.equal(lines[at + 2], "```", `a project's fence is exactly three lines: ${body}`);
+        // The one label allowed to stand over nothing is a finished worker's: `drawsGroup` in
+        // card.ts draws every group with entries, and a done entry draws no line of its own, so a
+        // worker whose every entry is done draws a label with an empty list under it. That label
+        // reads `N of N done`, the one count pair no other group in this fill can carry: an ordinary
+        // worker here is mid-queue and so counts fewer done than total, and a project's label never
+        // carries a done count at all. A regression that let an ordinary label stand over nothing
+        // (a worker with entries left to draw, or a project) would pass a rule that only checked for
+        // any blank line, so the two shapes are told apart on the label's own text rather than on
+        // position.
+        const label = lines[at + 1] ?? "";
+        const finishedWorker = /(\d+) of \1 done/.test(label);
         assert.match(
           lines[at + 3] ?? "",
-          /^- /,
-          `no fence stands over an empty list: ${body}`,
+          finishedWorker ? /^(- |$)/ : /^- /,
+          `a fence is followed by its first bullet, or by nothing when its label (${label}) is a finished worker's: ${body}`,
         );
       }
       if (line === "") {
@@ -793,24 +811,35 @@ test("the blank lines the list shape needs are charged against the budget like a
       })),
     });
     // The third fill is the persona view at the same widths, which spends the budget ahead of the
-    // projects and so is where an uncharged line first pushes the card past the ceiling.
+    // projects and so is where an uncharged line first pushes the card past the ceiling. It opens
+    // on a finished worker, whose group is a label and nothing under it: the one group the budget
+    // charges with no item to carry the label, so its blank line is walked here too.
     const fleet = card({
-      personas: Array.from({ length: count }, (_, index) =>
+      personas: [
         persona({
-          name: `worker-${String(index).padStart(2, "0")}`,
-          total: 3,
+          name: "worker-finished",
+          done: 2,
+          total: 2,
           worker: "idle 12m",
-          entries: [
-            entry({
-              title: `a queue entry title long enough to fill its own bullet ${index}`,
-              word: "in flight",
-              reading: { sections: 7, completed: 2, next: "the next section of this plan", heldSince: null },
-            }),
-            entry({ title: `a blocked entry of worker ${index}`, word: "blocked", reason: "Waiting on an operator fork" }),
-            entry({ title: `a queued entry of worker ${index}` }),
-          ],
+          entries: [entry({ title: "a done entry", word: "done" }), entry({ title: "another", word: "done" })],
         }),
-      ),
+        ...Array.from({ length: count }, (_, index) =>
+          persona({
+            name: `worker-${String(index).padStart(2, "0")}`,
+            total: 3,
+            worker: "idle 12m",
+            entries: [
+              entry({
+                title: `a queue entry title long enough to fill its own bullet ${index}`,
+                word: "in flight",
+                reading: { sections: 7, completed: 2, next: "the next section of this plan", heldSince: null },
+              }),
+              entry({ title: `a blocked entry of worker ${index}`, word: "blocked", reason: "Waiting on an operator fork" }),
+              entry({ title: `a queued entry of worker ${index}` }),
+            ],
+          }),
+        ),
+      ],
     });
     overflowed = walk(card({ plans }), `${count} projects`) || overflowed;
     overflowed = walk(thin, `${count * 8} one-bullet projects`) || overflowed;
@@ -962,12 +991,13 @@ function persona(overrides: Partial<BoardPersona> & { name: string }): BoardPers
   return { entries: [], done: 0, total: 0, worker: "idle", heldSince: null, ...overrides };
 }
 
-/** Every fenced label on the card paired with the bullets drawn under it, in card order. */
+/** Every fenced label on the card paired with the bullets drawn under it, in card order. A label
+ * opens on the delimiter that follows a blank line, as `projects` above reads it. */
 function groups(rendered: string): { label: string; lines: string[] }[] {
   const lines = rendered.split("\n");
   const found: { label: string; lines: string[] }[] = [];
   for (const [at, line] of lines.entries()) {
-    if (line !== "```" || lines[at + 2] !== "```") continue;
+    if (line !== "```" || lines[at - 1] !== "" || lines[at + 2] !== "```") continue;
     const drawnLines: string[] = [];
     for (let read = at + 3; read < lines.length; read += 1) {
       const line = lines[read] ?? "";
@@ -1055,10 +1085,14 @@ test("a store instant that names no time leaves the footer an age rather than Na
   assert.match(body, /^card as of 4m ago$/m, "an instant naming no time ages the footer by nothing");
 });
 
-test("a persona group that draws nothing ages the footer no more than a hidden plan does", () => {
-  const body = card({
+test("a held store reading ages the footer only through a group the card draws, a finished worker's label included", () => {
+  const empty = card({
+    personas: [persona({ name: "empty", heldSince: NOW - 3 * HOUR })],
+    plans: [plan()],
+    roots: [CHANNELS],
+  });
+  const finished = card({
     personas: [
-      persona({ name: "empty", heldSince: NOW - 3 * HOUR }),
       persona({
         name: "finished",
         done: 2,
@@ -1071,7 +1105,9 @@ test("a persona group that draws nothing ages the footer no more than a hidden p
     roots: [CHANNELS],
   });
 
-  assert.match(body, /^card as of just now$/m);
+  assert.match(empty, /^card as of just now$/m, "a group with no entries draws nothing and ages nothing");
+  assert.equal(groups(finished)[0]?.label, "finished · 2 of 2 done · idle · held 3h 0m");
+  assert.match(finished, /^card as of 3h ago$/m, "a drawn label reading held ages the footer to match");
 });
 
 /** The reference queue with one entry's plan reading replaced by a hold stamped at `heldSince`. */
@@ -1097,7 +1133,7 @@ test("the footer is as old as a held plan parse behind a drawn entry, and the en
   );
 });
 
-test("a held parse behind an entry the card does not draw ages the footer by nothing", () => {
+test("a held parse behind a done entry ages the footer by nothing, under a drawn label or not", () => {
   const done = referenceQueue();
   const doneReadings = new Map(done.readings);
   doneReadings.set(
@@ -1125,7 +1161,7 @@ test("a held parse behind an entry the card does not draw ages the footer by not
   });
 
   assert.match(onDone, /^card as of just now$/m, "a done entry's held parse ages nothing");
-  assert.match(onUndrawn, /^card as of just now$/m, "an undrawn group's held parse ages nothing");
+  assert.match(onUndrawn, /^card as of just now$/m, "a done entry's held parse under a label-only group ages nothing");
 });
 
 test("a plan hold instant that names no time leaves the footer an age rather than NaN", () => {
@@ -1278,18 +1314,60 @@ test("a title and a reason out of a worker's store are cut with a mark rather th
   ]);
 });
 
-test("a persona with nothing left to draw takes no label at all", () => {
+test("a persona whose every entry is done draws its label alone, so the worker's own state stays readable", () => {
   const body = card({
     plans: [plan()],
     personas: [
-      persona({ name: "empty" }),
       persona({
         name: "finished",
         done: 2,
         total: 2,
+        worker: "idle 12m",
         entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
       }),
     ],
+  });
+
+  assert.deepEqual(projects(body), ["finished · 2 of 2 done · idle 12m", "sapplefeld-channels"]);
+  assert.deepEqual(groups(body)[0]?.lines, [], "no bullet stands under a finished worker's label");
+  const lines = body.split("\n");
+  const label = lines.indexOf("finished · 2 of 2 done · idle 12m");
+  assert.deepEqual(
+    lines.slice(label + 1, label + 4),
+    ["```", "", "```"],
+    "the next group opens right after the blank line that closes the label-only group",
+  );
+});
+
+test("a lone finished worker with nothing else configured ends the card on its own label, not the empty-card line", () => {
+  const body = card({
+    personas: [
+      persona({
+        name: "finished",
+        done: 2,
+        total: 2,
+        worker: "idle 12m",
+        entries: [entry({ title: "one", word: "done" }), entry({ title: "two", word: "done" })],
+      }),
+    ],
+  });
+
+  assert.doesNotMatch(
+    body,
+    /No open plans in the configured projects\./,
+    "a finished worker's label is something to draw, so the card is not the empty-projects one",
+  );
+  assert.deepEqual(
+    body.split("\n").slice(-3),
+    ["```", "", "card as of just now"],
+    "the body ends on the label's closing fence, one blank line, then the footer: no items, no other group",
+  );
+});
+
+test("a persona with no entries at all draws nothing, which is the control for the finished worker's label", () => {
+  const body = card({
+    plans: [plan()],
+    personas: [persona({ name: "empty", worker: "idle 12m" })],
   });
 
   assert.deepEqual(projects(body), ["sapplefeld-channels"]);
@@ -1420,6 +1498,101 @@ test("a fleet too large for one message ends in the tail counting entries and wh
     `every group is either drawn or counted as a project: ${body}`,
   );
   assert.match(body, /^card as of just now$/m, "the footer survives a card that ran out of room");
+});
+
+test("a label-only group at the stop position counts as one project and no plans", () => {
+  // A finished worker last in the fleet, so it is the group the budget reaches only after every
+  // other group has drawn whole: dropping it whole is what the tail has to report as one project
+  // and no plans, since its own group carries no item to spend a plan on.
+  const WORKER_ONE_ENTRIES = 30;
+  const PAD = 42;
+  const filled = (pad: number): string =>
+    card({
+      personas: [
+        persona({
+          name: "worker-one",
+          total: WORKER_ONE_ENTRIES,
+          worker: "idle 12m",
+          entries: Array.from({ length: WORKER_ONE_ENTRIES }, (_, index) =>
+            entry({
+              title: `queue entry ${String(index).padStart(2, "0")}${index === WORKER_ONE_ENTRIES - 1 ? "z".repeat(pad) : ""}`,
+              word: "blocked",
+              reason: "waiting on something",
+            }),
+          ),
+        }),
+        persona({
+          name: "worker-finished",
+          done: 2,
+          total: 2,
+          worker: "idle 12m",
+          entries: [entry({ title: "a", word: "done" }), entry({ title: "b", word: "done" })],
+        }),
+      ],
+    });
+
+  assert.doesNotMatch(filled(PAD - 1), /not shown/, "one byte under the boundary, both groups draw whole");
+  const body = filled(PAD);
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  assert.equal(
+    bullets(body).filter((line) => line.startsWith("- **queue entry")).length,
+    WORKER_ONE_ENTRIES,
+    `worker-one draws every entry; only the label-only group behind it is missing: ${body}`,
+  );
+  assert.equal(
+    body.split("\n").find((line) => line.includes("not shown")),
+    "(+1 project not shown)",
+    `a label-only group dropped whole carries no plan of its own, so the tail names only the project: ${body}`,
+  );
+});
+
+test("a finished worker's label-only item that is drawn spends none of the tail's plan count", () => {
+  // A group with no items to draw is still charged a synthetic item to carry its label through the
+  // budget loop (`card.ts`'s composed items array around line 1061). Placed here, worker-finished, is
+  // drawn (it fits), and worker-two's queue is what overflows behind it. The synthetic item is a
+  // finished worker's stand-in for a real plan, and it must cost the tail nothing: a card where
+  // worker-finished's own draw quietly spent one of worker-two's plans would report one fewer plan
+  // left than worker-two's queue actually holds.
+  const WORKER_TWO_ENTRIES = 40;
+  const body = card({
+    personas: [
+      persona({
+        name: "worker-finished",
+        done: 2,
+        total: 2,
+        worker: "idle 12m",
+        entries: [entry({ title: "a", word: "done" }), entry({ title: "b", word: "done" })],
+      }),
+      persona({
+        name: "worker-two",
+        total: WORKER_TWO_ENTRIES,
+        worker: "idle 12m",
+        entries: Array.from({ length: WORKER_TWO_ENTRIES }, (_, index) =>
+          entry({
+            title: `queue entry ${String(index).padStart(2, "0")} long enough to matter here`,
+            word: "blocked",
+            reason: "waiting on something",
+          }),
+        ),
+      }),
+    ],
+  });
+
+  assert.ok(body.length <= MAX_CARD_LENGTH, `${body.length} units`);
+  assert.match(
+    body,
+    /^```\nworker-finished · 2 of 2 done · idle 12m\n```$/m,
+    `worker-finished draws its label, so the case this pins is the drawn one: ${body}`,
+  );
+  const shown = bullets(body).filter((line) => line.startsWith("- **queue entry")).length;
+  const tail = body.split("\n").find((line) => line.includes("not shown")) ?? "";
+  const left = Number(/\+(\d+) plans/.exec(tail)?.[1]);
+  assert.ok(left > 0, `worker-two's queue has to overflow, or nothing here exercises the tail: ${body}`);
+  assert.equal(
+    shown + left,
+    WORKER_TWO_ENTRIES,
+    `every entry of worker-two's queue is drawn or counted; worker-finished's drawn label adds neither: ${body}`,
+  );
 });
 
 // Filenames, statuses and `Next:` prose are model-written text out of another program's files, and

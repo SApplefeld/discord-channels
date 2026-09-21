@@ -125,9 +125,11 @@ export type BrokerConfig = {
    * this order, and this order is what settles every project the touch order leaves unsettled: two
    * roots whose newest plan moved at the same instant, two with no plan the card can date at all,
    * and where a root that is not on this list sits among the ones that are. Configuration and never
-   * derived: the card reads `docs/plans` directly under each of these and nothing else, and no value
-   * out of any file it reads is ever used as a path. Empty roots leave the folder view off; the card
-   * still builds when the roster path names a fleet roster, since either source alone is enough.
+   * derived: the card reads `docs/plans` directly under each of these and nothing else, and the
+   * folder view never uses a value out of any file it reads as a path. The roster join is the one
+   * view that does, under the rule `boardRosterPath` below states. Empty roots leave the folder
+   * view off; the card still builds when the roster path names a fleet roster, since either source
+   * alone is enough.
    */
   boardProjects: readonly string[];
   /** How often the fleet is re-swept and re-rendered. An edit is spent only when it changed. */

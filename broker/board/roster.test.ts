@@ -70,12 +70,23 @@ test("a truthy but non-boolean enabled value is refused, not treated as on", (t)
   assert.deepEqual(createRosterReader(roster.file).read(), []);
 });
 
-test("a relative workdir yields no persona and does not throw", (t) => {
+test("a workdir that is not rooted on a drive yields no persona and does not throw", (t) => {
   const roster = rosterFile();
   t.after(roster.cleanup);
-  roster.write(JSON.stringify([entry({ workdir: "relative\\path" })]));
+  // The first two are relative in every reading. The rooted, drive-less pair are the withheld
+  // members: `path.isAbsolute` accepts them on Windows, where they resolve against whichever drive
+  // the broker was launched from, and only the guard's own drive-letter rule refuses them.
+  const unrootedWorkdirs = ["relative\\path", "personas/worker", "\\personas\\worker", "/personas/worker"];
 
-  assert.deepEqual(createRosterReader(roster.file).read(), []);
+  for (const unrootedWorkdir of unrootedWorkdirs) {
+    // Control: the guard the roster reader applies refuses each on its own, and accepts the drive
+    // rooted form the rest of this file writes, so a guard reduced to `path.isAbsolute` turns this red.
+    assert.equal(namesOneLocalDirectory(unrootedWorkdir), false, `the guard refuses ${unrootedWorkdir}`);
+    roster.write(JSON.stringify([entry({ workdir: unrootedWorkdir })]));
+
+    assert.deepEqual(createRosterReader(roster.file).read(), [], `no persona for ${unrootedWorkdir}`);
+  }
+  assert.equal(namesOneLocalDirectory("D:\\personas\\worker"), true);
 });
 
 test("a missing name yields no persona and does not throw", (t) => {

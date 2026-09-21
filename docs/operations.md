@@ -447,8 +447,10 @@ view off.
 `D:\personas\fleet.json`. The card reads three fields of each entry: `name`, `workdir` and
 `enabled`. An entry counts only when `enabled` is exactly `true`, its name is not already taken by
 an earlier entry, and its `workdir` is an absolute local folder. A UNC share is refused there, even
-though a project root may name one. At most **16** personas are drawn, in roster order. A value that
-is not absolute stops the broker at load, and the message does not echo the path.
+though a project root may name one. At most **16** personas are drawn, in roster order. A roster
+path that is not absolute stops the broker at load with `CHANNEL_BOARD_ROSTER expects an absolute
+path, the value names no fixed file`, which does not echo the value. The setting itself is held to
+the project-root rule, so a UNC roster path is accepted as any other `broker.env` path is.
 
 For each persona the card reads the persona plugin's store, `.agentic-personas.json`, and its
 heartbeat, `.agentic-heartbeat.json`, both in that `workdir`. It then finds the plan document behind
@@ -467,14 +469,16 @@ Each entry draws one plain word, and none of them is the persona plugin's own st
 
 | Word | Means |
 |---|---|
-| in progress | The entry being worked. Its plan is `In Progress` with the newest document, or the store names it active when no plan is started. It also carries the plan's latest `next:` step |
+| in progress | The entry being worked. Its plan is `In Progress` with the newest document, or, when no unplaced entry has a started plan, the entry the store names active. It also carries the plan's latest `next:` step |
 | up next | The first entry in queue order not otherwise placed. The worker will reach it next |
 | started, parked | Its plan is `In Progress`, but another entry is the one in flight |
 | blocked | A kit blocked event is outstanding for its plan, the entry's lead says blocked, or the store holds a real block. The worker's reason draws beside it when the lead or the store gave one |
 | stalled | The worker paused it after running out of nudges |
 | then: | Every other queued entry, folded into one closing line of titles |
 
-A done entry draws no line and is counted in the label. A store block reading `Max rounds reached`
+A done entry draws no line and is counted in the label, and a worker whose every entry is done
+still draws its label, with its count and its state and nothing beneath it, so a finished worker can
+be told from one that has left the roster. A store block reading `Max rounds reached`
 is the plugin's bookkeeping rather than a block, so that entry is judged like any other. A paused
 entry is judged like any other too, because the plugin's "paused" means "not now": with no plan
 started it reads `up next` or sits in the `then:` line, and with an `In Progress` plan it reads
@@ -482,10 +486,22 @@ started it reads `up next` or sits in the `then:` line, and with an `In Progress
 out of total, such as `2/3`.
 
 The store is written whole with no lock, so a read can land mid-write. A store that fails to read
-keeps its last good reading, and the label ends `held 5m`, with an age that climbs. The card's
-closing freshness line ages with it. An entry's plan document that fails to read or parse keeps its
-last parse the same way, and the closing line ages with the instant that parse was last read. The
-entry itself carries no marker.
+or parse keeps its last good reading, and the label ends `held 5m`, with an age that climbs. The
+card's closing freshness line ages with it. An entry's plan document that fails to read or parse
+keeps its last parse the same way, and the closing line ages with the instant that parse was last
+read. The entry itself carries no marker. The roster is held the same way: a roster that stops
+reading, or is deleted, keeps its last personas until the roster is rewritten with no enabled
+entries or as something other than a JSON array, or the setting is cleared and the broker
+restarted, so removing the file is not a way to switch the persona view off.
+
+Each of those failures is logged once per change rather than every tick, and never with a path.
+The roster logs `fleet roster: unreadable, keeping the last good reading`, with `oversized` or
+`unparseable` in place of `unreadable`, and `fleet roster: not an array, no personas read this
+tick`. A store or heartbeat logs `fleet queue: persona store unparseable, keeping the last good
+reading` on the same pattern, with `worker heartbeat` for the other file and `nothing read this
+tick` where nothing is held. A roster naming more than **16** enabled personas logs how many it
+dropped. A card with nothing to draw in either view reads `No open plans in the configured
+projects.`, and it says that whether the roster, the project roots or both are configured.
 
 ### The folder view
 

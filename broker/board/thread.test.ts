@@ -1605,7 +1605,7 @@ test("the default readers, driven from real files, join a roster and a store wit
   // The absence check this test rests on: none of the store's own words reaches the posted body.
   const assertNoBannedWords = (body: string): void => {
     for (const word of ["paused", "pending", "Max rounds"]) {
-      assert.doesNotMatch(body, new RegExp(word), `the store's own word "${word}" must not reach the card`);
+      assert.doesNotMatch(body, new RegExp(word, "i"), `the store's own word "${word}" must not reach the card`);
     }
   };
 
@@ -1626,6 +1626,8 @@ test("the default readers, driven from real files, join a roster and a store wit
 
   // The withheld control: the same helper must refuse a body that does carry a banned word, which is
   // what proves the silence over the real body above means the words are absent rather than that the
-  // check never ran.
+  // check never ran. The capitalised form is the second control, since the card draws its own text
+  // in sentence case and a check that read only the lower-case word would let that spelling through.
   assert.throws(() => assertNoBannedWords("a body that carries paused right here"));
+  assert.throws(() => assertNoBannedWords("A body that carries Paused right here"));
 });
