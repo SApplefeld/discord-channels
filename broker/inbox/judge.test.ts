@@ -29,10 +29,14 @@ type Deferred = {
   reject: (error: unknown) => void;
 };
 
-/** A response body carrying the two numbers, in the vendor's shape. */
+/**
+ * A response body carrying the two numbers, in the vendor's shape, plus a sentinel field so a
+ * line quoting the body is caught on the well-formed and malformed-number branches too.
+ */
 function scored(needsReply: number, needsAct: number): string {
   return JSON.stringify({
     answers: { needs_reply: { noul: needsReply }, needs_act: { noul: needsAct } },
+    echo: "SECRET-BODY",
   });
 }
 
@@ -176,6 +180,7 @@ test("the request goes to the constant host with both headers and the calibrated
   assert.equal(init.headers["Authorization"], `Bearer ${KEY}`);
   assert.equal(init.headers["Content-Type"], "application/json");
   assert.ok(init.signal instanceof AbortSignal);
+  assert.equal(init.redirect, "error", "a redirect fails the call rather than re-posting the text");
   assert.deepEqual(JSON.parse(init.body), {
     state: { message: REPLY_TEXT },
     model: JUDGE_MODEL,
@@ -191,9 +196,10 @@ test("no argument or setting redirects the host", () => {
   const h = harness({ url: "https://example.invalid/elsewhere" } as Partial<JudgeOptions>);
   h.judge.submit(SESSION, reply());
   assert.equal(h.calls[0]!.url, JUDGE_URL);
-  // And the module reads no environment at all, so no variable can name another host.
+  // And the module never names the process object at all, by either spelling, so no environment
+  // variable can name another host.
   const source = readFileSync(new URL("./judge.ts", import.meta.url), "utf8");
-  assert.ok(!source.includes("process.env"), "judge.ts reads no environment variable");
+  assert.ok(!/\bprocess\b|node:process/.test(source), "judge.ts reads no environment variable");
 });
 
 test("a timeout, a non-2xx, a malformed body and a network failure each deliver nothing and log without content", async () => {
@@ -207,7 +213,12 @@ test("a timeout, a non-2xx, a malformed body and a network failure each deliver 
     ["not JSON", (d) => d.resolve(respond("SECRET-BODY not json")), "malformed"],
     [
       "needs_act absent",
-      (d) => d.resolve(respond(JSON.stringify({ answers: { needs_reply: { noul: 0.9 } } }))),
+      (d) =>
+        d.resolve(
+          respond(
+            JSON.stringify({ answers: { needs_reply: { noul: 0.9 } }, echo: "SECRET-BODY" }),
+          ),
+        ),
       "malformed",
     ],
     [
@@ -217,6 +228,7 @@ test("a timeout, a non-2xx, a malformed body and a network failure each deliver 
           respond(
             JSON.stringify({
               answers: { needs_reply: { noul: "0.9" }, needs_act: { noul: 0.1 } },
+              echo: "SECRET-BODY",
             }),
           ),
         ),
@@ -281,7 +293,7 @@ test("the failure log writes one line per kind per window and counts the rest", 
   assertFailureLines(h.logged, [{ kind: "timeout", session: SESSION }]);
   // A different kind inside the same window is its own line.
   h.judge.submit(SESSION, reply());
-  h.pending[h.pending.length - 1]!.resolve(respond("", 500));
+  h.pending[h.pending.length - 1]!.resolve(respond("SECRET-BODY server error", 500));
   await settled();
   assertFailureLines(h.logged, [
     { kind: "timeout", session: SESSION },
@@ -304,6 +316,8 @@ test("each secret screen branch blocks the send", () => {
     ["bearer token", "Authorization: Bearer abcdefghij0123456789"],
     ["PEM header", "-----BEGIN RSA PRIVATE KEY-----\nMIIE"],
     ["sk- key", "the key is sk-abcdefghij0123456789xyz"],
+    ["sk-proj- key", "OPENAI_API_KEY is sk-proj-abcdefghij0123456789"],
+    ["sk-ant-api03- key", "use sk-ant-api03-abcdefghij0123456789"],
     ["GitHub gho_", "gho_abcdefghij0123456789"],
     ["GitHub ghp_", "ghp_abcdefghij0123456789"],
     ["GitHub ghs_", "ghs_abcdefghij0123456789"],
@@ -324,6 +338,7 @@ test("a near miss of each branch does not block the send", () => {
     ["an 11-character api_key value", `api_key = "abcdefghijk"`],
     ["bearer with 19 token characters", "Bearer abcdefghij012345678"],
     ["sk- with 19 alphanumerics", "sk-abcdefghij012345678"],
+    ["sk- with 19 token characters", "sk-proj-abcdefghij0123"],
     ["a GitHub prefix with 19 characters", "ghp_abcdefghij012345678"],
     ["a password mentioned without an assignment", "reset your password before Friday"],
     ["a PEM public key", "-----BEGIN PUBLIC KEY-----"],
@@ -444,6 +459,35 @@ test("a verdict handler that throws is logged and the waiting reply is still jud
   assert.equal(calls, 1);
   assert.equal(h.calls.length, 2);
   assertFailureLines(h.logged, [{ kind: "verdict handler threw", session: SESSION }]);
+});
+
+test("a log that throws on a failure line does not stop the waiting reply from being judged", async () => {
+  const written: string[] = [];
+  const h = harness({
+    log: (message) => {
+      if (written.length === 0) {
+        written.push(message);
+        throw new Error("SECRET-BODY log broke");
+      }
+      written.push(message);
+    },
+  });
+  h.judge.submit(SESSION, reply("SECRET-REPLY first", 1));
+  h.judge.submit(SESSION, reply("SECRET-REPLY second", 2));
+  h.pending[0]!.reject(new DOMException("timed out", "TimeoutError"));
+  await settled();
+  assert.equal(written.length, 1, "the failure line was attempted once");
+  assert.equal(h.calls.length, 2, "the waiting reply is judged after the log threw");
+  h.pending[1]!.resolve(respond(scored(0.8, 0.1)));
+  await settled();
+  assert.deepEqual(
+    h.verdicts.map((v) => v.flag.postedAt),
+    [2],
+  );
+  // Once idle, the session is released rather than stranded.
+  h.judge.submit(SESSION, reply("SECRET-REPLY third", 3));
+  assert.equal(h.calls.length, 3);
+  assertNoContent(written);
 });
 
 test("sessions fly independently: one session's call in flight never holds another's", () => {

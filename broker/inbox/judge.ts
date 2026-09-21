@@ -10,7 +10,7 @@
 // What leaves the machine is closed at the text of one reply, screened for secrets over its whole
 // length and then cut to its first 12,000 code points. A reply matching the screen is never sent,
 // and neither is an empty one. Length never blocks a send. The screen is a pattern and not a proof,
-// which `docs/security-model.md` records as an accepted residual.
+// an accepted residual; section 5 of the plan records it in `docs/security-model.md`.
 //
 // Every failure lands on one direction: no flag, one rate-limited log line, and never a throw into
 // the caller. A log line names the failure kind and the session and carries no reply text, no
@@ -47,13 +47,14 @@ const REPEAT_WINDOW_MS = 60_000;
  *
  * The branches, in order: an `api_key` or `api-key` assignment to a quoted value of 12 or more
  * characters; `bearer` followed by 20 or more token characters; a PEM private-key header; `sk-`
- * followed by 20 or more alphanumerics; a GitHub token prefix (`gho_`, `ghp_`, `ghs_`,
- * `github_pat_`) followed by 20 or more token characters; and a `password` assignment to a quoted
- * value of any length. Case-insensitive throughout. Run over the whole reply before the cut, so a
- * secret past the cut still blocks the send.
+ * followed by 20 or more token characters (letters, digits, `_` and `-`, so a `sk-proj-` or
+ * `sk-ant-api03-` shaped key is caught with its infix); a GitHub token prefix (`gho_`, `ghp_`,
+ * `ghs_`, `github_pat_`) followed by 20 or more token characters; and a `password` assignment to
+ * a quoted value of any length. Case-insensitive throughout. Run over the whole reply before the
+ * cut, so a secret past the cut still blocks the send.
  */
 export const SECRET_SCREEN =
-  /(api[_-]key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|sk-[a-z0-9]{20,}|(gho_|ghp_|ghs_|github_pat_)[a-z0-9_]{20,}|password\s*[:=]\s*['"][^'"]+)/i;
+  /(api[_-]key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|sk-[a-z0-9_-]{20,}|(gho_|ghp_|ghs_|github_pat_)[a-z0-9_]{20,}|password\s*[:=]\s*['"][^'"]+)/i;
 
 const PREAMBLE =
   "The `message` is the final reply an AI coding agent sent to its human operator at the end of " +
@@ -124,6 +125,8 @@ export type JudgeFetch = (
     headers: Record<string, string>;
     body: string;
     signal: AbortSignal;
+    /** A redirect fails the call, so a 307 or 308 can never re-POST the text to another host. */
+    redirect: "error";
   },
 ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
 
@@ -190,7 +193,9 @@ function noul(answers: unknown, question: JudgeWinner): number | null {
  * Rate-limits a repeating failure line by its kind. The first of a kind is written at once; a
  * repeat inside the window is counted, and the count rides on the next line that window admits.
  * The kinds are a closed set (a timeout, a network failure, a malformed body, a handler throw,
- * and one per HTTP status), so the map is bounded without a sweep.
+ * and one per HTTP status), so the map is bounded without a sweep. The same bound is why a
+ * trailing suppressed count is never flushed when a kind's failures stop: no timer or sweep runs,
+ * so the count rides only on the next line of its kind, and stays unwritten where none comes.
  */
 function createRepeatLog(
   log: (message: string) => void,
@@ -220,6 +225,11 @@ function thrownKind(error: unknown): string {
   return error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network";
 }
 
+/**
+ * Builds the judge over its injected seams. `threshold` is the seam contract's one number: the
+ * caller supplies a finite value in 0 to 1 out of its own bounded setting, and this module does
+ * not re-validate it, so an out-of-range value is the caller's defect and not detected here.
+ */
 export function createJudge(options: JudgeOptions): Judge {
   const log = options.log ?? ((): void => {});
   const now = options.now ?? Date.now;
@@ -228,8 +238,9 @@ export function createJudge(options: JudgeOptions): Judge {
   const flights = new Map<string, Flight>();
 
   /**
-   * One call: the request, the read, and the verdict. Resolves whatever happened, so the caller's
-   * chain to the waiting reply never breaks. Nothing in here throws out.
+   * One call: the request, the read, and the verdict. Resolves whatever happened on every path
+   * this module owns. The one throw that can still escape is the injected `log`'s own, raised
+   * from a failure line, which is why `fly` settles the handoff on both arms.
    */
   async function judge(sessionId: string, reply: JudgeReply): Promise<void> {
     const message = sliceCodePoints(reply.text, MAX_JUDGED_CODE_POINTS);
@@ -243,6 +254,7 @@ export function createJudge(options: JudgeOptions): Judge {
         },
         body: JSON.stringify({ state: { message }, model: JUDGE_MODEL, questions: QUESTIONS }),
         signal: AbortSignal.timeout(JUDGE_TIMEOUT_MS),
+        redirect: "error",
       });
       if (!response.ok) {
         failed(`http ${String(response.status)}`, sessionId);
@@ -273,9 +285,13 @@ export function createJudge(options: JudgeOptions): Judge {
     }
   }
 
-  /** Runs one call for the session and, when it settles, the reply waiting behind it. */
+  /**
+   * Runs one call for the session and, when it settles, the reply waiting behind it. The handoff
+   * runs on both arms, so a throw escaping `judge` (an injected `log` that throws) can neither
+   * strand the session's flight nor surface as an unhandled rejection.
+   */
   function fly(sessionId: string, flight: Flight, reply: JudgeReply): void {
-    void judge(sessionId, reply).then(() => {
+    const handOff = (): void => {
       const next = flight.waiting;
       flight.waiting = null;
       if (next === null) {
@@ -283,7 +299,8 @@ export function createJudge(options: JudgeOptions): Judge {
         return;
       }
       fly(sessionId, flight, next);
-    });
+    };
+    void judge(sessionId, reply).then(handOff, handOff);
   }
 
   return {
