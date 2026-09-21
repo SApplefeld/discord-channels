@@ -325,3 +325,119 @@ blind it. The code commits with chapter 1.
 **Next action per section.** Section 1: adjudicate round 3, take the Minor close pass over the seven
 surviving Minors, run the close gate, write chapter 1, and make the first-green and close commits
 together. Sections 2 to 5: not started.
+
+### Chapter 1 - 2026-09-20
+Completed: 1. The roster setting and the roster reader
+Implemented By: implementer-sonnet, no escalation
+Metrics: review rounds 3, closed clean; provenance 6 spec-traceable, 1 fix-introduced, 1
+new-requirement, rulings (0 refused, 0 declared, 0 asked); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+
+- Builds the `CHANNEL_BOARD_ROSTER` setting and a reader turning the fleet roster into a list of
+  enabled personas. Serves the Goal sentence "the pinned `Fleet: Board` card can draw one group per
+  worker persona on this machine" and Section 1's own acceptance bullets. Adds no mechanism the spec
+  does not name. Size: the section as specified, roughly 150 lines across two new files and three
+  edits. Not building it leaves the card with no source of personas at all.
+- A parsed non-array roster yields no persona and clears the held reading, rather than returning the
+  held one. Serves the acceptance bullet "a non-array file each yield no persona from that entry or
+  file". Adds no mechanism: it narrows an existing branch. Size: 2 lines. Not fixing it means an
+  operator who rewrites the roster into an object keeps seeing the old fleet drawn forever, with the
+  previously enabled workdirs still opened every tick.
+- The byte-cap test's padded file carries a second distinct enabled persona, so the assertion changes
+  when the cap is not enforced. Serves the acceptance bullet "reads the roster file with a 64 KiB
+  cap" by making the check able to fail. Adds no mechanism. Size: 1 line. Not fixing it leaves a test
+  that stays green with the cap deleted.
+- The `boardRosterPath` doc comment states what is true of the join: the persona store contributes a
+  validated file name and never a path, and `workdir` is the only path input trusted as
+  configuration. Serves the Approach sentence "The broker takes a file name only". Adds no mechanism.
+  Size: 4 lines of comment. Not fixing it ships a false path-safety claim into the file whose wording
+  Section 5 copies into the security model.
+- The `CHANNEL_BOARD_ROSTER` refusal names the setting. Serves the acceptance bullet
+  "`CHANNEL_BOARD_ROSTER=relative\path` fails config load with a message that does not echo the
+  value". Adds no mechanism. Size: 1 line. Not fixing it means a broker refusing to start logs a
+  message byte-identical to the events-path refusal, so the log cannot say which knob to fix.
+- Every roster read or parse failure logs once per change. Serves the Goal sentence "The operator can
+  tell from a phone what is running", since a card drawing nothing must say why. Adds a mechanism,
+  a second use of the existing once-per-change log seam the section already builds for the cap drop.
+  Size: about 10 lines. Not fixing it makes a mistyped roster path indistinguishable from an empty
+  fleet, with nothing written anywhere.
+- A persona `name` is trimmed before the non-empty check and refused past a length cap. Serves the
+  acceptance bullet "its `name` is a non-empty string". Adds a mechanism, a length cap, mirroring
+  `MAX_INTAKE_STATUS_LENGTH` in `plans.ts`. Size: 3 lines and one constant. Not fixing it lets a
+  64 KiB name be held across every tick and drawn into the card's budget, and lets a whitespace name
+  draw a blank group heading.
+- A roster `workdir` naming a UNC root is refused. Serves Section 1's Tests line, "Lock the refusal
+  of a non-absolute `workdir`, because that value becomes a read path", read at its stated reason
+  rather than its literal. Adds a mechanism, a UNC refusal. **This narrows a trust the Approach
+  states**: "A roster `workdir` is trusted the way a configured project root is trusted." Size: 3
+  lines plus the comment. Not fixing it lets one line in a file any process running as the operator
+  can rewrite make the broker open `\\attacker\share` every refresh under the operator's own
+  identity, which is the forced-authentication primitive `broker/intake.ts:328` already refuses for
+  the transcript path. No live roster entry uses a UNC workdir, so the refusal breaks nothing today.
+
+Three surprises beyond those lines. The header read `Ready` at this run's start and was normalized to
+`In Progress`, recorded here as the deliberate change it was. The UNC narrowing's own first fix was
+written as a fresh pattern matching `\\` and `//` alone, which admitted the mixed spellings, and
+round 2 caught it; interim board 2 carries that account and the correction to interim board 1's
+overstated reuse ground. And the same mixed-separator hole was found in `transcriptPathField` in
+`broker/intake.ts`, an HTTP-facing guard, which is why that file joined this section's scope.
+
+Assumptions: none beyond the plan's own `## Assumptions` section. Every gap this section met was
+answered by an acceptance bullet or by the Approach.
+Review Findings: `review: code pair + security at opus, Workflow` for round 1 over a sonnet writer;
+`review: adversarial at sonnet, Workflow` for rounds 2 and 3. Round 1: no Critical, 7 Majors, 9
+Minors. All 7 Majors fixed. Round 2: 1 Critical, fix-introduced, fixed before close under the
+carve-out that keeps a Critical off the hold-and-bucket route; its trace was orchestrator-made for
+the blind lens. Round 3: APPROVED, no Critical, no Major, 1 Minor. No finding was held and no judge
+was convened: the one new-requirement finding, the UNC refusal, is a security Major, which the
+out-of-scope route sends to fix-before-close rather than to a bucket. Minors: 2 fixed in fix round 1,
+4 fixed in the close pass, 4 left with the reason, 0 upgraded. The four left: the capped-read loop
+duplicating `readPlanFile`, which Section 2 exports and converges; dedup on `name` rather than on the
+comparable `workdir`, which is what the section's own acceptance bullet specifies, so changing it
+would add an unasked mechanism; no checked-in roster fixture pinning the parsed field names, declined
+because a real roster's `workdir` values carry the operator's OS account name into the repository;
+and round 3's platform Minor, that `UNC_ROOT` is not gated on `win32`, declined because gating it
+would make a security guard conditional to admit a POSIX path with a literal backslash at its root,
+which this Windows-targeted broker never sees. The close pass changed prose in four hunks only and so
+owed no round; it took the author re-read in its place. One security-lens item was routed out rather
+than fixed: three known-vulnerable transitive dependencies, pre-existing and untouched here, already
+at `docs/backlog.md:444` whose stale advisory count Section 5 amends.
+Stamps: adjudicated 8, stamped 3. Stamped `a-model-override-the-account-cannot-serve-never-runs` and
+`a-self-stamped-liveness-field-cannot-establish-exit`, both of which steered how the dispatches were
+placed and how a quiet agent was read, and `node-test-count-lines-are-not-tap`, which turned out to
+own the reporter-marker trap this run hit twice when a grep over suite output returned nothing. The
+remaining 5 were read in the window and did not change what was built.
+Gate: targeted lane owed at this close; the whole gate run instead, since it covers the targeted lane
+and the box allowed it. No contention lane: the section's delta touches config parsing, a roster
+reader and two path guards, none of them machine-shared state. Measured on SCOTT-CLAUDE at
+2026-09-20T20:29-0400, on this branch at `854adba` with the section's nine files dirty. Whole gate
+1737 tests, 1736 pass, 0 fail, 1 skipped, exit code 0, 35 s wall clock; lint (`tsc --noEmit`) exit
+code 0. Against the branch baseline at `4152f79` on a clean worktree, 1721 tests, 1720 pass, 0 fail,
+1 skipped, exit 0, 34.1 s: 16 tests added, 0 failing to 0 failing. Contention reading: contended. A
+live heavy-process claim stood on the box throughout, held by session DEV-PLUGIN running a sequence
+of whole gates in `D:/personas/dev-plugin/repo`. A process poll taken before this run found no suite
+and read the claim as residual; its holder corrected that on the relay, saying the poll landed
+between two legs of its sequence. The wall clock landing within 0.7 s of an earlier uncontended
+baseline suggests light overlap, but the run is recorded as contended rather than reasoned clean from
+timing. The claim was neither written nor deleted by this session. Test delta: 16 added, 0 retired, 2
+edited to stay green on this section's own change, so no retire class applies. Of the added, 15 in
+`broker/board/roster.test.ts` pin the reader's contract, one per acceptance bullet plus the failure
+classes: file order and enabled-true-only, a non-boolean truthy `enabled`, a relative `workdir`, a
+missing `name`, a repeated `name`, a non-array file clearing rather than holding, a torn write
+holding, an unreadable file, the byte cap, the persona cap with its once-per-change log, the three
+distinct failure-class logs, the name trim and length cap, and the UNC refusal over all four
+separator spellings with the general rule as its withheld control. The 16th, in `broker/config.test.ts`,
+pins that the setting has no default location, refuses a non-absolute value, and never echoes the
+value in its refusal. The 2 edited: the existing UNC test in `broker/intake.test.ts` gained the two
+mixed spellings, and the installer allowlist pin in `install/Install-Functions.test.ts` moved from
+four board settings to five. Two `BrokerConfig` object literals in `broker/index.test.ts` and
+`broker/intake.test.ts` each gained one field to keep the type check green. Added tests that spawn a
+process, directly or through a shared helper: 0.
+Next: 2. The queue, heartbeat and plan readers, and the join
+Commit Model: Branch-and-PR
+Delta: measured on SCOTT-CLAUDE at 2026-09-20T20:30-0400, worktree at `854adba` with the section's
+nine files dirty.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
