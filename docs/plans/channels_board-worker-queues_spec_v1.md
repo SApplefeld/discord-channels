@@ -850,3 +850,82 @@ Delta: read on SCOTT-CLAUDE at 2026-09-21T02:56Z, against the worktree at this C
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 6 - 2026-09-20
+
+Written on the compaction gate's deferral nudge, with section 4 built, committed at first green and
+in review round 1. Not a Chapter: section 4 is still open.
+
+**Section stages.** Sections 1, 2 and 3 are closed, committed at `44aa3e8`, `69c57b7` and `fb1db63`,
+and pushed. Section 4 is built, verified by this session's own whole-gate run, committed at first
+green as `3354a21` and pushed, and in review round 1. Section 5 is not started.
+
+**Live dispatches.** Three reviewers over section 4's delta against `fb1db63`, all at fable on the
+Agent tool, none permitted to build or run the whole suite. The adversarial lens carries the spec,
+the base ref, the section name, an `Amendments in effect: none` line and the trace target, and was
+asked in addition to judge six claims the implementer made rather than assume them, and to test four
+things specifically: whether the overflow fixture genuinely overflows rather than merely fitting,
+whether the narrowed `sectionCount` signature is behaviour-preserving on the project path, whether
+the persona path's failure-mode breadth actually matches the project path's clamp for clamp, and
+whether the layout's entry ordering is what the code produces when one of its positions is empty.
+The blind lens carries the base ref and the two changed file names alone, plus the two standing
+repository properties. The security lens carries the same sighted fields and was pointed at three
+properties worth testing here: whether the block-inert path reaches every value drawn inside the
+group's fenced label, whether any new path can push the card past the length at which Discord
+refuses it outright, and whether a value another program wrote can cost time on the broker's one
+event loop proportional to its own length.
+
+**Gate baseline.** Measured on SCOTT-CLAUDE at 2026-09-21T03:06Z, on this branch with section 4's
+two files dirty and this session's own claim held and then released: whole gate 1810 tests, 1809
+pass, 0 fail, 1 skipped, exit code 0, 37 s wall clock; lint (`tsc --noEmit`) exit code 0. Measured by
+this session rather than taken from the implementer's report. Against section 3's close at `fb1db63`,
+1795 tests, 1794 pass, 0 fail, 1 skipped, exit 0: section 4 has added 15 tests and broken nothing.
+Contention reading: the claims directory was empty before the run, and the wall clock landed within
+1 s of the four preceding whole-gate baselines. An empty claims directory means nobody has claimed
+the box rather than that the box is free, so the first reading rests on the second.
+
+**Rulings adopted since the last boundary.** Three, all declared at the implementer's adjudication
+and none referred.
+
+The first is where the renderer's persona input type lives. The spec says `broker/board/card.ts`
+must not import `broker/board/status.ts`. The input could have borrowed section 3's and section 2's
+types through a sibling import, which is less code and honours the sentence literally. It is
+declared structurally in the card's own vocabulary instead, because the sentence is about the
+renderer not depending on the rule module rather than about which file name appears in an import
+line. The cost is an adapter at the tick, which section 5 already owes. A test pins that the two
+upstream types satisfy the new shapes with no conversion, so the adapter cannot quietly become a
+translation.
+
+The second is a persona whose entries are all done. The layout says a persona with nothing left
+after rule 1 draws nothing and is silent on this case. It draws nothing too, because the card's shape
+forbids a fenced label over an empty list, which its own blank-line walk asserts, and the project
+view already drops a root whose plans are all terminal. What that costs is that a fully finished
+worker's `N of N done` label is not shown. One line reverses it.
+
+The third is the `personas` field being optional on the renderer's input. That is forced rather than
+chosen: `broker/board/thread.ts` is outside section 4's scope and has to keep compiling. Section 5
+makes it always passed.
+
+**Scope drift since the last boundary.** None. Section 4's `Files in scope:` line stands as written.
+Two surfaces outside it were named by the implementer and left unedited, and both are carried below
+rather than folded.
+
+**Carried out-of-scope surfaces, for adjudication at section 4's close.** Two, both named by the
+implementer in its report and neither touched. An entry title and a block reason have no intake cap
+in `broker/board/queues.ts`, so the renderer measures a value of another program's choosing before
+cutting it, and the remaining bound is coarse: a 2 MiB store file times 16 personas, on the broker's
+one event loop, every tick. Section 2's Chapter had already routed that length bound here, so this is
+where it lands. The implementer declined to pre-slice, because the cut helper is shared with the
+project path and an existing test pins it on exactly its measure-before-cut behaviour, and it stated
+the property in the card's header instead. The remedy named is an intake cap on `title`, `objective`,
+`blockedReason` and `lead.reason` in the reader, in the shape `broker/board/plans.ts` already uses
+for a plan's status. Separately, the project path's own facts line carries the same non-finite hold
+instant hole the persona path now guards against.
+
+**Next action per section.** Section 4: adjudicate round 1's three lenses, capture the provenance of
+every Major against `.kit/scratch/channels_board-worker-queues/section-4/fix-round-1.diff`, dispatch
+the fix round, then the lens any fix delta owes, the Minor close pass, adjudicate the two carried
+surfaces above under the out-of-scope route, the close gate, chapter 4, and the close commit. Section
+5: not started, and it inherits from section 3 that a block reason rides out of the rule module uncut
+because the layout paragraph puts the 120-character cut on the renderer, which section 4 has now
+applied.
