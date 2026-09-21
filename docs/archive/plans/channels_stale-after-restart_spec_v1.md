@@ -1,6 +1,6 @@
 # channels: a session that died during a broker outage is ended, and a deleted thread stays deleted, v1
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR. Work on branch `stale-after-restart`, push to `origin`, open a PR against `main`, never push directly to `main`.
 Created: 2026-09-20
 Worker: a dev persona, handed over by the coordinator persona. The architect persona wrote this plan and does not execute it.
@@ -43,8 +43,8 @@ Four other records went `stale` in the same sweep and never resurfaced, because 
 
 ## Related plans
 
-- [channels_thread-rebinding_spec_v1.md](../archive/plans/channels_thread-rebinding_spec_v1.md) (Shelved): one Discord thread across a supervisor's restarts. Its lineage takeover is why only sessions with no running successor showed the symptom. Its round 3 recorded the defect this plan closes: the reconnect grace window did not cover a broker restart, because the hub's pending set starts empty. Unchanged by this round.
-- [channel-quality-and-plugin_spec_v1.md](../archive/plans/channel-quality-and-plugin_spec_v1.md) (Complete): built the rule that an exited session's deleted card or thread stays deleted, the `exited` decline in the surface's build path that section 2's guard sits beside and mirrors.
+- [channels_thread-rebinding_spec_v1.md](channels_thread-rebinding_spec_v1.md) (Shelved): one Discord thread across a supervisor's restarts. Its lineage takeover is why only sessions with no running successor showed the symptom. Its round 3 recorded the defect this plan closes: the reconnect grace window did not cover a broker restart, because the hub's pending set starts empty. Unchanged by this round.
+- [channel-quality-and-plugin_spec_v1.md](channel-quality-and-plugin_spec_v1.md) (Complete): built the rule that an exited session's deleted card or thread stays deleted, the `exited` decline in the surface's build path that section 2's guard sits beside and mirrors.
 
 ## Approach
 
@@ -271,3 +271,26 @@ Minor pass checks: `node --test broker/routing/relays.test.ts broker/config.test
 Docs curation (claude-kit:docs-curator): 3 drift items, all deviation, none a mistake, none resting on a pre-change claim. D1: the restart window and ceiling are constants, not `broker.env` settings, and the bound is the window plus one heartbeat, 105 s at the default and 110 s at the 20 s heartbeat ceiling; the curator stated both. D2: a restored session with no saved timestamp goes silent once the staleness window has passed since it was last heard from, not at the first sweep; the curator corrected the Minor pass's sentence. D3: the silent-session rule sits in its own paragraph after the state legend rather than inside the `exited` line, as Chapter 3 records. The curator also added a paragraph to `docs/architecture.md` stating the restart window, which that document did not describe. Hygiene: two cross-references added to Related plans, to the thread-rebinding plan's round 3 finding of this defect and to the channel-quality plan whose exited decline section 2 mirrors. The orchestrator read the curator's diff against the code: every figure and name checks, the heartbeat setting at `broker/config.ts:470`.
 Operator Verification additions for the final Chapter: the threat model is absent; the Fleet Board pull request's backlog already carries the item, so none is added to `docs/backlog.md` here, where it would conflict with that pull request.
 What follows: the whole gate over this tree, the commit, then the pull request opened, marked ready and auto-merge armed; then BLOCKED on the operator's merge and restart yes for section 4.
+
+### Chapter 4 - 2026-09-21
+Completed: 4. Land it on the running broker
+Implemented By: the operator (merge and restart); readings in the main session
+Metrics: review rounds 0; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- The operator merged the pull request (#11, merge commit 166e73f, 2026-09-21T12:24:00Z) and restarted the broker in `D:\discord-channels` themselves, before this session had taken the before-restart reading. The pull request's head was 96d2342, the last pushed commit, so nothing was stranded on the branch.
+- In place of the before-restart record, the reading attributes by the process list after the restart. Six `claude` processes ran, all started between 05:29:54Z and 05:30:14Z, hours before the restart. Each launch command names a session: STEWARD, ARCHITECT, DEV-PERSONA, DEV-DISCORD, DEV-PLUGIN, and `PERSONAS: Expert`. Each name matched exactly one process and exactly one `live` session, so no session was left out. A process that started before the restart and still runs is a session that was running across it, which is the attribution the section's text asks for.
+Assumptions: none
+Review Findings: none; the section changes no file in the repository.
+Stamps: adjudicated 0, stamped 0.
+Gate: the two live readings, as observations. The broker answered at 12:24:40.746Z and opened a restart window for 27 restored sessions. Six relays attached at 12:24:41Z. At 12:26:24.8Z, 104 seconds after the port answered, it ended the 21 sessions whose pipe did not come back, one `relay: session <id> is ended, its pipe did not come back` line each, inside the 105 second bound `docs/operations.md` states. `GET /sessions` at 12:26:57Z: 40 records, 34 `ended`, 6 `live`, none `stale`. The six live ones are the six running sessions above. The broker log since the restart holds no ended line for any of the six. The same search finds the 21 ended lines for the others, which is its control. One ended session, `PERSONAS: Expert` 3fb3694c, logged `is exited, not rebuilding its surface` at 12:26:25Z, the ended path's existing decline. Test delta: none.
+Next: none; the plan is complete.
+Commit Model: Branch-and-PR
+
+### Chapter 5 - 2026-09-21
+Completed: plan close-out
+Recap: A broker restart used to leave a session that died while the broker was down in `stale`, reading `idle` for four hours, and a card or thread deleted for it was rebuilt within a minute. Section 1 opens a 90 second restart window when the broker starts listening, for every restored session that is not ended and has a saved relay timestamp. A relay that comes back keeps its session, and one that does not is ended on the next heartbeat. Section 2 stops the surface building a card or thread for a stale session that reads `idle`. Section 3 states both rules in `docs/operations.md` and `docs/architecture.md`. Section 4's first live restart ended 21 dead sessions in 104 seconds and kept all six running ones `live`. Delivered by pull request #11 (merge 166e73f) and closed on the pull request carrying this Chapter.
+Gate: whole gate on the merged tree 96d2342, before the pull request was marked ready: `npm run lint` exit 0; `npm test` exit 0, 1851 tests, 1850 pass, 0 fail, 1 skipped (2026-09-21T12:22:07Z to 12:22:47Z, SCOTT-CLAUDE). Baseline 1721/1720/0/1 at 4152f79 before the Fleet Board merge; `main` after that merge carried 1836, and this plan adds 15 tests. This close-out changes only the plan doc and the two indexes, so no suite ran for it.
+Operator Verification: two items. The plan's own check remains yours: start a wrapped session, stop the broker task, close that session's window while the broker is down, start the task again, and watch its thread paint as exited within two minutes, then delete the thread and confirm it stays gone. Section 4's restart already showed the ending half on 21 real sessions. The deleted-thread half has not been watched live. Second: `docs/security-model.md` has no threat model section, which the finishing security lens reported as `threat model: absent`. `docs/backlog.md` already carries that item from the Fleet Board plan, so none is added here.
+Left: the performance lens's Minor, that a reap tick ending several sessions rewrites the whole state snapshot once per session, is unbounded by any requirement. Section 4's 21 endings logged within 27 ms, so it is left.
+Next: none
+Commit Model: Branch-and-PR
