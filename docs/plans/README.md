@@ -3,7 +3,9 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open. Everything delivered, shelved or declined is in
+No plan is in progress. One is parked as Ready:
+[`channels_operator-inbox_spec_v1.md`](channels_operator-inbox_spec_v1.md), one inbox card for every ask a
+session makes of the operator. Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
 
 ## Rules
