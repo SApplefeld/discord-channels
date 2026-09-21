@@ -35,6 +35,8 @@ He approved the sketch, its Assumptions and its addendum the same day with "Yes,
 
 **Rulings after the spec shipped.** Three, all taken during section 3 and all recorded in the Approach's own wording above, which this line points at rather than restates. The store's block reason draws only where the store's own block is the block. The round-limit reason is compared on the trimmed, case-folded value rather than exactly. `broker/board/queues.ts` gained one export so the queue-ordering key has one owner, which widened section 3's Files in scope by that file.
 
+**Operator decision, 2026-09-21.** The card's closing freshness line also ages with a held plan parse behind a drawn, not-done persona entry, stamped at the instant that parse was last read, exactly as the project view stamps a held row. No marker is drawn on the entry itself, so the entry layout stays as approved. Decided on the relay channel ("Agreed, let's do Option 1 for Section 4, as you recommended") on the section 4 ask that put three options, this one recommended. Rationale: the line's one job is to say how old the card is, and it already counts every other held reading the card draws from.
+
 **Provenance.** Distilled from the architect persona's design conversation with the operator on 2026-09-20.
 
 ## Approach
@@ -105,6 +107,7 @@ The first line above is the content of the fenced label. The group composes agai
 ## Standing Brief Amendments
 
 - The card's closing freshness line ages with a held persona store reading as well as with a held plan parse, so the card never reports itself as current while a group above it says how old that group's reading is.
+- The card's closing freshness line ages with a held plan parse behind a drawn, not-done persona entry, stamped at the instant that parse was last read, as the project view stamps a held row, and no marker is drawn on the entry itself.
 
 ## Sections of Work
 
@@ -1140,3 +1143,64 @@ because the run is attended. The section does not close until it is answered.
 is chosen, run the round that fix owes, then the Minor close pass over the eighteen Minors now listed,
 the close gate, chapter 4 and the close commit. Section 5: not started, with interim board 8's two
 document duties still owed.
+
+### Interim board 10 - 2026-09-21
+
+Written by the session that took the `dev-discord` persona after its predecessor died. Not a Chapter:
+sections 4 and 5 are both open. This entry is what a session resuming after this one reads first.
+
+**How this session came to hold the plan.** Two sessions worked the plan after interim board 9. The
+first committed section 5's five documents as `baaf725` at 00:43 local and dispatched section 5's
+code implementer, then died with it; that implementer's partial tree is kept at
+`.kit/scratch/channels_board-worker-queues/section-5/partial/`. The second took the persona at 00:59,
+re-dispatched the code implementer from
+`.kit/scratch/channels_board-worker-queues/section-5/brief-redispatch.md`, and died at 01:02 with
+that implementer mid-work, its transcript ending inside a file read. The persona plugin then handed
+this session the persona on the stale heartbeat. The kit goal record in `.kit/goal-state.json` still
+names the session that parked at interim board 8 and is left as it is, per interim board 9.
+
+**The operator's answer on section 4.** At 05:06Z on the relay channel: "Agreed, let's do Option 1
+for Section 4, as you recommended." That is option (a). It is recorded above as a dated line under
+`## Intent` and as the second `## Standing Brief Amendments` bullet, both written at this boundary and
+before any dispatch. The answer reached a passive session rather than the one that asked, which is
+why it sat unbuilt for ten minutes.
+
+**Section stages.** Sections 1, 2 and 3 are closed and pushed. Section 4 carries three fix rounds
+committed and its fourth, option (a), not yet built. Section 5's documents are committed at
+`baaf725`; its code is built and green in the worktree and not yet committed.
+
+**Live dispatches.** None. Both dead dispatches are named above; nothing of theirs is in flight.
+
+**Gate baseline.** Measured on SCOTT-CLAUDE at 2026-09-21T05:15Z, on this branch at `baaf725` with
+section 5's four code files dirty, while a DEV-PLUGIN heavy-process claim 45 minutes past its stated
+15 minute span stood in the claims directory, read as residue rather than as a live holder: targeted
+lane over `thread.test.ts` and `index.test.ts`, 77 tests, 77 pass, 0 fail, 0 skipped, exit code 0,
+6.0 s; `tsc --noEmit` exit code 0. The declared `test(` count across the two files is 35 and 42,
+which equals the reporter's 77. Red evidence for section 5's four new tests, taken here since the
+implementer that wrote them never reported: with HEAD's `thread.ts` and `index.ts` put in place of
+the worktree's, those four fail and the other 73 pass, exit code 1; the worktree files were then
+restored from the pre-probe copies and confirmed byte-identical, with `git status --porcelain`
+unchanged. No whole gate has run since `3354a21`.
+
+**Section 5's code, as the dead implementer left it.** `BoardCardOptions` carries `rosterPath`,
+`readRoster` and `readQueues` as seams; the gate refuses only when both sources are empty and logs
+the Approach's message; the tick reads roster, queues, events, the status rule per persona, then the
+sweep, and passes both views; the event reader is handed the roots then the personas' folders and is
+reset to its start when that list changes; `boardCardWiring` passes the roster path through. Four
+tests pin the gate in both directions, the roster-only build, the reset by observed offsets, and the
+wiring tick over a fake store carrying `paused`, `pending` and `Max rounds reached` with none of them
+reaching the posted body. What is still owed: the third acceptance bullet is pinned only through the
+reader's offset, not through a persona's entry drawing blocked after it is enabled, so one test is
+owed on the real event reader; the implementer's report, its add-decision lines and its
+out-of-scope surfaces were never delivered and are taken from the diff instead.
+
+**Rulings adopted since the last boundary.** The operator's, above. Nothing else.
+
+**Next action per section.** Section 5: first-green commit of its four code files on this session's
+own gate reading, then hold while section 4's fix lands, since that fix adds one line to the adapter
+in `thread.ts`. Section 4: dispatch option (a) to `implementer-opus` over `card.ts`, `card.test.ts`,
+`queues.ts`, `queues.test.ts` and the one adapter line in `thread.ts`, run the round that fix owes,
+the Minor close pass over the eighteen recorded Minors, the close gate, chapter 4 and the close
+commit. Then section 5: the owed test on the real event reader, review round 1 with the code pair,
+the security lens and the performance lens over a sonnet writer, its fixes, the close gate, chapter
+5 and the close commit. Then finishing-work and the pull request.
