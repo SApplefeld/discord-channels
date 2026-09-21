@@ -54,7 +54,13 @@ to do in its own repository.
 - Reusing the personas repository's TypeSafe client: refused, because this broker has no build
   step and no package path to a sibling repository, and one fetch is smaller than that dependency.
 
-**Rulings after the spec shipped.** None at the write.
+**Rulings after the spec shipped.**
+- 2026-09-21: a supervised persona session's reply that carries the steward-shaped ask line is
+  neither marked nor judged. The Architect reported that workers ask the steward often and the
+  operator rarely prompts a worker directly, so those lines would rest on the card for days. The
+  operator chose this over keeping them, and over applying the rule to every session. The accepted
+  cost: an ask meant for the operator inside such a reply is missed unless it arrives as a
+  `BLOCKED:`.
 
 **Provenance.** Distilled from the Expert seat's design session on SCOTT-CLAUDE, 2026-09-21
 (session `b0a32d8b`), including the operator's Discord relay messages in that session's thread and
@@ -84,8 +90,15 @@ one such line opens or refreshes the session's item with source `marked`, and th
 called for it. The kit has no `ASK:` convention today. The persona plugin does: `agent_persona`'s
 `hooks/index.ts` matches a worker's turn-final answer against a line of the form
 `ASK: <question>? Recommend: <choice>` and opens an ask record that a reader or the steward
-answers. The inbox parser admits that line as it admits any `ASK:` line, so a persona worker's ask
-opens a marked item from the first day.
+answers. That line is addressed to the steward, so it is kept off the operator's card. A supervised
+session is one whose record carries a lineage (`SessionRecord.lineage`, set from `CHANNEL_LINEAGE`,
+which `agent_persona`'s supervisor sets on every session it launches and an interactive session
+never carries). A reply from a supervised session that carries at least one steward-shaped line, an
+`ASK:` line whose text contains `? Recommend:` on the persona matcher's own pattern, is neither
+marked nor judged: it opens nothing and its text is not sent to the judge. A plain `ASK:` line in
+that same reply does not change this, and a worker's ask of the operator reaches him as a
+`BLOCKED:`, which the blocked desk already carries. The same line from a session with no lineage is
+an ordinary `ASK:` line and marks an ask.
 
 **The judge.** Jev is a hosted classifier from the vendor TypeSafe. A caller posts a JSON state and
 a set of named questions, and each answer comes back with a number. For a yes-or-no question (type
@@ -130,9 +143,8 @@ three prompt paths) is one source. A Discord message the inbound router delivere
 (`broker/routing/inbound.ts:287`, the `delivered` branch) is the other, because a channel message
 that lands mid-turn may fire no prompt hook. The instant the clear receives is the clamped stamp the registry computes on the first path, and
 the broker's clock at delivery on the second. A Discord message the router could not deliver to a
-live session clears nothing, and the ended-session case is stated below. An answer from anyone other than the operator clears nothing, by design. A persona worker's ask
-that the steward answers stays on the card until the operator prompts that session, because the
-broker cannot see the persona plugin's ask records and a missed ask costs more than a stale line.
+live session clears nothing, and the ended-session case is stated below. An answer from anyone other than the operator clears nothing, by design. The steward-shaped rule
+above is what keeps a worker's steward asks from resting on the card unanswerable.
 `SessionStart` and `PostToolUse` do not clear an item,
 which is the deliberate difference from the blocked desk: a session that asks and keeps working
 makes tool calls all the while. A message the inbound router consumed as a permission verdict or a
@@ -186,6 +198,8 @@ item upgrades to `marked` and not back; a clear with an instant at or before the
 the item; the map never exceeds one item per session; a snapshot round-trips and a malformed one
 yields an empty inbox.
 Files in scope: `broker/inbox/store.ts`, `broker/inbox/ask.ts`, their tests.
+The parser also reports whether a reply carries a steward-shaped line, as a separate pure
+function, and section 3 applies the lineage condition.
 Tests: lock the parser's three refusals, since a parser that matches quoted code turns every
 code review into an ask; lock the clear rule's instant comparison in both directions, since a clear
 that fires on an older prompt silently empties the inbox.
@@ -243,7 +257,9 @@ board card's bounds; all four join `$script:ChannelBrokerEnvAllowlist`. Acceptan
 off, no inbox module is constructed and no fetch is made; a suppressed mirror, a prompt, a
 narration chunk and a peer message reach the inbox never; a permission verdict and a held-question
 answer clear nothing; a delivered Discord message and a console prompt each clear; `PostToolUse`
-and `SessionStart` clear nothing; a stale session's item stays; an ended session's item stays until
+and `SessionStart` clear nothing; a supervised session's reply carrying a steward-shaped line opens
+nothing and makes no judge call, and the same reply from a session with no lineage opens a marked
+item; a stale session's item stays; an ended session's item stays until
 an operator message in its thread or the record's prune, and then leaves; a mirror-off session's
 reply-tool answer is parsed and never judged; a reply mirror dropped as an interim echo is tapped
 and one dropped as an answer echo is not.
@@ -309,7 +325,6 @@ The surfaces this plan changes are closed at the sections' Files in scope. Named
 - assumed 2026-09-21 (default): sections 1 to 3 ship dark, and nothing is visible to the operator until section 4's card; reversal: none needed, the card is off by default.
 - assumed 2026-09-21 (default, the operator's to overrule): an ended session's item stays until an operator message in its thread or the record's prune; reversal: one store rule, section 1.
 - assumed 2026-09-21 (default, the operator's to overrule): a mirror-off session is never sent to the judge; reversal: one condition, section 3.
-- assumed 2026-09-21 (default, the operator's to overrule): a marked item answered by the steward or any other session stays until an operator prompt; reversal: a second clearing source, which needs a signal the broker does not hold today.
 - assumed 2026-09-21 (the repository's own rule): Branch-and-PR, since `main` refuses a direct push; reversal: none available.
 
 ## Operator Verification
