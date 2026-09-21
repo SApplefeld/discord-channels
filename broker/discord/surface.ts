@@ -363,6 +363,16 @@ export function createSurface(options: SurfaceOptions): Surface {
       return;
     }
 
+    // A record nothing has heard from for the staleness window gains no new card or thread,
+    // whichever way the half came to be missing: deleted by the operator, never built because the
+    // record was first seen stale, or left unopened when a pass ran out of budget. A deletion is
+    // honored as cleanup, same as the exited branch above, but the entry is never
+    // abandoned: a record that wakes (a hook or a relay revives it to live) renders a live state
+    // and builds normally on the next pass. needs you, blocked and working are untouched, so a
+    // stale session waiting on the operator, or one still holding a background task, still gets
+    // its surface rebuilt.
+    if (view.lifecycle === "stale" && state === "idle") return;
+
     if (entry.messageId === null) {
       if (!posts.affordable(options.now())) return;
       if (!spend()) return;

@@ -103,6 +103,12 @@ recorded a blocked stop and nothing there moves until you engage it; it takes th
 rather than an immediate rename, and the alert described under "When a run is blocked on you" is
 what reaches you quickly.
 
+A session the broker has heard nothing from for the staleness window (five minutes by default)
+keeps the card and thread it has. A card or thread you delete for such a session is not rebuilt
+until the session is heard from again, by a hook or by its relay. Three kinds of silent session
+are exempt and rebuilt as usual: one reading `needs you`, one reading `blocked`, and one holding
+background tasks.
+
 The title is coarser than the state the broker tracks because every rename writes a notice into the
 thread that nothing can remove: an app cannot delete a thread-rename notice (Discord error 50021),
 where a human account with Manage Messages can, so a title following every change would run a column
@@ -135,7 +141,8 @@ The channel's pinned messages are the sessions that are running. The broker pins
 while its session is live, unpins it when the session exits, and keeps the fleet usage and board
 cards pinned permanently, so the pin list answers "what is running right now" without a scroll. It works by
 reading the channel's own pins each pass and moving them toward that set, which is what survives a
-broker restart and a card rebuilt after a deletion. A pin you added by hand is left alone.
+broker restart and a card rebuilt after a deletion for a session the broker is hearing from. A pin
+you added by hand is left alone.
 
 This needs Discord's **Pin Messages** permission on the broker's channel, and it is worth knowing
 that the older pin route answers `Missing Permissions` when the newer permission is what is actually
@@ -155,7 +162,10 @@ it revives it. That matters because the session that exited wrongly is the one w
 afterward. A session that was only presumed dead and then comes back is picked up again on both
 sides: posting revives the thread on Discord, and the broker drops the archived flag the moment that
 session stops reading exited, so its card and its title resume being maintained and it is archived
-again at its real exit.
+again at its real exit. The same decline-and-wake rule covers a deleted card or thread well before
+that horizon: from the staleness window on, a silent session gets no new card or thread, and one
+that is heard from again gets both back on the next pass. `needs you`, `blocked` and a session
+holding background tasks are exempt, so a thread you must answer in is always rebuilt.
 
 ## Renaming a session
 
@@ -1132,3 +1142,23 @@ on top of that, so a close landing just after a tick is not acted on until the t
 bound is up to two heartbeat intervals, roughly 30 seconds, rather than one. The trade buys the
 opposite failure, which is worse: without the grace, a relay's own reconnect would strand a working
 session as exited, and ended is terminal with no way back.
+
+After a broker restart the wait is longer, up to about 105 seconds at the default heartbeat. No
+relay's pipe survives the broker, so when the broker starts listening it opens a restart window of
+90 seconds for every restored session that is not already ended and whose saved record carries a
+relay timestamp. A session whose relay reconnects inside that window carries on. One whose relay
+never returns is ended on the first heartbeat after the window closes, which adds up to one
+heartbeat interval: 15 seconds by default, 20 at the ceiling `CHANNEL_RELAY_HEARTBEAT_MS` allows.
+The window is three times the relay's reconnect ceiling, which is 30 seconds: a relay that was
+backing off against a down broker can take that long to retry, so a shorter window would end
+sessions that are still running. For that reason both are constants in `broker/config.ts` rather
+than `broker.env` settings.
+
+A session whose saved record carries no relay timestamp opens no window and is judged by silence
+alone, as before any restart. That includes a session whose relay attached but was never saved:
+the timestamp reaches disk only when the record is saved for some other change, so a relay that
+attached shortly before the broker stopped can leave none behind. If that session is still
+running, its relay reconnects and it reads and rebuilds as a live session. If its process is
+gone, the staleness sweep marks it silent once the staleness window has passed since it was last
+heard from. From then until the four hour backstop it reads `idle`, and a card or thread you
+delete for it is not rebuilt.

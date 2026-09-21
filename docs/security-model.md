@@ -139,9 +139,12 @@ paragraph below already accepts: a process that attaches a pipe before the genui
 the token under first-pipe-wins, and its record is protected like any other.
 
 The residual is a race: a local process that attaches a stream *before* the relay does holds the
-token and its key until that pipe closes. Nothing detects it, and the operator's only signal is a
-session whose status card keeps ticking while its answers read wrong. Closing it would need the
-broker to learn the relay's process identity, which the channel protocol does not carry.
+token and its key until that pipe closes. A broker restart opens the race for every session on the
+host at once: no pipe survives the broker, and each relay retries on a backoff of up to 30 seconds
+once the broker is listening again. The restart window then holds each session for whichever pipe
+attached first. Nothing detects it, and the operator's only signal is a session whose status card
+keeps ticking while its answers read wrong. Closing it would need the broker to learn the relay's
+process identity, which the channel protocol does not carry.
 
 Since that process can also issue permission prompts, the residual is now phishing as well as
 impersonation: it can ring the phone with an approval request carrying a tool name, description and

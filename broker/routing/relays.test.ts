@@ -2,8 +2,9 @@
 // join between them: which session a pipe belongs to, and what its closing means.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { RELAY_RESTART_GRACE_MS, loadConfig } from "../config.ts";
 import { createRegistry } from "../registry.ts";
-import type { Registry } from "../registry.ts";
+import type { Registry, SessionRecord } from "../registry.ts";
 import { createRelayHub } from "./relays.ts";
 import type { AttachResult, RelayConnection, RelayEvent } from "./relays.ts";
 
@@ -306,4 +307,215 @@ test("a pending end names the session it was watching, not whatever the token ho
   assert.equal(first.state, "ended", "supersession had already ended the first session");
   assert.equal(second.sessionId, "session-b");
   assert.equal(second.state, "live", "the replacement outlived its predecessor's pipe");
+});
+
+/**
+ * A broker that has just restarted: its registry restored from a snapshot holding one record for
+ * session-a under TOKEN, and a hub built over it that holds no pipe, since none survives a restart.
+ */
+function restarted(options: {
+  now: () => number;
+  state?: SessionRecord["state"];
+  lastRelayAt?: number | null;
+  endedAt?: number | null;
+  graceMs?: number;
+  log?: (message: string) => void;
+}) {
+  const saved = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: options.now });
+  announce(saved, "session-a");
+  const record: SessionRecord = {
+    ...saved.list()[0],
+    state: options.state ?? "live",
+    lastRelayAt: options.lastRelayAt === undefined ? 500 : options.lastRelayAt,
+    endedAt: options.endedAt ?? null,
+  };
+  const registry = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    now: options.now,
+    sessions: [record],
+  });
+  const relays = createRelayHub({
+    registry,
+    graceMs: options.graceMs ?? GRACE_MS,
+    now: options.now,
+    log: options.log,
+  });
+  return { registry, relays };
+}
+
+test("a relay that returns inside the restart window keeps its session, past the ordinary one", () => {
+  // The expensive direction. A relay that was backing off against a down broker retries on its
+  // reconnect ceiling, which is longer than one heartbeat, and a living session ended here is
+  // ended for good: `ended` is terminal and a re-attach skips ended records.
+  let now = 1_000;
+  const { registry, relays } = restarted({ now: () => now });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  now += GRACE_MS + 1;
+  relays.heartbeat();
+  assert.equal(
+    registry.list()[0].state,
+    "live",
+    "past the ordinary window and inside the restart one, the session is still owed its relay",
+  );
+
+  accepted(relays.attach(TOKEN, fakeConnection()));
+  assert.equal(registry.list()[0].state, "live");
+
+  now += RELAY_RESTART_GRACE_MS * 10;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "live", "the relay came back, so nothing died");
+  assert.equal(registry.list()[0].endedAt, null);
+});
+
+test("a session whose relay does not return after a restart is ended when the window closes", () => {
+  let now = 1_000;
+  const lines: string[] = [];
+  const { registry, relays } = restarted({ now: () => now, log: (line) => lines.push(line) });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+  assert.ok(
+    lines.some((line) => line.includes("session-a")),
+    "the seeded window is logged by session ID",
+  );
+
+  now += RELAY_RESTART_GRACE_MS - 1;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "live", "still inside the restart window");
+
+  now += 2;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "ended");
+  assert.equal(registry.list()[0].endedAt, now);
+});
+
+test("a session restored stale is ended the same way when its relay does not return", () => {
+  // A second restart soon after the first restores the same dead session as stale, and it held a
+  // pipe exactly as a live one did.
+  let now = 1_000;
+  const { registry, relays } = restarted({ now: () => now, state: "stale" });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  now += RELAY_RESTART_GRACE_MS + 1;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "ended");
+  assert.equal(registry.list()[0].endedAt, now);
+});
+
+test("no restart window runs before the listener binds", () => {
+  // The hub is built and its heartbeat started long before the broker binds its port, with a
+  // Discord login in between. A window running down then would end sessions no relay could reach.
+  let now = 1_000;
+  const { registry, relays } = restarted({ now: () => now });
+
+  for (const at of [GRACE_MS + 1, RELAY_RESTART_GRACE_MS + 1, RELAY_RESTART_GRACE_MS * 100]) {
+    now = 1_000 + at;
+    relays.heartbeat();
+    assert.equal(registry.list()[0].state, "live", `a heartbeat ${String(at)}ms in ends nothing`);
+  }
+});
+
+test("a restored session no relay ever attached to is left to the sweep", () => {
+  // A null `lastRelayAt` means the record never held a pipe, so no window is opened for it.
+  let now = 1_000;
+  const { registry, relays } = restarted({ now: () => now, lastRelayAt: null });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  for (const at of [RELAY_RESTART_GRACE_MS + 1, RELAY_RESTART_GRACE_MS * 100]) {
+    now = 1_000 + at;
+    relays.heartbeat();
+    assert.equal(registry.list()[0].state, "live");
+    assert.equal(registry.list()[0].endedAt, null);
+  }
+});
+
+test("a restored ended session is left exactly as it was", () => {
+  let now = 1_000;
+  const lines: string[] = [];
+  const { registry, relays } = restarted({
+    now: () => now,
+    state: "ended",
+    endedAt: 700,
+    log: (line) => lines.push(line),
+  });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+  assert.deepEqual(lines, [], "an ended session is given no window to report");
+
+  now += RELAY_RESTART_GRACE_MS * 100;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "ended");
+  assert.equal(registry.list()[0].endedAt, 700, "ending it again would move its timestamp");
+});
+
+test("closing every pipe for a shutdown clears the restart windows too", () => {
+  let now = 1_000;
+  const { registry, relays } = restarted({ now: () => now });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  relays.closeAll();
+  now += RELAY_RESTART_GRACE_MS * 10;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "live", "a broker shutdown is not a session death");
+});
+
+test("a second call does not reopen the restart windows later", () => {
+  let now = 1_000;
+  const { registry, relays } = restarted({ now: () => now });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  now += RELAY_RESTART_GRACE_MS / 2;
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  // Measured from the first call. A window reopened by the second would still be running here.
+  now = 1_000 + RELAY_RESTART_GRACE_MS;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "ended");
+});
+
+test("a token already holding a pipe when the windows open gets no window", () => {
+  let now = 1_000;
+  const lines: string[] = [];
+  const { registry, relays } = restarted({ now: () => now, log: (line) => lines.push(line) });
+  accepted(relays.attach(TOKEN, fakeConnection()));
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+  assert.deepEqual(
+    lines.filter((line) => line.includes("session-a")),
+    [],
+    "a relay already back is not reported as missing",
+  );
+
+  now += RELAY_RESTART_GRACE_MS * 10;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "live");
+});
+
+test("a relay that never returns after a restart is ended inside the two minute bound", () => {
+  // The Goal's bound, measured from the listener binding: the restart window plus the one heartbeat
+  // the reap waits for, which is 105 seconds at the defaults and inside two minutes. The heartbeat
+  // interval starts when the hub is built, before the bind, so its phase against the bind is
+  // arbitrary. The steps are placed so one lands a millisecond before the window closes, which is
+  // the worst phase: the reap then waits a whole heartbeat more.
+  const heartbeatMs = loadConfig({}).relayHeartbeatMs;
+  const bindAt = 1_000;
+  let now = bindAt;
+  const { registry, relays } = restarted({ now: () => now, graceMs: heartbeatMs });
+  relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+
+  let endedAfter: number | null = null;
+  let step = (RELAY_RESTART_GRACE_MS - 1) % heartbeatMs;
+  while (now - bindAt < 120_000 && endedAfter === null) {
+    now += step;
+    step = heartbeatMs;
+    relays.heartbeat();
+    if (registry.list()[0].state === "ended") endedAfter = now - bindAt;
+  }
+  assert.notEqual(endedAfter, null, "the session was never ended");
+  assert.ok(
+    (endedAfter ?? Infinity) <= 105_000,
+    `ended ${String(endedAfter)}ms after the bind, past the 105000ms bound`,
+  );
+  assert.ok(
+    (endedAfter ?? 0) >= RELAY_RESTART_GRACE_MS,
+    `ended ${String(endedAfter)}ms after the bind, before the restart window closed`,
+  );
 });

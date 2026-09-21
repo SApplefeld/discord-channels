@@ -4,7 +4,11 @@
 // here knows what a channel notification is, and nothing in the server wiring knows what the broker
 // speaks.
 import http from "node:http";
-import { RELAY_READ_TIMEOUT_MS, RELAY_REPLY_IDLE_MS } from "../broker/config.ts";
+import {
+  RELAY_MAX_RECONNECT_DELAY_MS,
+  RELAY_READ_TIMEOUT_MS,
+  RELAY_REPLY_IDLE_MS,
+} from "../broker/config.ts";
 import type { PermissionVerdict } from "./permission.ts";
 
 export type InboundHandler = (text: string, chatId: string) => void;
@@ -95,7 +99,6 @@ export type BrokerClient = {
 };
 
 const DEFAULT_RECONNECT_DELAY_MS = 1_000;
-const MAX_RECONNECT_DELAY_MS = 30_000;
 
 /**
  * How long a permission prompt's POST may go unanswered before the prompt is reported as not taken.
@@ -210,7 +213,7 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
       retry = null;
       connect();
     }, delay);
-    delay = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
+    delay = Math.min(delay * 2, RELAY_MAX_RECONNECT_DELAY_MS);
   }
 
   function connect(): void {

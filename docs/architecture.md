@@ -151,6 +151,17 @@ next `Stop` and dropping it would read a mid-fan-out restart as an idle session.
 is written and restored, on the opposite reasoning to the goal's: it is identity rather than intent,
 and a restart that dropped it would repaint a renamed thread back to its launch name.
 
+A restored record is weak evidence that its session survived the restart, because no relay pipe
+survives the broker process. When the listener binds, the relay hub (`openRestartWindows` in
+`broker/routing/relays.ts`) opens a restart window for every restored record that is not ended and
+carries a saved `lastRelayAt`. A relay that re-attaches inside the window cancels it, and a session
+whose relay never returns is ended on the heartbeat through the same path an ordinary pipe close
+takes. The window is `RELAY_RESTART_GRACE_MS`, three times the 30 second
+`RELAY_MAX_RECONNECT_DELAY_MS` that also caps the relay client's backoff, and both are constants in
+`broker/config.ts`. It opens at the bind rather than when the hub is built, since a window running
+down through a slow Discord login would end sessions whose relays had no way back. A record saved
+with no `lastRelayAt` opens no window and is left to the staleness sweep.
+
 ## Mid-turn narration
 
 The mirror above carries only the two moments a hook payload reaches: the prompt that opens a turn
@@ -740,17 +751,25 @@ is mirrored raw, on the reasoning that readable pipes beat a truncated block.
 
 The channel's pinned messages are maintained the same way the threads are: by reconciling against
 Discord's own answer rather than a flag this broker keeps, which is what survives a restart, a
-hand-made pin, and a card rebuilt after a deletion. The sweep touches only messages the broker
-recognizes as its own cards, so a pin the operator made is not collateral. That narrowing is also
-why the fifty-pin ceiling is read as the channel's rather than as this broker's: every pin the sweep
-will not touch is counted against the ceiling before the cards are, since nothing here will ever
-free those slots and asking for a pin the channel has no room for is a permanent refusal, three of
-which stop the pin route for the life of the process.
+hand-made pin, and a card rebuilt after a deletion for a session the broker is hearing from. The
+sweep touches only messages the broker recognizes as its own cards, so a pin the operator made is
+not collateral. That narrowing is also why the fifty-pin ceiling is read as the channel's rather
+than as this broker's: every pin the sweep will not touch is counted against the ceiling before
+the cards are, since nothing here will ever free those slots and asking for a pin the channel has
+no room for is a permanent refusal, three of which stop the pin route for the life of the process.
 
 An exited session's thread archives itself on the same tick, unless the host turns that off. The
 flag lives beside the binding and clears the moment the session's derived state stops reading
 exited, which is what lets a presumed-dead session that wakes get its card and its title maintained
 again, and be archived once more at its real exit.
+
+The decline-and-wake rule behind that starts at staleness rather than at the four hour backstop. A
+session the registry holds `stale` whose derived state is `idle` gains no new card or thread, so a
+deletion is honored as cleanup, and the entry is never abandoned: a hook or a relay that revives
+the record to `live` makes the next pass build both. A stale session reading `needs you`,
+`blocked` or `working` is outside the rule and rebuilt as usual. The guard sits in the surface's
+build path alone, so a card and thread that still exist are reconciled to their current state
+whatever the session's lifecycle.
 
 ## External integrations
 
