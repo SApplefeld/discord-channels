@@ -339,6 +339,8 @@ test("a near miss of each branch does not block the send", () => {
     ["bearer with 19 token characters", "Bearer abcdefghij012345678"],
     ["sk- with 19 alphanumerics", "sk-abcdefghij012345678"],
     ["sk- with 19 token characters", "sk-proj-abcdefghij0123"],
+    ["a hyphenated file name containing sk-", "renamed task-runner-config-loader-module.ts"],
+    ["a hyphenated phrase containing sk-", "wired the risk-based-authentication-flow-handler"],
     ["a GitHub prefix with 19 characters", "ghp_abcdefghij012345678"],
     ["a password mentioned without an assignment", "reset your password before Friday"],
     ["a PEM public key", "-----BEGIN PUBLIC KEY-----"],

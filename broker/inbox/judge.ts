@@ -10,7 +10,7 @@
 // What leaves the machine is closed at the text of one reply, screened for secrets over its whole
 // length and then cut to its first 12,000 code points. A reply matching the screen is never sent,
 // and neither is an empty one. Length never blocks a send. The screen is a pattern and not a proof,
-// an accepted residual; section 5 of the plan records it in `docs/security-model.md`.
+// an accepted residual recorded in `docs/security-model.md`.
 //
 // Every failure lands on one direction: no flag, one rate-limited log line, and never a throw into
 // the caller. A log line names the failure kind and the session and carries no reply text, no
@@ -47,14 +47,15 @@ const REPEAT_WINDOW_MS = 60_000;
  *
  * The branches, in order: an `api_key` or `api-key` assignment to a quoted value of 12 or more
  * characters; `bearer` followed by 20 or more token characters; a PEM private-key header; `sk-`
- * followed by 20 or more token characters (letters, digits, `_` and `-`, so a `sk-proj-` or
- * `sk-ant-api03-` shaped key is caught with its infix); a GitHub token prefix (`gho_`, `ghp_`,
- * `ghs_`, `github_pat_`) followed by 20 or more token characters; and a `password` assignment to
- * a quoted value of any length. Case-insensitive throughout. Run over the whole reply before the
- * cut, so a secret past the cut still blocks the send.
+ * at a word boundary followed by 20 or more token characters (letters, digits, `_` and `-`, so a
+ * `sk-proj-` or `sk-ant-api03-` shaped key is caught with its infix, while a hyphenated name
+ * such as `task-runner-config-loader` that merely contains `sk-` is not); a GitHub token prefix
+ * (`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more token characters; and a
+ * `password` assignment to a quoted value of any length. Case-insensitive throughout. Run over
+ * the whole reply before the cut, so a secret past the cut still blocks the send.
  */
 export const SECRET_SCREEN =
-  /(api[_-]key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|sk-[a-z0-9_-]{20,}|(gho_|ghp_|ghs_|github_pat_)[a-z0-9_]{20,}|password\s*[:=]\s*['"][^'"]+)/i;
+  /(api[_-]key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|\bsk-[a-z0-9_-]{20,}|(gho_|ghp_|ghs_|github_pat_)[a-z0-9_]{20,}|password\s*[:=]\s*['"][^'"]+)/i;
 
 const PREAMBLE =
   "The `message` is the final reply an AI coding agent sent to its human operator at the end of " +
@@ -209,6 +210,9 @@ function createRepeatLog(
       entry.suppressed += 1;
       return;
     }
+    // The window is refreshed before either line is written, so a log that throws cannot leave
+    // it stale and turn every later failure of the kind into a fresh line.
+    state.set(kind, { windowStart: at, suppressed: 0 });
     if (entry !== undefined && entry.suppressed > 0) {
       log(
         `inbox judge: ${kind} occurred ${String(entry.suppressed)} more time(s) in the last ` +
@@ -216,7 +220,6 @@ function createRepeatLog(
       );
     }
     log(`inbox judge: ${kind} session=${sessionId}`);
-    state.set(kind, { windowStart: at, suppressed: 0 });
   };
 }
 
