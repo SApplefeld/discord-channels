@@ -804,7 +804,7 @@ test("the blank lines the list shape needs are charged against the budget like a
             entry({
               title: `a queue entry title long enough to fill its own bullet ${index}`,
               word: "in flight",
-              reading: { sections: 7, completed: 2, next: "the next section of this plan" },
+              reading: { sections: 7, completed: 2, next: "the next section of this plan", heldSince: null },
             }),
             entry({ title: `a blocked entry of worker ${index}`, word: "blocked", reason: "Waiting on an operator fork" }),
             entry({ title: `a queued entry of worker ${index}` }),
@@ -855,6 +855,7 @@ function queueReading(
     stem,
     mtimeMs: NOW - 3 * HOUR,
     sizeBytes: 4_096,
+    heldSince: null,
     ...overrides,
   };
 }
@@ -1088,6 +1089,71 @@ test("a card carrying no persona group is anchored to its plans alone", () => {
   assert.equal(absent, empty, "an absent persona list composes the same bytes as an empty one");
 });
 
+/** The reference queue with one entry's plan reading replaced by a hold stamped at `heldSince`. */
+function referenceHolding(id: string, heldSince: number): PersonaQueue {
+  const fresh = referenceQueue();
+  const held = fresh.readings.get(id);
+  assert.ok(held !== undefined && !held.archived, `${id} must carry a parsed reading to hold`);
+  const readings = new Map(fresh.readings);
+  readings.set(id, { ...held, heldSince });
+  return { ...fresh, readings };
+}
+
+test("the footer is as old as a held plan parse behind a drawn entry, and the entry draws no marker", () => {
+  const fresh = card({ personas: [reference()] });
+  const held = card({ personas: [reference(referenceHolding("e2", NOW - 3 * HOUR))] });
+
+  assert.match(fresh, /^card as of just now$/m);
+  assert.match(held, /^card as of 3h ago$/m, "a drawn entry's held parse is what the footer reports");
+  assert.equal(
+    held.replace(/^card as of 3h ago$/m, "card as of just now"),
+    fresh,
+    "the footer is the only line the hold changes",
+  );
+});
+
+test("a held parse behind an entry the card does not draw ages the footer by nothing", () => {
+  const done = referenceQueue();
+  const doneReadings = new Map(done.readings);
+  doneReadings.set(
+    "e4",
+    queueReading("kaizen-messages", { status: "Complete", terminal: true, heldSince: NOW - 3 * HOUR }),
+  );
+  const onDone = card({ personas: [reference({ ...done, readings: doneReadings })] });
+  const onUndrawn = card({
+    personas: [
+      persona({
+        name: "finished",
+        done: 1,
+        total: 1,
+        entries: [
+          entry({
+            title: "one",
+            word: "done",
+            reading: { sections: 2, completed: 2, next: null, heldSince: NOW - 3 * HOUR },
+          }),
+        ],
+      }),
+    ],
+    plans: [plan()],
+    roots: [CHANNELS],
+  });
+
+  assert.match(onDone, /^card as of just now$/m, "a done entry's held parse ages nothing");
+  assert.match(onUndrawn, /^card as of just now$/m, "an undrawn group's held parse ages nothing");
+});
+
+test("a plan hold instant that names no time leaves the footer an age rather than NaN", () => {
+  const body = card({
+    personas: [reference(referenceHolding("e2", Number.NaN))],
+    plans: [plan({}, NOW - 4 * MINUTE)],
+    roots: [CHANNELS],
+  });
+
+  assert.doesNotMatch(body, /NaN/);
+  assert.match(body, /^card as of 4m ago$/m, "an instant naming no time ages the footer by nothing");
+});
+
 test("the next line draws on the entry in flight and on no other", () => {
   const body = card({
     personas: [
@@ -1098,12 +1164,12 @@ test("the next line draws on the entry in flight and on no other", () => {
           entry({
             title: "running",
             word: "in flight",
-            reading: { sections: 3, completed: 1, next: "the renderer and its tests" },
+            reading: { sections: 3, completed: 1, next: "the renderer and its tests", heldSince: null },
           }),
           entry({
             title: "parked",
             word: "started, parked",
-            reading: { sections: 3, completed: 2, next: "a next value no parked entry draws" },
+            reading: { sections: 3, completed: 2, next: "a next value no parked entry draws", heldSince: null },
           }),
         ],
       }),
@@ -1127,7 +1193,7 @@ test("a done entry draws no line of its own, and the label's count is where it i
         done: 2,
         total: 3,
         entries: [
-          entry({ title: "finished", word: "done", reading: { sections: 4, completed: 4, next: null } }),
+          entry({ title: "finished", word: "done", reading: { sections: 4, completed: 4, next: null, heldSince: null } }),
           entry({ title: "archived", word: "done" }),
           entry({ title: "running", word: "in flight" }),
         ],
@@ -1146,7 +1212,7 @@ test("an entry whose plan declares no sections draws its word alone", () => {
         name: "dev-plugin",
         total: 1,
         entries: [
-          entry({ title: "unsectioned", word: "up next", reading: { sections: 0, completed: 0, next: null } }),
+          entry({ title: "unsectioned", word: "up next", reading: { sections: 0, completed: 0, next: null, heldSince: null } }),
         ],
       }),
     ],
@@ -1329,7 +1395,7 @@ test("a fleet too large for one message ends in the tail counting entries and wh
             title: `a queue entry title long enough to fill its own bullet ${at}-${index}`,
             word: index === 0 ? "in flight" : "blocked",
             reason: "Waiting on an operator fork that has not been answered yet",
-            reading: { sections: 7, completed: index, next: "the next section of this plan" },
+            reading: { sections: 7, completed: index, next: "the next section of this plan", heldSince: null },
           }),
         ),
         // Every group carries a queued tail, so its closing fold is one item standing for several
@@ -1446,7 +1512,7 @@ function adversarialCards(): string[] {
               entry({
                 title: hostile,
                 word: "in flight",
-                reading: { sections: 3, completed: 1, next: hostile },
+                reading: { sections: 3, completed: 1, next: hostile, heldSince: null },
               }),
               entry({ title: hostile, word: "blocked", reason: hostile }),
               entry({ title: hostile, word: "done" }),

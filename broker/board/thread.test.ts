@@ -970,7 +970,25 @@ test("the roster alone, with no project roots, builds the card and draws persona
         activeGoalId: null,
         lastTurnComplete: null,
         turnStartedAt: null,
-        readings: new Map(),
+        readings: new Map([
+          [
+            "g1",
+            {
+              archived: false,
+              status: "Ready",
+              terminal: false,
+              sections: 2,
+              completed: 0,
+              next: null,
+              root: persona.workdir,
+              path: path.join(persona.workdir, "docs", "plans", "first_spec_v1.md"),
+              stem: "first_spec_v1",
+              mtimeMs: START - 60 * 60_000,
+              sizeBytes: 1_024,
+              heldSince: START - 3 * 60 * 60_000,
+            },
+          ],
+        ]),
         heldSince: null,
       })),
   });
@@ -981,6 +999,7 @@ test("the roster alone, with no project roots, builds the card and draws persona
   assert.match(body, /worker-one/);
   assert.match(body, /First plan/);
   assert.doesNotMatch(body, /No open plans in the configured projects/);
+  assert.match(body, /^card as of 3h ago$/m, "the entry's held parse instant reaches the footer");
 });
 
 test("a persona enabled since the last tick widens the event roots and resets the reader", async () => {

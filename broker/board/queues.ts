@@ -131,9 +131,14 @@ export type QueueEntry = {
  * persona's `workdir` rather than to a configured project root. One found only in an archive folder
  * yields the archived flag and no parse at all: the card draws such an entry as done, so the file's
  * contents would change nothing and reading them would cost the whole file.
+ *
+ * `heldSince` is null for a parse taken this tick, and for one whose document this tick confirmed
+ * unmoved, which is as current as one read this tick. It is the instant the parse was last known to
+ * describe the file when the reading is a hold handed back over a document that failed to read or
+ * parse this tick, so the card can say how old what it draws from that entry is.
  */
 export type QueuePlanReading =
-  | ({ readonly archived: false } & PlanReading)
+  | ({ readonly archived: false; readonly heldSince: number | null } & PlanReading)
   | {
       readonly archived: true;
       readonly root: string;
@@ -548,12 +553,23 @@ type HeldFile<T> = {
  */
 type PlanFailureHold = { stat: PlanStat; durable: boolean };
 
+/**
+ * One plan document's last good parse, with the stat it was read at and when that parse was last
+ * known to describe the file.
+ *
+ * `stat` is what a later tick's stat is compared against, and a difference in either field sends
+ * the document back to the reader. `readAt` is the instant a hold handed back over that document
+ * is stamped with, and it moves on every tick the document is confirmed unmoved, because an unmoved
+ * file's parse is as current as one read this tick.
+ */
+type PlanParseHold = { stat: PlanStat; parse: PlanParse; readAt: number };
+
 /** One persona's state across ticks: both held files, the plan parses the join already has, and the
  * stats the join's failures were reached at. */
 type PersonaState = {
   store: HeldFile<StoreReading>;
   heartbeat: HeldFile<{ turnStartedAt: number | null }>;
-  parses: Map<string, { stat: PlanStat; parse: PlanParse }>;
+  parses: Map<string, PlanParseHold>;
   failures: Map<string, PlanFailureHold>;
 };
 
@@ -702,7 +718,9 @@ function readHeldFile<T>(
  * doc caught mid-write by a live session needs. That parse is handed back whole, under the stat it
  * was read at as well as its contract fields, because a held parse's status describes those bytes
  * and no others: wearing the current document's modification time it would outrank a genuinely
- * newer document in the card's in-flight rule and draw the wrong entry as running.
+ * newer document in the card's in-flight rule and draw the wrong entry as running. It carries the
+ * instant it was last known good as well, which is `at` on the last tick that parsed the document
+ * or confirmed it unmoved, so the card can age itself by a reading it redraws.
  *
  * The stat a failure was reached at is held too, so a document that has not moved since it failed is
  * not opened again, whether that is a second entry naming it inside this tick or the tick after.
@@ -711,8 +729,9 @@ function joinPlan(
   workdir: string,
   name: string,
   state: PersonaState,
-  parses: Map<string, { stat: PlanStat; parse: PlanParse }>,
+  parses: Map<string, PlanParseHold>,
   failures: Map<string, PlanFailureHold>,
+  at: number,
   stat: (file: string) => PlanStat | null,
   read: (file: string) => PlanRead,
 ): QueuePlanReading | null {
@@ -731,23 +750,26 @@ function joinPlan(
       sizeBytes: moved.sizeBytes,
     };
 
+    // An unmoved document's parse is as current as one read this tick, so the hold's instant moves
+    // up to this tick and the reading is handed back as this tick's own.
     const holding = parses.get(file) ?? state.parses.get(file);
     if (
       holding !== undefined &&
       holding.stat.mtimeMs === moved.mtimeMs &&
       holding.stat.sizeBytes === moved.sizeBytes
     ) {
-      parses.set(file, holding);
-      return { archived: false, ...holding.parse, ...where };
+      parses.set(file, { ...holding, readAt: at });
+      return { archived: false, heldSince: null, ...holding.parse, ...where };
     }
 
-    // The hold, kept and handed back at the stat it was parsed at, or nothing at all when this
-    // document has never parsed.
+    // The hold, kept and handed back at the stat it was parsed at and stamped with the instant it
+    // was last known good, or nothing at all when this document has never parsed.
     const held = (): QueuePlanReading | null => {
       if (holding === undefined) return null;
       parses.set(file, holding);
       return {
         archived: false,
+        heldSince: holding.readAt,
         ...holding.parse,
         root: workdir,
         path: file,
@@ -783,8 +805,8 @@ function joinPlan(
     if ("failed" in text) return failAt(text.failed === "oversized");
     const parsed = parsePlan(text.text);
     if (parsed === null) return failAt(true);
-    parses.set(file, { stat: moved, parse: parsed });
-    return { archived: false, ...parsed, ...where };
+    parses.set(file, { stat: moved, parse: parsed, readAt: at });
+    return { archived: false, heldSince: null, ...parsed, ...where };
   }
   return null;
 }
@@ -808,6 +830,9 @@ export function createQueueReader(options: QueueReaderOptions = {}): QueueReader
 
   return {
     read: (personas) => {
+      // One instant for the tick, which every parse taken or confirmed unmoved this tick is stamped
+      // with, so two entries naming one document agree on when it was last known good.
+      const at = now();
       const next = new Map<string, PersonaState>();
       const queues: PersonaQueue[] = [];
 
@@ -838,7 +863,7 @@ export function createQueueReader(options: QueueReaderOptions = {}): QueueReader
 
         const entries = store?.entries ?? [];
         const readings = new Map<string, QueuePlanReading>();
-        const parses = new Map<string, { stat: PlanStat; parse: PlanParse }>();
+        const parses = new Map<string, PlanParseHold>();
         const failures = new Map<string, PlanFailureHold>();
         const joined = new Set<string>();
         for (const entry of entries) {
@@ -850,7 +875,7 @@ export function createQueueReader(options: QueueReaderOptions = {}): QueueReader
           joined.add(entry.id);
           const name = planNameFor(entry);
           if (name === null) continue;
-          const reading = joinPlan(persona.workdir, name, state, parses, failures, stat, read);
+          const reading = joinPlan(persona.workdir, name, state, parses, failures, at, stat, read);
           if (reading !== null) readings.set(entry.id, reading);
         }
         // Only the documents this tick actually joined to are held, so a queue that drops an entry

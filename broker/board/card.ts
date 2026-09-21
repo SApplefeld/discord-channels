@@ -99,12 +99,22 @@ export type BoardPersonaWord =
  * `reason` draws on a blocked entry alone, which is the one word that has one. `reading` is null for
  * an entry whose plan document the join found nothing for, and for one found only in an archive
  * folder and never opened: such an entry draws its word and nothing else.
+ *
+ * `reading.heldSince` is the instant the parse behind the entry was last known good, or null for
+ * one read or confirmed unmoved this tick. It draws no marker on the entry, whose lines are the
+ * layout as approved. The footer counts it, on an entry the card draws, so the card never reports
+ * itself as current while a count or a next step on it came from a document that has since failed.
  */
 export type BoardPersonaEntry = {
   title: string;
   word: BoardPersonaWord;
   reason: string | null;
-  reading: { sections: number; completed: number; next: string | null } | null;
+  reading: {
+    sections: number;
+    completed: number;
+    next: string | null;
+    heldSince: number | null;
+  } | null;
 };
 
 /**
@@ -930,13 +940,17 @@ function personaSections(groups: readonly BoardPersona[], now: number): ProjectS
  *
  * Both views age it, a project's plan parses and a worker's store reading alike, so the footer is
  * never fresher than a group drawn above it: a card closing as of just now over a label reading
- * `held 5m` states two ages for one card, and the footer's is the false one.
+ * `held 5m` states two ages for one card, and the footer's is the false one. A held plan parse
+ * behind a queue entry ages it the same way, stamped at the instant that parse was last known good,
+ * because the entry's count and next step were read from that parse and the entry itself draws no
+ * marker saying so: the footer is the one line on the card that can.
  *
- * Only what is drawn counts. A terminal plan and a group of nothing but done entries each draw
- * nothing, so a held reading of one is information no reader is looking at, and letting it age the
- * footer would put an hours-old stamp under a card every visible line of which was read this tick.
- * A hold instant that names no time counts as nothing too, which keeps the line an age rather than
- * a figure of `NaN`, and costs only the marker the group's own label already leaves off.
+ * Only what is drawn counts. A terminal plan, a done entry and a group of nothing but done entries
+ * each draw nothing, so a held reading of one is information no reader is looking at, and letting
+ * it age the footer would put an hours-old stamp under a card every visible line of which was read
+ * this tick. A hold instant that names no time counts as nothing too, which keeps the line an age
+ * rather than a figure of `NaN`, and costs only the marker the group's own label already leaves
+ * off.
  */
 function footerLine(
   plans: readonly BoardPlan[],
@@ -949,9 +963,16 @@ function footerLine(
     now,
   );
   const oldest = personas.reduce((at, group) => {
+    if (!drawsGroup(group)) return at;
     const since = group.heldSince;
-    if (since === null || !Number.isFinite(since) || !drawsGroup(group)) return at;
-    return Math.min(at, since);
+    const oldestGroup = since === null || !Number.isFinite(since) ? at : Math.min(at, since);
+    return group.entries.reduce((oldestEntry, item) => {
+      const parsedAt = item.reading?.heldSince ?? null;
+      if (item.word === "done" || parsedAt === null || !Number.isFinite(parsedAt)) {
+        return oldestEntry;
+      }
+      return Math.min(oldestEntry, parsedAt);
+    }, oldestGroup);
   }, oldestPlan);
   return `card as of ${heartbeat(Math.max(now - oldest, 0))}`;
 }

@@ -593,7 +593,12 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
         reason: entry.reason,
         reading:
           reading !== undefined && !reading.archived
-            ? { sections: reading.sections, completed: reading.completed, next: reading.next }
+            ? {
+                sections: reading.sections,
+                completed: reading.completed,
+                next: reading.next,
+                heldSince: reading.heldSince,
+              }
             : null,
       };
     });

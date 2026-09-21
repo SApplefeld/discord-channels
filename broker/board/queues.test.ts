@@ -758,6 +758,53 @@ test("a plan document that fails to read keeps its held parse too", (t) => {
   assert.deepEqual(opened, [file, file, file], "a refused open is retried, not held on its stat");
 });
 
+test("a held parse carries the instant it was last known good, which moves while the document sits still", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.file(["docs", "plans"], "a_b_v1.md", planDoc());
+  work.store(store([goal({ planPath: "a_b_v1.md" })]));
+
+  let clock = 1_000;
+  let refuse = false;
+  const reader = createQueueReader({
+    now: () => clock,
+    readPlan: (target) => (refuse ? { failed: "unreadable" } : readPlanFile(target)),
+  });
+  const heldSince = (): number | null => {
+    const reading = reader.read([work.persona])[0]?.readings.get("goal-1");
+    assert.ok(reading !== undefined && !reading.archived, "the entry must join to a live plan");
+    return reading.heldSince;
+  };
+
+  assert.equal(heldSince(), null, "a parse taken this tick is held from no instant");
+
+  // The document has not moved, so its parse is as current as one read this tick: no instant, and
+  // the instant a later hold will report moves up to this tick.
+  clock = 2_000;
+  assert.equal(heldSince(), null, "a document confirmed unmoved this tick is not a hold");
+
+  // The document moves and the read fails, so the parse taken at 1,000 and confirmed at 2,000 is
+  // handed back as a hold stamped at the instant it was last known to describe the file.
+  clock = 3_000;
+  refuse = true;
+  work.file(["docs", "plans"], "a_b_v1.md", planDoc("Ready"));
+  assert.equal(heldSince(), 2_000, "the hold is stamped at the last tick the file was confirmed unmoved");
+
+  // Still failing at the same stat, so the file is not opened, and the instant is still when the
+  // parse was last known good rather than when this tick read the hold.
+  clock = 4_000;
+  assert.equal(heldSince(), 2_000, "the instant does not move while the hold stands");
+
+  // A document that parsed on one tick and fails on the very next one is stamped at the parse.
+  refuse = false;
+  clock = 5_000;
+  assert.equal(heldSince(), null, "a document that reads again is not a hold");
+  clock = 6_000;
+  refuse = true;
+  work.file(["docs", "plans"], "a_b_v1.md", planDoc("Complete"));
+  assert.equal(heldSince(), 5_000, "a parse that failed on the tick after it was taken is stamped at the parse");
+});
+
 test("two entries naming one document read and parse it once for the tick", (t) => {
   const work = workdir();
   t.after(work.cleanup);

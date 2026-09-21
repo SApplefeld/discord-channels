@@ -55,6 +55,7 @@ function reading(overrides: Partial<ParsedReading> = {}): ParsedReading {
     stem,
     mtimeMs: NOW - 2 * HOUR,
     sizeBytes: 2_048,
+    heldSince: null,
     ...overrides,
   };
 }

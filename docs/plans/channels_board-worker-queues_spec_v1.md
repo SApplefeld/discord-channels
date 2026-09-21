@@ -171,7 +171,7 @@ Acceptance:
 - A fixture large enough to overflow ends in the tail, counts undrawn entries as plans and undrawn groups as projects, and keeps the whole card at or under `MAX_CARD_LENGTH`.
 - With no persona input, every existing card test passes unchanged.
 
-Files in scope: `broker/board/card.ts`, `broker/board/card.test.ts`, `broker/board/queues.ts`, `broker/board/queues.test.ts`.
+Files in scope: `broker/board/card.ts`, `broker/board/card.test.ts`, `broker/board/queues.ts`, `broker/board/queues.test.ts`, `broker/board/thread.ts` (the `personaView` adapter alone), `broker/board/thread.test.ts` (one assertion), `broker/board/status.test.ts` (one fixture line).
 Tests: lock the budget with persona groups present, because a card over Discord's limit fails to post at all. Lock the reference body, because it is the layout the operator approved.
 
 ### 5. Wiring, the build gate, and the documents
