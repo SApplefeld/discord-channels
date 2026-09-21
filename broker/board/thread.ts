@@ -327,11 +327,13 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
   /**
    * Reads forward from `previous` by calling `readEventStream` up to `windows` times, each call the
    * bounded window `readEvents` itself already enforces. A call whose returned offset does not sit
-   * past the one it was handed means there is nothing left to read this tick, whether the stream is
-   * genuinely caught up or `readEvents` resolved a rotation back to an offset already seen; either
-   * way another call would only read the same bytes again. A call reporting `unreadable` would fail
-   * the same way on every further call, so it stops the loop too rather than spending the rest of the
-   * budget on it. A tick with no reset hands this a ceiling of one, which is today's single call.
+   * past the one it was handed stops the loop. Where the stream is genuinely caught up, another call
+   * would only read the same bytes again. Where `readEvents` resolved a rotation instead, the offset
+   * fell because the read restarted at the top of the replacement file, which the kit starts near
+   * empty, so what one window did not cover waits for the next tick. A call reporting `unreadable`
+   * would fail the same way on every further call, so it stops the loop too rather than spending
+   * the rest of the budget on it. A tick with no reset hands this a ceiling of one, which is today's
+   * single call.
    */
   function drainEvents(
     previous: EventReaderState,
