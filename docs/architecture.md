@@ -504,16 +504,35 @@ changes; and every session that never sets `CHANNEL_LINEAGE` - which is every se
 
 ## The fleet board card
 
-A third surface answers what the other two cannot: which plans are open across the projects on this
-host, and how far each has got. One more broker-owned thread carries a card edited in place, built
-from `broker/board/`: a sweep that parses plan documents, a tail over the kit's goal event stream, a
-pure renderer, and a thread module owning the lifecycle, on the usage card's pattern.
+A third surface answers what the other two cannot: what each worker on this host is doing, which
+plans are open across its projects, and how far each has got. One more broker-owned thread carries
+a card edited in place, built from `broker/board/`: a sweep that parses plan documents, a tail over
+the kit's goal event stream, a pure renderer, and a thread module owning the lifecycle, on the usage
+card's pattern.
+
+The card has two sources, and it is built when either is configured. The first is the fleet roster
+named by `CHANNEL_BOARD_ROSTER`, which yields the persona view. The second is the project roots
+named by `CHANNEL_BOARD_PROJECTS`, which yields the folder view. Each refresh runs in one order. It
+reads the roster (`roster.ts`), then each persona's queue (`queues.ts`), then the event stream. It
+then computes each entry's status word (`status.ts`), sweeps the project roots (`plans.ts`), and
+hands both views to the renderer (`card.ts`). The renderer never imports the status module, so the
+card draws the words it is handed and holds no queue rule of its own.
+
+The persona view draws one group per enabled persona, in roster order, ahead of every project
+group. `roster.ts` reads the roster with a 64 KiB cap and keeps at most 16 personas. `queues.ts`
+reads each persona's store and heartbeat under its `workdir`, with a 2 MiB cap and at most 200
+entries each, and joins each entry to a plan document. `status.ts` is one pure function that turns
+those readings into a word per entry, the group's done and total counts, and the worker's state. It
+reads no file and no clock, and its output carries no store status string. That is why the persona
+plugin's own words, such as `paused`, never reach the card: the operator reads "paused" as "won't",
+where the plugin means "not now". The words and what each means are listed in
+[`operations.md`](operations.md) under the persona view.
 
 The renderer is deterministic. No agent, no model call, and no token spend sit anywhere in the path
 between a plan file and the card, so what the card says is what the documents say, and a card that
 disagreed with the plan tree would be a bug rather than a judgment call.
 
-It reads exactly two kinds of file. The first is `docs/plans/*.md` under each configured project
+The folder view reads two kinds of file. The first is `docs/plans/*.md` under each configured project
 root, parsed against the kit's frozen v1 plan-doc machine contract: the `Status` header, the sections
 listed under `## Sections of Work`, which of them a Chapter's `Completed:` line closes, and the latest
 Chapter's `Next:`. That contract's sharp edges are reproduced rather than corrected. A foreign `##`
@@ -524,9 +543,17 @@ second is the kit's goal event stream, one JSON object per line, tailed by byte 
 project and plan, which is where the blocked marker comes from. That file has a second reader with
 its own offset, the blocked desk below, and the two folds live side by side in `broker/board/events.ts`.
 
-Paths are never derived from what either file says. The configured roots are the only path input;
-the one join is a root with a directory entry's own name, which cannot contain a separator, so no
-field of a plan document or an event can steer a read. Roots are compared as strings,
+No field of a plan document or an event is ever used as a path. The sweep's one join is a root with a
+directory entry's own name, which cannot contain a separator, so nothing either file says can steer
+a read. The persona view adds one bounded exception, a file name taken from a persona's store. The
+join keeps only the final segment of the entry's `planPath`, or the first `docs/plans/<name>.md` in
+its title and then its objective. The name must match one pattern and must not be `README.md`. It is
+then looked for in exactly four folders under that persona's `workdir`: `docs/plans/`,
+`docs/archive/plans/`, `docs/archive/` and `docs/plans/archive/`. A name found only in an archive
+folder marks the entry done and is never opened. The event reader is handed the configured roots
+first and the personas' working folders after them. It drops an event whose project matches no root
+it holds, so a change in that set of roots resets the reader and the stream is read again from its
+start. Roots are compared as strings,
 separator-normalized and case-folded on Windows, never by asking the filesystem whether two paths name
 the same place, and the configured spelling and the folded form come from one shared normalizer so
 the two readers cannot disagree about which root an event belongs to.

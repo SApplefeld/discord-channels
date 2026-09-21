@@ -55,10 +55,12 @@ session anyway, and the fix is re-running the installer.
 
 **The optional fleet cards send content of their own, and both are off until you turn them on.** The
 usage card (`CHANNEL_USAGE_CARD`) carries each account's identity and headroom. The board card
-(`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`) sweeps plan documents under the project roots
-you name and puts their titles, progress, and next steps in the channel, along with the last path
-segment of each root as the project name, so a root at or just under your home directory would put
-your account name there too. Both are configured in `broker.env` and documented in
+(`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_ROSTER`, `CHANNEL_BOARD_PROJECTS` or both) puts plan
+titles, progress, and next steps in the channel. With `CHANNEL_BOARD_ROSTER` set it draws each
+worker persona the fleet roster names, with that persona's name and its queued plan titles. With
+`CHANNEL_BOARD_PROJECTS` set it sweeps plan documents under the project roots you name, and uses
+the last path segment of each root as the project name. So a root at or just under your home
+directory would put your account name there too. Both cards are configured in `broker.env` and documented in
 [`operations.md`](operations.md); a value tuned by hand there survives a re-install.
 
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a

@@ -190,7 +190,8 @@ and none carries a date of its own. An item added from here on carries `(parked 
      rather than reading fresh.
   8. On a host with zero sessions and no claude-swap, confirm the static body means a deleted card
      goes undetected until restart.
-  9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`) and read it on a
+  9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`, or plus
+     `CHANNEL_BOARD_ROSTER`, the other way to turn it on, for the persona view) and read it on a
      phone in the same pass as check 2, folded and unfolded. The card draws no bar, and its one
      fence is the box naming each project, so what is being read is whether that box reads as the
      boundary between one project's list and the next, whether a long project name wraps inside the
@@ -495,10 +496,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   numbers, which is why it is parked rather than fixed in flight. What it costs to leave is that the
   next author copies whichever of the four they happen to open. The shape of the fix is one module
   owning a parameterised capped read that the four call, with the cap and the subject as arguments.
-  A smaller piece of the same convergence: `broker/board/plans.ts` keeps `planStem`, `isReadmeStem`
-  and `statPlanFile` unexported, so `broker/board/queues.ts` carries a hand-written copy of each. The
-  queue reader was written that way deliberately, to keep its section inside its own files, and the
-  three exports are the cheap half of this item.
+  A smaller piece of the same convergence: `broker/board/queues.ts` carries hand-written copies of
+  five helpers `broker/board/plans.ts` keeps unexported. They are `planStem`, the README-stem check,
+  `bounded`, the capped read inside `readPlanFile`, and `statPlanFile`. The queue reader's copy of
+  the last also refuses anything that is not a regular file, which the sweep settles from its own
+  listing instead, so a shared stat must keep that refusal for the reader. The queue reader was written that way
+  deliberately, to keep its section inside its own files, and the exports are the cheap half of this
+  item.
 
 - Give the non-finite modification time guard one owner (parked 2026-09-20, surfaced by the Fleet
   Board worker queues plan's section 3 and routed here because that section's spec bounds
