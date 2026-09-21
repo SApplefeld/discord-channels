@@ -519,3 +519,73 @@ Majors, then run the one lens the fix delta owes (it adds no module and reaches 
 but it reaches the path-join surface, so the adversarial lens runs at opus through Workflow), then
 the Minor close pass, the close gate, chapter 2, the routed-out backlog entry, and the commit.
 Sections 3 to 5: not started.
+
+### Interim board 4 - 2026-09-20
+
+Written on the closure drought: two review-round adjudications have now passed with section 2 still
+open. Not a Chapter.
+
+**Section stages.** Section 1 is closed, committed at `44aa3e8` and pushed. Section 2 is built,
+reviewed twice, fixed once, and in fix round 2. Sections 3 to 5 are not started.
+
+**Live dispatches.** One `implementer-opus` holds this section's four files, applying the three
+adjudicated fixes below. Review round 2's single lens has returned.
+
+**Gate baseline.** Measured on this branch at `3519aae` with section 2's four files dirty, on a box
+carrying no foreign claim, after fix round 1 and before fix round 2: targeted lane over
+`queues.test.ts` and `plans.test.ts` 55 tests, 55 pass, 0 fail, 0 skipped, exit code 0, 226 ms;
+lint (`tsc --noEmit`) exit code 0. Measured by this session rather than taken from the implementer's
+report. The lane's own prior baseline, at `44aa3e8` and contended, was 47 tests, 47 pass, 0 fail,
+exit 0. So fix round 1 added 8 tests and broke nothing. No whole gate has run since section 2's
+delta landed.
+
+**Rulings adopted since the last boundary.** Fix round 1 landed all six owed Majors and its gate was
+re-run here rather than taken on report. Review round 2 ran one adversarial lens at opus through
+Workflow at effort high, per the reviewer-effort table's later-round row over an opus writer. It
+returned CHANGES_REQUIRED with no Critical, four Majors and six Minors, and it confirmed fixes 5 and
+6 as correct and adequately pinned.
+
+Provenance on the four: one spec-traceable and three fix-introduced. None is new-requirement, so no
+finding is held and no judge is convened. No fix adds a mechanism no clause names, so no design stop
+fires.
+
+The reversal is the ruling worth finding in history. Fix round 1's brief carried an explicit
+acceptance clause, written by this session, saying a held plan parse is handed back under the
+current tick's modification time and size, on the reasoning that the card's downstream rules compare
+document modification times. That clause was wrong. `broker/board/thread.ts:497-507` redraws a held
+parse under the held stat, not the current one, and this module was written to follow that card. The
+consequence of the version shipped: a held parse's status is stale by definition, so a stale
+`In Progress` wearing a fresh timestamp outranks a genuinely newer document under section 3's
+in-flight rule, and the wrong entry draws as running with the wrong sections count and the wrong
+next step, for as long as the failing document keeps failing. Confirmed here by reading the sibling
+rather than taken on the reviewer's word. Fix round 2 reverses it to the held stat.
+
+The second ruling is a deliberate divergence from that same sibling. Fix round 1's failure hold
+records the failing stat for every terminal class, `unreadable` among them. On Windows a virus
+scanner holding a file open returns that class for a file that is otherwise at rest, so the stat
+never moves, the file is never opened again, and the persona's whole group freezes on its previous
+reading forever. The fix records a failure stat only for the three classes the bytes at that stat
+determine. `broker/board/thread.ts:441-447` holds `unreadable` the same way this stops doing, and
+the divergence is taken rather than referred: the sweep's version freezes one row where this one
+freezes a whole persona group.
+
+The third is that the join holds a parse but holds no failure, so a document that cannot be read or
+parsed is opened in full every tick forever, once per entry naming it. `thread.ts:220-228` states
+that cost as the reason its own `HeldFailure` exists. The fix mirrors the `failedAt` slot fix round
+1 already added for the store. That same fix closes the fourth Major, which is that fix round 1's
+in-tick fold does not cover the failure path while its own docstring claims it does.
+
+One half of a Major is declined on a positive ground. The reviewer asked for a held marker on each
+plan reading so a stale row can be drawn as stale. The Approach's layout paragraph puts the held
+marker at the group label and sources it from the store's reading, so a per-entry marker is a
+mechanism no clause in this plan names. Carried forward to section 4, where the layout lands.
+
+**Surfaces routed out, still pending one write.** Unchanged from interim board 3: the single-read
+capped read at `broker/usage/cache.ts:270-281`, the capped-read loop in four copies, and three
+`plans.ts` helpers left unexported. One `docs/backlog.md` entry, written after the rounds so that
+shared file is touched once.
+
+**Next action per section.** Section 2: read fix round 2's diff and re-run its gate here, then run
+the one lens that delta owes, then the Minor close pass over the thirteen Minors now listed, then
+the close gate, chapter 2, the routed-out backlog entry, and the commit. Sections 3 to 5: not
+started.
