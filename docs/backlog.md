@@ -90,6 +90,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   typed message more than momentarily, a missing chunk, a missing queued prompt, or a report that
   still ends early reopens the thread-fidelity effort as a new round. NEO and ASR pick the code up
   at their next `git pull` plus broker restart (or next logon, which restarts the task).
+  (parked 2026-08-07, backfilled)
 - Revisit the coalescing freshness map's eviction race if this ever runs at fleet scale. The
   per-thread invalidation clock is bounded, so with 64 or more other threads narrating during one
   run, an evicted entry reads as "no arrival" and a run can be remembered above a foreign message,
@@ -97,7 +98,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   at a two-host installation because reachability needs 64 concurrently narrating threads, and
   because the clean fix, a single monotonic arrival counter that survives eviction, would make any
   ID-less arrival anywhere end every in-flight run's coalescing. Growing the fleet is the trigger to
-  take that trade.
+  take that trade. (parked 2026-08-08, backfilled)
 - A Discord code block wraps to the rendered width of the window it is read in, and never scrolls
   sideways. Measured on the operator's own devices at roughly 51 columns on a folded phone, 62
   unfolded, 83 on a desktop, and no wrap at all past 120 on an ultrawide. Recorded here because two
@@ -106,6 +107,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   input is deliberately not wrapped, since no constant is right for a reader whose width is their
   window. Anyone tempted to widen the card bound should re-run the check first: a ruler of `END|`
   markers at known columns, read on the narrowest device that matters.
+  (parked 2026-08-11, backfilled)
 
 - Two live checks the question-answering round could not close from code, both needing a real held
   question at a console with the thread beside it
@@ -115,7 +117,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   synthetic entry but never against a live socket, and the failure it guards is a session wedged
   with no picker on either surface. Second, clearing a multi-select back to nothing and re-picking
   before submitting, the one interaction path where Discord's own component state, not the desk's,
-  decides what arrives.
+  decides what arrives. (parked 2026-08-09, backfilled)
 - One live check the question-overflow round could not close from code, needing a real session and a
   phone ([`archive/plans/channels_question-overflow_spec_v1.md`](archive/plans/channels_question-overflow_spec_v1.md)
   is the delivered plan). Provoke a long ask, or wait for a real one, and read the thread on the
@@ -125,12 +127,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   reopens the delivery section. Worth watching the timing too, since a maximal six-continuation ask
   now takes about 7.2 seconds between the alert and the controls appearing, and that pace is one
   constant (`CONTINUATION_POST_PACE_MS`) if it reads as too slow in practice.
+  (parked 2026-08-13, backfilled)
 - A dangling sentence in `security-model.md`, in the `GET /sessions` paragraph: "Those are model
   ids, a token count, and upstream's own refusal category and consent answer" follows a sentence
   about card-versus-route disclosure and has no antecedent left, so a reader cannot tell what
   "those" names. Predates the question-overflow round, which is why that round left it alone rather
   than guessing at the missing clause. Whoever fixes it should read the surrounding paragraph
   against `GET /sessions`'s actual field list rather than inferring the lost sentence.
+  (parked 2026-08-13, backfilled)
 - Fold the six duplicated `createRepeatLog` implementations into one. The rate-limited repeat
   logger is hand-copied into `broker/tail.ts`, `broker/question-desk.ts`,
   `broker/routing/interactions.ts`, `broker/discord/pins.ts`, `broker/usage/thread.ts`, and
@@ -139,11 +143,12 @@ and none carries a date of its own. An item added from here on carries `(parked 
   card's round took the sixth copy deliberately, on the codebase's own precedent that a small
   terminal mechanism is duplicated per surface, and named three copies as the extraction threshold.
   That threshold is now well past, so this is the round that should collapse them.
+  (parked 2026-08-16, backfilled)
 - The board card's binding module is a near-duplicate of the usage card's. `broker/board/binding.ts`
   and `broker/usage/binding.ts` differ only in identifiers and their header paragraphs. Accepted
   deliberately at the time, on the same per-surface-duplication precedent, with a fourth card named
   as the point to extract. If one ever lands, the shape to build is a single card-binding module
-  taking a label.
+  taking a label. (parked 2026-08-16, backfilled)
 - Decide whether a plan's status should be allowed to spell the board card's own marker vocabulary
   (parked 2026-08-16). A status is drawn whole, so `Status: held 9h 10m · blocked 2d 1h` renders as
   clauses a reader tells from the broker's own markers only by position: the markers lead the facts
@@ -190,10 +195,12 @@ and none carries a date of its own. An item added from here on carries `(parked 
      rather than reading fresh.
   8. On a host with zero sessions and no claude-swap, confirm the static body means a deleted card
      goes undetected until restart.
-  9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`) and read it on a
-     phone in the same pass as check 2, folded and unfolded. The card draws no bar, and its one
-     fence is the box naming each project, so what is being read is whether that box reads as the
-     boundary between one project's list and the next, whether a long project name wraps inside the
+  9. Turn the board card on (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_PROJECTS`, or plus
+     `CHANNEL_BOARD_ROSTER`, the other way to turn it on, for the persona view) and read it on a
+     phone in the same pass as check 2, folded and unfolded. The card draws no bar, and its only
+     fences are the boxes naming each persona group and each project, so what is being read is
+     whether that box reads as the
+     boundary between one group's list and the next, whether a long project name wraps inside the
      box rather than being cut, whether the nested bullets render with a hanging indent, whether any
      name
      or status still ends in an ellipsis at its full length, and whether a long fact wraps rather
@@ -242,13 +249,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
      copies was exercised against a clock a test moves; what no test supplies is a real hook the CLI
      actually abandons. The plan is
      [`archive/plans/channels_mirror-load-tolerance_spec_v1.md`](archive/plans/channels_mirror-load-tolerance_spec_v1.md).
+  (parked 2026-08-09, backfilled)
 - Confirm what Discord does with a rename on a still-archived thread. Inferred, never established:
   after the archive-revive fix, a session woken by hook traffic alone leaves the broker's archived
   flag cleared while Discord's thread may still be archived. If Discord refuses the rename as a
   permanent failure, three refusals mark the entry abandoned and the card is unpinned, which is a
   louder failure than the frozen card it replaces but still not the intended one. Nothing in this
   repository states the rule and no test can establish it; a real archived thread taking a
-  name-change request settles it.
+  name-change request settles it. (parked 2026-08-09, backfilled)
 - Spoiler-collapsed background-task reports, behind `CHANNEL_TASK_NOTIFICATION=full`. The default
   `brief` drops the injected report entirely in favor of the one-line 📨 notice, and `full` posts
   it as a many-message quoted block; a collapsed rendering would keep the report reachable without
@@ -256,9 +264,10 @@ and none carries a date of its own. An item added from here on carries `(parked 
   Takes its rendering vocabulary from
   [`archive/plans/channels_peer-chatter-rendering_spec_v1.md`](archive/plans/channels_peer-chatter-rendering_spec_v1.md),
   which settles the register, the collapse threshold and the escapes a collapsed body needs.
+  (parked 2026-08-08, backfilled)
 - Remove the retired `mcp__channel-relay__reply` rule from `~/.claude/settings.json` on NEO and on
   ASR: both were provisioned while the fragment still shipped it, and `Install-Host.ps1` never
-  removes a rule already there. SCOTT's copy is already done.
+  removes a rule already there. SCOTT's copy is already done. (parked 2026-08-07, backfilled)
 - Teach `Start-Broker.ps1` to clear its own port at startup with `Repair-Broker.ps1`'s
   kill-by-proof rules. The scheduled task runs at the highest run level, so a broker it started is
   elevated, and an unelevated repair cannot kill that orphan when it outlives a task stop: every
@@ -266,6 +275,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   deploy a keyboard trip on 2026-08-08; the corrected `claude-sessions-on-scott-run-elevated`
   memory carries the failure matrix). The task's own elevation is exactly what the startup script
   can use to clear the port safely, under the same proof discipline, never by name.
+  (parked 2026-08-08, backfilled)
 
 - `COMMAND_NAME` in `broker/tail.ts` scans quadratically on a line carrying many unclosed
   `<command-name>` tokens: a 224 KB synthetic line measured 403 ms of blocked event loop, against
@@ -275,7 +285,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   transcript, the accepted risk `security-model.md` already carries, plus the harness's own local
   command output, so it is a hardening rather than a defect. The same regex ran on the same lines
   before that round, through `goalCommand`. Worth doing if the transcript read ever accepts a
-  larger pass or a less trusted file.
+  larger pass or a less trusted file. (parked 2026-08-25, backfilled)
 
 - Tag a prompt claim with the run that made it. The prompt slots in `broker/tail.ts` hold a text
   digest and two instants and no run identity, which leaves two residuals that share one cause.
@@ -289,7 +299,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   the claim window and neither is a regression; closing them means tagging every slot with its run
   rather than patching either site. Whether the late-`learn` ordering occurs at all is unconfirmed:
   it turns on which of the two arming posts the fragment emits first on a session's opening prompt,
-  which nobody has measured.
+  which nobody has measured. (parked 2026-08-26, backfilled)
 
 - Clamp `lastEngagementAt` when a snapshot is restored. `broker/registry.ts` bounds the engagement
   stamp forward at the `engage` seam, so a transcript line cannot post-date a session out of its
@@ -297,7 +307,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   carrying a future value survives a restart and suppresses `⛔` until the next completed tool call
   overwrites it outright. Bounded and self-healing, and behind the same same-user write to local
   state the security model already carries as an accepted risk, which is why it sits here rather
-  than in the round that found it.
+  than in the round that found it. (parked 2026-08-25, backfilled)
 
 - Two invisible-character residues in the shared sanitizer, from the fleet-card round's security
   review, both display-spoofing at worst with no syntax reachable. U+0085 (NEL) survives
@@ -307,6 +317,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   (LRM/RLM and the bidi overrides are covered, ALM is not), so it can invisibly influence display
   order in a label with RTL text. Fix is one range each in `isInvisible` plus a test; the class is
   shared with the path that carries text to the model, so sweep both consumers when changing it.
+  (parked 2026-08-10, backfilled)
 
 - An intermittent failure in `broker/tail.test.ts`, inside the `until` helper at its own line 2451,
   which yields up to 1000 `setImmediate` turns and then asserts "the condition never held". It fails
@@ -318,6 +329,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   margin. So the next round that touches the tailer should first make the helper say which condition
   never held, and whether it became true shortly afterwards; a bound that expired and a run that
   never posted are then different messages and the choice of fix is evidence-led.
+  (parked 2026-08-11, backfilled)
 
   Measured while chasing it: 21 clean full runs against 1 failure, no reproduction in 3 runs under 12
   CPU-saturating processes, none in 3 runs under 8 disk-saturating processes. The one failure landed
@@ -349,11 +361,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   its values as an orphan paragraph a reader attributes to the row above, and a cell under an empty
   header can open a bullet or ordered list, since `-`, `+` and `1.` are not in the escape class.
   Fixing the NEL class serves the sanitizer item above at the same time.
+  (parked 2026-08-11, backfilled)
 - Re-pick `MAX_ROW_LABEL_WIDTH` in `broker/discord/render.ts` if a real table ever ships as raw pipes
   unexpectedly. It is 40, justified from the header lengths this repository's own tables carry rather
   than from a rule, and the growth bound beside it effectively tightens it to about 30 for a terse
   and very tall table. A table with a 45-character column header ships raw and nothing in the suite
   says so. Nothing is lost when it happens, which is why this is a note rather than a defect.
+  (parked 2026-08-11, backfilled)
 - **Detect a fleet-wide usage-pause freeze from the tailer's own vantage (parked 2026-08-26, routed
   from the kit's kaizen pass).** When the harness holds every session behind a weekly-usage banner,
   every transcript the tailer follows goes quiet simultaneously with no completions: a detectable
@@ -441,11 +455,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   and a shared-escape change wants its own gate. The fix shape already exists in the tree,
   `withoutPipes` counting its run and evening it up.
 
-- Decide what to do about the two `npm audit` advisories the root tree carries (parked 2026-09-07,
-  found during the DSH bridge plan's section 1 security review). One high, `fast-uri` 3.1.5, an SSRF
-  through URI normalization; one moderate, `qs` 6.15.3. Both trace to `@modelcontextprotocol/sdk`
-  1.30.0 rather than to anything the bridge added: `ajv` reaches `fast-uri` and `express` reaches
-  `qs`. The review that surfaced them assumed they arrived with the DeepSeek Harness packages, and
+- Decide what to do about the three `npm audit` advisories the root tree carries (parked
+  2026-09-07, found during the DSH bridge plan's section 1 security review). One high, `fast-uri`
+  3.1.5, an SSRF through URI normalization; two moderate, `qs` 6.15.3 and `hono` 4.13.0, whose
+  advisories name `parseBody` nesting, the query parser and `toSSG`. Inside the SDK only a shipped
+  example server imports `hono`, and this project imports the SDK's stdio transport alone. All
+  three trace to `@modelcontextprotocol/sdk` 1.30.0 rather than to anything the bridge added:
+  `ajv` reaches `fast-uri`, `express` reaches `qs` and `@hono/node-server` reaches `hono`.
+  The review that surfaced them assumed they arrived with the DeepSeek Harness packages, and
   that premise is wrong, which is why this is parked rather than fixed in that section: the fix
   moves the MCP SDK's transitive tree, which no open plan's scope covers, and nothing the bridge does
   makes it worse. Whether `fast-uri`'s SSRF is reachable from any path this project actually runs is
@@ -482,6 +499,85 @@ and none carries a date of its own. An item added from here on carries `(parked 
   `broker/sanitize.ts`, which already holds the shared title composition for the same reason. Which
   of the two is right is unestablished and wants one read of both call sites, since the stricter
   bridge rules may or may not be safe to impose on the broker's own payload path.
+
+- Give the capped file read one owner, and fix the copy that does not loop (parked 2026-09-20,
+  surfaced by the Fleet Board worker queues plan and routed here because that plan serves the board
+  card rather than this family). Four modules now read a size-capped file into a buffer one byte
+  larger so an oversized file is refused whole rather than truncated. Three of them loop the read
+  until the descriptor is drained and say in a comment why. The fourth, `broker/usage/cache.ts:270-281`,
+  performs a single `readSync` with no loop, so a short read hands the parser a prefix of the file
+  under the name of the whole. That one is a confirmed defect rather than a style divergence, read
+  against its three siblings. It fails closed, since a truncated JSON document does not parse, so
+  the symptom is a usage card that reports itself unavailable rather than one that reports wrong
+  numbers, which is why it is parked rather than fixed in flight. What it costs to leave is that the
+  next author copies whichever of the four they happen to open. The shape of the fix is one module
+  owning a parameterised capped read that the four call, with the cap and the subject as arguments.
+  A smaller piece of the same convergence: `broker/board/queues.ts` carries hand-written copies of
+  five helpers `broker/board/plans.ts` keeps unexported. They are `planStem`, the README-stem check,
+  `bounded` with its `WHITESPACE_RUN` constant, the capped read inside `readPlanFile`, and
+  `statPlanFile`. The queue reader's copy of the last also refuses anything that is not a regular
+  file, which the sweep settles from its own listing instead, so a shared stat must keep that
+  refusal for the reader. The queue reader was written that way deliberately, to keep its section
+  inside its own files, and the exports are the cheap half of this item.
+
+- Give the non-finite modification time guard one owner (parked 2026-09-20, surfaced by the Fleet
+  Board worker queues plan's section 3 and routed here because that section's spec bounds
+  `broker/board/card.ts` to four exports). Two modules now carry the same three-line clamp that turns
+  a modification time which is not a finite number into negative infinity before a comparator sorts
+  by it: `touchedAt` in `broker/board/card.ts` and in `broker/board/status.ts`. The guard exists because a
+  comparator handed a value that is neither above, below nor equal to another orders nothing, so the
+  word it decides lands wherever the loop happens to leave it. Neither copy is wrong today. What it
+  costs to leave is that a writer and a reader hold one rule in two places, which is the shape
+  through which a later edit to either moves a word with neither side's tests noticing. The fix is
+  one exported clamp the two call. It was not taken in section 3 because exporting a fifth name from
+  the card renderer would contradict a section line the operator approved.
+
+- Decide whether the board card's `running now` should be bounded by the heartbeat stamp's age
+  (parked 2026-09-20, surfaced by the Fleet Board worker queues plan's section 3 blind review).
+  `broker/board/status.ts` reports a worker as running now for any finite `turnStartedAt`, with no
+  comparison against the current time, and that reading outranks everything the queue says. A worker
+  that dies mid-turn leaves its stamp in place, so the card reads it as running indefinitely and the
+  operator cannot tell a live worker from a dead one. The plan's Approach states the rule exactly as
+  built, so a ceiling is a mechanism no clause in it names, which is why this is parked rather than
+  fixed in that section. The shape of the fix is a turn ceiling above which the stamp is read as
+  stale, plus the question of what a stamp dated in the future should mean. Both are product calls
+  rather than code ones.
+
+- Hoist the board card's per-entry stats into one directory listing per place, and build the event
+  index once per tick, if a tick at the caps is ever worth trimming (parked 2026-09-21, surfaced by
+  the Fleet Board worker queues plan's section 5 performance review, sized by its finishing review).
+  The tick is synchronous on the broker's one event loop. `broker/board/queues.ts` stats each
+  entry's plan name in up to four places and each persona's store and heartbeat, which at 16
+  personas of 200 entries is about 12,800 `statSync` calls on a fleet that has not moved, about
+  0.13 s per tick at 10 µs a stat. The other term is a moved store or heartbeat: open, capped read,
+  parse and per-field bounding is about 6 ms per 2 MiB file, so 32 files all moving in one tick is
+  about 0.2 s, and a tick at every cap with every file moving is about 0.35 s against the 5 s
+  refresh floor. `broker/board/status.ts` rebuilds the event index and normalizes every kept
+  event's root once per persona where one build per tick would do, at low single-digit
+  milliseconds. The figures are sized from microbenchmarks on the broker's own host, recorded with
+  their moment in the Fleet Board plan's finishing Chapter. No requirement is failed, so this is a
+  trim rather than a fix, and it waits on a real fleet that approaches the caps.
+- Write `docs/security-model.md` a `## Threat model` section (handoff 2026-09-21, from the Fleet
+  Board worker queues plan's finishing security review, which opened `threat model: absent`). The
+  document carries the accepted-risk sizing for each surface in prose, and the board-card passage
+  plus the plan's Intent stood in for a model at that review. A stated model names the attacker
+  classes (same-account code, a Discord account that is not the operator's, a peer on the store's
+  remote), what each can reach, and which entries are accepted, so a security lens can cite an entry
+  rather than reason from the prose. Operator-pending: the operator decides whether that section is
+  written as its own effort.
+
+- Move the queue reader's per-tick walk of an entry `id` behind the store's mtime hold (parked
+  2026-09-21, surfaced by the Fleet Board worker queues plan's section 4 fix round). A persona's
+  store file is read whole and then held across ticks, but `broker/board/queues.ts` builds a fresh
+  dedup `Set` from every entry's `id` on every refresh, outside that hold, so an `id` is hashed in
+  full each tick. Every other free-text field that entry carries is now capped at intake, and the
+  entry's `planPath` reduction moved behind the hold in the same section. `id` could not join them:
+  a prefix cut fuses two distinct identities into one, and a refusal drops the entry, which a scope
+  ruling refused on the ground that a store whose `activeGoalId` names the dropped entry would then
+  read as nothing in flight and draw the worker's queue short. So the remaining shape is a
+  restructure rather than a bound: compute the dedup and the readings map once per parse and hold
+  them with the reading, rather than rebuilding them per tick. The bound today is the 2 MiB store
+  file cap times sixteen personas, on the broker's only event loop.
 
 ## Snapshots
 

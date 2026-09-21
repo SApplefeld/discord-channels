@@ -9,6 +9,7 @@ import {
   MAX_PLANS_PER_ROOT,
   MAX_PLAN_FILE_BYTES,
   parsePlan,
+  readPlanFile,
   sweepPlans,
 } from "./plans.ts";
 import type { PlanDirectoryListing, PlanSweep } from "./plans.ts";
@@ -435,6 +436,30 @@ test("a file at the cap is still read", () => {
     const swept = sweepPlans([held.root]);
     assert.deepEqual(swept.failures, []);
     assert.equal(swept.readings.length, 1);
+  } finally {
+    held.cleanup();
+  }
+});
+
+// The queue reader opens a plan doc a persona's store named through this same exported function,
+// rather than through the sweep, so the three shapes it can return are a contract between two
+// modules rather than an internal of this one: the caller branches on `failed` being present.
+test("the exported read returns text, an oversized refusal, or an unreadable one", () => {
+  const held = scratch();
+  try {
+    const file = held.write("read_spec_v1.md", plan());
+    assert.deepEqual(readPlanFile(file), { text: plan() });
+
+    const body = plan();
+    const huge = held.write(
+      "huge_spec_v1.md",
+      body + "x".repeat(MAX_PLAN_FILE_BYTES + 1 - Buffer.byteLength(body, "utf8")),
+    );
+    assert.deepEqual(readPlanFile(huge), { failed: "oversized" });
+
+    assert.deepEqual(readPlanFile(path.join(held.root, "docs", "plans", "absent.md")), {
+      failed: "unreadable",
+    });
   } finally {
     held.cleanup();
   }

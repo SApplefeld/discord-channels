@@ -125,9 +125,11 @@ export type BrokerConfig = {
    * this order, and this order is what settles every project the touch order leaves unsettled: two
    * roots whose newest plan moved at the same instant, two with no plan the card can date at all,
    * and where a root that is not on this list sits among the ones that are. Configuration and never
-   * derived: the card reads `docs/plans` directly under each of these and nothing else, and no value
-   * out of any file it reads is ever used as a path. Empty leaves the card unbuilt even with the knob
-   * on, since there is nothing to sweep.
+   * derived: the card reads `docs/plans` directly under each of these and nothing else, and the
+   * folder view never uses a value out of any file it reads as a path. The roster join is the one
+   * view that does, under the rule `boardRosterPath` below states. Empty roots leave the folder
+   * view off; the card still builds when the roster path names a fleet roster, since either source
+   * alone is enough.
    */
   boardProjects: readonly string[];
   /** How often the fleet is re-swept and re-rendered. An edit is spent only when it changed. */
@@ -138,6 +140,15 @@ export type BrokerConfig = {
    * whole stream rather than splitting the two folds onto two files. Absent on disk is the ordinary
    * case, not an error: the card then draws no blocked markers and no session stands blocked. */
   boardEventsPath: string;
+  /**
+   * Absolute path to the fleet roster: an operator-maintained JSON file naming the personas the
+   * board card draws a queue group for. Empty, the default, means no roster is configured. The
+   * roster's own `workdir` field is trusted the way a configured project root is, because the
+   * operator writes the file and its location comes from this same setting. A persona's own store,
+   * by contrast, contributes a validated file name and never a path: `workdir` is the only path
+   * input this reads out of the roster or a persona's files that is ever trusted as configuration.
+   */
+  boardRosterPath: string;
 };
 
 /**
@@ -379,9 +390,37 @@ function peerMessageMode(raw: string | undefined): "full" | "brief" | "off" {
 const WINDOWS_ROOT = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
 
 /** True only for a value that names one file or directory whatever the process's launch state was. */
-function namesOneDirectory(root: string): boolean {
+export function namesOneDirectory(root: string): boolean {
   if (!path.isAbsolute(root)) return false;
   return process.platform === "win32" ? WINDOWS_ROOT.test(root) : true;
+}
+
+/**
+ * A share root: two leading path separators of either spelling, in any combination.
+ *
+ * The separator class rather than the two homogeneous spellings is the whole point. Windows treats
+ * any two leading separator characters as the UNC prefix, so `\\host\share`, `//host/share`,
+ * `/\host\share` and `\/host/share` all resolve to the same share and all open the same outbound
+ * connection. A pattern naming only the two obvious spellings admits the two mixed ones, which is a
+ * refusal that passes its own tests and fails on the input it exists for. `WINDOWS_ROOT` above
+ * detects the same prefix the same way, in its second alternative.
+ *
+ * Exported because a path this broker will open can arrive from more than one source, and each
+ * source that re-derives this check by hand re-derives it slightly differently.
+ */
+export const UNC_ROOT = /^[\\/][\\/]/;
+
+/**
+ * `namesOneDirectory` narrowed to a local drive, refusing the UNC root that function accepts by
+ * design. That acceptance exists for a value out of the broker's own environment, an
+ * access-controlled surface the operator alone can write. A roster `workdir` sits in a lower trust
+ * class: the roster is an ordinary JSON file any process running as the operator can rewrite, and
+ * the broker's scheduled task runs as the operator's own identity. A UNC `workdir` the broker later
+ * opens files under would send outbound SMB to whatever host that entry names, under the operator's
+ * own credentials, so a value reaching this from the roster is held to the narrower rule.
+ */
+export function namesOneLocalDirectory(root: string): boolean {
+  return namesOneDirectory(root) && !UNC_ROOT.test(root);
 }
 
 /**
@@ -442,6 +481,29 @@ function eventsPath(env: NodeJS.ProcessEnv): string {
   if (configured === undefined || configured === "") return defaultEventsPath(env);
   if (!namesOneDirectory(configured)) {
     throw new Error("expected an absolute path, the value names no fixed file");
+  }
+  return configured;
+}
+
+/**
+ * The fleet roster's path, or empty when none is configured.
+ *
+ * Unlike the events path above, an unconfigured roster has no fallback location: the roster's very
+ * existence is the second way the board card turns itself on, so an operator who never set this gets
+ * no persona reader rather than a guess at a file that may not exist.
+ *
+ * A configured value is held to the rule a project root and the events path both are: a relative or
+ * drive-relative path resolves against whatever directory or drive the broker was launched from,
+ * which under a scheduled task is neither of the operator's choosing.
+ *
+ * The refusal never echoes the value: a roster path typically embeds the operator's OS username, and
+ * this message reaches the log file.
+ */
+function rosterPath(env: NodeJS.ProcessEnv): string {
+  const configured = env.CHANNEL_BOARD_ROSTER?.trim();
+  if (configured === undefined || configured === "") return "";
+  if (!namesOneDirectory(configured)) {
+    throw new Error("CHANNEL_BOARD_ROSTER expects an absolute path, the value names no fixed file");
   }
   return configured;
 }
@@ -537,5 +599,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     // Read here rather than where the file is opened, so the installer's env allowlist pin, which
     // scans this file for the knobs it must carry, sees this one too.
     boardEventsPath: eventsPath(env),
+    // Read here for the same reason: the roster is opened in broker/board/roster.ts, and the
+    // allowlist pin only sees a knob this file names itself.
+    boardRosterPath: rosterPath(env),
   };
 }

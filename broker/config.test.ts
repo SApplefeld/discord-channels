@@ -341,3 +341,30 @@ test("the board's event stream is the kit's own file unless an override names an
     (error: Error) => !/secret-user-path/.test(error.message),
   );
 });
+
+test("the fleet roster has no default location and refuses a non-absolute path", () => {
+  assert.equal(loadConfig({}).boardRosterPath, "", "unset is empty, not a guessed-at file");
+  assert.equal(loadConfig({ CHANNEL_BOARD_ROSTER: "   " }).boardRosterPath, "");
+  assert.equal(
+    loadConfig({ CHANNEL_BOARD_ROSTER: "D:\\personas\\fleet.json" }).boardRosterPath,
+    "D:\\personas\\fleet.json",
+  );
+
+  // The same rule the project roots and the events path are held to, for the same reason: a
+  // relative path resolves against whatever directory the broker was launched from, and a
+  // drive-relative one against whatever drive, neither of which a scheduled task lets the operator
+  // choose.
+  for (const raw of ["fleet.json", "relative\\path", "..\\fleet.json", "\\fleet.json", "/fleet.json"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_BOARD_ROSTER: raw }),
+      /CHANNEL_BOARD_ROSTER expects an absolute path/,
+      raw,
+    );
+  }
+  // And the refusal never echoes the value: a roster path typically embeds the operator's OS
+  // username, and this message reaches the log file.
+  assert.throws(
+    () => loadConfig({ CHANNEL_BOARD_ROSTER: "..\\secret-user-path\\fleet.json" }),
+    (error: Error) => !/secret-user-path/.test(error.message),
+  );
+});

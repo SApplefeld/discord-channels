@@ -440,9 +440,80 @@ that mark.
 ## The fleet board card
 
 One thread named **Fleet: Board** carries a second broker-edited card, answering "what is still open
-and how far has it got" without opening a plan document. It is off unless the host sets both
-`CHANNEL_BOARD_CARD` and `CHANNEL_BOARD_PROJECTS`, and off means nothing is built: no thread, no
-timer, and no file opened.
+and how far has it got" without opening a plan document. It is off unless the host sets
+`CHANNEL_BOARD_CARD` and at least one of its two sources, `CHANNEL_BOARD_ROSTER` and
+`CHANNEL_BOARD_PROJECTS`. Off means nothing is built: no thread, no timer, and no file opened. With
+the card switched on, Discord configured and neither source set, the broker logs
+`board card: neither project roots nor a roster is configured, the card is not built` once at start.
+
+The card has two views, and either can be used alone. The persona view draws one group per worker
+persona named in the fleet roster, showing that worker's queue. The folder view sweeps plan
+folders. Persona groups draw first, and leaving `CHANNEL_BOARD_PROJECTS` empty switches the folder
+view off.
+
+### The persona view
+
+`CHANNEL_BOARD_ROSTER` is the absolute path of the fleet roster, a JSON array you maintain, such as
+`D:\personas\fleet.json`. The card reads three fields of each entry: `name`, `workdir` and
+`enabled`. An entry counts only when `enabled` is exactly `true`, its name is not already taken by
+an earlier entry, and its `workdir` is an absolute local folder. A UNC share is refused there, even
+though a project root may name one. At most **16** personas are drawn, in roster order. A roster
+path that is not absolute stops the broker at load with `CHANNEL_BOARD_ROSTER expects an absolute
+path, the value names no fixed file`, which does not echo the value. The setting itself is held to
+the project-root rule, so a UNC roster path is accepted as any other `broker.env` path is.
+
+For each persona the card reads the persona plugin's store, `.agentic-personas.json`, and its
+heartbeat, `.agentic-heartbeat.json`, both in that `workdir`. It then finds the plan document behind
+each queue entry. The entry's `planPath` wins when present, and otherwise the first
+`docs/plans/<name>.md` in the entry's title and then its objective. Only the file name is kept, and
+it is looked for in four folders under the same `workdir`: `docs/plans/`, `docs/archive/plans/`,
+`docs/archive/` and `docs/plans/archive/`. A plan found only in an archive folder counts as done. A
+plan checked out on another branch is invisible to the card, so a parked plan can under-report its
+sections.
+
+Each group opens with a shaded label: the persona's name, `N of M done`, and the worker's state.
+The state is `running now` while the heartbeat says the worker is inside a turn. Otherwise it is
+`idle 12m`, measured from the last completed turn, bare `idle` when the store records no completed
+turn, or `nothing started` when no entry is in flight.
+Each entry draws one plain word, and none of them is the persona plugin's own status:
+
+| Word | Means |
+|---|---|
+| in progress | The entry being worked. Its plan is `In Progress` with the newest document, or, when no unplaced entry has a started plan, the entry the store names active. It also carries the plan's latest `next:` step |
+| up next | The first entry in queue order not otherwise placed. The worker will reach it next |
+| started, parked | Its plan is `In Progress`, but another entry is the one in flight |
+| blocked | A kit blocked event is outstanding for its plan, the entry's lead says blocked, or the store holds a real block. The worker's reason draws beside it when the lead or the store gave one |
+| stalled | The worker paused it after running out of nudges |
+| then: | Every other queued entry, folded into one closing line of titles |
+
+A done entry draws no line and is counted in the label, and a worker whose every entry is done
+still draws its label, with its count and its state and nothing beneath it, so a finished worker can
+be told from one that has left the roster. A store block reading `Max rounds reached`
+is the plugin's bookkeeping rather than a block, so that entry is judged like any other. A paused
+entry is judged like any other too, because the plugin's "paused" means "not now": with no plan
+started it reads `up next` or sits in the `then:` line, and with an `In Progress` plan it reads
+`in progress` or `started, parked`. An entry whose plan the card can read also shows sections done
+out of total, such as `2/3`.
+
+The store is written whole with no lock, so a read can land mid-write. A store that fails to read
+or parse keeps its last good reading, and the label ends `held 5m`, with an age that climbs. The
+card's closing freshness line ages with it. An entry's plan document that fails to read or parse
+keeps its last parse the same way, and the closing line ages with the instant that parse was last
+read. The entry itself carries no marker. The roster is held the same way: a roster that stops
+reading, or is deleted, keeps its last personas until the roster is rewritten with no enabled
+entries or as something other than a JSON array, or the setting is cleared and the broker
+restarted, so removing the file is not a way to switch the persona view off.
+
+Each of those failures is logged once per change rather than every tick, and never with a path.
+The roster logs `fleet roster: unreadable, keeping the last good reading`, with `oversized` or
+`unparseable` in place of `unreadable`, and `fleet roster: not an array, no personas read this
+tick`. A store or heartbeat logs `fleet queue: persona store unparseable, keeping the last good
+reading` on the same pattern, with `worker heartbeat` for the other file and `nothing read this
+tick` where nothing is held. A roster naming more than **16** enabled personas logs how many it
+dropped. A card with nothing to draw in either view reads `No open plans in the configured
+projects.`, and it says that whether the roster, the project roots or both are configured.
+
+### The folder view
 
 `CHANNEL_BOARD_PROJECTS` is a semicolon-separated list of absolute project roots. Each is swept for
 `docs/plans/*.md`, and every plan not marked Complete gets an entry. A `README.md` there is taken as
@@ -493,7 +564,9 @@ an unusable value there is never mistaken for one simply running.
 A plan the broker cannot parse right now redraws its last good reading under a held marker whose age
 climbs, rather than dropping off the card. A plan whose goal is blocked carries the age of the block,
 cleared when the document moves again or when the goal completes. A card that runs out of room names
-how many plans and projects it dropped.
+how many plans and projects it dropped. There, an undrawn queue entry counts as a plan and an
+undrawn persona group as a project. Persona groups spend the room first, so a large fleet can push
+folder groups into that count.
 
 The card is deterministic and spends no tokens: nothing between a plan file and the card involves a
 model. It also reads the plan-doc contract exactly as the external engine does, sharp edges included,
@@ -504,7 +577,9 @@ Cost per refresh is small and bounded. A file is opened only when its modificati
 moved, and a file that fails to parse is held shut on the same terms rather than being re-read every
 tick. A plan above 256 KB is refused whole rather than parsed as a prefix, and draws a bullet saying so,
 so a truncated document never reaches the card as if it were complete; a real plan runs tens of KB.
-Each root contributes at most 64 plan files.
+Each root contributes at most 64 plan files. The persona view holds to the same terms. The roster
+is capped at **64 KB**, each store and heartbeat at **2 MB**, and each persona at **200** queue
+entries. A plan document opened through the join takes the same 256 KB cap as a swept one.
 
 ## What a session card says about its model
 
@@ -905,7 +980,8 @@ refused by name rather than guessed at.
 | `CHANNEL_USAGE_CARD_REFRESH_MS` | 60 s | How often the fleet card is re-read and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_USAGE_CACHE_ROOT` | the profile's claude-swap backup | Where the usage cache and account list are read from |
 | `CHANNEL_BOARD_CARD` | off | Whether the Fleet: Board thread and its card exist on this host |
-| `CHANNEL_BOARD_PROJECTS` | none | Semicolon-separated absolute project roots swept for `docs/plans/*.md`; the card builds nothing without at least one |
+| `CHANNEL_BOARD_ROSTER` | none | Absolute path of the fleet roster; each enabled persona in it draws a queue group. The card needs this or `CHANNEL_BOARD_PROJECTS` |
+| `CHANNEL_BOARD_PROJECTS` | none | Semicolon-separated absolute project roots swept for `docs/plans/*.md`. Empty switches the folder view off. The card needs this or `CHANNEL_BOARD_ROSTER` |
 | `CHANNEL_BOARD_CARD_REFRESH_MS` | 60 s | How often the board card is re-swept and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from. One stream, two readers: the board card's per-plan blocked marker and the session surface's own `⛔` state and its alert, so redirecting this moves both. Read whenever Discord is configured, board card or not |
 | `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |

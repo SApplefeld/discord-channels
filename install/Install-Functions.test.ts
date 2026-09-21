@@ -870,12 +870,13 @@ describe("Install-Functions", { concurrency: 8 }, () => {
     assert.ok(configKnobs.has("CHANNEL_MIRROR_MAX_BYTES"));
     // Every knob a feature reads belongs to this scan, so a knob read in the module that opens the
     // file rather than in broker/config.ts is outside the pin and can lose its allowlist entry
-    // silently. The board card's four are named here so that placement stays deliberate.
+    // silently. The board card's five are named here so that placement stays deliberate.
     for (const knob of [
       "CHANNEL_BOARD_CARD",
       "CHANNEL_BOARD_PROJECTS",
       "CHANNEL_BOARD_CARD_REFRESH_MS",
       "CHANNEL_BOARD_EVENTS_PATH",
+      "CHANNEL_BOARD_ROSTER",
     ]) {
       assert.ok(configKnobs.has(knob), `${knob} must be read in broker/config.ts to be pinned here`);
     }
