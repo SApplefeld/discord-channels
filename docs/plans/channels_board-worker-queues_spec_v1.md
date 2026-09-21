@@ -116,7 +116,7 @@ Acceptance:
 - `CHANNEL_BOARD_ROSTER=relative\path` fails config load with a message that does not echo the value.
 - The installer's allowlist test names five board settings.
 
-Files in scope: `broker/config.ts`, `broker/config.test.ts`, `broker/board/roster.ts`, `broker/board/roster.test.ts`, `install/Install-Functions.ps1`, `install/Install-Functions.test.ts`.
+Files in scope: `broker/config.ts`, `broker/config.test.ts`, `broker/board/roster.ts`, `broker/board/roster.test.ts`, `install/Install-Functions.ps1`, `install/Install-Functions.test.ts`, `broker/index.test.ts`, `broker/intake.test.ts`, `broker/intake.ts`.
 Tests: lock the held reading on a torn roster, because a roster mid-save must not blank the card. Lock the refusal of a non-absolute `workdir`, because that value becomes a read path.
 
 ### 2. The queue, heartbeat and plan readers, and the join
@@ -268,3 +268,60 @@ file.
 
 **Next action per section.** Section 1: read the fix round's diff, run the close gate, run the one
 lens the fix delta owes, take the Minor close pass, write chapter 1. Sections 2 to 5: not started.
+
+### Interim board 2 - 2026-09-20
+
+Written on the closure drought: two review-round adjudications have now passed with section 1 still
+open. Not a Chapter.
+
+**Section stages.** Section 1 is built, reviewed twice, and in review round 3. Sections 2 to 5 are
+not started.
+
+**Live dispatches.** One adversarial reviewer at sonnet, effort high, over the round-2 fix delta.
+It was asked to judge the UNC guard convergence described below, and in particular whether widening
+this section into `broker/intake.ts` breaks any caller that previously passed that module's guard.
+Round 2's own lens has returned.
+
+**Gate baseline.** Measured on this branch at `2c684ed` with the section's nine files dirty and no
+foreign process holding the box, after round 1's fixes and before round 2's: whole suite 1737 tests,
+1736 pass, 0 fail, 1 skipped, exit code 0, 35.7 s wall clock; lint (`tsc --noEmit`) exit code 0. The
+branch baseline it is a delta against, measured at `4152f79` on a clean worktree, was 1721 tests,
+1720 pass, 0 fail, 1 skipped, exit 0, 34.1 s. So the section has added 16 tests and broken nothing.
+The targeted lane after round 2's fix, over `roster.test.ts`, `intake.test.ts` and `config.test.ts`:
+97 tests, 97 pass, exit code 0.
+
+**Rulings adopted since the last boundary.** Round 2 returned one Critical and no Major. It is
+fix-introduced: fix round 1's own UNC refusal was written as a fresh pattern matching only the two
+homogeneous two-separator spellings, `\\` and `//`. Windows resolves any two leading separators as a
+share root, so the mixed spellings `/\host\share` and `\/host/share` passed the guard while
+`path.win32.normalize` collapsed all four to the same share. The guard refused exactly the inputs its
+own test named and admitted the ones it did not. Confirmed here by running the real exported
+functions rather than by reading: both mixed forms returned true from `namesOneLocalDirectory` and
+normalized to `\\host\share\dir`.
+
+Two things follow, and the second is a correction to interim board 1. First, the fix is now a shared
+pattern rather than a fourth copy: `broker/config.ts` exports `UNC_ROOT = /^[\\/][\\/]/`, over the
+separator class the way `WINDOWS_ROOT` already did, and `namesOneLocalDirectory` uses it. Second,
+interim board 1 recorded that the UNC narrowing was "reuse rather than a new mechanism" because the
+guard "already exists in this repository at `broker/intake.ts:321-331`". That ground was weaker than
+stated. `transcriptPathField` there is unexported, independently written, and carried the same
+mixed-separator hole: a `transcript_path` of `/\host\share\x.jsonl` posted to the broker's intake
+passed it and would have been opened. That is confirmed by a test watched failing before the fix. The
+narrowing was a new mechanism when it was taken, and it is genuine reuse only now that both call
+sites share one exported pattern.
+
+**Scope drift since the last boundary.** Section 1's `Files in scope:` gains `broker/intake.ts`
+alongside the two test fixtures already folded. The out-of-scope route forbids parking a security
+finding of Critical or Major weight whatever its scope: it is fixed before the section closes or
+raised to the operator. Fixing was chosen because the change makes an HTTP-facing guard strictly more
+refusing, the whole suite covers it, and leaving two divergent copies of one boundary check is what
+produced the defect. Named to the operator rather than left in this document alone.
+
+**Commit state at this boundary.** The plan doc is committed here; the section's code is not. The
+first-green commit is deliberately held until round 3 returns, because that round's brief names
+`2c684ed` as its base and states the code is unstaged, and moving HEAD under a reading reviewer would
+blind it. The code commits with chapter 1.
+
+**Next action per section.** Section 1: adjudicate round 3, take the Minor close pass over the seven
+surviving Minors, run the close gate, write chapter 1, and make the first-green and close commits
+together. Sections 2 to 5: not started.
