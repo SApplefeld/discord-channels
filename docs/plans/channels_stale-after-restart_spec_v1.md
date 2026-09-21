@@ -238,3 +238,19 @@ Delta: 2026-09-21T11:51:14Z, SCOTT-CLAUDE, working tree as the Gate line names, 
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 3 - 2026-09-21
+Completed: 3. State the two rules in the solution docs
+Implemented By: main session (Locus: inline, docs routing override)
+Metrics: review rounds 1, closed major-closed; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 3 open (2026-09-21): changes `docs/operations.md` and `docs/architecture.md` to state the restart window and the stale-idle decline; serves section 3's bullets; adds no mechanism; size about 30 lines of prose across two files; not building it leaves both documents promising a rebuild the broker no longer makes and a 30 second exit it no longer holds after a restart.
+- The spec named the state legend's `exited` line as a site. The silent-session rule is a lifecycle behaviour rather than a title state, so it sits in its own paragraph directly after the legend rather than inside the four-state enumeration.
+- The restart paragraph states the condition as the code reads it, a saved relay timestamp, and a following paragraph names the case where a relay attached but was never saved, per the plan's Standing Brief Amendments.
+Assumptions: none
+Review Findings: review: adversarial at fable, Agent tool at frontmatter effort, resolved claude-fable-5-1 (writer: the main session on claude-opus-5); blind: no code diff. One Major, a claim on a published document held to the behaviour bar: "opens a restart window for every restored session that has ever held a relay" promised a window for a record whose saved `lastRelayAt` is null, which contradicts section 3's "states the rule as it now behaves"; fixed in the round by stating the saved-timestamp condition and adding the null case. No Critical. Minors: 3 fixed (an orphan short line in the architecture pin-sweep paragraph, rewrapped; the legend sentences moved out of the enumeration and "one you delete" named as a card or thread; the scratch trace-target file's "no amendments" line updated), 0 upgraded, 0 left. The fix delta is prose alone and owes no round; its author re-read it against section 3's bullets and re-ran the `rebuil|deleted` sweep over both files: every rebuild sentence carries the heard-from rule, and `docs/operations.md:285` (ask messages kept as thread history) and `docs/architecture.md:480` (a rebuilt registry record) are other subjects. The sweep's predicate matched the two unqualified sentences before the first edit, which is its control.
+Stamps: adjudicated 5, stamped 0. The same five operator records, none applied here.
+Gate: no test lane covers these two documents, so none ran; the section's code gates are Chapters 1 and 2. Checks run on the delta: both files uniform CRLF (`docs/operations.md` 1082 of 1082, `docs/architecture.md` 773 of 773), no added line past 100 columns, no em dash in any added line. Test delta: none.
+Next: 4. Land it on the running broker, after the finishing pass and the operator's merge of the pull request
+Commit Model: Branch-and-PR
+Delta: not taken for this section; the two prior readings reported an empty corpus for this repository.
