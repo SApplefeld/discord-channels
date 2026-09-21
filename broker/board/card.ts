@@ -98,7 +98,8 @@ export type BoardPersonaWord =
  *
  * `reason` draws on a blocked entry alone, which is the one word that has one. `reading` is null for
  * an entry whose plan document the join found nothing for, and for one found only in an archive
- * folder and never opened: such an entry draws its word and nothing else.
+ * folder and never opened: such an entry draws its word alone, or its word and its reason when it is
+ * blocked, since a block needs no plan document to explain itself.
  *
  * `reading.heldSince` is the instant the parse behind the entry was last known good, or null for
  * one read or confirmed unmoved this tick. It draws no marker on the entry, whose lines are the
@@ -143,9 +144,9 @@ export type BoardPersona = {
  * The largest section count the card draws. The counts come out of a plan doc's own headings, so a
  * file full of them is bounded here rather than allowed to render a figure that takes the line.
  *
- * A persona group's done and total counts are held to it too. They are counted over a queue the
- * reader already caps, so the bound never fires on a queue that reader produced; it is here because
- * `renderBoardCard` is exported and draws the counts it is handed.
+ * A persona group's finite done and total counts are held to it too. They arrive as array lengths
+ * out of the status function, so they are always finite; the guard is here because `renderBoardCard`
+ * is exported and draws the counts it is handed, and a non-finite one would pass through unclamped.
  */
 export const MAX_DRAWN_SECTIONS = 999;
 
@@ -945,12 +946,14 @@ function personaSections(groups: readonly BoardPersona[], now: number): ProjectS
  * because the entry's count and next step were read from that parse and the entry itself draws no
  * marker saying so: the footer is the one line on the card that can.
  *
- * Only what is drawn counts. A terminal plan, a done entry and a group of nothing but done entries
- * each draw nothing, so a held reading of one is information no reader is looking at, and letting
- * it age the footer would put an hours-old stamp under a card every visible line of which was read
- * this tick. A hold instant that names no time counts as nothing too, which keeps the line an age
- * rather than a figure of `NaN`, and costs only the marker the group's own label already leaves
- * off.
+ * What would draw under the layout counts, budget aside. A terminal plan, a done entry and a group
+ * of nothing but done entries each draw nothing, so a held reading of one is information no reader
+ * is looking at, and letting it age the footer would put an hours-old stamp under a card every
+ * visible line of which was read this tick. The footer runs before composition, so an entry the
+ * overflow tail swallows still ages it: what counts is what the layout would draw, not what the
+ * budget left room for. In the two persona folds, a hold instant that names no time counts as
+ * nothing too, which keeps the line an age rather than a figure of `NaN`, and costs only the marker
+ * the group's own label already leaves off.
  */
 function footerLine(
   plans: readonly BoardPlan[],

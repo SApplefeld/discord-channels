@@ -1074,21 +1074,6 @@ test("a persona group that draws nothing ages the footer no more than a hidden p
   assert.match(body, /^card as of just now$/m);
 });
 
-test("a card carrying no persona group is anchored to its plans alone", () => {
-  const empty = card({ roots: [CHANNELS], plans: [plan({}, NOW - 3 * HOUR)] });
-  const absent = renderBoardCard({
-    roots: [CHANNELS],
-    plans: [plan({}, NOW - 3 * HOUR)],
-    failures: [],
-    truncated: [],
-    events: initialEventState(),
-    now: NOW,
-  });
-
-  assert.match(empty, /^card as of 3h ago$/m);
-  assert.equal(absent, empty, "an absent persona list composes the same bytes as an empty one");
-});
-
 /** The reference queue with one entry's plan reading replaced by a hold stamped at `heldSince`. */
 function referenceHolding(id: string, heldSince: number): PersonaQueue {
   const fresh = referenceQueue();

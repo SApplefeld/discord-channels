@@ -790,8 +790,9 @@ test("a held parse carries the instant it was last known good, which moves while
   work.file(["docs", "plans"], "a_b_v1.md", planDoc("Ready"));
   assert.equal(heldSince(), 2_000, "the hold is stamped at the last tick the file was confirmed unmoved");
 
-  // Still failing at the same stat, so the file is not opened, and the instant is still when the
-  // parse was last known good rather than when this tick read the hold.
+  // Still failing at the same stat: "unreadable" is a non-durable failure, so the file is opened
+  // and refused again rather than held on its stat, and the instant is still when the parse was
+  // last known good rather than when this tick read the hold.
   clock = 4_000;
   assert.equal(heldSince(), 2_000, "the instant does not move while the hold stands");
 

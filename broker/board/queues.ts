@@ -17,14 +17,18 @@
 // the store. `path.join` is fed a name the pattern has already proved holds no separator and no
 // parent segment, so no reading can reach outside `workdir` whatever the store says.
 //
-// That text is bounded here as well as distrusted. Every free-text field a queue entry carries is
-// held to an intake cap on the way out of this module, because everything downstream of it walks
+// That text is bounded here as well as distrusted. Every free-text field a queue entry carries on
+// is held to an intake cap on the way out of this module, because everything downstream of it walks
 // those values in full on every refresh tick while this module parses them only when the file moves.
 // Without the caps one store's oversized value costs the status rule several folds and the renderer
 // a spread of the whole value, on the broker's only event loop, for as long as the file stays as
-// written. The join's search for a plan name runs at intake over the uncut text instead, so no cap
-// narrows it and no tick repeats it. Neutralizing the same values stays the renderer's job, as it is for a plan
-// document's own prose: nothing is escaped here.
+// written. Two fields carry no such cap: `id` leaves as the store wrote it, since a prefix cut would
+// fold two distinct ids into one identity, and `planSegment` is a reduction rather than a cut, so a
+// separator-free `planPath` reaches it uncut. `textPlanName` is bounded by the pattern that finds it
+// rather than by an intake cap, to about 254 code points. The join's search for a plan name runs at
+// intake over the uncut text, so no cap narrows the search and no tick repeats it. Neutralizing the
+// same values stays the renderer's job, as it is for a plan document's own prose: nothing is escaped
+// here.
 //
 // Nothing here is logged but a static failure-class word. A `workdir`, a store path and a plan path
 // all embed the operator's OS account name, and the log is a lower-trust surface than the card.
@@ -112,7 +116,7 @@ export type QueueEntry = {
    * What the store's `planPath` reduced to: its final path segment, a string. Null when the store
    * wrote a value that names no final segment, and absent when it wrote none, wrote something other
    * than a string, or wrote one that is empty or nothing but whitespace. The join reads all three
-   * and searches the entry's text under the absent state alone.
+   * and takes `textPlanName` under the absent state alone.
    */
   readonly planSegment?: string | null;
   /**
@@ -350,14 +354,15 @@ function planStem(name: string): string {
  * The plan file name one queue entry names, or null when it names none this module will act on.
  *
  * `planSegment` wins outright when the entry carries one: it is what the persona plugin's own record
- * of the plan reduced to, so an entry that has one is not searched for a second name in its prose. A
- * segment that fails the pattern therefore yields no name at all rather than falling back to the
- * text, which is what keeps one field the answer.
+ * of the plan reduced to, so an entry that has one does not take the name found in its prose, which
+ * intake already searched for regardless. A segment that fails the pattern therefore yields no name
+ * at all rather than falling back to the text, which is what keeps one field the answer.
  *
  * The field's three states are all read here. A segment is the record naming something. Null is the
  * record naming nothing, which a value of `..\..\` or one ending in a separator leaves behind, and
- * it yields no name and no text search: the entry has a record either way. Absent is no record at
- * all, and only that state takes the name intake found in the entry's text, `textPlanName`.
+ * it yields no name and does not take the name found in its prose: the entry has a record either
+ * way. Absent is no record at all, and only that state takes the name intake found in the entry's
+ * text, `textPlanName`.
  *
  * The reduction to a segment is belt to the pattern's braces: the pattern below refuses a separator
  * and a bare parent segment outright, so neither route can produce a name that leaves `workdir`.
@@ -405,8 +410,9 @@ function planSegmentField(value: unknown): string | null | undefined {
  * sized for display would otherwise decide which entries join: live objectives run to several
  * hundred characters and name their plan near the end. The search sits beside the other intake
  * reductions for the reason `planSegmentField` gives, once per store read behind the store's hold
- * rather than on every refresh tick. Whitespace is left uncollapsed because neither the name nor the
- * character after it can be whitespace, so collapsing first could not change what matches.
+ * rather than on every refresh tick. Whitespace is left uncollapsed because the name holds no
+ * whitespace and the lookahead treats whitespace and end of value alike, so collapsing first could
+ * not change what matches.
  */
 function textPlanNameField(value: unknown): string | undefined {
   const text = stringField(value);
@@ -416,16 +422,17 @@ function textPlanNameField(value: unknown): string | undefined {
 /**
  * One queue entry, or null when the value is not one this module can file a reading under. Every
  * field is taken only when it holds the type the card reads it at, so a store that writes a number
- * where a string belongs draws as a missing field rather than as itself. Every free-text string the
- * entry carries on is held to its own intake cap here, which is the only place any of them is
- * bounded: past this point a value is walked by the status rule and by the renderer on every
- * refresh tick.
+ * where a string belongs draws as a missing field rather than as itself. Every free-text string but
+ * three is held to its own intake cap here, which is the only place any of those is bounded: past
+ * this point a value is walked by the status rule and by the renderer on every refresh tick.
  *
  * `id` is the one string that leaves here as the store wrote it. A prefix cut is the wrong shape
- * for it: two distinct ids sharing a cut's worth of prefix would become one identity. `planPath` is
- * bounded by a reduction rather than by a cut, because the only part of it this module reads is its
- * final segment. `title` and `objective` are searched for a plan name before `title` is cut, the
- * title first, and `objective` is read for nothing else and so goes no further than this function.
+ * for it: two distinct ids sharing a cut's worth of prefix would become one identity. `planSegment`
+ * carries no cap either: it is `planPath`'s last segment, reduced rather than cut, so a
+ * separator-free path reaches it whole however long it runs. `textPlanName` is bounded by the
+ * pattern that finds it rather than by a cap here, to about 254 code points. `title` and
+ * `objective` are searched for a plan name before `title` is cut, the title first, and `objective`
+ * is read for nothing else and so goes no further than this function.
  */
 function entryOf(value: unknown): QueueEntry | null {
   if (!isRecord(value)) return null;
@@ -703,7 +710,8 @@ function readHeldFile<T>(
 
 /**
  * The plan reading for one name under one persona's `workdir`, or null when the name is in none of
- * the four places or its document cannot be read or parsed this tick.
+ * the four places or its document cannot be read or parsed this tick and no earlier parse of it is
+ * held.
  *
  * `name` has already passed `PLAN_NAME`, so it carries no separator and no parent segment and every
  * path below stays under `workdir` by construction. Nothing outside those four paths is stat'd or
