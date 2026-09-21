@@ -441,3 +441,81 @@ nine files dirty.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 3 - 2026-09-20
+
+Written on the compaction gate's deferral nudge, with section 2's first review round part-returned.
+Not a Chapter: section 2 is still open.
+
+**Section stages.** Section 1 is closed, committed at `44aa3e8` and pushed. Section 2 is built,
+verified by this session's own gate run, reviewed once by all three lenses, and entering fix round 1.
+Sections 3 to 5 are not started.
+
+**Live dispatches.** Three reviewers over section 2's delta, all at fable on the Agent tool, none
+permitted to build or run a suite because a sibling session holds the box. The blind lens has
+returned APPROVED_WITH_CONCERNS, six Minors and no Critical or Major. The security lens has returned
+CLEAR, four Minors and no Critical or Major, recording the path pattern, the expression over
+untrusted text, the deserialization, the caps, the logging and the absence of any write as checked
+and clean. The adversarial lens has returned CHANGES_REQUIRED, five Majors, six Minors and no
+Critical. No dispatch is live at this boundary; the fix round is dispatched next.
+
+**Gate baseline.** Measured on this branch at `44aa3e8` with section 2's four files dirty, while a
+sibling session held a live heavy-process claim, so contended: targeted lane over
+`queues.test.ts` and `plans.test.ts` 47 tests, 47 pass, 0 fail, exit code 0; lint (`tsc --noEmit`)
+exit code 0. The whole-gate figure this branch last recorded, at `854adba` and also contended, was
+1737 tests, 1736 pass, 0 fail, 1 skipped, exit 0, 35 s. No whole gate has run since section 2's
+delta landed.
+
+**Rulings adopted since the last boundary.** Section 1 closed with its chapter, and the plan's
+`Files in scope:` for that section already carries the three folded files. Section 2's implementer
+returned DONE_WITH_CONCERNS with four add-decision lines, all of which serve acceptance bullets and
+none of which adds a mechanism no clause names, so no design stop fired. Two of the blind lens's six
+Minors are confirmed here against the code rather than taken on report. The first is a suffix-case
+disagreement: `plans.ts` matches `.md` case-insensitively and sweeps `SPEC_V1.MD` as a plan, while
+`queues.ts`'s name pattern is case-sensitive and refuses it, so one module draws a file the other
+will not join. The second is that a store which stays unreadable, unparseable or over the 2 MiB cap
+is re-opened and fully read every tick, because the failure path never records the stat it failed
+at, where `plans.ts` holds one through `heldFailure`. That second one is being upgraded from Minor
+to Major at adjudication on a stated consequence and a trace: the Approach says the store is "held
+on mtime and size like a plan document, so an unchanged file is not parsed again", and an unchanged
+failing store is re-read regardless.
+
+A third finding, from the security lens, is upgraded the same way and confirmed here by tracing every
+use of the map: the join builds a fresh per-tick parse map, writes it, and never reads it, taking its
+hold from the previous tick's map alone. So two entries naming one plan document both read and parse
+that document inside one tick whenever it has moved, up to two hundred times per persona, on the
+broker's only event loop. Section 3's own acceptance bullets make two entries sharing one document a
+specified case rather than an exotic one, and the join's docstring already claims the folding this
+defeats. The fix is one line, reading the in-tick map before the held one.
+
+The adversarial lens then raised the unheld failing store independently, which is corroboration
+rather than a second finding and confirms the upgrade was right. Fix round 1 carries six owed Majors,
+every one of them spec-traceable, none fix-introduced and none new-requirement, so no finding is held
+and no judge is convened. They are: a plan document's parse dropped rather than held on a tick where
+it fails to read or parse, against the Approach's "keeps its last good reading, as the card already
+does for a plan document mid-write"; the store and heartbeat failures not held on their stat, against
+"holds each on mtime and size"; the in-tick parse map written and never read; an empty-string
+`planPath` yielding neither a reading nor the text fallback, against "when the entry has one"; and
+two test-strength Majors, that nothing can go red if the title-before-objective search order is
+swapped or the no-fallback rule is reversed, and that the README refusal is tested only against the
+literal it already matches, so a case-sensitive rewrite of it would keep the suite green while
+`docs/plans/readme.md` drew as a plan. That last one is the same defect class as section 1's
+Critical, found a second time in this plan, which is what the recurrence rule exists for.
+
+No fix on that list adds a mechanism no clause names, so no design stop fires. The suffix-case
+disagreement stays a Minor for the close pass.
+
+**Surfaces routed out, pending one write.** Three, adjudicated and awaiting a single
+`docs/backlog.md` entry written after the round so that shared file is touched once. A confirmed
+defect at `broker/usage/cache.ts:270-281`, which reads its capped file with a single `readSync` and
+no loop where the three sibling readers all loop, so a short read hands the parser a prefix of the
+file as the whole; it fails closed, since truncated JSON does not parse. The capped-read loop now
+standing in four copies, whose remedy is one module owning a parameterized `readCapped`. And three
+helpers in `plans.ts` left unexported, so `queues.ts` carries its own stat wrapper, stem function
+and README check.
+
+**Next action per section.** Section 2: dispatch fix round 1 to `implementer-opus` over the six owed
+Majors, then run the one lens the fix delta owes (it adds no module and reaches no outward action,
+but it reaches the path-join surface, so the adversarial lens runs at opus through Workflow), then
+the Minor close pass, the close gate, chapter 2, the routed-out backlog entry, and the commit.
+Sections 3 to 5: not started.
