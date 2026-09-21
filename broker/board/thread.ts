@@ -92,6 +92,14 @@ const MAX_REBUILDS = 3;
 const DECAY_PASSES = 3;
 
 /**
+ * The most read windows a reset tick's own drain spends catching the stream up in one pass. Nine
+ * times the event reader's 128 KiB window is 1,152 KiB, comfortably past the kit's own 1 MB rotation
+ * point, so a reset tick can cross a rotation boundary in the same tick it started rather than
+ * leaving that for however many refreshes the catch-up would otherwise take.
+ */
+export const EVENT_DRAIN_WINDOWS = 9;
+
+/**
  * Rate-limits a repeating log line by its reason, which is a fixed phrase naming the cause; the
  * varying detail (Discord's own refusal text) rides beside it and never keys the limiter.
  *
@@ -136,8 +144,9 @@ export type BoardCardOptions = {
   roots: readonly string[];
   /**
    * The fleet roster's path, or empty when no roster is configured. The card's other source: a
-   * roster naming at least one enabled persona lets the card build with no project roots at all.
-   * Empty is never itself opened, by `readRoster`'s default or by anything else here.
+   * configured roster path lets the card build with no project roots at all, whether or not the
+   * roster currently names an enabled persona. Empty is never itself opened, by `readRoster`'s
+   * default or by anything else here.
    */
   rosterPath: string;
   /** The resolved path of the kit's goal event stream. Absent on disk is not an error. */
@@ -314,6 +323,31 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
     return options.readEvents !== undefined
       ? options.readEvents(previous)
       : readEvents(previous, eventRoots, { path: eventsPath });
+  }
+  /**
+   * Reads forward from `previous` by calling `readEventStream` up to `windows` times, each call the
+   * bounded window `readEvents` itself already enforces. A call whose returned offset does not sit
+   * past the one it was handed means there is nothing left to read this tick, whether the stream is
+   * genuinely caught up or `readEvents` resolved a rotation back to an offset already seen; either
+   * way another call would only read the same bytes again. A call reporting `unreadable` would fail
+   * the same way on every further call, so it stops the loop too rather than spending the rest of the
+   * budget on it. A tick with no reset hands this a ceiling of one, which is today's single call.
+   */
+  function drainEvents(
+    previous: EventReaderState,
+    eventRoots: readonly string[],
+    windows: number,
+  ): ReadEventsResult {
+    let state = previous;
+    let unreadable = false;
+    for (let window = 0; window < windows; window += 1) {
+      const read = readEventStream(state, eventRoots);
+      unreadable = read.unreadable;
+      const advanced = read.state.offset > state.offset;
+      state = read.state;
+      if (unreadable || !advanced) break;
+    }
+    return { state, unreadable };
   }
   const setTimer = options.setTimer ?? setInterval;
   const clearTimer = options.clearTimer ?? clearInterval;
@@ -578,13 +612,20 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
    * and its plan reading, both read off the same queue the status rule was handed, are the only two
    * things this adds. A reading that is archived, or that the join found none for, draws null: such
    * an entry has already been called done or has nothing behind it to show a count or a next step for.
+   *
+   * The title map keeps the first entry's title for a repeated id, matching the queue reader's own
+   * rule for a store that wrote two goals under one id: the reading such an id joins to is the first
+   * entry's reading, so the title beside it is the first entry's title too.
    */
   function personaView(
     persona: RosterPersona,
     queue: PersonaQueue,
     status: PersonaStatus,
   ): BoardPersona {
-    const titles = new Map(queue.entries.map((entry): [string, string] => [entry.id, entry.title]));
+    const titles = new Map<string, string>();
+    for (const entry of queue.entries) {
+      if (!titles.has(entry.id)) titles.set(entry.id, entry.title);
+    }
     const entries: BoardPersonaEntry[] = status.entries.map((entry) => {
       const reading = queue.readings.get(entry.id);
       return {
@@ -626,10 +667,24 @@ export function createBoardCard(options: BoardCardOptions): BoardCard | null {
     // event for its folder already stepped over under the narrower list would otherwise never be
     // seen again: the reset sends the stream back to its start so every line is matched against the
     // wider list.
-    if (!sameRoots(eventRoots, lastEventRoots)) events = initialEventState();
+    const reset = !sameRoots(eventRoots, lastEventRoots);
     lastEventRoots = eventRoots;
-
-    const read = readEventStream(events, eventRoots);
+    if (reset) {
+      // The offset, the file identity, the mid-line flag and the malformed tally all start over, but
+      // the kept map does not: a marker a persona's own root already drew stands on an entry this
+      // reset's own re-read may never reach again, since a line the kit has since rotated past can
+      // now only be found here, in the map, and nowhere else. Carrying it forward is what keeps
+      // widening the roster from being the one thing that clears a block the operator still needs to
+      // see.
+      events = { ...initialEventState(), latest: events.latest };
+    }
+    // A reset tick drains several windows in the same tick rather than one: a persona enabled with a
+    // large stream already behind it needs every line under the wider root list read before the card
+    // draws it right, and leaving that for later ticks would mean drawing a stale card for however
+    // many refreshes the catch-up takes. A tick with no reset keeps today's single call. The ceiling
+    // on the drain is what keeps a stream this reader cannot finish in one tick from stalling it
+    // either.
+    const read = drainEvents(events, eventRoots, reset ? EVENT_DRAIN_WINDOWS : 1);
     events = read.state;
     if (read.unreadable) {
       // Not fatal to the card: the blocked markers are one field of it, and every row beside them is

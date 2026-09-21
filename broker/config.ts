@@ -126,8 +126,8 @@ export type BrokerConfig = {
    * roots whose newest plan moved at the same instant, two with no plan the card can date at all,
    * and where a root that is not on this list sits among the ones that are. Configuration and never
    * derived: the card reads `docs/plans` directly under each of these and nothing else, and no value
-   * out of any file it reads is ever used as a path. Empty leaves the card unbuilt even with the knob
-   * on, since there is nothing to sweep.
+   * out of any file it reads is ever used as a path. Empty roots leave the folder view off; the card
+   * still builds when the roster path names a fleet roster, since either source alone is enough.
    */
   boardProjects: readonly string[];
   /** How often the fleet is re-swept and re-rendered. An edit is spent only when it changed. */

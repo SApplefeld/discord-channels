@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BOARD_THREAD_NAME, createBoardCard } from "./thread.ts";
+import { BOARD_THREAD_NAME, createBoardCard, EVENT_DRAIN_WINDOWS } from "./thread.ts";
 import type { BoardCardOptions } from "./thread.ts";
 import { loadBoardBinding, saveBoardBinding } from "./binding.ts";
 import { sweepPlans } from "./plans.ts";
 import type { PlanFailure, PlanRead, PlanReading, PlanSweep } from "./plans.ts";
-import { initialEventState } from "./events.ts";
+import { initialEventState, MAX_EVENTS_READ_BYTES } from "./events.ts";
 import type { EventReaderState, ReadEventsResult } from "./events.ts";
 import type { CallOutcome, DiscordTransport, RateLimitObservation } from "../discord/transport.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
@@ -587,13 +587,16 @@ test("an event stream that cannot be read is drawn around and logged once per wi
 
 test("the event reader's state carries from one pass to the next", async () => {
   // The reader tails by byte offset: handing it a fresh state every pass would re-read the whole file
-  // on every tick and re-key every event in it.
+  // on every tick and re-key every event in it. The mock converges after one advance, the shape a
+  // real window takes once nothing more is on disk, so the first tick's own reset drains in two calls
+  // rather than spinning to its cap.
   const seen: EventReaderState[] = [];
   const { card } = board({
     binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
     readEvents: (previous) => {
       seen.push(previous);
-      return { state: { ...previous, offset: previous.offset + 100 }, unreadable: false };
+      const next = previous.offset < 100 ? previous.offset + 100 : previous.offset;
+      return { state: { ...previous, offset: next }, unreadable: false };
     },
   });
 
@@ -602,10 +605,10 @@ test("the event reader's state carries from one pass to the next", async () => {
 
   assert.deepEqual(
     seen.map((state) => state.offset),
-    [0, 100],
-    "the second pass resumes where the first one stopped",
+    [0, 100, 100],
+    "the first tick's reset drains to convergence, and the second pass resumes where it left off",
   );
-  assert.deepEqual(seen[0], initialEventState(), "and the first starts from nothing consumed");
+  assert.deepEqual(seen[0], initialEventState(), "and the first call starts from nothing consumed");
 });
 
 test("a refused edit is skipped rather than queued, and retried on the next tick", async () => {
@@ -1002,11 +1005,47 @@ test("the roster alone, with no project roots, builds the card and draws persona
   assert.match(body, /^card as of 3h ago$/m, "the entry's held parse instant reaches the footer");
 });
 
+test("a queue holding two entries under one id draws the first entry's title", async () => {
+  // The queue reader keeps the first entry's reading for a repeated id, so the title beside it has to
+  // agree: a last-write-wins title would name one entry with the reading of another.
+  const { calls, card } = board({
+    roots: [],
+    rosterPath: "D:\\personas\\fleet.json",
+    sweep: () => swept([]),
+    readRoster: () => [{ name: "worker-one", workdir: path.join(ROOT, "worker-one") }],
+    readQueues: (personas) =>
+      personas.map((persona) => ({
+        name: persona.name,
+        workdir: persona.workdir,
+        entries: [
+          { id: "g1", title: "First title", status: "paused" },
+          { id: "g1", title: "Second title", status: "paused" },
+        ],
+        activeGoalId: null,
+        lastTurnComplete: null,
+        turnStartedAt: null,
+        readings: new Map(),
+        heldSince: null,
+      })),
+  });
+
+  await card.tick();
+
+  const body = calls.posts[0] ?? "";
+  assert.match(body, /First title/);
+  assert.doesNotMatch(body, /Second title/);
+});
+
 test("a persona enabled since the last tick widens the event roots and resets the reader", async () => {
   // The event reader drops a line whose project matches no root it was handed at the moment that
   // line was read, so a persona enabled after that moment needs the stream read again from its
   // start under the wider list, or its own events are gone for good.
-  const offsets: number[] = [];
+  //
+  // What is recorded is the offset each tick's own first call opens with, not every call a reset
+  // tick's drain makes: a reset now spends more than one call when the stream keeps advancing, and
+  // this test's own subject is the reset rather than the drain, which the tests beside it cover.
+  const starts: number[] = [];
+  let firstCallThisTick = true;
   let personas: { name: string; workdir: string }[] = [];
   const { card } = board({
     readRoster: () => personas,
@@ -1022,17 +1061,26 @@ test("a persona enabled since the last tick widens the event roots and resets th
         heldSince: null,
       })),
     readEvents: (previous) => {
-      offsets.push(previous.offset);
-      return { state: { ...previous, offset: previous.offset + 1 }, unreadable: false };
+      if (firstCallThisTick) {
+        starts.push(previous.offset);
+        firstCallThisTick = false;
+      }
+      // Converges after one advance, so a reset tick's own drain halts here rather than spinning to
+      // its cap.
+      const next = previous.offset < 1 ? previous.offset + 1 : previous.offset;
+      return { state: { ...previous, offset: next }, unreadable: false };
     },
   });
 
+  firstCallThisTick = true;
   await card.tick();
+  firstCallThisTick = true;
   await card.tick();
   personas = [{ name: "worker-one", workdir: path.join(ROOT, "worker-one") }];
+  firstCallThisTick = true;
   await card.tick();
 
-  assert.deepEqual(offsets, [0, 1, 0], "the third call sees offset 0, the reset rather than 2");
+  assert.deepEqual(starts, [0, 1, 0], "the third tick opens its reset at offset 0, not 2");
 });
 
 test("a goal-blocked event read on a tick before a persona was enabled marks that persona's entry on the first tick after it is enabled", async (t) => {
@@ -1044,8 +1092,11 @@ test("a goal-blocked event read on a tick before a persona was enabled marks tha
   const eventsPath = path.join(dir, "kit-events.jsonl");
   writeFileSync(
     eventsPath,
+    // Stamped between the reading's mtime and the clock, the ordinary past-stamped path rather than
+    // the future-stamp clamp: `blockedAt` draws blocked either way, and this is the path a real event
+    // actually takes.
     `${JSON.stringify({
-      ts: "2024-01-01T00:00:00.000Z",
+      ts: new Date(START - 30 * 60_000).toISOString(),
       event: "goal-blocked",
       project: workdir,
       plan: "docs/plans/first_spec_v1.md",
@@ -1132,6 +1183,180 @@ test("a goal-blocked event read on a tick before a persona was enabled marks tha
     controlBody,
     /blocked/,
     "the control: enabled from the first tick, the same event marks the entry with no reset needed",
+  );
+});
+
+test("a goal-blocked line past the first read window still marks the entry once the roots widen", async (t) => {
+  // The stream is larger than one read window, so a reset that spends only one call never reaches
+  // the last line. This drives the real reader end to end, the same idiom the reset test above uses,
+  // over a stream too big for a single window to cross.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-drain-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workdir = path.join(dir, "worker-one");
+  const eventsPath = path.join(dir, "kit-events.jsonl");
+
+  // A line the reader accepts and drops: it parses cleanly but names a project that matches no
+  // configured root or persona folder, so it costs read bytes without ever being kept.
+  const filler = `${JSON.stringify({
+    ts: "2024-01-01T00:00:00.000Z",
+    event: "goal-complete",
+    project: path.join(dir, "unrelated-project"),
+    plan: "docs/plans/other_spec_v1.md",
+    session: null,
+  })}\n`;
+  const repeats = Math.ceil((MAX_EVENTS_READ_BYTES * 1.5) / filler.length);
+  const blockedLine = `${JSON.stringify({
+    ts: new Date(START - 30 * 60_000).toISOString(),
+    event: "goal-blocked",
+    project: workdir,
+    plan: "docs/plans/first_spec_v1.md",
+    session: null,
+  })}\n`;
+  const fixture = filler.repeat(repeats) + blockedLine;
+  assert.ok(
+    fixture.length > MAX_EVENTS_READ_BYTES,
+    "the fixture has to outgrow one read window for this test to mean anything",
+  );
+  writeFileSync(eventsPath, fixture, "utf8");
+
+  const worker = { name: "worker-one", workdir };
+  const queueFor = (persona: { name: string; workdir: string }) => ({
+    name: persona.name,
+    workdir: persona.workdir,
+    entries: [{ id: "g1", title: "First plan", status: "paused" }],
+    activeGoalId: null,
+    lastTurnComplete: null,
+    turnStartedAt: null,
+    readings: new Map([
+      [
+        "g1",
+        {
+          archived: false as const,
+          status: "Ready",
+          terminal: false,
+          sections: 2,
+          completed: 0,
+          next: null,
+          root: persona.workdir,
+          path: path.join(persona.workdir, "docs", "plans", "first_spec_v1.md"),
+          stem: "first_spec_v1",
+          mtimeMs: START - 60 * 60_000,
+          sizeBytes: 1_024,
+          heldSince: null,
+        },
+      ],
+    ]),
+    heldSince: null,
+  });
+
+  let personas: { name: string; workdir: string }[] = [];
+  const { calls, card } = board({
+    roots: [],
+    rosterPath: "D:\\personas\\fleet.json",
+    sweep: () => swept([]),
+    readEvents: undefined,
+    eventsPath,
+    readRoster: () => personas,
+    readQueues: (ps) => ps.map(queueFor),
+  });
+
+  await card.tick();
+  assert.doesNotMatch(
+    calls.posts[0] ?? "",
+    /blocked/,
+    "no persona is enabled on the first tick, so the line drops for want of a matching root",
+  );
+
+  personas = [worker];
+  await card.tick();
+  const secondBody = calls.edits.at(-1)?.card ?? "";
+  assert.match(secondBody, /worker-one/);
+  assert.match(
+    secondBody,
+    /blocked/,
+    "the reset drains past the first window in the same tick, so the last line lands on this entry",
+  );
+});
+
+test("a project's blocked marker survives a reset even though the reset's own drain does not reach the line again", async (t) => {
+  // The line sits past the reset drain's own nine-window budget, established there before this test
+  // starts widening the roots. Once found by the ordinary steady reads that follow, only a carried
+  // map keeps the marker when enabling the persona forces a fresh reset over the same stream.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-carry-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const eventsPath = path.join(dir, "kit-events.jsonl");
+
+  const filler = `${JSON.stringify({
+    ts: "2024-01-01T00:00:00.000Z",
+    event: "goal-complete",
+    project: path.join(dir, "unrelated-project"),
+    plan: "docs/plans/other_spec_v1.md",
+    session: null,
+  })}\n`;
+  const beyondDrainBudget = MAX_EVENTS_READ_BYTES * EVENT_DRAIN_WINDOWS + 40_000;
+  const repeats = Math.ceil(beyondDrainBudget / filler.length);
+  const blockedLine = `${JSON.stringify({
+    ts: new Date(START - 30 * 60_000).toISOString(),
+    event: "goal-blocked",
+    project: ROOT,
+    plan: "docs/plans/gamma_spec_v1.md",
+    session: null,
+  })}\n`;
+  const filled = filler.repeat(repeats);
+  assert.ok(
+    filled.length > MAX_EVENTS_READ_BYTES * EVENT_DRAIN_WINDOWS,
+    "the line has to sit past what one reset's own drain can reach for this test to mean anything",
+  );
+  assert.ok(
+    filled.length - MAX_EVENTS_READ_BYTES * EVENT_DRAIN_WINDOWS < MAX_EVENTS_READ_BYTES,
+    "and within reach of the single steady window that follows",
+  );
+  writeFileSync(eventsPath, filled + blockedLine, "utf8");
+
+  let personas: { name: string; workdir: string }[] = [];
+  const { calls, card } = board({
+    eventsPath,
+    readEvents: undefined,
+    binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
+    sweep: () => swept([reading({ stem: "gamma_spec_v1", mtimeMs: START - 60 * 60_000 })]),
+    readRoster: () => personas,
+    readQueues: (ps) =>
+      ps.map((persona) => ({
+        name: persona.name,
+        workdir: persona.workdir,
+        entries: [],
+        activeGoalId: null,
+        lastTurnComplete: null,
+        turnStartedAt: null,
+        readings: new Map(),
+        heldSince: null,
+      })),
+  });
+
+  // The first tick's own reset drains up to the window cap, which the filler alone already exceeds:
+  // the line is not reached yet.
+  await card.tick();
+  assert.doesNotMatch(calls.edits.at(-1)?.card ?? "", /blocked/);
+
+  // A steady tick, roots unchanged, spends its one window on the bytes the first tick's drain left
+  // off at, which is exactly where the line sits.
+  await card.tick();
+  assert.match(
+    calls.edits.at(-1)?.card ?? "",
+    /blocked/,
+    "the steady window that follows the drain reaches the line",
+  );
+
+  // The persona widens the roots and forces a fresh reset. Its own drain again stops at the window
+  // cap, short of the line. The persona has no queue entries of its own, so nothing else about the
+  // card changes and no further edit is spent; the last edit on record is still the one that has to
+  // carry the marker, and only the carried map keeps it there.
+  personas = [{ name: "worker-one", workdir: path.join(dir, "worker-one") }];
+  await card.tick();
+  assert.match(
+    calls.edits.at(-1)?.card ?? "",
+    /blocked/,
+    "the carried map keeps the marker even though this reset's own drain does not reach the line again",
   );
 });
 
@@ -1320,4 +1545,87 @@ test("one failing pass is one failure however many timer fires joined it", async
     [],
     "and no window reports repeats that never happened",
   );
+});
+
+test("the default readers, driven from real files, join a roster and a store without the store's raw words reaching the card", async (t) => {
+  // Every other test in this file injects `readRoster` and `readQueues`. This one leaves both out, so
+  // the roster file and the persona plugin's own store are read the way the wiring actually reads
+  // them, and the words the card must never draw are the real store's words rather than a test double's.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-board-wiring-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const workdir = path.join(dir, "worker-one");
+  mkdirSync(path.join(workdir, "docs", "plans"), { recursive: true });
+  writeFileSync(
+    path.join(workdir, "docs", "plans", "first_spec_v1.md"),
+    "Status: In Progress\n\n## Sections of Work\n### 1. One\n\n## Chapters\n### Chapter 1\nNext: onward\n",
+    "utf8",
+  );
+
+  writeFileSync(
+    path.join(dir, "roster.json"),
+    JSON.stringify([{ name: "worker-one", workdir, enabled: true }]),
+    "utf8",
+  );
+
+  writeFileSync(
+    path.join(workdir, ".agentic-personas.json"),
+    JSON.stringify({
+      "worker-one": {
+        goals: [
+          {
+            id: "g1",
+            kind: "plan",
+            title: "Finish the fleet board plan",
+            status: "paused",
+            planPath: "docs/plans/first_spec_v1.md",
+            sortKey: 1,
+            createdAt: 1,
+          },
+          { id: "g2", kind: "plan", title: "Next up", status: "pending", sortKey: 2, createdAt: 2 },
+          {
+            // The round-limit reason: bookkeeping the plugin writes while working normally, never a
+            // block on this card. The plan's own Intent rules this store status out as the truth.
+            id: "g3",
+            kind: "plan",
+            title: "Stuck",
+            status: "blocked",
+            blockedReason: "Max rounds reached",
+            sortKey: 3,
+            createdAt: 3,
+          },
+        ],
+        activeGoalId: null,
+        monitor: { lastTurnComplete: null },
+      },
+    }),
+    "utf8",
+  );
+
+  // The absence check this test rests on: none of the store's own words reaches the posted body.
+  const assertNoBannedWords = (body: string): void => {
+    for (const word of ["paused", "pending", "Max rounds"]) {
+      assert.doesNotMatch(body, new RegExp(word), `the store's own word "${word}" must not reach the card`);
+    }
+  };
+
+  const { calls, card } = board({
+    roots: [],
+    rosterPath: path.join(dir, "roster.json"),
+    eventsPath: path.join(dir, "kit-events.jsonl"),
+    sweep: () => swept([]),
+    readEvents: NO_EVENTS,
+  });
+
+  await card.tick();
+
+  const body = calls.posts[0] ?? "";
+  assert.match(body, /worker-one/, "the persona's name reaches the card");
+  assert.match(body, /Finish the fleet board plan/, "the plan title reaches the card");
+  assertNoBannedWords(body);
+
+  // The withheld control: the same helper must refuse a body that does carry a banned word, which is
+  // what proves the silence over the real body above means the words are absent rather than that the
+  // check never ran.
+  assert.throws(() => assertNoBannedWords("a body that carries paused right here"));
 });

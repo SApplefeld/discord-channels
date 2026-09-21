@@ -1477,8 +1477,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   }
 
   // The board card, under all three of its conditions: the knob, a configured channel, and at least
-  // one project root or a roster naming an enabled persona. Off any of those ways means the machinery
-  // is absent rather than idle, so nothing opens a thread, nothing runs on a timer, and no plan doc,
+  // one project root or a configured roster path. Off any of those ways means the machinery is
+  // absent rather than idle, so nothing opens a thread, nothing runs on a timer, and no plan doc,
   // store file or event stream is read.
   const boardCard = createBoardCard(
     boardCardWiring({

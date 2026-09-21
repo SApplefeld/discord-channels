@@ -530,6 +530,17 @@ and none carries a date of its own. An item added from here on carries `(parked 
   stale, plus the question of what a stamp dated in the future should mean. Both are product calls
   rather than code ones.
 
+- Measure one board-card tick at the plan's caps and, if it runs long, hoist the queue reader's
+  per-entry stats into one directory listing per place (parked 2026-09-21, surfaced by the Fleet
+  Board worker queues plan's section 5 performance review). The tick is synchronous on the broker's
+  one event loop. `broker/board/queues.ts` stats each entry's plan name in up to four places and
+  each persona's store and heartbeat, which at 16 personas of 200 entries is about 12,800 `statSync`
+  calls on a fleet that has not moved, and `broker/board/status.ts` rebuilds the event index and
+  normalizes every kept event's root once per persona where one build per tick would do. Nothing
+  in the plan bounds tick latency and no timing was taken, so this is a measurement first: one tick
+  at the caps on this host, against the 5 s minimum refresh. Both files sit outside section 5's
+  scope, which is why the shapes are recorded here rather than changed there.
+
 - Move the queue reader's per-tick walk of an entry `id` behind the store's mtime hold (parked
   2026-09-21, surfaced by the Fleet Board worker queues plan's section 4 fix round). A persona's
   store file is read whole and then held across ticks, but `broker/board/queues.ts` builds a fresh

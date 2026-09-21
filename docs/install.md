@@ -57,7 +57,8 @@ session anyway, and the fix is re-running the installer.
 usage card (`CHANNEL_USAGE_CARD`) carries each account's identity and headroom. The board card
 (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_ROSTER`, `CHANNEL_BOARD_PROJECTS` or both) puts plan
 titles, progress, and next steps in the channel. With `CHANNEL_BOARD_ROSTER` set it draws each
-worker persona the fleet roster names, with that persona's name and its queued plan titles. With
+worker persona the fleet roster names, with that persona's name, its queued plan titles, and the
+reason a worker wrote on a blocked entry. With
 `CHANNEL_BOARD_PROJECTS` set it sweeps plan documents under the project roots you name, and uses
 the last path segment of each root as the project name. So a root at or just under your home
 directory would put your account name there too. Both cards are configured in `broker.env` and documented in

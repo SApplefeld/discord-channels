@@ -433,7 +433,7 @@ One thread named **Fleet: Board** carries a second broker-edited card, answering
 and how far has it got" without opening a plan document. It is off unless the host sets
 `CHANNEL_BOARD_CARD` and at least one of its two sources, `CHANNEL_BOARD_ROSTER` and
 `CHANNEL_BOARD_PROJECTS`. Off means nothing is built: no thread, no timer, and no file opened. With
-the card switched on and neither source set, the broker logs
+the card switched on, Discord configured and neither source set, the broker logs
 `board card: neither project roots nor a roster is configured, the card is not built` once at start.
 
 The card has two views, and either can be used alone. The persona view draws one group per worker
@@ -461,7 +461,8 @@ sections.
 
 Each group opens with a shaded label: the persona's name, `N of M done`, and the worker's state.
 The state is `running now` while the heartbeat says the worker is inside a turn. Otherwise it is
-`idle 12m`, measured from the last completed turn, or `nothing started` when no entry is in flight.
+`idle 12m`, measured from the last completed turn, bare `idle` when the store records no completed
+turn, or `nothing started` when no entry is in flight.
 Each entry draws one plain word, and none of them is the persona plugin's own status:
 
 | Word | Means |
@@ -469,14 +470,16 @@ Each entry draws one plain word, and none of them is the persona plugin's own st
 | in progress | The entry being worked. Its plan is `In Progress` with the newest document, or the store names it active when no plan is started. It also carries the plan's latest `next:` step |
 | up next | The first entry in queue order not otherwise placed. The worker will reach it next |
 | started, parked | Its plan is `In Progress`, but another entry is the one in flight |
-| blocked | A kit blocked event is outstanding for its plan, or the store holds a real block. The worker's reason draws beside it when the store or the lead gave one |
+| blocked | A kit blocked event is outstanding for its plan, the entry's lead says blocked, or the store holds a real block. The worker's reason draws beside it when the lead or the store gave one |
 | stalled | The worker paused it after running out of nudges |
 | then: | Every other queued entry, folded into one closing line of titles |
 
 A done entry draws no line and is counted in the label. A store block reading `Max rounds reached`
 is the plugin's bookkeeping rather than a block, so that entry is judged like any other. A paused
-entry reads `up next` or sits in the `then:` line, because the plugin's "paused" means "not now". An
-entry whose plan the card can read also shows sections done out of total, such as `2/3`.
+entry is judged like any other too, because the plugin's "paused" means "not now": with no plan
+started it reads `up next` or sits in the `then:` line, and with an `In Progress` plan it reads
+`in progress` or `started, parked`. An entry whose plan the card can read also shows sections done
+out of total, such as `2/3`.
 
 The store is written whole with no lock, so a read can land mid-write. A store that fails to read
 keeps its last good reading, and the label ends `held 5m`, with an age that climbs. The card's
