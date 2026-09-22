@@ -242,3 +242,26 @@ Delta: kit-size at 2026-09-22 22:23 UTC, SCOTT-CLAUDE, exit 2:
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Chapter 2 - 2026-09-22
+Completed: 2. Evidence: which kind of red the group produces
+Implemented By: main session (inline, per the section's Locus)
+Metrics: review rounds 0, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 2 open: runs `npm test` 30 times, one at a time, on a box polled clear before each run, and records every red's classified message; serves section 2's acceptance; adds no mechanism in the code (the runner is scratch tooling under `.kit/`); size 0 lines in the tree; not running it leaves section 3 moving a bound on no evidence, which is the trap the backlog names.
+- Result: 30 runs counted out of 30 attempts, none died partway. Every run reported 2006 tests. 3 reds, all in the group, all the same test and the same wait, and all classified "held only after the bound":
+  - run 5, 22:28 UTC: "a mirror run that landed nothing after the tailer deferred still gets the text posted", `the tailer's poll has settled held only after the bound, 25 ms late` (tail.test.ts:2970).
+  - run 21, 22:41 UTC: same test and wait, 22 ms late.
+  - run 22, 22:41 UTC: same test and wait, 22 ms late.
+  - No red was "never held". No red fell outside the five tests, so there is no found work to raise.
+- The hypothesis is confirmed. The 1000-turn bound expired while the poll's thread-pool file calls were still in flight, and the condition held 22 to 25 ms later. The branch rule in the Approach's design step 3 sends the run to section 3.
+- Unlike the backlog's record of a different member failing each run, every red here was one member: the wait on a tailer poll that runs while a paced mirror run holds the thread. The inferred reason is that this box's timing favors that path. It does not change the branch, since every red is the same kind.
+- Contention: the runner started each run only on a CLEAR poll, and held the heavy-process claim from 22:23:49 UTC until it finished at about 22:47:46 UTC. Another session's short red/green probe (`node .kit/controller-tick-test.mjs`, the direct-lines work) started at 22:24:22 UTC during run 1's tail, and a foreign process was present at the end of runs 5 and 7. The runner waited on foreign processes 9 times in all. Runs 21 and 22 read CLEAR both before and after, so the reds do not depend on another session's load.
+Assumptions:
+- assumed 2026-09-22 (section 2): a full run's totals line reading 2006 tests is the "did not die partway" test; every run carried it.
+Review Findings: no review. The section has no code or document delta, so the reviewers have nothing to read. The runner and its message extractor are scratch tooling, and the extractor was checked against a synthetic log holding both message shapes and an unrelated failure.
+Stamps: adjudicated 0, stamped 0; none surfaced beyond Chapter 1's window.
+Gate: the section's gate is its 30 runs, `npm test`, SCOTT-CLAUDE, 2026-09-22 22:23:49-22:47:46 UTC, on branch tail-until-flake at 52d2be7: 27 exit 0 at 2006/2006/0, and 3 exit 1 at 2006/2005/1 (runs 5, 21, 22). Wall clock 37-42 s per run. Per-run records: `.kit/scratch/channels_tail-until-flake_spec_v1/evidence/results.log`. No code delta, so no targeted lane.
+Next: 3. The wait bounds on wall clock
+Commit Model: Branch-and-PR
+Delta: no code or document delta beyond this Chapter; kit-size measures no corpus in this repository (Chapter 1's reading).
