@@ -14,8 +14,9 @@ clamp exists as two. The usage cache's copy of the capped read performs a single
 loop, so a short read would hand the parser a prefix of the file under the name of the whole. The
 codebase's own precedent set three copies as the point to extract, and every family but the clamp
 is past it. When this is done each family has one owner, the usage cache's read loops like its
-siblings, no caller's observable behaviour changes otherwise, and the four backlog entries are
-retired.
+siblings, and no caller's observable behaviour changes otherwise. The four backlog entries left the
+active list when the operator approved this plan, and sit in `docs/archive/backlog-2026-Q3.md`
+under "Planned 2026-09-22".
 
 ## Intent
 
@@ -95,8 +96,8 @@ the final form.
 ## Open questions for the Architect seat
 
 1. **One plan or two?** Recommend one plan with four sections, one per family. Each section is
-   independently reviewable and revertible, and together they retire four backlog entries in one
-   round.
+   independently reviewable and revertible, and together they close four former backlog entries
+   in one round.
 2. **How is the short read proven red?** A short `readSync` is hard to provoke on a local disk.
    Recommend that `broker/capped-read.ts` take an optional reader function whose default is
    `readSync`. A test hands it a reader that returns the file in two chunks: the usage cache's old
@@ -168,13 +169,13 @@ directory in the queue is refused.
 
 Export `touchedAt` once and import it in the other module. Export the plan helpers from
 `broker/board/plans.ts` and import them in `broker/board/queues.ts`, keeping the regular-file
-refusal. Retire the four backlog entries.
+refusal.
 
 Acceptance: `npm run lint` exits 0; `node --test broker/board/*.test.ts` exits 0 against a same-lane
-baseline; the four entries are gone from `docs/backlog.md`.
+baseline.
 
 Files in scope: `broker/board/card.ts`, `broker/board/status.ts`, `broker/board/plans.ts`,
-`broker/board/queues.ts`, `docs/backlog.md`.
+`broker/board/queues.ts`.
 
 ## Out of Scope
 

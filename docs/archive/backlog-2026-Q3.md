@@ -141,7 +141,7 @@ the live backlog carries active items only.
   residual: inside a spoiler a tap has revealed, a peer body can compose a line shaped like the
   renderer's own attribution, because the escape that would mark it is one the client consumes.
 
-## Declined 2026-09-22
+## Ruled won't-fix 2026-09-22
 
 - **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
   from the title-states security review).** `classifyMessage`'s thread branch drops
@@ -153,6 +153,133 @@ the live backlog carries active items only.
   ("a pin notice in a thread is delivered like any message") flips with it. Do it when the gateway
   is next open, and pin both directions.
 
-  Declined by the operator on 2026-09-22, relayed by the coordinator, as excessive hardening not
+  Ruled won't-fix by the operator on 2026-09-22, relayed by the coordinator, as excessive hardening not
   worth its review cost. No system message type carries composed text today, and the router drops
   empty text, so the thread keeps delivering every type but the rename notice.
+
+## Planned 2026-09-22
+
+The operator approved these for planning on 2026-09-22. Each now lives in the plan named above
+its entries, so it has left the active list.
+
+Owned by `plans/channels_tail-until-flake_spec_v1.md`:
+
+- Root-cause the intermittent timing failure in `broker/tail.test.ts:2469`, "a long reply the
+  tailer is still posting is not posted again by the Stop mirror" (parked 2026-08-21, found while
+  baselining an unrelated round). It fails with `AssertionError: the condition never held` from the
+  test's own `until` helper (tail.test.ts:2459), observed once in a full-suite run and once in three
+  isolated runs of the file, on a clean tree at 3417f79, and passes on re-run. A genuine flake by
+  the repeat test, not a regression from any open work; it needs its `until` window read against
+  what the test drives (a real timer against an injected clock is the usual shape) rather than a
+  retry wrapper. Also observed under suite load later the same day: its mirror-image sibling (the
+  inverse dedup direction) and "a mirror run that landed nothing after the tailer deferred still
+  gets the text posted" each failed the same way, always with the `until` helper's "the condition
+  never held", always green alone and in-file (111/111 across repeated runs) and green on full-suite
+  re-run, so the flake covers the in-flight echo-dedup group in `tail.test.ts`, not one test, and
+  the shared `until` polling window under parallel suite load is the prime suspect. The group has
+  since grown: the prompt slot's own deferral tests joined it on 2026-08-25, and "a tailer run that
+  landed nothing after the mirror deferred still gets the text posted" failed the same way in a
+  full-suite run taken while three review agents were working the same box, then passed 152/152 in
+  each of three isolated runs of the file. A separate full-suite run over the same code, taken on a
+  box carrying no review agents, came back 1492/1491/0/1 exit 0. "A reply record left by a deferral
+  dies with the interim run that never landed" joined on the same day, failing once in a full-suite
+  run with the same "the condition never held", then passing 159/159 in each of three isolated runs
+  and green on the next full-suite run at 1505/1504/0/1 exit 0. It failed a second time, with "a
+  mirror run that landed nothing after the tailer deferred still gets the text posted", across two
+  further full-suite runs taken while another project's .NET suite held eleven processes on the
+  box; each isolated to 160/160 exit 0 and each followed by a green full suite, the last of them
+  1510/1509/0/1 exit 0 with that contention gone. On 2026-08-26 three consecutive full-suite runs
+  each went red on a different member of the group, in order "a mirror run that landed nothing
+  after the tailer deferred still gets the text posted", "a long reply the Stop mirror is still
+  posting is not posted again by the tailer", and "a long reply the tailer is still posting is not
+  posted again by the Stop mirror", every one at the same helper line with the same message, while
+  another project's release suite held eleven .NET processes on the box; three isolated runs of the
+  file in between were 160/160 exit 0 each, and the run taken once that contention had drained was
+  green at 1510/1509/0/1 exit 0. A moving member across consecutive runs is the discriminator worth
+  keeping: a regression fails the same test twice. So the member list tracks whatever the
+  echo-dedup group holds rather than a fixed set of names, the trigger is load on the box rather
+  than any one test, and the fix belongs in the helper.
+
+- An intermittent failure in `broker/tail.test.ts`, inside the `until` helper at its own line 2451,
+  which yields up to 1000 `setImmediate` turns and then asserts "the condition never held". It fails
+  on a different test each time and only under machine load, and it is old: the fleet-card round hit
+  it once too. What is worth knowing before anyone touches it is that the obvious fix is a trap.
+  A failure there has two possible causes, a turn-count bound too tight to cover a slow run, or the
+  tailer genuinely failing to post that once, and widening the bound cannot tell them apart. Doing
+  so would hide the second case permanently, which is the more expensive of the two by a wide
+  margin. So the next round that touches the tailer should first make the helper say which condition
+  never held, and whether it became true shortly afterwards; a bound that expired and a run that
+  never posted are then different messages and the choice of fix is evidence-led.
+  (parked 2026-08-11, backfilled)
+
+  Measured while chasing it: 21 clean full runs against 1 failure, no reproduction in 3 runs under 12
+  CPU-saturating processes, none in 3 runs under 8 disk-saturating processes. The one failure landed
+  while two subagents were working the tree, which is also when it did its damage: an implementer
+  read the red as its own and reported against a baseline that was in fact clean. That is the real
+  cost of leaving it, and it is why it is written down rather than left as folklore.
+
+  Measured again on 2026-08-25, during the peer-traffic round, with the control the earlier
+  measurement lacked: a clean HEAD tree extracted outside the shared worktree (`git archive HEAD
+  | tar -x`) ran the full suite ten times and went red twice, once on "a long reply the tailer is
+  still posting is not posted again by the Stop mirror" at `broker/tail.test.ts:2464`, same `until`
+  assertion, with none of that round's code present. So a red in this group is pre-existing by
+  default and no round needs to re-litigate whose it is. Two things in the wording above are
+  sharper than the evidence supports: 2 in 10 on a clean tree is a far higher rate than the 21-to-1
+  recorded here, and the reds arrived without the load the entry names as the trigger, so "only
+  under machine load" and "the polling window under parallel suite load is the prime suspect" are
+  both unproven. The helper's bound is a count of 1,000 `setImmediate` turns rather than wall clock
+  (`broker/tail.test.ts:2473-2479`), which is load-independent by construction: it expires when the
+  microtask loop spins fast relative to the paced run's real timer, which load would slow rather
+  than hasten. The instrument-first fix above is unchanged and is still the right first move.
+
+Owned by `plans/channels_shared-helper-owners_spec_v1.md`:
+
+- Fold the eight duplicated `createRepeatLog` implementations into one. The rate-limited repeat
+  logger is hand-copied into `broker/tail.ts`, `broker/question-desk.ts`,
+  `broker/routing/interactions.ts`, `broker/discord/pins.ts`, `broker/usage/thread.ts`,
+  `broker/board/thread.ts`, `broker/inbox/thread.ts`, and `broker/inbox/judge.ts`, each with its
+  own window constant, so a fix to the throttling behavior has to be found in eight places. Low risk
+  and no behavior change wanted; purely drift. The board card's round took the sixth copy
+  deliberately, on the codebase's own precedent that a small terminal mechanism is duplicated per
+  surface, and named three copies as the extraction threshold, and the operator inbox took the
+  seventh and eighth on the same precedent. That threshold is now well past, so this is the round
+  that should collapse them. (parked 2026-08-16, backfilled)
+
+- The three standing cards' binding modules are near-duplicates. `broker/board/binding.ts`,
+  `broker/usage/binding.ts` and `broker/inbox/binding.ts` differ only in identifiers and their
+  header paragraphs. Accepted deliberately at the time, on the same per-surface-duplication precedent, with
+  a fourth card named as the point to extract. The inbox card is that fourth card and took a third
+  copy instead, so the extraction is due: the shape to build is a single card-binding module taking
+  a label. (parked 2026-08-16, backfilled)
+
+- Give the capped file read one owner, and fix the copy that does not loop (parked 2026-09-20,
+  surfaced by the Fleet Board worker queues plan and routed here because that plan serves the board
+  card rather than this family). Four modules now read a size-capped file into a buffer one byte
+  larger so an oversized file is refused whole rather than truncated. Three of them loop the read
+  until the descriptor is drained and say in a comment why. The fourth, `broker/usage/cache.ts:270-281`,
+  performs a single `readSync` with no loop, so a short read hands the parser a prefix of the file
+  under the name of the whole. That one is a confirmed defect rather than a style divergence, read
+  against its three siblings. It fails closed, since a truncated JSON document does not parse, so
+  the symptom is a usage card that reports itself unavailable rather than one that reports wrong
+  numbers, which is why it is parked rather than fixed in flight. What it costs to leave is that the
+  next author copies whichever of the four they happen to open. The shape of the fix is one module
+  owning a parameterised capped read that the four call, with the cap and the subject as arguments.
+  A smaller piece of the same convergence: `broker/board/queues.ts` carries hand-written copies of
+  five helpers `broker/board/plans.ts` keeps unexported. They are `planStem`, the README-stem check,
+  `bounded` with its `WHITESPACE_RUN` constant, the capped read inside `readPlanFile`, and
+  `statPlanFile`. The queue reader's copy of the last also refuses anything that is not a regular
+  file, which the sweep settles from its own listing instead, so a shared stat must keep that
+  refusal for the reader. The queue reader was written that way deliberately, to keep its section
+  inside its own files, and the exports are the cheap half of this item.
+
+- Give the non-finite modification time guard one owner (parked 2026-09-20, surfaced by the Fleet
+  Board worker queues plan's section 3 and routed here because that section's spec bounds
+  `broker/board/card.ts` to four exports). Two modules now carry the same three-line clamp that turns
+  a modification time which is not a finite number into negative infinity before a comparator sorts
+  by it: `touchedAt` in `broker/board/card.ts` and in `broker/board/status.ts`. The guard exists because a
+  comparator handed a value that is neither above, below nor equal to another orders nothing, so the
+  word it decides lands wherever the loop happens to leave it. Neither copy is wrong today. What it
+  costs to leave is that a writer and a reader hold one rule in two places, which is the shape
+  through which a later edit to either moves a word with neither side's tests noticing. The fix is
+  one exported clamp the two call. It was not taken in section 3 because exporting a fifth name from
+  the card renderer would contradict a section line the operator approved.

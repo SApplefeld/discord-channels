@@ -29,8 +29,9 @@ two backlog entries that describe it: "Root-cause the intermittent timing failur
 
 **What done needs to do.** Make an expired wait distinguish "the condition became true shortly
 after the bound" from "the condition never became true", and name the condition. Gather enough
-runs to say which of the two the group's reds are. Fix the cause that evidence names, and retire
-both backlog entries with receipts.
+runs to say which of the two the group's reds are. Fix the cause that evidence names. The two
+backlog entries already left the active list when the operator approved this plan, and sit in
+`docs/archive/backlog-2026-Q3.md` under "Planned 2026-09-22".
 
 **What done does not need to do.** It does not change the tailer's behaviour unless the evidence
 shows the tailer failing to post. It does not touch the other polling helpers in
@@ -133,14 +134,13 @@ new plan for the tailer.
 Tests: section 1's helper tests still pass with the bound restated in wall-clock terms.
 
 Replace the 1000-turn count with a wall-clock bound matching the siblings' shape, keeping the
-labelled messages. Retire both backlog entries with receipts from section 2.
+labelled messages.
 
 Acceptance:
 - `npm run lint` exits 0; `node --test broker/tail.test.ts` exits 0 against the same-lane baseline.
 - A further 20 full-suite runs show no red in the group.
-- Both backlog entries are removed from `docs/backlog.md`, with the evidence recorded in this plan.
 
-Files in scope: `broker/tail.test.ts`, `docs/backlog.md`.
+Files in scope: `broker/tail.test.ts`.
 
 ## Out of Scope
 
