@@ -638,7 +638,9 @@ when it registers. It asks its supervisor with a line of the form
 The marker does not mean the supervisor read the ask. The broker sees the line's shape and the
 session's declared lineage, never what the persona plugin did with the line. A session can also
 declare a lineage it does not have. An indented line of this shape marks the ask but draws no
-marker, because the plugin's own pattern requires the line to start at its first character.
+marker, because the plugin's own pattern requires the line to start at its first character. A line
+that still carries the template's angle-bracket placeholders draws the marker, though the plugin
+opens no ask for it.
 
 A marked ask of this shape is never sent to the judge. The same shape written lowercase or inside a
 code block is not a mark, so a reply carrying only that is judged like any other unmarked reply.

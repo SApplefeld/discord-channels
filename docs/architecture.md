@@ -748,8 +748,9 @@ persona session a worker reports to, and it answers the worker's asks itself rat
 them to the operator. No kit skill names the mark. The judge is what catches an ask from a
 session that did not mark it.
 
-One marked shape carries a flag. A supervised session is one whose record carries a lineage, which
-the persona supervisor's launches declare and an interactive session never does (see the lineage
+One marked shape carries a flag. A supervised session is one whose record carries a lineage. The
+persona supervisor's launches declare one and the wrapper never sets one, so an interactive session
+carries none unless `CHANNEL_LINEAGE` reaches its environment some other way (see the lineage
 paragraph above). The flag goes up where such a session's marked line, the one the excerpt comes
 from, has the form `ASK: <question>? Recommend: <choice>`. That form is matched on the persona
 plugin's own pattern, and it is shaped as a worker's ask of its steward. The line is marked like any
@@ -761,8 +762,11 @@ first character while the mark rule allows leading space.
 The flag records the line's shape and the record's lineage, and not whether the persona plugin read
 the line. The broker cannot see that. The plugin matches the shape over a worker's turn-final
 answer. Its reply backstop can post that same answer through the reply tool, so a post's route does
-not say which reading it had. The lineage is the session's own declaration at registration (the
-security model owns how), so the marker is the session's report of what it is and never proof.
+not say which reading it had. The plugin also refuses a question that still carries a template
+placeholder (`<...>`), and the broker's copy of its pattern does not (`hasStewardAsk` in
+`broker/inbox/ask.ts`). So a worker echoing the template shape raises the flag where the plugin
+opens no ask. The lineage is the session's own declaration at registration (the security model
+owns how), so the marker is the session's report of what it is and never proof.
 
 A flagged item clears the way every item does, on a later prompt to that session. The persona
 plugin delivers a supervisor's answer to its worker as a prompt submitted into the worker's
@@ -831,7 +835,9 @@ verdict-shaped message or a held question's answer posted there clears nothing, 
 Items persist in `inbox-items.json` beside `broker-state.json`, written whole to a temp file and
 renamed on every change, which is a human rate. A snapshot that is unreadable, of another version
 or malformed in any one item restores nothing rather than refusing to start, and a restored item
-whose session record did not restore is dropped. Prompt instants are not persisted.
+whose session record did not restore is dropped. An item with no steward flag, the shape a broker
+from before the flag wrote, restores with the flag down. A steward flag that is not a boolean, or
+one raised on a judged item, makes the item malformed. Prompt instants are not persisted.
 
 The card (`broker/inbox/card.ts`, with `thread.ts` and `binding.ts` on the board card's pattern) is
 the third permanent pin, its `{messageId, threadId}` binding persisted in `inbox-card.json`. The pin
