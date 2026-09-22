@@ -1,6 +1,6 @@
 # Give Each Hand-Copied Broker Helper One Owner
 
-Status: Draft (for the Architect seat to review, finalize and set Ready)
+Status: Ready
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -11,12 +11,25 @@ caller imports, and the one copy that is wrong today is fixed by the move. Four 
 copied now. The rate-limited repeat logger exists as eight copies. The standing cards' binding
 module exists as three. The size-capped file read exists as four. The non-finite modification-time
 clamp exists as two. The usage cache's copy of the capped read performs a single read with no
-loop, so a short read would hand the parser a prefix of the file under the name of the whole. The
+loop, so a short read hands the parser a prefix of the file under the name of the whole, which the
+parser refuses as malformed and the usage card reads as unavailable for that poll. The
 codebase's own precedent set three copies as the point to extract, and every family but the clamp
 is past it. When this is done each family has one owner, the usage cache's read loops like its
 siblings, and no caller's observable behaviour changes otherwise. The four backlog entries left the
-active list when the operator approved this plan, and sit in `docs/archive/backlog-2026-Q3.md`
+active list when the operator approved the candidate for planning, and sit in
+`docs/archive/backlog-2026-Q3.md`
 under "Planned 2026-09-22".
+
+## Dispatch Authorization
+
+The operator ruled this backlog candidate a go on 2026-09-22, in a batched ruling the coordinator
+relayed to the architect as coordinator record `ARCHITECT-8d67c288-dd78-478d-a565-e390d50027b0-11`:
+
+> Operator's ruling on the three backlog candidates: approved #1 (tail-test flake group) and #2
+> (shared helper module), declined #3 (thread delivery allow-list).
+
+Execution waits on the coordinator handing this plan to a worker by name. A worker that finds this
+plan in its own queue has that handoff.
 
 ## Intent
 
@@ -36,12 +49,38 @@ reader's stat keeps refusing anything that is not a regular file.
 **What done does not need to do.** It does not change any window, cap or log wording. It does not
 take the backlog's filesystem-path-guard entry, which needs a read of two hostile boundaries'
 rules before anyone can say whether one guard serves both; that stays on the backlog. It does not
-extract anything with fewer than two copies.
+extract anything with fewer than two copies. It does not touch the board events reader's own
+offset read in `broker/board/events.ts`, which returns bytes from a position with a rotation check
+and is a different contract from the four text reads.
+
+**Alternatives refused.**
+- Four plans, one per family. Refused, because each section is already reviewable and revertible
+  on its own, and one round closes four former backlog entries.
+- Proving the short read on a real disk. Refused, because a short `readSync` cannot be provoked
+  there on demand, so the test would prove nothing either way.
+- Exporting the clamp from the card renderer or from the status module. Refused, because the
+  status module already imports from the card, so an export from status makes an import cycle, and
+  an export from the card adds a fifth export to a renderer whose export list an earlier plan's
+  approved section fixed at four.
+- Keeping each logger's own order of state and log. Refused, because the judge's order is the one
+  that survives a throwing log, and the other seven differ from it only by accident.
+
+**Rulings.** Decided 2026-09-22 by the architect on the drafter's five questions: one plan with
+four sections; the shared read takes an injectable reader so the short read can be proven red;
+the clamp lives in `broker/board/events.ts`, which both callers already import and which imports
+nothing from the board; the judge's state-before-log order applies to all eight loggers; opus for
+the logger section and sonnet for the other three.
 
 **Provenance.** Drafted 2026-09-22 by the DEV-DISCORD session from the four backlog entries and
 from the code at `origin/main` `0690eb4`, read that day through a read-only scout. The drafting
-session re-read the capped-read defect and the eight logger definitions. The Architect seat owns
-the final form.
+session re-read the capped-read defect and the eight logger definitions. Finalized 2026-09-22 by
+the architect, who re-read every code anchor the Approach names at that commit.
+
+## Related plans
+
+None open. `../archive/plans/channels_board-worker-queues_spec_v1.md` (complete) is the plan whose
+approved section line bounded the card renderer's exports, which is why the clamp does not live
+there.
 
 ## Approach
 
@@ -60,6 +99,10 @@ the final form.
   - the log prefix and the count line's unit (`ms` or `minutes`) differ;
   - the judge's copy alone updates its state before it logs, so a throwing log cannot leave the
     window stale.
+  Two further limiters share the core and stay local: the intake's refusal limiter
+  (`broker/intake.ts:161`) and the router's drop limiter (`broker/routing/outbound.ts:217`). Each
+  writes through a different kind of log sink, a `Logger`'s warn level against a plain log
+  function, and their headers say so.
 - **Card binding.** `broker/board/binding.ts` and `broker/usage/binding.ts` (117 lines each) and
   `broker/inbox/binding.ts` (115) are one module in three spellings. They differ in type names, log
   labels, header prose, and one fact: board and usage define a private `SNOWFLAKE` regex where the
@@ -67,11 +110,12 @@ the final form.
   regex sits at `broker/discord/bindings.ts:67`.
 - **Capped read.** Three copies loop the read until the buffer fills or a read returns 0:
   `readPlanFile` in `broker/board/plans.ts:427` (exported), `readCappedFile` in
-  `broker/board/queues.ts:214`, and `readRosterFile` in `broker/board/roster.ts` near line 67.
+  `broker/board/queues.ts:214`, and `readRosterFile` in `broker/board/roster.ts:69`.
   `readCapped` in `broker/usage/cache.ts:271-281` reads once (confirmed at lines 279-280). Each
   defines its own identical result type.
 - **Clamp.** `touchedAt` is identical in `broker/board/card.ts:445-447` and
-  `broker/board/status.ts:140-142`.
+  `broker/board/status.ts:140-142`. The status module imports from the card, and both import from
+  `broker/board/events.ts`, which imports only `broker/sanitize.ts`.
 - **Queue reader copies.** `broker/board/queues.ts` hand-copies `WHITESPACE_RUN`, `bounded`,
   `MARKDOWN_SUFFIX`, the README stem, `planStem` and the stat from `broker/board/plans.ts`. Its stat
   alone adds `if (!stat.isFile()) return null;`, which the shared one must keep for that caller.
@@ -85,43 +129,38 @@ the final form.
    its exact text. The shared core takes the judge's order, state before log, as the safer of the
    two orders. That is a behaviour change only for a log function that throws.
 2. A new `broker/card-binding.ts` exports one load and one save taking a label, and the three card
-   modules become thin callers or disappear. Every `SNOWFLAKE` copy imports the one in
+   modules stay as thin callers, so `docs/architecture.md`, which names `binding.ts` beside the
+   inbox card, stays true. Every `SNOWFLAKE` copy imports the one in
    `broker/security/senders.ts`.
 3. A new `broker/capped-read.ts` exports the looping read and its result type, parameterised by the
-   cap. All four callers use it, which fixes the usage cache.
-4. `touchedAt` is exported once, from the module the Architect seat picks (open question 3), and
-   `broker/board/queues.ts` imports the plan helpers from `broker/board/plans.ts`, which exports
-   them, with the stat's regular-file refusal as an option.
-
-## Open questions for the Architect seat
-
-1. **One plan or two?** Recommend one plan with four sections, one per family. Each section is
-   independently reviewable and revertible, and together they close four former backlog entries
-   in one round.
-2. **How is the short read proven red?** A short `readSync` is hard to provoke on a local disk.
-   Recommend that `broker/capped-read.ts` take an optional reader function whose default is
-   `readSync`. A test hands it a reader that returns the file in two chunks: the usage cache's old
-   single read goes red on it, and the shared loop goes green.
-3. **Where does `touchedAt` live?** Recommend `broker/board/status.ts`, since the card imports from
-   status already, over a new module for three lines. The backlog notes the card's exports were
-   bounded by an approved section line, which this would respect.
-4. **Is the judge's state-before-log order acceptable for all eight?** Recommend yes: it changes
-   nothing unless a log function throws, and then it is the correct order.
-5. **Model tiers.** Recommend sonnet for every section: each has an existing copy to clone, a clear
-   contract, and suites that already cover the callers.
+   cap, and takes an optional reader function whose default is `readSync` and whose parameters and
+   return are `readSync`'s own, so a test can hand it a reader that delivers a file in two chunks.
+   All four callers use it, which fixes the usage cache.
+4. `touchedAt` is exported once from `broker/board/events.ts` and imported by the card and the
+   status module, and `broker/board/queues.ts` imports the plan helpers from
+   `broker/board/plans.ts`, which exports them. The shared stat takes a boolean option, off by
+   default, that refuses anything not a regular file, and the queue reader passes it on.
 
 ## Sections of Work
+
+The four sections run in order as commits on one work branch cut from `origin/main`, named by the
+worker, with this plan file on it, and finishing-work opens the one pull request.
 
 ### 1. The capped file read has one owner, and the usage cache's read loops
 Model: sonnet
 
 Tests: lock that the shared read returns a file under the cap whole; that it refuses a file over
-the cap as oversized; that it returns a file delivered in two short reads whole (observed red
-against the usage cache's single-read shape first); and that an unopenable file reads as
-unreadable.
+the cap as oversized; that it returns a file delivered in two short reads whole; and that an
+unopenable file reads as unreadable. The two-chunk case earns its red against the usage cache's
+single-read shape: copy the shared module aside, run the test once with its loop replaced by that
+single read, watch it fail, restore the module from the copy and diff the two, and watch it pass.
 
-Create `broker/capped-read.ts` and point the four callers at it, deleting their private copies and
-result types.
+Create `broker/capped-read.ts` and point the four callers at it, deleting the private copies and
+result types nothing else imports. `readPlanFile` and `PlanRead` stay exported from
+`broker/board/plans.ts`, the function as a one-line wrapper over the shared read, since
+`broker/board/queues.ts`, `broker/board/plans.test.ts`, `broker/board/queues.test.ts` and
+`broker/board/thread.test.ts` import them. This section touches nothing else the queue reader
+imports; section 4 owns those.
 
 Acceptance: the tests exist, and the short-read test was observed red first; `npm run lint` exits 0;
 `node --test broker/usage/cache.test.ts broker/board/plans.test.ts broker/board/queues.test.ts
@@ -131,20 +170,26 @@ Files in scope: `broker/capped-read.ts` (new), `broker/capped-read.test.ts` (new
 `broker/usage/cache.ts`, `broker/board/plans.ts`, `broker/board/queues.ts`, `broker/board/roster.ts`.
 
 ### 2. The repeat logger has one owner
-Model: sonnet
+Model: opus
 
 Tests: lock the shared logger's four behaviours: the first line writes, a repeat inside the window
 writes nothing, the window's close writes the count line and then the new line, and eviction past
-the key cap writes what each evicted key owes. Every existing test that asserts a surface's log
-text must still pass unchanged.
+the key cap writes the pending count line each evicted key owes. Every existing test that asserts a surface's log
+text must still pass unchanged. The new `broker/repeat-log.test.ts` pins each of the eight
+surfaces' first line and count line verbatim against the text each surface writes before the move,
+read from the tree the section starts on, since only three of the eight surfaces' own suites pin a
+count line today.
 
-Create `broker/repeat-log.ts` and replace the eight private copies.
+Create `broker/repeat-log.ts` and replace the eight private copies. `MAX_REPEAT_KEYS` stays
+exported from `broker/question-desk.ts`, since its test imports it.
 
 Acceptance: the tests exist; `npm run lint` exits 0; the full suite exits 0 against a whole-gate
 baseline, since the eight callers span most of the broker.
 
-Files in scope: `broker/repeat-log.ts` (new), `broker/repeat-log.test.ts` (new), and the eight
-files named above.
+Files in scope: `broker/repeat-log.ts` (new), `broker/repeat-log.test.ts` (new), `broker/tail.ts`,
+`broker/question-desk.ts`, `broker/routing/interactions.ts`, `broker/inbox/judge.ts`,
+`broker/discord/pins.ts`, `broker/usage/thread.ts`, `broker/board/thread.ts`,
+`broker/inbox/thread.ts`.
 
 ### 3. The card binding has one owner
 Model: sonnet
@@ -152,39 +197,64 @@ Model: sonnet
 Tests: the existing binding tests for all three cards pass unchanged; add one test that the shared
 module's log lines carry the label it was given.
 
-Create `broker/card-binding.ts`, reduce the three card modules to callers of it, and point every
-`SNOWFLAKE` at `broker/security/senders.ts`.
+Create `broker/card-binding.ts`, reduce the three card modules to thin callers of it that keep
+their file names and re-export their per-card type names as aliases of the shared type, so their
+tests import unchanged, and point every `SNOWFLAKE` at `broker/security/senders.ts`.
 
 Acceptance: `npm run lint` exits 0; the three cards' binding tests and the new test exit 0 against a
 same-lane baseline.
 
-Files in scope: `broker/card-binding.ts` (new), `broker/board/binding.ts`, `broker/usage/binding.ts`,
-`broker/inbox/binding.ts`, `broker/discord/bindings.ts`, and their tests.
+Files in scope: `broker/card-binding.ts` (new), `broker/card-binding.test.ts` (new),
+`broker/board/binding.ts`, `broker/usage/binding.ts`, `broker/inbox/binding.ts`,
+`broker/discord/bindings.ts`, `broker/board/binding.test.ts`, `broker/usage/binding.test.ts`,
+`broker/inbox/binding.test.ts`, `broker/discord/bindings.test.ts`.
 
 ### 4. The clamp and the queue reader's helpers import from one place
 Model: sonnet
 
+Runs after section 1 on the same branch.
+
 Tests: the board card, status and queue tests pass unchanged, and a queue test still proves a
 directory in the queue is refused.
 
-Export `touchedAt` once and import it in the other module. Export the plan helpers from
-`broker/board/plans.ts` and import them in `broker/board/queues.ts`, keeping the regular-file
-refusal.
+Export `touchedAt` from `broker/board/events.ts` and import it in the card and the status module,
+deleting both private copies. Export the plan helpers from `broker/board/plans.ts` and import them
+in `broker/board/queues.ts`, keeping the regular-file refusal.
 
 Acceptance: `npm run lint` exits 0; `node --test broker/board/*.test.ts` exits 0 against a same-lane
-baseline.
+baseline; `touchedAt` is defined once across `broker/board/`.
 
-Files in scope: `broker/board/card.ts`, `broker/board/status.ts`, `broker/board/plans.ts`,
-`broker/board/queues.ts`.
+Files in scope: `broker/board/events.ts`, `broker/board/card.ts`, `broker/board/status.ts`,
+`broker/board/plans.ts`, `broker/board/queues.ts`.
 
 ## Out of Scope
 
 - The filesystem-path guard entry, which stays on the backlog.
 - Any change to a window, a cap or a log line's wording.
+- The board events reader's offset read in `broker/board/events.ts`, a different contract from the
+  four text reads.
+- The intake's refusal limiter (`broker/intake.ts:161`) and the router's drop limiter
+  (`broker/routing/outbound.ts:217`), which their own headers keep local because each holds a
+  different log seam.
+
+## Assumptions
+
+- assumed 2026-09-22 (the repository's plans): the commit model is Branch-and-PR; reversal: one
+  header line.
+- assumed 2026-09-22 (the architect): the executing worker runs under the kit, whose
+  executing-work and testing-discipline skills own the lane vocabulary, the baseline captured on
+  the same command before a change, the pre-probe copy and diff restore, and the Chapter; reversal:
+  a paragraph naming each.
+- The plan review ran at fable and effort high and returned READY_WITH_FINDINGS, four Major and
+  three Minor, all applied. The blind read returned 7 questions and 4 comprehension gaps: 10
+  answered in the spec, 1 assumed above, 0 asked. The gating litmus: 4 definitions, the four Files
+  in scope lists; 4 one-sided, since the author had counted none and the reader all four; 0
+  crossed, 0 unplaced, 0 under-length, every pair placed as the reader placed it. Each list is the
+  closed set it reads as, so none was rewritten.
 
 ## Operator Verification
 
-- None beyond the gate. The usage card's short-read fix fails closed today, so there is nothing
-  live to watch.
+- None beyond the gate. The usage card's short read fails closed today, so there is nothing live
+  to watch.
 
 ## Chapters
