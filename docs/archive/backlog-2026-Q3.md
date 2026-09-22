@@ -200,6 +200,14 @@ Owned by `plans/channels_tail-until-flake_spec_v1.md`:
   echo-dedup group holds rather than a fixed set of names, the trigger is load on the box rather
   than any one test, and the fix belongs in the helper.
 
+  Measured by the owning plan on 2026-09-22, with the helper instrumented to name its condition and
+  classify an expiry: 30 serial full-suite runs on a box polled clear before each, at 2006 tests,
+  went red 3 times. All three were "a mirror run that landed nothing after the tailer deferred still
+  gets the text posted", at its wait for the tailer's poll to settle, and each classified as the
+  condition holding 22 to 25 ms after the 1,000-turn bound expired. None was a condition that never
+  held. The cause is the bound's unit: the turns run out while the poll's thread-pool file calls
+  are still in flight. The plan's Chapter 2 holds the per-run record.
+
 - An intermittent failure in `broker/tail.test.ts`, inside the `until` helper at its own line 2451,
   which yields up to 1000 `setImmediate` turns and then asserts "the condition never held". It fails
   on a different test each time and only under machine load, and it is old: the fleet-card round hit
@@ -231,6 +239,12 @@ Owned by `plans/channels_tail-until-flake_spec_v1.md`:
   (`broker/tail.test.ts:2473-2479`), which is load-independent by construction: it expires when the
   microtask loop spins fast relative to the paced run's real timer, which load would slow rather
   than hasten. The instrument-first fix above is unchanged and is still the right first move.
+
+  Measured by the owning plan on 2026-09-22, after that instrument-first fix: 30 serial full-suite
+  runs gave 3 reds, each classified "held only after the bound", 22 to 25 ms late, and none "never
+  held". So every observed red was a bound that expired early, not a tailer that failed to post.
+  That rules out the expensive case this entry warned about, and it makes a wall-clock bound safe to
+  adopt. The plan's Chapter 2 holds the per-run record.
 
 Owned by `plans/channels_shared-helper-owners_spec_v1.md`:
 

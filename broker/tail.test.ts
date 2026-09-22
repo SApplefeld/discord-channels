@@ -2724,21 +2724,26 @@ const LONG_REPLY = Array.from(
 const UNTIL_GRACE_MS = 2_000;
 /** How often the grace re-checks the condition. */
 const UNTIL_GRACE_STEP_MS = 10;
-/** The primary bound, in event-loop turns. */
-const UNTIL_TURNS = 1_000;
+/** The primary bound, in tries against wall clock. */
+const UNTIL_TRIES = 300;
+/** How often the primary bound re-checks the condition between tries. */
+const UNTIL_TRY_STEP_MS = 10;
 
 /**
  * Yields until the condition holds, so a test can act while a run is genuinely still in flight.
  *
- * The primary bound is `UNTIL_TURNS` event-loop turns. If the condition still has not held by
- * then, the wait keeps polling on wall clock, read from a monotonic clock, for a further grace
- * purely to classify the failure: it did not meet the bound either way, but a condition that holds
- * inside the grace was merely slow, while one that never holds is genuinely stuck. The test fails
- * in both cases; the grace only decides which message it fails with.
+ * The primary bound is `UNTIL_TRIES` tries, `UNTIL_TRY_STEP_MS` ms apart on wall clock, so it
+ * outlasts a real wait such as the tailer's thread-pool file I/O rather than only the idle
+ * event loop. If the condition still has not held by then, the wait keeps polling on wall clock,
+ * read from a monotonic clock, for a further grace purely to classify the failure: it did not
+ * meet the bound either way, but a condition that holds inside the grace was merely slow, while
+ * one that never holds is genuinely stuck. The test fails in both cases; the grace only decides
+ * which message it fails with.
  */
 async function until(label: string, holds: () => boolean): Promise<void> {
-  for (let turn = 0; turn < UNTIL_TURNS && !holds(); turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < UNTIL_TRIES; attempt += 1) {
+    if (holds()) return;
+    await new Promise((resolve) => setTimeout(resolve, UNTIL_TRY_STEP_MS));
   }
   if (holds()) return;
 
@@ -2762,10 +2767,10 @@ test("until: passes when the condition holds within the primary bound", async ()
 
 test("until: a condition true only after the bound fails naming the label and the ms late", async () => {
   // Counted rather than timed, so the test cannot pass by the bound happening to outlast a timer:
-  // the primary loop checks once per turn and once after, and the first grace poll is the next.
+  // the primary loop checks once per try and once after, and the first grace poll is the next.
   let checks = 0;
   await assert.rejects(
-    until("late condition", () => (checks += 1) > UNTIL_TURNS + 1),
+    until("late condition", () => (checks += 1) > UNTIL_TRIES + 1),
     (error: Error) => /^late condition held only after the bound, \d+ ms late$/.test(error.message),
   );
 });
