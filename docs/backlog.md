@@ -567,7 +567,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   remote), what each can reach, and which entries are accepted, so a security lens can cite an entry
   rather than reason from the prose. Operator-pending: the operator decides whether that section is
   written as its own effort. The operator inbox plan's finishing security review opened `threat
-  model: absent` as well.
+  model: absent` as well, and so did the judge-unmirrored-replies plan's on 2026-09-22.
 - Run the operator inbox's three live checks (handoff 2026-09-21, from
   `archive/plans/channels_operator-inbox_spec_v1.md`'s Operator Verification). Find the
   `Fleet: Inbox` card on the phone; if it is not quick to reach among the pins, that reopens where
@@ -637,14 +637,24 @@ and none carries a date of its own. An item added from here on carries `(parked 
   that predate the checkout's move; no note on running the broker locally; a five-item list headed
   "three groups"; and a self-referential layout remark.
 
-- Write a `## Threat model` section for `docs/security-model.md` (parked 2026-09-22, surfaced by
-  the judge-unmirrored-replies plan's finishing security review, which opened `threat model:
-  absent`). The document inventories what leaves the machine, names the assets a token reaches and
-  states which switches are enforced against a poster, but it declares no attacker classes and no
-  asset list under a heading a reviewer can cite. The kit's security lens reads that section first
-  and rules a finding's relevance against it, so with none present every advisory finding falls
-  back to whatever deployment sentence a plan happens to carry. Writing it is the operator's call,
-  and it is on that plan's `## Operator Verification` list too.
+- Run the unmirrored-reply judge's three live checks (handoff 2026-09-22, from
+  `archive/plans/channels_judge-unmirrored-replies_spec_v1.md`'s Operator Verification). After the
+  broker is updated on a host running personas, its start log reads `the judge reads unmarked
+  replies`; a line still reading `of mirrored sessions` reopens that plan's section 1. A persona
+  reply that asks something without an `ASK:` line reaches the `Fleet: Inbox` card within one
+  refresh interval (`CHANNEL_INBOX_CARD_REFRESH_MS`, 60 seconds by default); a card still at `No
+  open asks.` two intervals later, with the key file in place, reopens section 1. A persona's next
+  reply that hands the operator a decision opens with an `ASK:` line drawn on the card with its
+  excerpt; its absence on a session started after the update reopens section 2. Operator-pending.
+
+- Show a supervised session's steward-shaped ask on the `Fleet: Inbox` card, marked as one its
+  supervisor was also told about (handoff 2026-09-22, from the judge-unmirrored-replies plan's
+  finishing review and the operator's ruling recorded in its `## Intent`). A reply from a session
+  with a lineage that carries a line `ASK: <question>? Recommend: <choice>` matches `STEWARD_ASK`
+  at `broker/inbox/ask.ts:79` and returns at `broker/index.ts:808` before the mark read and the
+  judge, so it reaches the thread and never the card. A draft plan for the change was written at
+  that plan's close and handed to the Architect seat to review, finalize and dispatch; this entry
+  retires when that plan is registered in `docs/plans/`.
 
 ## Snapshots
 
