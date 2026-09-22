@@ -75,8 +75,9 @@ export type JudgeWinner = "needs_reply" | "needs_act";
 /**
  * One flagged reply. `postedAt` is the epoch-millisecond instant the reply was posted, and it is what
  * an open or a refresh records. `messageId` is the Discord message the reply landed as, where the
- * writer returned one. `stewardAsk` is true where a supervised session's reply carried a line the
- * persona plugin reads as a worker's ask of its steward.
+ * writer returned one. `stewardAsk` is true where the session is supervised and the line the excerpt
+ * came from is shaped as the persona plugin's ask of a worker's steward. It records that shape and
+ * the session's lineage, not whether the plugin read the line.
  */
 export type InboxFlag =
   | { source: "marked"; postedAt: number; excerpt: string; stewardAsk: boolean; messageId?: string }
@@ -96,8 +97,8 @@ export type InboxItem = {
   /** The first `ASK:` line of the latest marked reply. Null while the item is judged. */
   excerpt: string | null;
   /**
-   * Whether the reply the excerpt came from was a supervised session's steward-shaped ask. It moves
-   * with the excerpt, so it is false while the item is judged.
+   * Whether the excerpt's own line is shaped as a steward ask and came from a supervised session. It
+   * moves with the excerpt, so it is false while the item is judged.
    */
   stewardAsk: boolean;
   /** The latest judge reading, kept across an upgrade to marked. Null where no judge flag landed. */

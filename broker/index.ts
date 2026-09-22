@@ -44,7 +44,7 @@ import { loadUsageBinding, saveUsageBinding } from "./usage/binding.ts";
 import { createBoardCard } from "./board/thread.ts";
 import type { BoardCardOptions } from "./board/thread.ts";
 import { loadBoardBinding, saveBoardBinding } from "./board/binding.ts";
-import { findAsk, hasStewardAsk } from "./inbox/ask.ts";
+import { findAsk, findAskLine, hasStewardAsk } from "./inbox/ask.ts";
 import { createJudge } from "./inbox/judge.ts";
 import type { JudgeFetch } from "./inbox/judge.ts";
 import { createInboxStore, loadInboxSnapshot, saveInboxSnapshot } from "./inbox/store.ts";
@@ -732,13 +732,14 @@ export type Inbox = OutboundInbox &
  * tap is never submitted, while a late verdict is one whose reply was submitted before the session
  * was pruned, so its text had already left. Otherwise a reply with an `ASK:` line opens or refreshes
  * a marked item and is never judged. That item carries the steward flag where the session is
- * supervised (its record carries a lineage) and the reply has a line the persona plugin reads as a
- * worker's ask of its steward. The flag records the line's shape and the record's lineage, and not
- * whether the plugin read the line, which nothing here observes. Otherwise the reply goes to the
- * judge where the judge is on, and nowhere when it is off. That holds for a steward-shaped line the
- * mark rule refuses too, such as a lowercase `ask:` or one inside a fence. Whether the session
- * mirrors its console is not read here, since the mirror switches govern what the session's thread
- * carries rather than what reaches the vendor. `docs/security-model.md` owns which switches do.
+ * supervised (its record carries a lineage) and the line the excerpt came from is shaped as the
+ * persona plugin's ask of a worker's steward. Another line of the reply never raises it. The flag
+ * records that line's shape and the record's lineage, and not whether the plugin read the line,
+ * which nothing here observes. Otherwise the reply goes to the judge where the judge is on, and
+ * nowhere when it is off. That holds for a steward-shaped line the mark rule refuses too, such as a
+ * lowercase `ask:` or one inside a fence. Whether the session mirrors its console is not read here,
+ * since the mirror switches govern what the session's thread carries rather than what reaches the
+ * vendor. `docs/security-model.md` owns which switches do.
  *
  * The snapshot lives beside the registry snapshot and the card bindings. It restores only items
  * whose session record restored, and it is written on every change, which is a human rate: an item
@@ -810,7 +811,10 @@ export function inboxWiring(options: {
       const shown = messageId === null ? {} : { messageId };
       const excerpt = findAsk(text);
       if (excerpt !== null) {
-        const stewardAsk = record.lineage !== null && hasStewardAsk(text);
+        // The flag reads the marked line alone, untrimmed, so it describes the line the excerpt came
+        // from, and an indented line fails the matcher's first-character anchor as it does there.
+        const line = findAskLine(text);
+        const stewardAsk = record.lineage !== null && line !== null && hasStewardAsk(line);
         store.flag(sessionId, { source: "marked", postedAt, excerpt, stewardAsk, ...shown });
         return;
       }

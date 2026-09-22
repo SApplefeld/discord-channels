@@ -137,6 +137,14 @@ it. The plan is finalized by the Architect seat and scheduled through the coordi
 the discord-channels worker, so the grant covers the session that persona's queue assigns and no
 other.
 
+## Standing Brief Amendments
+
+- The steward flag is read from the line the mark read took its excerpt from, never from the
+  whole reply: a supervised session's reply `ASK: merge it?` followed on the next line by
+  `ASK: which backend? Recommend: postgres` opens a marked item with the excerpt `merge it?` and
+  `stewardAsk` false, and a reply whose marked line is `ASK: which?` with `Recommend: postgres` on
+  the next line opens one with `stewardAsk` false.
+
 ## Sections of Work
 
 ### 1. A steward-shaped reply opens a marked item carrying the flag
@@ -171,7 +179,7 @@ restores with it false; a snapshot item with `stewardAsk: "yes"` refuses the sna
 snapshot item with `stewardAsk: true` refuses the snapshot; `npm run lint` exits 0 and `npm test`
 exits 0.
 Files in scope: `broker/index.ts`, `broker/inbox/store.ts`, `broker/inbox/ask.ts`, `broker/index.test.ts`,
-`broker/inbox/store.test.ts`, `broker/inbox/card.test.ts`, `broker/inbox/thread.test.ts`,
+`broker/inbox/ask.test.ts`, `broker/inbox/store.test.ts`, `broker/inbox/card.test.ts`, `broker/inbox/thread.test.ts`,
 `broker/routing/outbound.test.ts`.
 Tests: lock both directions of the flag at the tap (lineage with the shape raises it, no lineage
 or no shape leaves it false), the refused-shape path reaching the judge, the flag following the
@@ -277,3 +285,22 @@ clear the item; steward-flagged items sort as every item does.
   exclusion.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-22
+Completed: 1. A steward-shaped reply opens a marked item carrying the flag
+Implemented By: implementer-opus (first build and fix round 1)
+Metrics: review rounds 1, closed major-closed; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 1 findings, 1 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: section 1 open | changes: removes the steward return from the inbox tap and adds a `stewardAsk` boolean to the marked flag and the item, restored false when absent, so a supervised session's steward-shaped reply opens a marked item | serves: the Goal sentence "A supervised session's reply carrying the steward-shaped line ... opens an item on the `Fleet: Inbox` card" | adds a mechanism: no new unit of behavior beyond the flag the Approach names; one return is removed | size: about 6 source lines across three files plus fixtures | not building it costs: the persona's ask of its supervisor stays off the card, which is the gap the operator ruled should close.
+  round 1 Major (spec-traceable, blind lens, orchestrator-traced; the adversarial lens reported the same defect as a Minor) | changes: reads the steward flag from the raw line the mark read matched rather than from the whole reply, so the flag and the excerpt describe one line | serves: the Goal sentence "drawn with a marker that says the line takes the form a worker uses to ask its supervisor" | adds a mechanism: no; it narrows the input of the flag the Approach names, with one exported helper in ask.ts returning the matched line | size: about 10 source lines across ask.ts and index.ts plus 2 tests | not building it costs: the card draws "supervisor ask" beside a plain operator ask whenever the same reply also carries a steward-shaped line, including one inside a fence, steering the operator away from an ask that is theirs to answer.
+  Then: the Status header read `Ready` and now reads `In Progress`, set at run start. The spec's own section text computed the flag as `hasStewardAsk(text)` over the whole reply; the round 1 Major showed that contradicts the Goal's "the line", so the section was amended through a new `## Standing Brief Amendments` block rather than by rewriting the section body. `findAsk` was factored onto an exported `findAskLine`, which returns the marked line untrimmed, so the flag reads that one line and an indented line still fails the matcher's first-character anchor; `findAsk`'s output is unchanged and its existing tests pass unchanged. `broker/inbox/ask.test.ts` was folded into the section's Files in scope for the helper's pin (same directory, no new acceptance, covered by the gate). The implementer also refuses a non-boolean `stewardAsk` at `flag()` on the way in, one line past the section text, consistent with store.ts's rule that `flag` makes every check the loader makes; declared rather than removed. A live broker (process 6480) runs this tree's `broker/index.ts` and sees none of this until it restarts.
+Assumptions: none beyond the plan's own `## Assumptions` section.
+Review Findings: `review: code pair plus security at fable, Agent tool (blind low, adversarial low, security medium)`. Blind CHANGES_REQUIRED, 1 Major and 4 Minors; adversarial APPROVED_WITH_CONCERNS, 4 Minors; security ADVISORY, 1 Major and 2 Minors, opening `threat model: absent`. Correctness Major, fixed in fix round 1 (above; red observed in the harness on the first case, and by a scratch probe of the old expression on all three). Security Major (advisory, honesty route): `docs/security-model.md`'s "What is never sent" steward clause is false from this commit on, since a fenced steward-shaped line is now judged; disposition fix now, in section 3 of this plan, which rewrites that clause in the same pull request, so no merge carries the false sentence. Minors: 2 fixed in the fix round (the `hasStewardAsk` comment's "card's" flag, the `InboxFlag` doc's "reads as"), 2 resolved by the Major's fix (the index.ts doc's "the line's shape", `STEWARD_ASK`'s `\s*` spanning a newline), 1 refused on the plan's own ground (a lowercase or fenced steward line reaching the judge is the Intent's refused alternative and the Assumptions' first entry), 1 declared (the `flag()` refusal above), 1 carried to section 3 (the three host documents false until it lands), 1 carried to section 3's brief (the security lens's note that `x-channel-lineage` is poster-supplied, so the marker is a report and never proof), 1 left as pre-existing (npm audit, already on `docs/backlog.md`). Critical 0. Majors: 1 correctness fixed, 1 advisory fixed-by-section-3. The fix delta owed no round (no outward action, no new module, one expression pinned red-first) and took the author re-read of its diff.
+Stamps: adjudicated 3, stamped 1 (`release-an-exclusive-claim-at-the-operations-end-not-the-turns-end`, operator tier, which shaped releasing the heavy-process claim at the gate's end). 2 skipped as read by dispatched agents rather than applied here.
+Gate: targeted lane `node --test broker/index.test.ts broker/inbox/store.test.ts broker/inbox/ask.test.ts broker/inbox/card.test.ts broker/inbox/thread.test.ts broker/routing/outbound.test.ts` at section close, 2026-09-22 ~18:50 UTC on SCOTT-CLAUDE against the worktree at `70de76d` plus the fix round's unstaged edits: 289 tests, 289 pass, 0 fail, exit code 0. The five-file lane (without ask.test.ts) was 271/271/0 exit 0 at `4408da7` and 275/275/0 exit 0 at `70de76d`; the six-file lane has no pre-change baseline, so its delta is stated as +4 tests at first green and +2 in the fix round, 0 failing throughout. `npm run lint` exit code 0. The implementer's whole-suite run at first green: 1993 tests, 1992 pass, 0 fail, 1 skipped, exit 0 (reported; the whole gate runs at finishing). Test delta: 6 added (index.test.ts: indented line marks with the flag down; refused shape is judged, lowercase and fenced; flag read from the excerpt's line, three cases. store.test.ts: flag follows the excerpt on refresh both ways; absent field restores false. ask.test.ts: `findAskLine` returns the marked line on findAsk's rules), 1 rewritten to the new contract (the steward test, whose first half inverted), fixtures in four files edited to carry the field, snapshot refusal cases added to the existing malformed-item test. 0 added tests spawn a process. Contention: a foreign `node .kit/controller-tick-test.mjs` (not a test runner) ran beside some lane runs; all were green. No contention lane is defined in this repository.
+Next: 2. The card draws the marker
+Commit Model: Branch-and-PR
+Delta: reading taken 2026-09-22 on SCOTT-CLAUDE against the worktree at `70de76d` carrying the fix round's edits.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

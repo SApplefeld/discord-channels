@@ -2096,6 +2096,30 @@ test("an indented steward-shaped line from a supervised session marks with the s
   assert.deepEqual(calls, []);
 });
 
+test("the steward flag is read from the line the excerpt came from, never from the rest of the reply", async (t) => {
+  // Each reply carries a steward-shaped text somewhere, and the marked line is a plain ask, so the
+  // item is the plain ask's and carries no flag.
+  const cases = [
+    // A steward-shaped line after the marked one.
+    { reply: "ASK: merge it?\nASK: which backend? Recommend: postgres", excerpt: "merge it?" },
+    // The recommendation on the line after the marked one.
+    { reply: "ASK: which?\nRecommend: postgres", excerpt: "which?" },
+    // A steward-shaped line inside a fence, ahead of the marked one.
+    { reply: "```\nASK: which backend? Recommend: postgres\n```\nASK: merge it?", excerpt: "merge it?" },
+  ];
+  for (const { reply, excerpt } of cases) {
+    const { inbox, calls } = inboxUnderTest(t, { lineage: "persona-worker-3" });
+    assert.ok(inbox);
+    inbox.reply("session-a", reply, 2_000, null);
+    await settled();
+    assert.equal(inbox.items().length, 1, reply);
+    assert.equal(inbox.items()[0].source, "marked", reply);
+    assert.equal(inbox.items()[0].excerpt, excerpt, reply);
+    assert.equal(inbox.items()[0].stewardAsk, false, reply);
+    assert.deepEqual(calls, [], `${reply}: a marked reply is never judged`);
+  }
+});
+
 test("a supervised session's steward-shaped line the mark rule refuses opens nothing at the tap and is judged", async (t) => {
   // The persona plugin's matcher is case-insensitive and fence-blind, and the mark rule is neither,
   // so these replies are steward-shaped and unmarked. They take the path every unmarked reply takes.

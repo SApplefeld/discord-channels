@@ -44,6 +44,21 @@ const FENCE_OPEN = /^(?:(`{3,})[^`]*$|(~{3,}))/;
  * unclosed opener is read as quoted rather than as a mark.
  */
 export function findAsk(text: string): string | null {
+  const line = findAskLine(text);
+  if (line === null) return null;
+  // Whitespace collapses before the strip: a tab is in the invisible class, and stripped first it
+  // would join the two words it separated.
+  const rest = line.trimStart().slice(MARK.length).replace(/\s+/g, " ");
+  return sliceCodePoints(visible(rest), MAX_EXCERPT_CODE_POINTS);
+}
+
+/**
+ * The line `findAsk` takes its excerpt from, exactly as it stands in the reply with its leading
+ * whitespace kept and its line break removed, or null where the reply carries no mark. The mark and
+ * fence rules are `findAsk`'s, so a caller that reads something more from the marked line reads the
+ * same line the excerpt came from.
+ */
+export function findAskLine(text: string): string | null {
   let fence: { character: string; length: number } | null = null;
   for (const line of text.split(/\r\n|\r|\n/)) {
     const content = line.trimStart();
@@ -57,12 +72,7 @@ export function findAsk(text: string): string | null {
       fence = { character: run.charAt(0), length: run.length };
       continue;
     }
-    if (content.startsWith(MARK)) {
-      // Whitespace collapses before the strip: a tab is in the invisible class, and stripped first
-      // it would join the two words it separated.
-      const rest = content.slice(MARK.length).replace(/\s+/g, " ");
-      return sliceCodePoints(visible(rest), MAX_EXCERPT_CODE_POINTS);
-    }
+    if (content.startsWith(MARK)) return line;
   }
   return null;
 }
@@ -88,7 +98,7 @@ const STEWARD_ASK = /^ASK:\s*(?=\S)(.+?\?\s*Recommend:\s*.+)$/im;
  * case-insensitive, anchored at the line's first character, and blind to fences. The regular
  * expression is the whole of what is copied (with the lookahead noted at `STEWARD_ASK`, which
  * changes its cost and not its language), so the two agree on the line's shape. A line the steward
- * is answering lands on the operator's card by design, so where the two disagreed, the card's
+ * is answering lands on the operator's card by design, so where the two disagreed, the item's
  * steward flag would be raised on a line the plugin never read as an ask, or left down on one it did.
  * The sibling then goes one step further than this reading does. It refuses a captured question
  * that still carries a template placeholder (`<...>`), so a worker echoing the template shape
