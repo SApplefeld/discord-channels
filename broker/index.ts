@@ -836,9 +836,10 @@ export function inboxWiring(options: {
  * moment its thread passes to the successor, and the restart notice still posts.
  *
  * The clear runs first and the post second, and neither depends on the other landing. A throw out
- * of `clearEnded` is caught here, on `toInbox`'s shape in `broker/routing/inbound.ts` (a message
- * already routed must not read as failed; a rebind already under way must not stop the notice), and
- * the one log line names the departed session rather than the error, whose owner reports its own.
+ * of `clearEnded` is caught here, on `toInbox`'s shape in `broker/routing/inbound.ts`. There a
+ * message already routed must not read as failed. Here a rebind already under way must not stop the
+ * notice. The one log line names the departed session rather than the error, whose owner reports
+ * its own.
  * The clear runs whether or not the thread is open yet, because the rebind happened either way. The
  * post is skipped on a null thread ID, since there is nowhere to post into and the very next pass
  * opens the thread.

@@ -805,16 +805,21 @@ and drops a flag posted at or before it, so a judge verdict returning after the 
 answered opens nothing. A prompt typed at the console while the session is working stamps the
 instant it was typed, read from the transcript line, so it is earlier than the reply that closes
 the turn and clears nothing that reply asks. A stale
-record keeps its item, since a stale session can revive. An ended record keeps its item too, drawn
+record keeps its item, since a stale session can revive, until its thread rebinds as described
+below. An ended record keeps its item too, drawn
 with an `ended` marker, because an act such as a merge outlives the session that asked for it. That
 item leaves on any of three events. The operator posts a plain message in the ended session's
 thread. The registry prunes the record, which the store learns from the registry's mutate signal.
 Or the ended session's thread rebinds to a successor under the same lineage, and the rebind
 handler (`rebindHandling` in `broker/index.ts`) clears the item through the same `clearEnded` call
 the operator's post makes. That clear records the rebind's instant as the session's latest prompt,
-so a flag for that session carrying an earlier reply's instant opens nothing afterwards. The router
-sees the operator's post in the ended thread behind the sender gate (`docs/security-model.md`) though it delivers nothing. A
-verdict-shaped message or a held question's answer posted there clears nothing, as in a live thread.
+so a flag for that session carrying an earlier reply's instant opens nothing afterwards. The rebind
+clear keys on the departed session whatever state its record is in. A predecessor the registry
+still holds as live or stale when its successor takes the thread loses its item at that moment too,
+because neither the takeover in `entryFor` nor the handler reads the record's state. The router
+sees the operator's post in the ended thread behind the sender gate (`docs/security-model.md`)
+though it delivers nothing. A verdict-shaped message or a held question's answer posted there
+clears nothing, as in a live thread.
 
 Items persist in `inbox-items.json` beside `broker-state.json`, written whole to a temp file and
 renamed on every change, which is a human rate. A snapshot that is unreadable, of another version

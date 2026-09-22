@@ -638,9 +638,11 @@ verdict or as the answer to a held question answers that prompt rather than the 
 item where it is. An ended session keeps its item, marked `ended`, because a merge you were asked
 for outlives the session that asked. Post a plain message in that session's thread and the line
 leaves, or wait for the record to be pruned. When a persona restarts and its thread passes to the
-new session, the ended session's line leaves on its own at that moment, so you never need to reach
-a thread the ended session no longer has. A verdict word or a held question's answer clears
-nothing there, as in a live thread. A stale session keeps its item, since it may revive.
+new session, the old session's line leaves on its own at that moment, so you never need to reach
+a thread the old session no longer has. That holds whether or not the broker has marked the old
+session ended yet. A verdict word or a held question's answer clears nothing in an ended
+session's thread, as in a live one. A stale session keeps its item, since it may revive, unless a
+persona restart passes its thread to a new session.
 
 ### Edges worth knowing
 

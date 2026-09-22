@@ -1213,6 +1213,12 @@ authenticated account or a non-administrative service account.
   the operator's steering typed into that thread. One that does not holds the thread while delivery
   fails, since the router resolves the thread to whichever session the binding now names and finds no
   connection under its token.
+  Either way the takeover also takes the incumbent's item off the `Fleet: Inbox` card, because the
+  broker's rebind handler clears the departed session's inbox item whatever state its record is in.
+  So a claimant can remove another session's ask before the operator has seen it. The
+  operator-prompt stamp described under the inbox below reaches only the claimant's own session's
+  item, so this reach is one session wider, and it is smaller than the thread and the steering the
+  same takeover already hands over.
   Accepted because it stands behind the process-token wall the sections above describe rather than
   beside it. Registration without a token is dropped as unwatched traffic, the token is inherited by
   every process a wrapped session spawns, and a process already holding one can put words in the
