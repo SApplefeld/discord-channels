@@ -748,13 +748,34 @@ instructions name the mark for every session that connects, persona or interacti
 plugin separately teaches its workers the steward ask named below. A steward is the supervising
 persona session a worker reports to, and it answers the worker's asks itself rather than passing
 them to the operator. No kit skill names the mark. The judge is what catches an ask from a
-session that did not mark it. One reply is excluded from both readings.
-A supervised session is one whose record carries a lineage, which the persona supervisor's launches declare and
-an interactive session never does (see the lineage paragraph above). A reply from such a session
-holding a line of the form `ASK: <question>? Recommend: <choice>`, matched on the persona plugin's
-own pattern, is a worker's ask of its steward, answered there rather than by the operator. It opens
-nothing and its text is not judged, whatever else the reply carries. The same line from a session
-with no lineage is an ordinary mark.
+session that did not mark it.
+
+One marked shape carries a flag. A supervised session is one whose record carries a lineage. The
+persona supervisor's launches declare one and the wrapper never sets one, so an interactive session
+carries none unless `CHANNEL_LINEAGE` reaches its environment some other way (see the lineage
+paragraph above). The flag goes up where such a session's marked line, the one the excerpt comes
+from, has the form `ASK: <question>? Recommend: <choice>`. That form is matched on the persona
+plugin's own pattern, and it is shaped as a worker's ask of its steward. The line is marked like any
+other `ASK:` line and is not sent to the judge. Its item carries the steward flag, which the card
+draws as a `supervisor ask` marker. Another line of the same reply never raises the flag. An
+indented marked line never raises it either, because the plugin's pattern anchors at the line's
+first character while the mark rule allows leading space.
+
+The flag records the line's shape and the record's lineage, and not whether the persona plugin read
+the line. The broker cannot see that. The plugin matches the shape over a worker's turn-final
+answer. Its reply backstop can post that same answer through the reply tool, so a post's route does
+not say which reading it had. The plugin also refuses a question that still carries a template
+placeholder (`<...>`), and the broker's copy of its pattern does not (`hasStewardAsk` in
+`broker/inbox/ask.ts`). So a worker echoing the template shape raises the flag where the plugin
+opens no ask. The lineage is the session's own declaration at registration (the security model
+owns how), so the marker is the session's report of what it is and never proof.
+
+A flagged item clears the way every item does, on a later prompt to that session. The persona
+plugin delivers a supervisor's answer to its worker as a prompt submitted into the worker's
+session, and the broker does not tell that prompt from the operator's. Whether the answer clears
+the item therefore turns on whether that submitted prompt reaches the broker's mirror route, which
+this repository does not control. A reply carrying no mark goes to the judge like any other,
+including one whose only steward-shaped line is lowercase or inside a fence.
 
 The judge is the second opener. A tapped reply with no mark goes to TypeSafe's Jev classifier
 (`broker/inbox/judge.ts`) with two yes-or-no questions: whether the message asks the operator to
@@ -778,9 +799,10 @@ call: the judge runs once per reply, at the tap, and nowhere else.
 
 The store (`broker/inbox/store.ts`) holds at most one item per session, keyed by session ID, so its
 size is bounded by `CHANNEL_MAX_SESSIONS`. An item carries the instant it opened, the instant it was
-last refreshed, its source (`marked` or `judged`), its excerpt where marked, its scores where
-judged, a count of flagged replies since it opened, and the Discord message ID of the most recent
-flagged post where the writer returned one. The refresh instant is the instant the tap passed,
+last refreshed, its source (`marked` or `judged`), its excerpt where marked, the steward flag,
+its scores where judged, a count of flagged replies since it opened, and the Discord message ID of
+the most recent flagged post where the writer returned one. The steward flag moves with the
+excerpt, so it is false on a judged item. The refresh instant is the instant the tap passed,
 the reply's arrival at two of the three tap points and the handling time at the echo-drop point.
 The card does not draw the count. A flagged reply for a session that already holds an item
 refreshes that item and never opens a second, which is how a close-out recap restating a standing
@@ -824,14 +846,17 @@ clears nothing, as in a live thread.
 Items persist in `inbox-items.json` beside `broker-state.json`, written whole to a temp file and
 renamed on every change, which is a human rate. A snapshot that is unreadable, of another version
 or malformed in any one item restores nothing rather than refusing to start, and a restored item
-whose session record did not restore is dropped. Prompt instants are not persisted.
+whose session record did not restore is dropped. An item with no steward flag, the shape a broker
+from before the flag wrote, restores with the flag down. A steward flag that is not a boolean, or
+one raised on a judged item, makes the item malformed. Prompt instants are not persisted.
 
 The card (`broker/inbox/card.ts`, with `thread.ts` and `binding.ts` on the board card's pattern) is
 the third permanent pin, its `{messageId, threadId}` binding persisted in `inbox-card.json`. The pin
 keeper pins what is missing and never reorders, so where Discord draws it among the pins is
 Discord's. It draws one bullet per item, oldest opened first: a glyph for the source (the session's
 own mark, or which judge question won), the session's title through the full live-markdown escape,
-the age from when the ask opened, a link, and the `ended` marker where the record has ended. The
+the age from when the ask opened, a link, the `supervisor ask` marker where the item's steward flag
+is up, and the `ended` marker where the record has ended. The
 link is a jump link to the flagged message where the item holds a message ID and the gateway's
 channel cache has yielded the guild, and a channel chip to the session's thread otherwise. A marked
 item's excerpt draws on a sub-bullet through the same escape, the one model-authored string this

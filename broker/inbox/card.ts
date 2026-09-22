@@ -67,6 +67,11 @@ const MARK_GLYPH = "📝";
 const REPLY_GLYPH = "💬";
 const ACT_GLYPH = "⚡";
 
+/** What a marked item whose marked line is shaped as an ask of the session's supervisor draws, after
+ * its link where one is drawn and before the ended marker. It names the line's shape, never whether
+ * the supervisor read it, which the broker cannot see. */
+const STEWARD_MARKER = "supervisor ask";
+
 /** What an ended session's item is marked with, past its age. */
 const ENDED_MARKER = "ended";
 
@@ -145,9 +150,9 @@ function itemLink(
 
 /**
  * One item's lines: its session's title in bold on a bullet of its own, marked with the glyph its
- * flag source draws, its age, a link to its thread or its flagged message where one is known, and
- * an ended marker where its session has ended; a marked item with something in its excerpt draws
- * that on a sub-bullet under it.
+ * flag source draws, its age, a link to its thread or its flagged message where one is known, the
+ * steward-ask marker where its flag says so, and an ended marker where its session has ended; a
+ * marked item with something in its excerpt draws that on a sub-bullet under it.
  */
 function itemLines(
   item: InboxItem,
@@ -164,6 +169,7 @@ function itemLines(
   const parts = [`${glyphFor(item)} **${title}**`, age];
   const link = itemLink(guildId, session?.threadId ?? null, item.messageId);
   if (link !== null) parts.push(link);
+  if (item.source === "marked" && item.stewardAsk) parts.push(STEWARD_MARKER);
   if (session?.ended === true) parts.push(ENDED_MARKER);
   const lines = [`${BULLET} ${parts.join(` ${SEPARATOR} `)}`];
   if (item.excerpt !== null && item.excerpt !== "") {

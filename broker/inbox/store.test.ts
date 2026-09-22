@@ -16,8 +16,13 @@ const MESSAGE_B = "222222222222222222";
 
 function marked(postedAt: number, excerpt: string, messageId?: string): InboxFlag {
   return messageId === undefined
-    ? { source: "marked", postedAt, excerpt }
-    : { source: "marked", postedAt, excerpt, messageId };
+    ? { source: "marked", postedAt, excerpt, stewardAsk: false }
+    : { source: "marked", postedAt, excerpt, stewardAsk: false, messageId };
+}
+
+/** A marked flag whose reply carried the steward-shaped line from a supervised session. */
+function steward(postedAt: number, excerpt: string): InboxFlag {
+  return { source: "marked", postedAt, excerpt, stewardAsk: true };
 }
 
 function judged(postedAt: number, needsReply: number, needsAct: number): InboxFlag {
@@ -42,6 +47,7 @@ test("a reply with an ASK: line opens a marked item carrying the bounded excerpt
       refreshedAt: 1000,
       source: "marked",
       excerpt: "x".repeat(MAX_EXCERPT_CODE_POINTS),
+      stewardAsk: false,
       scores: null,
       winner: null,
       count: 1,
@@ -131,6 +137,43 @@ test("an older marked flag still upgrades a judged item, taking the excerpt it c
   assert.equal(item?.refreshedAt, 5000);
 });
 
+test("the steward flag follows the excerpt on a refresh, in both directions and never from an older flag", () => {
+  const store = createInboxStore();
+  store.flag("s1", steward(1000, "which backend? Recommend: postgres"));
+  assert.equal(store.items()[0]?.stewardAsk, true);
+
+  // A later plain ask drops the flag with the excerpt it replaces, and a later steward ask raises it.
+  store.flag("s1", marked(2000, "merge it?"));
+  assert.equal(store.items()[0]?.excerpt, "merge it?");
+  assert.equal(store.items()[0]?.stewardAsk, false);
+  store.flag("s1", steward(3000, "which host? Recommend: neo"));
+  assert.equal(store.items()[0]?.excerpt, "which host? Recommend: neo");
+  assert.equal(store.items()[0]?.stewardAsk, true);
+
+  // An older marked flag moves neither, in either direction.
+  store.flag("s1", marked(2500, "older plain"));
+  assert.equal(store.items()[0]?.excerpt, "which host? Recommend: neo");
+  assert.equal(store.items()[0]?.stewardAsk, true);
+  const lowered = createInboxStore();
+  lowered.flag("s2", marked(5000, "newer plain"));
+  lowered.flag("s2", steward(4000, "older? Recommend: no"));
+  assert.equal(lowered.items()[0]?.excerpt, "newer plain");
+  assert.equal(lowered.items()[0]?.stewardAsk, false);
+
+  // A judged flag, newer or not, never moves it.
+  store.flag("s1", judged(9000, 0.9, 0.1));
+  assert.equal(store.items()[0]?.stewardAsk, true);
+
+  // A judged item holds it false, and an older marked flag upgrading it takes the flag with the
+  // excerpt it carries.
+  const upgraded = createInboxStore();
+  upgraded.flag("s3", judged(5000, 0.9, 0.1));
+  assert.equal(upgraded.items()[0]?.stewardAsk, false);
+  upgraded.flag("s3", steward(4000, "which backend? Recommend: postgres"));
+  assert.equal(upgraded.items()[0]?.source, "marked");
+  assert.equal(upgraded.items()[0]?.stewardAsk, true);
+});
+
 test("a flag the snapshot could not restore is dropped or normalized before it is held", () => {
   // The loader refuses the whole snapshot on any of these, so an unchecked flag would cost every
   // item on the next boot.
@@ -140,6 +183,9 @@ test("a flag the snapshot could not restore is dropped or normalized before it i
   assert.equal(store.flag("s1", marked(1000, "y".repeat(MAX_EXCERPT_CODE_POINTS + 1))), false);
   assert.equal(store.flag("s1", marked(1000, "zero\u200bwidth")), false);
   assert.equal(store.flag("s1", judged(1000, 1.2, 0)), false);
+  // The type forbids it, but a caller outside the type system could still hand one over.
+  const notBoolean = { ...marked(1000, "open"), stewardAsk: "yes" } as unknown as InboxFlag;
+  assert.equal(store.flag("s1", notBoolean), false);
   assert.deepEqual(store.items(), []);
 
   // A message ID that is not a snowflake is treated as not supplied: the item still opens.
@@ -300,6 +346,7 @@ const ITEMS: InboxItem[] = [
     refreshedAt: 2000,
     source: "marked",
     excerpt: "ship it?",
+    stewardAsk: true,
     scores: { needsReply: 0.75, needsAct: 0.25 },
     winner: "needs_reply",
     count: 2,
@@ -311,6 +358,7 @@ const ITEMS: InboxItem[] = [
     refreshedAt: 1500,
     source: "judged",
     excerpt: null,
+    stewardAsk: false,
     scores: { needsReply: 0, needsAct: 1 },
     winner: "needs_act",
     count: 1,
@@ -419,6 +467,9 @@ test("a corrupt, foreign or malformed inbox snapshot degrades to empty rather th
       { excerpt: "ship  it?" },
       { excerpt: 7 },
       { excerpt: undefined },
+      { stewardAsk: "yes" },
+      { stewardAsk: 1 },
+      { stewardAsk: null },
     ];
     for (const override of malformed) {
       cases.push({
@@ -430,6 +481,14 @@ test("a corrupt, foreign or malformed inbox snapshot degrades to empty rather th
       {
         name: "a judged item carrying an excerpt",
         body: JSON.stringify({ version: 1, items: [{ ...ITEMS[1], excerpt: "x" }] }),
+      },
+      {
+        name: "a judged item carrying the steward flag",
+        body: JSON.stringify({ version: 1, items: [{ ...ITEMS[1], stewardAsk: true }] }),
+      },
+      {
+        name: "a judged item with a steward flag that is not a boolean",
+        body: JSON.stringify({ version: 1, items: [{ ...ITEMS[1], stewardAsk: "yes" }] }),
       },
       {
         name: "a judged item without a reading",
@@ -466,6 +525,28 @@ test("the malformed-item control: the same base items restore when nothing is ov
     const file = path.join(directory, "inbox.json");
     writeFileSync(file, JSON.stringify({ version: 1, items: [ITEMS[1], { ...ITEMS[0] }] }), "utf8");
     assert.equal(loadInboxSnapshot(file, { liveSessionIds: new Set(["s1", "s2"]) }).length, 2);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a snapshot item without the steward flag restores with it false", () => {
+  // The shape a broker from before the flag writes, which this one must load rather than refuse.
+  const directory = scratch();
+  try {
+    const file = path.join(directory, "inbox.json");
+    const withoutFlag = ITEMS.map(({ stewardAsk: _dropped, ...rest }) => rest);
+    writeFileSync(file, JSON.stringify({ version: 1, items: withoutFlag }), "utf8");
+    const said: string[] = [];
+    const restored = loadInboxSnapshot(file, {
+      liveSessionIds: new Set(["s1", "s2"]),
+      log: (m) => said.push(m),
+    });
+    assert.deepEqual(
+      restored,
+      ITEMS.map((item) => ({ ...item, stewardAsk: false })),
+    );
+    assert.deepEqual(said, []);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

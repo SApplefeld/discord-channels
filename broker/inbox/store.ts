@@ -75,10 +75,12 @@ export type JudgeWinner = "needs_reply" | "needs_act";
 /**
  * One flagged reply. `postedAt` is the epoch-millisecond instant the reply was posted, and it is what
  * an open or a refresh records. `messageId` is the Discord message the reply landed as, where the
- * writer returned one.
+ * writer returned one. `stewardAsk` is true where the session is supervised and the line the excerpt
+ * came from is shaped as the persona plugin's ask of a worker's steward. It records that shape and
+ * the session's lineage, not whether the plugin read the line.
  */
 export type InboxFlag =
-  | { source: "marked"; postedAt: number; excerpt: string; messageId?: string }
+  | { source: "marked"; postedAt: number; excerpt: string; stewardAsk: boolean; messageId?: string }
   | {
       source: "judged";
       postedAt: number;
@@ -94,6 +96,11 @@ export type InboxItem = {
   source: InboxSource;
   /** The first `ASK:` line of the latest marked reply. Null while the item is judged. */
   excerpt: string | null;
+  /**
+   * Whether the excerpt's own line is shaped as a steward ask and came from a supervised session. It
+   * moves with the excerpt, so it is false while the item is judged.
+   */
+  stewardAsk: boolean;
   /** The latest judge reading, kept across an upgrade to marked. Null where no judge flag landed. */
   scores: JudgeScores | null;
   winner: JudgeWinner | null;
@@ -114,8 +121,9 @@ export type InboxStore = {
   /**
    * Opens or refreshes the session's item. False where the flag was dropped: posted at or before
    * the session's latest prompt, or carrying a field the snapshot could not restore (an instant
-   * that is not a finite number, an excerpt the loader would refuse, a score outside 0 to 1). A
-   * message ID that is not a snowflake is treated as not supplied rather than dropping the flag.
+   * that is not a finite number, an excerpt the loader would refuse, a steward flag that is not a
+   * boolean, a score outside 0 to 1). A message ID that is not a snowflake is treated as not
+   * supplied rather than dropping the flag.
    */
   flag: (sessionId: string, flag: InboxFlag) => boolean;
   /**
@@ -161,7 +169,7 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
     // on the next boot.
     if (!isInstant(incoming.postedAt)) return false;
     if (incoming.source === "marked") {
-      if (!isExcerpt(incoming.excerpt)) return false;
+      if (!isExcerpt(incoming.excerpt) || typeof incoming.stewardAsk !== "boolean") return false;
     } else if (
       !isRecord(incoming.scores) ||
       !isScore(incoming.scores.needsReply) ||
@@ -183,6 +191,7 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
         refreshedAt: incoming.postedAt,
         source: incoming.source,
         excerpt: incoming.source === "marked" ? incoming.excerpt : null,
+        stewardAsk: incoming.source === "marked" && incoming.stewardAsk,
         scores: incoming.source === "judged" ? { ...incoming.scores } : null,
         winner: incoming.source === "judged" ? incoming.winner : null,
         count: 1,
@@ -199,8 +208,12 @@ export function createInboxStore(options: InboxStoreOptions = {}): InboxStore {
       if (messageId !== null && (latest || item.messageId === null)) item.messageId = messageId;
       if (incoming.source === "marked") {
         // The upgrade holds whatever the order: the session's own word outranks a classifier's
-        // reading of it, and a marked item is never without an excerpt.
-        if (latest || item.source !== "marked") item.excerpt = incoming.excerpt;
+        // reading of it, and a marked item is never without an excerpt. The steward flag describes
+        // the reply the excerpt came from, so it moves with the excerpt and never apart from it.
+        if (latest || item.source !== "marked") {
+          item.excerpt = incoming.excerpt;
+          item.stewardAsk = incoming.stewardAsk;
+        }
         item.source = "marked";
       } else if (latest || item.scores === null) {
         // The scores follow the latest judge reading on either source. The source and the excerpt
@@ -277,8 +290,18 @@ type Snapshot = {
  */
 function restoreItem(value: unknown): InboxItem | null {
   if (!isRecord(value)) return null;
-  const { sessionId, openedAt, refreshedAt, source, excerpt, scores, winner, count, messageId } =
-    value;
+  const {
+    sessionId,
+    openedAt,
+    refreshedAt,
+    source,
+    excerpt,
+    stewardAsk,
+    scores,
+    winner,
+    count,
+    messageId,
+  } = value;
   if (typeof sessionId !== "string" || sessionId === "") return null;
   if (!isInstant(openedAt) || !isInstant(refreshedAt) || openedAt > refreshedAt) return null;
   if (source !== "marked" && source !== "judged") return null;
@@ -301,6 +324,12 @@ function restoreItem(value: unknown): InboxItem | null {
     return null;
   }
 
+  // An absent flag is the shape a broker from before the flag writes, and reads as false. A present
+  // one is a boolean, and false on a judged item, which has no excerpt for it to describe.
+  const restoredStewardAsk = stewardAsk === undefined ? false : stewardAsk;
+  if (typeof restoredStewardAsk !== "boolean") return null;
+  if (source === "judged" && restoredStewardAsk) return null;
+
   let restoredMessageId: string | null = null;
   if (messageId !== null) {
     restoredMessageId = messageIdOf(messageId);
@@ -313,6 +342,7 @@ function restoreItem(value: unknown): InboxItem | null {
     refreshedAt,
     source,
     excerpt: restoredExcerpt,
+    stewardAsk: restoredStewardAsk,
     scores: restoredScores,
     winner,
     count,
