@@ -721,7 +721,8 @@ per such session until the operator answers that session, and one more broker-ow
 means no store, no snapshot, no thread, no timer, and no call to the judge.
 
 The tap sits in the outbound router (`broker/routing/outbound.ts`) and never in the intake handler,
-so the inbox sees exactly the text that reached the thread and a hook's 202 is never held for it. A
+so the inbox sees only a reply that reached the thread and a hook's 202 is never held for it. What
+it sees is the reply as the model wrote it, before the renderer's escape and table transform. A
 reply is shown to the inbox at three points: after a reply-tool answer lands, after a turn-final
 reply mirror lands, and where a reply mirror is dropped because the transcript tailer already posted
 the same text as interim narration. Narration itself is never tapped, so without that third point a
@@ -739,8 +740,12 @@ blockquoted `> ASK:`, a bulleted `- ASK:`, a lowercase `ask:` and an `ASK:` in t
 mark nothing, and neither does anything inside a fence, because a reply quoting code, a log or
 another session's text would otherwise turn every code review into an item. The rest of the first
 such line, whitespace-collapsed and cut to 200 code points, is the item's excerpt, and a reply
-carrying the mark is never sent to the judge. One reply is excluded from both readings. A supervised
-session is one whose record carries a lineage, which the persona supervisor's launches declare and
+carrying the mark is never sent to the judge. A fence opens as CommonMark opens one, on a run of
+three or more backticks or tildes (`FENCE_OPEN` in `broker/inbox/ask.ts`). The one surface that
+teaches a session to write the mark is the persona plugin, whose workers write the steward ask
+named below. Neither the relay's instructions nor any kit skill names it, so for an interactive
+session the judge is what catches an unmarked ask today. One reply is excluded from both readings.
+A supervised session is one whose record carries a lineage, which the persona supervisor's launches declare and
 an interactive session never does (see the lineage paragraph above). A reply from such a session
 holding a line of the form `ASK: <question>? Recommend: <choice>`, matched on the persona plugin's
 own pattern, is a worker's ask of its steward, answered there rather than by the operator. It opens
@@ -753,25 +758,30 @@ decide, answer or confirm something, and whether it tells the operator that some
 perform now. Each answer comes back as a probability, the larger is the reply's score, and a score
 at or above `CHANNEL_INBOX_THRESHOLD` opens or refreshes the item with source `judged`, recording
 both numbers and which question won. The judge runs only where its key file is set and usable, and
-only for a session whose mirror is on, which the router establishes by having seen a mirror post
-from that session pass the straggler gate since the broker started. A session running with its
-mirror off still posts reply-tool answers, and those are read for `ASK:` lines and sent nowhere. What
-goes out is the reply's text, screened for secret shapes over its whole length and then cut to its
-first 12,000 code points, and a reply matching the screen makes no call. The call is detached from
-the post, times out at 5 seconds and is never retried. Any failure opens nothing and logs one
-rate-limited line that names the failure kind and the session and carries no reply text. Each
+only for a session whose mirror is on. The router establishes that by having seen a mirror post
+from the session since the broker started. The post must first pass the router's straggler gate,
+which drops a mirror post that names no session or names one the posting token no longer holds,
+since a subprocess `claude` inherits its parent's token and would otherwise post as the parent. A
+turn-final reply is itself a mirror post and it arms the session before it is tapped, so the first
+mirror post after a restart is judged like any later one. A session running with its mirror off
+still posts reply-tool answers, and those are read for `ASK:` lines and sent nowhere. What goes out
+is the reply's text, screened for secret shapes over its whole length and then cut to its first
+12,000 code points, and a reply matching the screen makes no call. The call is detached from the
+post. How it fails is stated once, in the External integrations bullet below. Each
 session has at most one call in flight and one reply waiting, a newer reply replacing the one
 waiting, and the verdict of the call in flight is always used. The card renderer makes no model
 call: the judge runs once per reply at intake and nowhere else.
 
 The store (`broker/inbox/store.ts`) holds at most one item per session, keyed by session ID, so its
 size is bounded by `CHANNEL_MAX_SESSIONS`. An item carries the instant it opened, the instant it was
-last refreshed, its source, its excerpt where marked, its scores where judged, a count of flagged
-replies since it opened, and the Discord message ID of the most recent flagged post where the writer
-returned one. A flagged reply for a session that already holds an item refreshes that item and never
-opens a second, which is how a close-out recap restating a standing wait attaches to the ask it
-restates. A marked flag upgrades a judged item, because the session's own word outranks a
-classifier's reading of it, and a judged flag never takes a marked item back. Flags can arrive out of
+last refreshed, its source (`marked` or `judged`), its excerpt where marked, its scores where
+judged, a count of flagged replies since it opened, and the Discord message ID of the most recent
+flagged post where the writer returned one. The refresh instant is the instant the tap passed,
+the reply's arrival at two of the three tap points and the handling time at the echo-drop point.
+The card does not draw the count. A flagged reply for a session that already holds an item
+refreshes that item and never opens a second, which is how a close-out recap restating a standing
+wait attaches to the ask it restates. A marked flag upgrades a judged item, because the session's
+own word outranks a classifier's reading of it, and a judged flag never takes a marked item back. Flags can arrive out of
 posting order, since a verdict takes as long as the judge takes, so an older flag counts toward the
 item and overwrites nothing a newer one already wrote.
 
@@ -786,13 +796,17 @@ mid-turn may fire no prompt hook. A message the router consumed as a permission 
 question's answer clears nothing, since each answers a prompt the session is parked on rather than
 its last reply. Neither `SessionStart` nor `PostToolUse` clears anything, which is the deliberate
 difference from the blocked desk: a session that asks and keeps working makes tool calls all the
-while. The store also keeps each session's latest prompt instant and drops a flag posted at or
-before it, so a judge verdict returning after the operator has answered opens nothing. A stale
+while. The store also keeps each session's latest prompt instant, which both clear sources advance,
+and drops a flag posted at or before it, so a judge verdict returning after the operator has
+answered opens nothing. A prompt typed at the console while the session is working stamps the
+instant it was typed, read from the transcript line, so it is earlier than the reply that closes
+the turn and clears nothing that reply asks. A stale
 record keeps its item, since a stale session can revive. An ended record keeps its item too, drawn
 with an `ended` marker, because an act such as a merge outlives the session that asked for it. That
-item leaves when the operator posts anything in the ended session's thread, which the router sees
-behind the sender gate though it delivers nothing, or when the registry prunes the record, which
-the store learns from the registry's mutate signal.
+item leaves when the operator posts a plain message in the ended session's thread, or when the
+registry prunes the record, which the store learns from the registry's mutate signal. The router
+sees that message behind the sender gate (`docs/security-model.md`) though it delivers nothing. A
+verdict-shaped message or a held question's answer posted there clears nothing, as in a live thread.
 
 Items persist in `inbox-items.json` beside `broker-state.json`, written whole to a temp file and
 renamed on every change, which is a human rate. A snapshot that is unreadable, of another version
@@ -901,10 +915,9 @@ Four, and each one fails in its own way.
   `jev-latest` and the two fixed questions, under a bearer key read from the file
   `CHANNEL_INBOX_JUDGE_KEY_FILE` names. The host is a constant that no setting can redirect, and a
   redirect response fails the call rather than being followed. It fails in two layers. A key file
-  that is missing, unprotected, empty or holding anything outside printable ASCII turns the judge
-  off at start with one warning, and the inbox runs on `ASK:` lines alone; no key file named is the
-  ordinary off state and warns nothing. A call that fails, returns a non-2xx status, answers with a
-  body the reader cannot parse into two probabilities, or takes longer than 5 seconds opens nothing,
+  that fails the install guide's check turns the judge off at start with one warning, and the
+  inbox runs on `ASK:` lines alone; no key file named is the ordinary off state and warns nothing.
+  A call that fails, returns a non-2xx status, answers with a body the reader cannot parse into two probabilities, or takes longer than 5 seconds opens nothing,
   is not retried, and logs one rate-limited line naming the kind of failure and the session. The
   broker never stops for it, and an outage costs the operator the judged reading of the replies
   posted during it.

@@ -215,8 +215,9 @@ The broker checks the key file at start exactly as it checks the token file: the
 directory must be owned by the broker's account or an administrative identity, must grant nobody
 beyond those three trustees, and must not be a symbolic link or junction. Where that check failing
 on the token file stops the broker, failing on this file only turns the judge off, with one warning
-in the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. An empty
-file, or one holding anything outside printable ASCII, is refused the same way. Both keys are on
+in the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. A file
+that is missing, unreadable or empty, or one holding anything outside printable ASCII, is refused
+the same way. Both keys are on
 the installer's allowlist, so values set by hand here survive the next install, and
 [`operations.md`](operations.md) carries the threshold and refresh knobs beside them.
 

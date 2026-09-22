@@ -1238,11 +1238,14 @@ authenticated account or a non-administrative service account.
   the next bullet states.
 - **The per-session mirror switch is advisory for the judge as it is for the mirror.** The judge
   reads a session's reply-tool answers only once a mirror post from that session has passed the
-  straggler gate, and that gate checks the off header and the session named in the post, both
-  poster-supplied. A process holding the session's token can post a mirror without the off header
-  and arm the judge for a session the operator marked no-mirror, and from then on that session's
-  reply-tool answers go to the vendor. This is the same door "The per-session switch is advisory"
-  above describes, reaching one more surface. The host-wide switch holds here as it holds there:
+  router's straggler gate, the check that drops a mirror post naming no session or naming one the
+  posting token no longer holds (`docs/architecture.md`, the operator inbox). Ahead of that gate,
+  the intake's `/mirror` handler drops a post carrying the off header. Both the header and the
+  session named in the post are poster-supplied. A process holding the session's token can post a
+  mirror without the off header and arm the judge for a session the operator marked no-mirror, and
+  from then on that session's reply-tool answers go to the vendor. This is the same door "The
+  per-session switch is advisory" above describes, reaching one more surface. The host-wide switch
+  holds here as it holds there:
   `CHANNEL_MIRROR=off` drops every mirror post at the intake, ahead of the router, so no session is
   ever armed and the judge reads nothing. Removing the key file holds against any poster too.
 - **A session's own subprocess can clear its own ask.** The clear fires on the registry's
@@ -1257,8 +1260,8 @@ authenticated account or a non-administrative service account.
   points of the session's own reply, taken from its first `ASK:` line, in the state root beside the
   registry snapshot and under the same protection. A judged item holds two scores and no text. The
   file is one more place a fragment of conversation rests after the reply itself has crossed to
-  Discord, and it is rewritten on every change, so an ask the operator answered is gone from it at
-  the next write.
+  Discord, and it is rewritten on every change, the clear included, so an ask the operator answered
+  is gone from it as soon as the clear lands.
 - **A judge-opened item shows where the ask is and never what it says.** The card draws the
   session's title, the age, which question won and a link to the flagged message, and no excerpt,
   by design: the judge's reading is a probability and the reply is the source. The operator opens

@@ -603,7 +603,7 @@ from the opening rather than the latest restatement, so a session that keeps rep
 not climb the card. The link is a jump link to the flagged message itself when the broker holds
 that message's ID, and a channel chip to the session's thread otherwise, which is what a reply the
 tailer narrated first gets, since the message on the thread is the tailer's. A marked ask draws its
-`ASK:` line on a sub-bullet beneath, cut to **200** characters. A judged ask draws no text, by
+`ASK:` line on a sub-bullet beneath, cut to **200** code points. A judged ask draws no text, by
 design, so you open the thread to read it. A card with nothing open reads `No open asks.`, and one
 that runs out of room ends `(+N more asks not shown)`.
 
@@ -627,32 +627,36 @@ neither does a tool call the session makes while it keeps working, so a session 
 carried on stays on the card until you answer it. A message the broker consumes as a tool-approval
 verdict or as the answer to a held question answers that prompt rather than the ask, and leaves the
 item where it is. An ended session keeps its item, marked `ended`, because a merge you were asked
-for outlives the session that asked. Post anything in that session's thread and the line leaves, or
-wait for the record to be pruned. A stale session keeps its item, since it may revive.
+for outlives the session that asked. Post a plain message in that session's thread and the line
+leaves, or wait for the record to be pruned. A verdict word or a held question's answer clears
+nothing there, as in a live thread. A stale session keeps its item, since it may revive.
 
 ### Edges worth knowing
 
 Three edges follow from where the clear and the link are read. A console prompt you queued mid-turn
-is handled after the turn's final reply, and its stamp lands later than that reply, so it clears an
-ask you never saw. The session's next reply restating the ask reopens the item. A jump link joins
+is stamped with the instant you typed it, read from the transcript line, so it lands earlier than
+the turn's final reply and clears nothing that reply asks. The item waits for your next prompt.
+A jump link joins
 the session's current thread to the message ID the flag carried, so a link into a thread the broker
 has since rebuilt, after you deleted the old one, still lands you in the right thread, with
 Discord's notice that the message is unknown. And a broker restart forgets which sessions it has
 seen mirror posts from, so after a restart a session's reply-tool answers are read for `ASK:` lines
-and not judged until its next mirror post arrives. An unmarked ask in that window is missed, which
-is the status quo without the inbox.
+and not judged until its next mirror post arrives. That post is judged itself where it is a reply,
+so the window is the reply-tool answers between the restart and the session's next mirrored turn.
+An unmarked ask in that window is missed, which is the status quo without the inbox.
 
 ### Turning the judge off
 
 The judge runs only while `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file, and the file is
 read once at start. To keep the inbox and stop reply text leaving the machine, remove that key from
-`broker.env` and restart the broker. The start log then reads `reading ASK: lines alone with the
-judge off`, and the inbox runs on marked replies alone. A key file that exists but is empty,
-unprotected or unreadable turns the judge off the same way, with one warning naming the file and
-the cause, and never stops the broker. To remove the whole card, set `CHANNEL_INBOX_CARD` off and
-restart; the thread already in the channel is left alone. `CHANNEL_MIRROR=off` also keeps every
-session off the judge, since the judge reads a session only after one of its mirror posts has
-arrived, but it takes the conversation off Discord with it.
+`broker.env` and restart the broker with `.\install\Repair-Broker.ps1` from an elevated prompt at
+the checkout root. Deleting the file alone changes nothing until that restart. The start log then
+reads `reading ASK: lines alone with the judge off`, and the inbox runs on marked replies alone. A
+key file that fails the check the install guide states turns the judge off the same way, with one
+warning naming the file and the cause, and never stops the broker. To remove the whole card, set
+`CHANNEL_INBOX_CARD` off and restart; the thread already in the channel is left alone.
+`CHANNEL_MIRROR=off` also keeps every session off the judge, since the judge reads a session only
+after one of its mirror posts has arrived, but it takes the conversation off Discord with it.
 
 ## What a session card says about its model
 
@@ -1058,7 +1062,7 @@ refused by name rather than guessed at.
 | `CHANNEL_BOARD_CARD_REFRESH_MS` | 60 s | How often the board card is re-swept and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from. One stream, two readers: the board card's per-plan blocked marker and the session surface's own `⛔` state and its alert, so redirecting this moves both. Read whenever Discord is configured, board card or not |
 | `CHANNEL_INBOX_CARD` | off | Whether the Fleet: Inbox thread and its card exist on this host. Off builds no item store, no snapshot and no judge, so no reply text leaves the machine |
-| `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that is unprotected, missing or empty turns the judge off with one warning |
+| `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning |
 | `CHANNEL_INBOX_THRESHOLD` | 0.7 | The judge score at or above which an unmarked reply opens an item; bounded 0.4 to 0.95 |
 | `CHANNEL_INBOX_CARD_REFRESH_MS` | 60 s | How often the inbox card is re-read and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |
