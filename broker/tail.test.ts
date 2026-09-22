@@ -2724,17 +2724,18 @@ const LONG_REPLY = Array.from(
 const UNTIL_GRACE_MS = 2_000;
 /** How often the grace re-checks the condition. */
 const UNTIL_GRACE_STEP_MS = 10;
-/** The primary bound, in tries against wall clock. */
+/** The primary bound, as a count of timer sleeps. */
 const UNTIL_TRIES = 300;
-/** How often the primary bound re-checks the condition between tries. */
+/** The shortest each of the primary bound's sleeps can last. */
 const UNTIL_TRY_STEP_MS = 10;
 
 /**
  * Yields until the condition holds, so a test can act while a run is genuinely still in flight.
  *
- * The primary bound is `UNTIL_TRIES` tries, `UNTIL_TRY_STEP_MS` ms apart on wall clock, so it
- * outlasts a real wait such as the tailer's thread-pool file I/O rather than only the idle
- * event loop. If the condition still has not held by then, the wait keeps polling on wall clock,
+ * The primary bound is `UNTIL_TRIES` timer sleeps of at least `UNTIL_TRY_STEP_MS` ms each, so at
+ * least 3 s of wall clock, which outlasts a real wait such as the tailer's thread-pool file I/O
+ * rather than only the idle event loop. If the condition still has not held by then, the wait
+ * keeps polling on wall clock,
  * read from a monotonic clock, for a further grace purely to classify the failure: it did not
  * meet the bound either way, but a condition that holds inside the grace was merely slow, while
  * one that never holds is genuinely stuck. The test fails in both cases; the grace only decides
@@ -2763,6 +2764,16 @@ test("until: passes when the condition holds within the primary bound", async ()
     flag = true;
   });
   await until("test condition", () => flag);
+});
+
+test("until: passes when the condition turns true from a real timer inside the primary bound", async () => {
+  // A bound counted in event-loop turns expires long before a timer fires, which is the flake this
+  // pins; the bound's wall-clock floor has to cover it.
+  let flag = false;
+  setTimeout(() => {
+    flag = true;
+  }, 200);
+  await until("timer condition", () => flag);
 });
 
 test("until: a condition true only after the bound fails naming the label and the ms late", async () => {
