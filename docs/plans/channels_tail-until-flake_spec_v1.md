@@ -265,3 +265,10 @@ Gate: the section's gate is its 30 runs, `npm test`, SCOTT-CLAUDE, 2026-09-22 22
 Next: 3. The wait bounds on wall clock
 Commit Model: Branch-and-PR
 Delta: no code or document delta beyond this Chapter; kit-size measures no corpus in this repository (Chapter 1's reading).
+
+### Interim board 1 - 2026-09-22
+- Section 3 stage: implemented by implementer-sonnet and verified by the main session. `node --test broker/tail.test.ts` gave 174/174/0, exit 0, 12.4 s, and `npm run lint` exit 0, at 22:51 UTC on SCOTT-CLAUDE with the box polled CLEAR. First-green commit fbdea60 is pushed and carries the helper change and the archive receipts.
+- Live dispatches: review round 1, a Workflow run (wf_076ceb61-03d), with the adversarial and blind reviewers at opus/high over ec1839b..fbdea60, told to run nothing. The 20-run acceptance runner (`.kit/scratch/evidence-run.sh 20`, output under `.kit/scratch/channels_tail-until-flake_spec_v1/acceptance/`) holds the heavy-process claim.
+- Gate baseline for this section: the file lane at 52d2be7, 174/174/0, exit 0, 2.6 s, 22:22 UTC, clear box. The +9.8 s is the two helper tests now spending the wall-clock bound. On Windows, 300 waits of 10 ms take about 4.7 s, because the timer ticks at about 15.6 ms.
+- Rulings since the last boundary: none.
+- Next: adjudicate the review, read the 20 runs (any red in the group fails the section, with its message recorded), close pass, close gate, Chapter 3, then finishing-work.
