@@ -32,8 +32,10 @@
 //
 // Nothing here is logged but a static failure-class word. A `workdir`, a store path and a plan path
 // all embed the operator's OS account name, and the log is a lower-trust surface than the card.
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
+import { readCappedFile } from "../capped-read.ts";
+import type { CappedRead as SharedCappedRead } from "../capped-read.ts";
 import { parsePlan, readPlanFile } from "./plans.ts";
 import type { PlanParse, PlanRead, PlanReading } from "./plans.ts";
 import type { RosterPersona } from "./roster.ts";
@@ -192,53 +194,10 @@ export type QueueReader = {
 /** One file's modification time and size, which is the whole of what a hold is keyed on. */
 export type PlanStat = { mtimeMs: number; sizeBytes: number };
 
-/** What one capped read yields: the file's text, or why there is none. */
-export type CappedRead = { text: string } | { failed: "unreadable" | "oversized" };
-
-/**
- * One read of at most `maxBytes`, into a buffer one byte larger so an oversized file is recognized
- * by the read itself rather than by a stat the file could have outgrown in between. The buffer is
- * uninitialized because only the bytes the read actually returned are ever decoded.
- *
- * The read repeats until the buffer fills or a read returns nothing, because one `readSync` is
- * allowed to return fewer bytes than asked for and a network filesystem does. Stopping at the first
- * short read would hand the parser a prefix of the file under the name of the whole.
- *
- * A failure at any stage reports "unreadable", which covers an absent file, a permission refusal,
- * and a read that failed after the open succeeded. The distinction changes nothing the caller does,
- * and the errors themselves are discarded unread because each carries the path.
- *
- * The close carries its own guard rather than riding a bare `finally`: a close that throws there
- * replaces whatever the read produced.
- */
-function readCappedFile(file: string, maxBytes: number): CappedRead {
-  let handle: number;
-  try {
-    handle = openSync(file, "r");
-  } catch {
-    return { failed: "unreadable" };
-  }
-  try {
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
-    let filled = 0;
-    while (filled < buffer.length) {
-      const read = readSync(handle, buffer, filled, buffer.length - filled, filled);
-      if (read === 0) break;
-      filled += read;
-    }
-    if (filled > maxBytes) return { failed: "oversized" };
-    return { text: buffer.subarray(0, filled).toString("utf8") };
-  } catch {
-    return { failed: "unreadable" };
-  } finally {
-    try {
-      closeSync(handle);
-    } catch {
-      // A handle that will not close is the operating system's problem, not the card's: the reading
-      // in hand, good or bad, is already decided.
-    }
-  }
-}
+/** What one capped read yields: the file's text, or why there is none. An alias of the shared
+ * `CappedRead` in `broker/capped-read.ts`, kept under this name because `QueueReaderOptions.readStore`
+ * and this module's own tests import it as `CappedRead`. */
+export type CappedRead = SharedCappedRead;
 
 /**
  * The modification time and size of one file, or null when it cannot be stat'd or is not a regular

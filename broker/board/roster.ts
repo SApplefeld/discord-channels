@@ -17,7 +17,8 @@
 // and parses to something other than an array is the one exception: a torn write of a JSON array
 // cannot land as valid non-array JSON, so a well-formed non-array file is an operator typo too, and
 // it yields no personas rather than the held reading.
-import { closeSync, openSync, readSync } from "node:fs";
+import { readCappedFile } from "../capped-read.ts";
+import type { CappedRead } from "../capped-read.ts";
 import { namesOneLocalDirectory } from "../config.ts";
 
 /** Ceiling on the roster file. Generous for a fleet the operator names by hand: the largest ordinary
@@ -58,41 +59,15 @@ export type RosterReader = {
   read: () => readonly RosterPersona[];
 };
 
-type RosterFileRead = { text: string } | { failed: "unreadable" | "oversized" };
-
 /**
- * One capped read of the roster file, on the same terms `readPlanFile` in `plans.ts` reads a plan
- * doc: refused whole past the cap rather than truncated, because a recognizer running on a cut copy
- * can manufacture a match the full text never held, and any failure at any stage is reported
- * "unreadable" without inspecting why, since the caller does the same thing either way.
+ * One capped read of the roster file, through the shared reader in `broker/capped-read.ts`, on the
+ * same terms `readPlanFile` in `plans.ts` reads a plan doc: refused whole past the cap rather than
+ * truncated, because a recognizer running on a cut copy can manufacture a match the full text never
+ * held, and any failure at any stage is reported "unreadable" without inspecting why, since the
+ * caller does the same thing either way.
  */
-function readRosterFile(file: string): RosterFileRead {
-  let handle: number;
-  try {
-    handle = openSync(file, "r");
-  } catch {
-    return { failed: "unreadable" };
-  }
-  try {
-    const buffer = Buffer.allocUnsafe(MAX_ROSTER_FILE_BYTES + 1);
-    let filled = 0;
-    while (filled < buffer.length) {
-      const read = readSync(handle, buffer, filled, buffer.length - filled, filled);
-      if (read === 0) break;
-      filled += read;
-    }
-    if (filled > MAX_ROSTER_FILE_BYTES) return { failed: "oversized" };
-    return { text: buffer.subarray(0, filled).toString("utf8") };
-  } catch {
-    return { failed: "unreadable" };
-  } finally {
-    try {
-      closeSync(handle);
-    } catch {
-      // A handle that will not close is the operating system's problem, not the roster's: the
-      // reading in hand, good or bad, is already decided.
-    }
-  }
+function readRosterFile(file: string): CappedRead {
+  return readCappedFile(file, MAX_ROSTER_FILE_BYTES);
 }
 
 /**

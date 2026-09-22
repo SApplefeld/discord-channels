@@ -26,9 +26,10 @@
 // a throw. Nothing read here is logged: the reading carries a static reason instead, so the caller
 // owns the log line and its rate limiting, and a parse error, which embeds an excerpt of its own
 // source, is discarded unread.
-import { closeSync, openSync, readSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readCappedFile } from "../capped-read.ts";
+import type { CappedRead as SharedCappedRead } from "../capped-read.ts";
 
 /**
  * Ceiling on either file. The live cache runs about three kilobytes for three accounts, so this is
@@ -116,8 +117,10 @@ export type UsageReading =
   | { available: true; accounts: UsageAccount[] }
   | { available: false; reason: UsageUnavailableReason };
 
-/** What one capped read yields: the file's text, or why there is none. */
-export type CappedRead = { text: string } | { failed: "unreadable" | "oversized" };
+/** What one capped read yields: the file's text, or why there is none. An alias of the shared
+ * `CappedRead` in `broker/capped-read.ts`, kept under this name because `ReadUsageOptions.readFile`
+ * and this module's own callers import it as `CappedRead`. */
+export type CappedRead = SharedCappedRead;
 
 export type ReadUsageOptions = {
   /** claude-swap's backup directory. Defaults to the one under the operator's profile. */
@@ -257,42 +260,6 @@ function accountEntries(
 }
 
 /**
- * One read of at most `maxBytes`, into a buffer one byte larger so an oversized file is recognized
- * by the read itself rather than by a separate stat the file could have outgrown in between. A
- * failure at any stage reports "unreadable", which covers an absent file, a permission refusal, and
- * a read that failed after the open succeeded. The distinction changes nothing the caller does, and
- * the errors themselves are discarded unread because each carries the path, which holds the
- * operator's own username.
- *
- * The close carries its own guard rather than riding a bare `finally`: a close that throws there
- * replaces whatever the read produced, so a healthy read would surface as a failure and a failed one
- * would surface with the wrong reason.
- */
-function readCapped(file: string, maxBytes: number): CappedRead {
-  let handle: number;
-  try {
-    handle = openSync(file, "r");
-  } catch {
-    return { failed: "unreadable" };
-  }
-  try {
-    const buffer = Buffer.alloc(maxBytes + 1);
-    const read = readSync(handle, buffer, 0, buffer.length, 0);
-    if (read > maxBytes) return { failed: "oversized" };
-    return { text: buffer.subarray(0, read).toString("utf8") };
-  } catch {
-    return { failed: "unreadable" };
-  } finally {
-    try {
-      closeSync(handle);
-    } catch {
-      // A handle that will not close is the operating system's problem, not the card's: the reading
-      // in hand is still good and there is nothing here left to do about the descriptor.
-    }
-  }
-}
-
-/**
  * The parsed contents of one capped read, or the reason there are none. The parse error is
  * discarded unread: V8 embeds an excerpt of the source in its message, so the one thing that must
  * not escape this function is the very thing the error carries.
@@ -336,7 +303,7 @@ export function readUsage(options: ReadUsageOptions = {}): UsageReading {
 
 function reading(options: ReadUsageOptions): UsageReading {
   const root = options.root ?? defaultUsageRoot();
-  const read = options.readFile ?? readCapped;
+  const read = options.readFile ?? readCappedFile;
 
   const usage = parsed(read(path.join(root, "cache", "usage.json"), MAX_USAGE_FILE_BYTES));
   if ("failed" in usage) return { available: false, reason: usage.failed };
