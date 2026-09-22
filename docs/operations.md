@@ -184,11 +184,13 @@ each change and only the settled name is painted. A session already reading `nee
 skips the dwell and repaints on the next pass.
 
 Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never
-follows a rename, because its transcript is never read at all, and that is the flag working as
-intended rather than a fault: `-NoMirror` tells the broker to read nothing from this session's
-transcript, and the name is transcript content. Its thread keeps the launch name for the session's
-life. The switch covers the transcript alone. What the session sends through the reply tool reaches
-Discord by another route, and "The fleet inbox card" below says where those answers go from there.
+follows a rename, because the broker reads nothing from that session's transcript, and the name is
+transcript content. That is the flag working as intended rather than a fault, and its thread keeps
+the launch name for the session's life. The switch stops two things: the mirror posts that
+session's hooks send, and the broker's reading of its transcript. It does not reach the reply tool,
+whose answers take another route to the thread. "The fleet inbox card" below says where those
+answers go. The switch is advisory besides: a process holding the session's token can post
+without the off header, as [`security-model.md`](security-model.md) explains.
 And nothing clears a title once set: a later `/rename` replaces it, but there is no path back to
 the launch name short of starting a session under it.
 

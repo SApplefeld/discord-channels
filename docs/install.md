@@ -52,8 +52,8 @@ the channel either.
 an optional classifier at TypeSafe, which the operator inbox uses once you name its key file under
 "The inbox judge's key file" below. While the inbox card is on and that key file is usable, a
 reply-tool answer that carries no `ASK:` line and does not match the judge's screen for secrets
-is sent to TypeSafe, whether or not the session is mirrored. To stop that, turn the card off, or
-unset `CHANNEL_INBOX_JUDGE_KEY_FILE` in `broker.env` and restart the broker, as
+is sent to TypeSafe, whether or not the session is mirrored. To stop that, turn the card off or
+unset `CHANNEL_INBOX_JUDGE_KEY_FILE` in `broker.env`. Either one takes a broker restart, which
 [`operations.md`](operations.md) describes under "Turning the judge off".
 
 The per-session switch needs the hooks installed from this version of the repository: it works by a
@@ -205,8 +205,8 @@ key, and the key is read from a file rather than from `broker.env`, because a sc
 environment is readable by anything that can read the task definition. This step is optional.
 Without it the inbox still runs and holds every reply a session marks with an `ASK:` line, and
 nothing leaves the machine on this path. With it the judge also catches asks a session did not
-mark, at the cost that every unmarked reply's text is sent to TypeSafe, which
-[`security-model.md`](security-model.md) states in full.
+mark, at the cost that an unmarked reply which does not match the judge's screen for secrets has
+its text sent to TypeSafe, which [`security-model.md`](security-model.md) states in full.
 
 Create the file inside the state root, `%LOCALAPPDATA%\sapplefeld-channels\`, beside
 `discord-token.txt`, from the same plain non-elevated session step 2 requires. It holds one line,

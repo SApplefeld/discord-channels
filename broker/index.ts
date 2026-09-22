@@ -735,9 +735,8 @@ export type Inbox = OutboundInbox &
  * nothing and is never judged, since its steward answers it rather than the operator. Otherwise a
  * reply with an `ASK:` line opens or refreshes a marked item and is never judged. Otherwise the
  * reply goes to the judge where the judge is on, and nowhere when it is off. Whether the session
- * mirrors its console is not read here: the mirror switches govern what the session's thread
- * carries, and the inbox card setting and the judge key file are the two switches that keep reply
- * text from the vendor.
+ * mirrors its console is not read here, since the mirror switches govern what the session's thread
+ * carries rather than what reaches the vendor. `docs/security-model.md` owns which switches do.
  *
  * The snapshot lives beside the registry snapshot and the card bindings. It restores only items
  * whose session record restored, and it is written on every change, which is a human rate: an item
