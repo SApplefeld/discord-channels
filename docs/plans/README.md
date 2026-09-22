@@ -3,10 +3,13 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is in progress or parked. The most recent is the operator inbox,
-[`../archive/plans/channels_operator-inbox_spec_v1.md`](../archive/plans/channels_operator-inbox_spec_v1.md),
-one inbox card for every ask a session makes of the operator. Everything delivered, shelved or
-declined is in
+One plan is parked as Ready for the worker's queue:
+[`channels_judge-unmirrored-replies_spec_v1.md`](channels_judge-unmirrored-replies_spec_v1.md),
+which has the inbox judge read every unmarked reply whether or not the session mirrors, so the
+`Fleet: Inbox` card fills for persona sessions, and has the relay's instructions name the `ASK:`
+mark. It builds on the operator inbox,
+[`../archive/plans/channels_operator-inbox_spec_v1.md`](../archive/plans/channels_operator-inbox_spec_v1.md).
+Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
 
 ## Rules
