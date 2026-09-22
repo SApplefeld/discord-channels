@@ -25,6 +25,8 @@ import { createBudget } from "../discord/budget.ts";
 import type { Budget } from "../discord/budget.ts";
 import type { SessionView, StateThresholds } from "../discord/state.ts";
 import type { CallOutcome, DiscordTransport } from "../discord/transport.ts";
+import { createRepeatLog } from "../repeat-log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
 import { readUsage } from "./cache.ts";
 import type { UsageReading, UsageUnavailableReason } from "./cache.ts";
 import { renderUsageCard } from "./card.ts";
@@ -65,36 +67,17 @@ const MAX_REBUILDS = 3;
 const DECAY_PASSES = 3;
 
 /**
- * Rate-limits a repeating log line by its reason, which is a fixed phrase naming the cause; the
- * varying detail (Discord's own refusal text) rides beside it and never keys the limiter.
- *
- * The first of a reason is written at once; a repeat inside the window is counted, and the count
- * rides on the next line that window admits. The same shape the tailer's limiter has, held locally
- * for the reason it holds one: each layer owns its own log seam. It needs no eviction, because the
- * reasons this module logs are a fixed handful of literals rather than one per session.
+ * The usage card's repeat log, keyed by a fixed phrase naming the cause; the varying detail
+ * (Discord's own refusal text) rides beside it. The reasons this module logs are a fixed handful of
+ * literals rather than one per session, so it needs no sweep.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (reason: string, detail: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (reason, detail) => {
-    const at = now();
-    const held = state.get(reason);
-    if (held !== undefined && at - held.windowStart < REPEAT_WINDOW_MS) {
-      held.suppressed += 1;
-      return;
-    }
-    if (held !== undefined && held.suppressed > 0) {
-      log(
-        `usage card: ${reason} occurred ${String(held.suppressed)} more time(s) in the last ` +
-          `${String(REPEAT_WINDOW_MS / 60_000)} minutes`,
-      );
-    }
-    log(`usage card: ${reason} (${detail})`);
-    state.set(reason, { windowStart: at, suppressed: 0 });
-  };
-}
+export const USAGE_CARD_REPEAT_LOG: RepeatLogSurface<[detail: string]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  firstLine: (reason, detail) => `usage card: ${reason} (${detail})`,
+  countLine: (reason, suppressed) =>
+    `usage card: ${reason} occurred ${String(suppressed)} more time(s) in the last ` +
+    `${String(REPEAT_WINDOW_MS / 60_000)} minutes`,
+};
 
 /**
  * Where the card is drawn, and under what thresholds its session lines read. Null when no Discord
@@ -204,7 +187,7 @@ export function createUsageCard(options: UsageCardOptions): UsageCard | null {
   const channel = options.channel;
   const now = options.now ?? Date.now;
   const log = options.log ?? ((): void => {});
-  const repeats = createRepeatLog(log, now);
+  const repeats = createRepeatLog(USAGE_CARD_REPEAT_LOG, log, now);
   const cacheRoot = options.cacheRoot;
   const read =
     options.read ?? ((): UsageReading => readUsage(cacheRoot === null ? {} : { root: cacheRoot }));

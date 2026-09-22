@@ -17,6 +17,8 @@
 import { randomBytes } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import type { AskedQuestion } from "./discord/render.ts";
+import { createRepeatLog } from "./repeat-log.ts";
+import type { RepeatLogSurface } from "./repeat-log.ts";
 import { MAX_INBOUND_TEXT_LENGTH } from "./routing/inbound.ts";
 import { sliceCodePoints, withoutInvisible } from "./sanitize.ts";
 import { questionDigest } from "./tail.ts";
@@ -57,8 +59,7 @@ const SHUTDOWN_FLUSH_MS = 1_000;
  *
  * The refused-retry line is the one line here a client can drive without limit: a CLI retrying past
  * an entry's response cap writes one per attempt for the life of a four-hour hold, which would push
- * every other line out through rotation. Local rather than shared with the tailer's limiter or the
- * intake's, the same rule those two follow: each layer holds its own log seam.
+ * every other line out through rotation.
  */
 const REPEAT_WINDOW_MS = 60_000;
 
@@ -340,54 +341,17 @@ type ClosedAsk = {
 };
 
 /**
- * Rate-limits a repeating log line by its reason, which carries the session and the cause and
- * nothing that varies per repeat.
- *
- * The first of a reason is written at once; a repeat inside the window is counted, and the count
- * rides on the next line that window admits. The same shape the tailer's limiter has, held locally
- * for the same reason it holds one: each layer owns its own log seam.
+ * The question desk's repeat log, keyed by a reason that carries the session and the cause. The
+ * reason is minted per session, which is why this surface sweeps.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (reason: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (reason) => {
-    const at = now();
-    const entry = state.get(reason);
-    if (entry !== undefined && at - entry.windowStart < REPEAT_WINDOW_MS) {
-      entry.suppressed += 1;
-      return;
-    }
-    if (entry !== undefined && entry.suppressed > 0) {
-      log(
-        `question desk: ${reason} occurred ${String(entry.suppressed)} more time(s) in the last ` +
-          `${String(REPEAT_WINDOW_MS)}ms`,
-      );
-    }
-    log(`question desk: ${reason}`);
-    state.set(reason, { windowStart: at, suppressed: 0 });
-    if (state.size <= MAX_REPEAT_KEYS) return;
-    // Oldest closed window first, and whatever it still owes is written on the way out. A reason
-    // carries a session id, so an entry left in the map because it owes a count is one only that
-    // same session could ever flush, and a session that tripped the cap and went away never will:
-    // the map would then grow by one for the life of the process. The open windows are left alone,
-    // where the count riding on the next line of a reason is still the reason's to report.
-    const closed = [...state]
-      .filter(([, kept]) => at - kept.windowStart >= REPEAT_WINDOW_MS)
-      .sort(([, left], [, right]) => left.windowStart - right.windowStart);
-    for (const [key, kept] of closed) {
-      if (state.size <= MAX_REPEAT_KEYS) return;
-      if (kept.suppressed > 0) {
-        log(
-          `question desk: ${key} occurred ${String(kept.suppressed)} more time(s) in the last ` +
-            `${String(REPEAT_WINDOW_MS)}ms`,
-        );
-      }
-      state.delete(key);
-    }
-  };
-}
+export const QUESTION_DESK_REPEAT_LOG: RepeatLogSurface<[]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  maxKeys: MAX_REPEAT_KEYS,
+  firstLine: (reason) => `question desk: ${reason}`,
+  countLine: (reason, suppressed) =>
+    `question desk: ${reason} occurred ${String(suppressed)} more time(s) in the last ` +
+    `${String(REPEAT_WINDOW_MS)}ms`,
+};
 
 export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
   const log = options.log ?? ((): void => {});
@@ -403,7 +367,7 @@ export function createQuestionDesk(options: QuestionDeskOptions): QuestionDesk {
   // arrive in that same order, so the search runs from the front and the oldest unspent record is
   // what a console answer flips. Eviction past the bound is the matching shift.
   const recentlyClosed: ClosedAsk[] = [];
-  const repeats = createRepeatLog(log, now);
+  const repeats = createRepeatLog(QUESTION_DESK_REPEAT_LOG, log, now);
 
   function view(entry: HeldEntry, sessionId: string): QuestionEntryView {
     return {
