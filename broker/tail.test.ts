@@ -2735,11 +2735,10 @@ const UNTIL_TRY_STEP_MS = 10;
  * The primary bound is `UNTIL_TRIES` timer sleeps of at least `UNTIL_TRY_STEP_MS` ms each, so at
  * least 3 s of wall clock, which outlasts a real wait such as the tailer's thread-pool file I/O
  * rather than only the idle event loop. If the condition still has not held by then, the wait
- * keeps polling on wall clock,
- * read from a monotonic clock, for a further grace purely to classify the failure: it did not
- * meet the bound either way, but a condition that holds inside the grace was merely slow, while
- * one that never holds is genuinely stuck. The test fails in both cases; the grace only decides
- * which message it fails with.
+ * keeps polling on wall clock, read from a monotonic clock, for a further grace purely to classify
+ * the failure: it did not meet the bound either way, but a condition that holds inside the grace
+ * was merely slow, while one that never holds is genuinely stuck. The test fails in both cases;
+ * the grace only decides which message it fails with.
  */
 async function until(label: string, holds: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < UNTIL_TRIES; attempt += 1) {
@@ -2757,14 +2756,6 @@ async function until(label: string, holds: () => boolean): Promise<void> {
   }
   assert.fail(`${label} never held within the grace`);
 }
-
-test("until: passes when the condition holds within the primary bound", async () => {
-  let flag = false;
-  setImmediate(() => {
-    flag = true;
-  });
-  await until("test condition", () => flag);
-});
 
 test("until: passes when the condition turns true from a real timer inside the primary bound", async () => {
   // A bound counted in event-loop turns expires long before a timer fires, which is the flake this

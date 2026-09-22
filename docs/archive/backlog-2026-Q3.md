@@ -208,7 +208,7 @@ Owned by `plans/channels_tail-until-flake_spec_v1.md`:
   condition that never held. The cause is the bound's unit: the turns run out while the poll's
   thread-pool file calls are still in flight. One member failing three times is therefore not the
   regression signal the rule above describes, because the classification now settles which case a
-  red is. The plan's Chapter 2 holds the per-run record.
+  red is. The plan's Chapter 2 holds the counts and each red's record.
 
 - An intermittent failure in `broker/tail.test.ts`, inside the `until` helper at its own line 2451,
   which yields up to 1000 `setImmediate` turns and then asserts "the condition never held". It fails
@@ -247,7 +247,7 @@ Owned by `plans/channels_tail-until-flake_spec_v1.md`:
   and none "never held". So every observed red was a bound that expired early, not a tailer that
   failed to post. None of the 30 runs showed the expensive case this entry warned about, and the
   grace still reports it as "never held" if it occurs, which is what makes a wall-clock bound safe
-  to adopt. The plan's Chapter 2 holds the per-run record.
+  to adopt. The plan's Chapter 2 holds the counts and each red's record.
 
 Owned by `plans/channels_shared-helper-owners_spec_v1.md`:
 

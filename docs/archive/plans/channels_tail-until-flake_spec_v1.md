@@ -1,6 +1,6 @@
 # Make the Tailer Tests' Wait Say Why It Failed, Then Fix the Flake From That Evidence
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -75,6 +75,8 @@ every code anchor the Approach names at that commit.
 ## Related plans
 
 None open. No plan on the board touches `broker/tail.test.ts`.
+
+- [`channels_test-wall-clock_spec_v1.md`](channels_test-wall-clock_spec_v1.md) owns the suite's wall-clock floor and its per-file timings. This plan's wall-clock bound adds about 10 s to `broker/tail.test.ts`'s own lane and about 4.7 s to a full run, which moves the per-file figure that plan records.
 
 ## Approach
 
@@ -217,7 +219,8 @@ Files in scope: `broker/tail.test.ts`, `docs/archive/backlog-2026-Q3.md`.
 
 ## Operator Verification
 
-- None. The evidence is gathered on this box by the run.
+- None for this plan's behaviour. The evidence is gathered on this box by the run.
+- Write the project's threat model. The finishing security review found `docs/security-model.md` carries no `## Threat model` section. The item already sits on `docs/backlog.md` (handoff 2026-09-21) and is repeated here because this plan's review found it absent again.
 
 ## Chapters
 
@@ -288,5 +291,28 @@ Review Findings: review: adversarial + blind at opus, Workflow at high (wf_076ce
 Stamps: adjudicated 4, stamped 0; none shaped this section's work.
 Gate: targeted lane `node --test broker/tail.test.ts` at 2026-09-22 23:11 UTC, SCOTT-CLAUDE, box CLEAR: 175 tests / 175 pass / 0 fail, exit 0, 12.6 s. Baseline on the same lane: 174/174/0, exit 0, 2.6 s at 52d2be7 (Chapter 1). Delta +1 test (the timer pass-path test), +10.0 s (the two classification tests spending the wall-clock bound). `npm run lint` exit 0 (baseline exit 0). Tests added 1, retired 0, edited 1 (the counted late test's bound constant, the contract change section 3's Tests line names). Spawning tests added 0.
 Next: finishing-work over the whole plan
+Commit Model: Branch-and-PR
+Delta: kit-size measures no corpus in this repository (Chapter 1's reading).
+
+### Chapter 4 - 2026-09-22
+Completed: Finishing pass over the whole plan
+Implemented By: main session, with qa-verifier, performance-reviewer, security-reviewer, adversarial-reviewer, scope-adjudicator and docs-curator dispatches
+Metrics: review rounds 1, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 1 declared, 0 asked); advisory: 4 findings, 0 fixed, 1 deferred, 3 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: "The five echo-dedup and deferral tests in `broker/tail.test.ts` stop failing intermittently, and a failure that does happen says what it means. Today a shared `until` helper waits a fixed count of 1000 `setImmediate` turns and then fails with one message, "the condition never held", whichever of the tests hits it. The backlog recorded the group going red on a clean tree in full-suite runs, most often while another suite loaded the box, and on a different member each time: three consecutive full-suite runs on 2026-08-26 each failed a different one, and every isolated run of the file between them was green. Every red costs a round a re-run and a question about whose it is. The backlog records that the obvious fix, widening the bound, is a trap. A bound that expired too early and a tailer that genuinely failed to post give the same message, so widening it would hide the second case for good. When this is done the helper says which of the two happened, the flake's cause has been named from that evidence, and the fix it points to has landed."; What the tree does now: the wait the tailer tests share names what it was waiting for, and when it runs out it keeps watching for 2 more seconds to report either that the thing happened a little late or that it never happened. Thirty full-suite runs showed every failure was the first kind, 22 to 25 ms late, because the wait counted spins of Node's event loop, which finish in about 5 ms, while the tailer was still reading its file from disk. The wait now counts 300 sleeps of at least 10 ms, at least 3 seconds, and 20 further full-suite runs had no failure in the group; Refinements during the run: section 1's late-condition test drives its condition by a check counter rather than a timer, so it cannot race the bound; section 3's close pass added a test whose condition turns true from a real 200 ms timer, the pin the review found missing, declared by the goal read; the finishing pass retired section 1's setImmediate pass-path test as a duplicate of that timer test; no spec amendment and no operator ruling mid-run; Operator-pending: write the project's threat model (already on `docs/backlog.md`, handoff 2026-09-21).
+Decisions / Surprises:
+- Base ref f0f6fbc, the merge-base of `tail-until-flake` with origin/main. The changeset listing was `broker/tail.test.ts`, `docs/archive/backlog-2026-Q3.md` and this plan doc, exactly the union of the Files in scope lines plus the plan doc.
+- QA (qa-verifier): PASS on every criterion of all three sections. It was briefed to run no test process and ran the file lane once anyway (175/175/0); the box was otherwise idle, so it is recorded rather than re-run.
+- The finishing review wave's agents started in `.kit/scratch/channels_tail-until-flake_spec_v1/`, because a bare `cd` had moved the session's working directory. That directory is inside this checkout and every reviewed file was committed at cdfeffa with briefs naming absolute paths, so the reads were unaffected; the session's directory was restored before the next dispatch.
+- The whole-gate cost of the wall-clock bound: the 30 evidence runs at 52d2be7 averaged 39.6 s (37-42 s) and the 20 acceptance runs at fbdea60 averaged 44.3 s (41-47 s), both from the same runner on CLEAR-polled starts, so about +4.7 s per full run. The two classification tests each wait out the whole bound, which is 300 sleeps of about 15.5 ms on this box's Windows timer. That is under the testing-discipline growth bar; an optional try count would remove it and is a mechanism no requirement names.
+- "Box CLEAR" in every Chapter means `.kit/scratch/poll-runners.ps1` found no node, dotnet, testhost, MSBuild or tsc process beyond this checkout's own broker, relay and sidecar. A heavy process in another engine would not show, and the runners kept only the last poll's output, so "CLEAR before each run" rests on the runner's loop rather than a retained reading per run.
+- Drift (docs-curator), adjudicated: D4 (mistake: the tree's 174 tests against Chapter 3's 175) refuted by a pre-change read, since `broker/tail.test.ts` at cdfeffa carried the setImmediate test and the only change since is this pass's retirement of it plus a comment reflow; D1 and D2 (the two plan indexes still read Ready) fixed at archive; D3 (deviation: the archived test-wall-clock row's "next largest at 8.5 seconds" no longer holds for `broker/tail.test.ts` at 12.5 s) left as that archived plan's own record, and surfaced in the PR; H1 (cross-reference) fixed in `## Related plans`.
+Assumptions:
+- assumed 2026-09-22 (the plan's section 1 Tests line, section 1): the grace stays a fixed 2 s rather than an injectable parameter, so the never-held test costs 2 s on this file's lane; reversal: one optional parameter.
+- assumed 2026-09-22 (section 2): a full run's totals line reading 2006 tests is the "did not die partway" test; every run carried it.
+- assumed 2026-09-22 (section 3): 200 ms is the new test's timer, well past what 1000 turns take (about 5 ms in the probe) and well inside the bound's 3 s floor; reversal: one literal.
+Review Findings: review: performance + security + adversarial at fable, Workflow at high (wf_c3234140-4ab), over f0f6fbc..cdfeffa. Performance CLEAR: 2 Minors, both the bound's cost and platform floor, recorded above and left. Security CLEAR, opening "threat model: absent": 2 Minors left (3 pre-existing npm audit advisories already parked on the backlog; the machine name in the archive receipts follows the repo's gate-line convention); the absent threat model carried to Operator Verification. Adversarial APPROVED_WITH_CONCERNS, 8 Minors: 6 fixed in one Minor pass (duplicate pass-path test retired; comment reflowed; archive pointer now "holds the counts and each red's record"; whole-gate cost, poll scope and contention readings recorded here and on the Gate line; plan indexes refreshed at archive), 1 left (the late test's counted driver is the only deterministic one, and its comment says so), 0 upgraded. Goal read (scope-adjudicator at fable, high): RULED; BUILT-BUT-UNASKED 1, the 200 ms timer test, ACCEPT-AND-DECLARE on the Goal's "the fix it points to has landed", bounded to one helper test adding no mechanism; ASKED-BUT-UNBUILT none. Minor pass lane: `node --test broker/tail.test.ts` 174/174/0 exit 0, 12.5 s; `npm run lint` exit 0. Adjudication record: `.kit/scratch/channels_tail-until-flake_spec_v1/finishing/minors.md`.
+Stamps: adjudicated 1, stamped 1 (a-bare-cd-in-the-bash-tool-repoints-every-later-dispatch).
+Gate: whole gate `npm run lint` then `npm test` over the final tree (plan archived, indexes refreshed) at 2026-09-22 23:32:59-23:33:50 UTC, SCOTT-CLAUDE, heavy-process claim held, box polled CLEAR before and after, 202 processes and 5681 of 16383 MB free at the start: lint exit 0; tests 2006 / pass 2005 / fail 0 / cancelled 0 / skipped 1, exit 0, 45 s. Baseline, the same whole gate at cdfeffa (23:15 UTC, finishing step 1): 2007 / 2006 / 0 / 0 / 1, exit 0, 44 s. Delta -1 test, the retired duplicate pass-path test; the skip is the pre-existing POSIX-only token-file test on both runs. Contention lane: this repository defines none. Tests added over the whole effort 4, retired 1, edited 8 (seven call-site labels and the counted late test's bound constant). Spawning tests added 0.
+Next: none; the plan is Complete.
 Commit Model: Branch-and-PR
 Delta: kit-size measures no corpus in this repository (Chapter 1's reading).
