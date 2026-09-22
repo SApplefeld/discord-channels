@@ -164,6 +164,47 @@ test("an ended session's item draws an ended marker", () => {
   assert.match(drawn, /ended/);
 });
 
+test("a steward-flagged item draws the marker between its link and its ended marker, and only there", () => {
+  const flagged = marked({ sessionId: "session-a", stewardAsk: true, messageId: MESSAGE_ID });
+  const unflagged = marked({ sessionId: "session-b", stewardAsk: false });
+  // A judged item's flag is always false, a rule the store enforces on the way in; drawn here to pin
+  // that the card draws no marker for it, the same as any other item with the flag down.
+  const plainJudged = judged({ sessionId: "session-c" });
+  const flaggedEnded = marked({ sessionId: "session-d", stewardAsk: true });
+  const session = sessionsOf({
+    "session-a": SESSION_A,
+    "session-b": SESSION_B,
+    "session-c": { title: "charlie worker", threadId: "444444444444444444", ended: false },
+    "session-d": { title: "delta worker", threadId: "555555555555555555", ended: true },
+  });
+
+  const drawn = renderInboxCard({
+    items: [flagged, unflagged, plainJudged, flaggedEnded],
+    session,
+    guildId: GUILD_ID,
+    now: NOW,
+  });
+  const lines = drawn.split("\n");
+  const flaggedLine = lines.find((line) => line.includes("alpha worker")) ?? "";
+  const unflaggedLine = lines.find((line) => line.includes("bravo worker")) ?? "";
+  const judgedLine = lines.find((line) => line.includes("charlie worker")) ?? "";
+  const endedLine = lines.find((line) => line.includes("delta worker")) ?? "";
+
+  assert.match(flaggedLine, /supervisor ask/, flaggedLine);
+  assert.doesNotMatch(unflaggedLine, /supervisor ask/, "an unflagged marked item draws no marker");
+  assert.doesNotMatch(judgedLine, /supervisor ask/, "a judged item's flag, always false, draws no marker");
+  assert.ok(endedLine.includes("supervisor ask") && endedLine.includes("ended"), endedLine);
+  assert.ok(
+    flaggedLine.indexOf(`https://discord.com/channels/${GUILD_ID}/${SESSION_A.threadId}/${MESSAGE_ID}`) <
+      flaggedLine.indexOf("supervisor ask"),
+    "the marker follows the link",
+  );
+  assert.ok(
+    endedLine.indexOf("supervisor ask") < endedLine.indexOf("ended"),
+    "the marker precedes the ended marker",
+  );
+});
+
 test("a session the lookup cannot resolve still draws a line, under a name built from its ID", () => {
   const drawn = renderInboxCard({
     items: [marked({ sessionId: "unresolvable-session-id" })],
