@@ -839,9 +839,9 @@ export function inboxWiring(options: {
  * of `clearEnded` is caught here, on `toInbox`'s shape in `broker/routing/inbound.ts` (a message
  * already routed must not read as failed; a rebind already under way must not stop the notice), and
  * the one log line names the departed session rather than the error, whose owner reports its own.
- * The clear runs whether or not the thread is open yet, because the rebind happened either way; the
- * post is still skipped on a null thread ID, exactly as before this factory existed, since there is
- * nowhere to post into and the very next pass opens the thread.
+ * The clear runs whether or not the thread is open yet, because the rebind happened either way. The
+ * post is skipped on a null thread ID, since there is nowhere to post into and the very next pass
+ * opens the thread.
  */
 export function rebindHandling(options: {
   /** Null when `CHANNEL_INBOX_CARD` is off, which leaves the clear a no-op. */
@@ -1376,7 +1376,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         inbox,
         post: (input) => messenger.postToThread(input),
         now: Date.now,
-        log: note,
+        // A failed clear leaves an ask stuck on the card, so it logs at the level the inbox's
+        // other failures do.
+        log: (message) => {
+          console.error(message);
+          logger.error(message);
+        },
       }),
     });
     // The channel's pin list, driven from the same timer the surfaces are. Its own budgets and its

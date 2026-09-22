@@ -2377,14 +2377,19 @@ test("a rebind with the inbox handle null posts the notice and touches nothing",
   assert.deepEqual(logs, [], "a null handle has nothing to clear and nothing to log");
 });
 
-test("a rebind whose predecessor holds no item changes nothing and throws nothing", () => {
+test("a rebind whose predecessor holds no item changes nothing and throws nothing", (t) => {
+  // Over the real inbox, since a double's delete of an absent key cannot throw and would prove
+  // nothing about the store's own no-item path.
   const { posts, post } = postSpy();
-  const inbox = fakeInbox([]);
-  const handler = rebindHandling({ inbox, post, now: () => 5_000, log: () => {} });
+  const logs: string[] = [];
+  const { inbox } = inboxUnderTest(t);
+  assert.ok(inbox);
+  const handler = rebindHandling({ inbox, post, now: () => 5_000, log: (message) => logs.push(message) });
 
   assert.doesNotThrow(() => handler(REBIND_EVENT));
 
-  assert.deepEqual([...inbox.items], []);
+  assert.deepEqual(inbox.items(), []);
+  assert.deepEqual(logs, []);
   assert.deepEqual(posts, [{ threadId: "thread-9", text: renderRestartNotice("lineage-1") }]);
 });
 
@@ -2422,11 +2427,12 @@ test("a rebind with a null thread ID still clears the predecessor's item and pos
   assert.deepEqual(posts, [], "nowhere to post into yet");
 });
 
-test("a judge verdict for the departed session submitted after the rebind opens no item", async (t) => {
-  // The regression this clearing event exists to hide: a late verdict must not reopen an ask the
-  // rebind already cleared. Built over the file's real inbox harness rather than a double, since
-  // the guard this pins is the store's own comparison between a flag's `postedAt` and the instant
-  // `clearEnded` recorded, not anything `rebindHandling` computes itself.
+test("a late flag for the departed session, carrying its reply's original instant, opens no item after the rebind", async (t) => {
+  // The regression this clearing event would otherwise hide: a flag arriving late, the shape a
+  // judge verdict on an earlier reply takes, must not reopen an ask the rebind already cleared.
+  // The flag is presented through the tap with the reply's original `postedAt` rather than
+  // through the judge, since the guard this pins is the store's own comparison between a flag's
+  // `postedAt` and the instant `clearEnded` recorded, which a judged flag meets the same way.
   const { posts, post } = postSpy();
   const { inbox } = inboxUnderTest(t);
   assert.ok(inbox);
@@ -2437,9 +2443,9 @@ test("a judge verdict for the departed session submitted after the rebind opens 
   handler(REBIND_EVENT);
   assert.deepEqual(inbox.items(), [], "the rebind cleared it");
 
-  // The late verdict: the same reply's mark, carrying its original `postedAt`, arrives after the
+  // The late flag: the same reply's mark, carrying its original `postedAt`, arrives after the
   // rebind's clear already recorded a later prompt instant for this session.
   inbox.reply("session-a", "ASK: merge it?", 2_000, null);
-  assert.deepEqual(inbox.items(), [], "a late verdict reopening a cleared ask is the regression");
-  assert.equal(posts.length, 1, "the restart notice still posted, independent of the late verdict");
+  assert.deepEqual(inbox.items(), [], "a late flag reopening a cleared ask is the regression");
+  assert.equal(posts.length, 1, "the restart notice still posted, independent of the late flag");
 });

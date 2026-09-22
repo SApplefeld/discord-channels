@@ -178,6 +178,19 @@ Acceptance:
 Files in scope: `broker/index.ts`, `broker/index.test.ts`, `docs/architecture.md`,
 `docs/operations.md`.
 
+### 2. The store's clearEnded contract names the rebind
+Model: sonnet
+Locus: inline
+
+`clearEnded`'s doc comment in `broker/inbox/store.ts` defines its instant as "the instant the
+operator posted in the ended session's thread", which section 1's rebind handler, a second caller
+passing the rebind's instant, makes incomplete. The comment names both callers' instants and keeps
+its account of why the instant is recorded. No code changes.
+Acceptance: the comment names the operator's post in the ended thread and the thread's rebind to a
+successor as the two instants a caller passes; `npm run lint` exits 0; the targeted lane of section 1
+exits 0.
+Files in scope: `broker/inbox/store.ts`.
+
 ## Out of Scope
 
 - A manual clear button on the inbox card. The operator declined it on 2026-09-22.
@@ -215,3 +228,39 @@ Files in scope: `broker/index.ts`, `broker/index.test.ts`, `docs/architecture.md
   its own and is not evidence either way.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-22
+Completed: 1. The rebind handler clears the departed session's item
+Implemented By: implementer-sonnet (build and tests); main session (the three document passages, placed from the implementer's drafts, and the Minor close pass)
+Metrics: review rounds 1, closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: section 1 open | changes: extracts the broker's onRebind closure into an exported `rebindHandling` factory that clears the departed session's inbox item (guarded) before posting the restart notice | serves: the Goal sentence "the broker's rebind handler clears the departed session's item before it posts the restart notice, a failure in that clear cannot stop the notice or the rebind" | adds a mechanism: no new unit beyond what the Goal names; the guard is the Goal's own "a failure in that clear cannot stop the notice" | size: about 20 source lines in broker/index.ts plus 6 tests and 3 doc passages | not building it costs: a persona restart leaves the ended session's ask on the Fleet: Inbox card for 24 hours with nothing the operator can do to clear it.
+  Then: the Status header read `Ready` and now reads `In Progress`, set at run start. The `## Related plans` entry for the judge-unmirrored-replies plan said it was open on its own branch; it is merged and archived, so the entry now links the archive copy and names the card-steward-asks plan (pull request #21) as the other open edit to the same tap. Both are edits above `## Chapters`, made deliberately. The factory takes the inbox handle by value at build time: `inbox` is assigned once, at `broker/index.ts:923`, before the surface is built, and never reassigned (confirmed by the implementer and by both reviewers). The late-verdict test presents the late flag through the tap with the reply's original `postedAt` rather than through the judge; the spec's own procedure ("presents a flag for A") allows it, since the store's `postedAt` comparison is the same for a judged flag, and the test is titled for what it drives. A failed clear logs at error level through `console.error` and `logger.error`, as the inbox's other failures do, rather than through `note` at info. The review surfaced `clearEnded`'s doc in `broker/inbox/store.ts`, which named only the operator's post as the instant a caller passes; that file sits outside this section's directory, so it failed the fold predicate and was appended as section 2 (approval drift, surfaced by this section's review).
+Assumptions: none beyond the plan's own `## Assumptions` section.
+Review Findings: `review: code pair at opus, Workflow (adversarial high, blind high)`. Adversarial CHANGES_REQUIRED, 1 Critical and 6 Minors; blind APPROVED_WITH_CONCERNS, 3 Minors, one of them the adversarial's test-title Minor. The adversarial Critical (the two documents absent from the reviewed commit range) was downgraded at adjudication: the section routes its `docs/` writes to the main thread, which placed them in the worktree after the first-green commit while the round ran, and the adversarial lens read those edits and found one Minor in them; they commit with this Chapter. Minors: 7 fixed in the close pass (the late-flag test's title and comments, its inverted "exists to hide" comment, the no-item test now over the real inbox rather than a double that cannot throw, the `rebindHandling` doc's change-narrative, the architecture document's "that message" antecedent and its reflowed line, the failed-clear log level), 0 upgraded, 2 left with the reason (the throwing-clear test's withheld-error assertion pins `toInbox`'s documented "never the error" shape, which the spec asks this guard to mirror; the blind lens's note that a takeover does not check the predecessor has ended, so a live predecessor's item would be cleared: the Intent defines this clear as happening "at the moment its thread passes to the successor", and the plan changes nothing in the takeover itself, whose own guard is the shelved thread-rebinding plan's item 6 territory), 1 routed to section 2 (the store's `clearEnded` doc). The close pass's delta took the author re-read: test and logging edits, no outward action or new module, owing no round.
+Stamps: adjudicated 0, stamped 0; `memq recall` surfaced nothing bearing on this section, and no memory was read in the stretch.
+Gate: targeted lane `node --test broker/index.test.ts broker/inbox/store.test.ts broker/discord/surface.test.ts` at section close, 2026-09-22 ~19:47 UTC on SCOTT-CLAUDE against `fddd1ae` plus the close pass, the three documents and section 2's comment, unstaged: 148 tests, 148 pass, 0 fail, exit code 0. Baseline on the same lane at `3e4ad41` before the change: 142/142/0, exit 0; delta +6 tests, no regressions. First green at `fddd1ae`: 148/148/0, exit 0. Red first: with the factory absent (`git show HEAD:broker/index.ts` swapped in), `node --test broker/index.test.ts` failed to load the file on the missing `rebindHandling` export (1 test, 0 pass, 1 fail); the late-flag test's absence control went red at "the rebind cleared it" with the clear commented out (implementer's runs, restored by byte-diff against a `.kit/` copy). `npm run lint` exit code 0. Test delta: 6 added in `broker/index.test.ts`: the handle-present rebind drops the predecessor's item and keeps the successor's; the null handle posts and touches nothing; a predecessor with no item changes nothing and throws nothing, over the real inbox; a throwing `clearEnded` still posts the notice with one log line naming the session; a null thread ID still clears and posts nothing; a late flag with the reply's original instant opens no item after the rebind. 0 retired, 0 edited. 0 added tests spawn a process. No contention lane is defined in this repository; foreign `node` processes on the box were service processes, no test runner.
+Next: 2. The store's clearEnded contract names the rebind
+Commit Model: Branch-and-PR
+Delta: reading taken 2026-09-22 ~19:47 UTC on SCOTT-CLAUDE against the worktree at `fddd1ae` carrying the close pass.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-09-22
+Completed: 2. The store's clearEnded contract names the rebind
+Implemented By: main session (Locus: inline, tier sonnet)
+Metrics: review rounds 0, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: section 2 open | changes: rewrites `clearEnded`'s doc comment in `broker/inbox/store.ts` to name both instants a caller passes | serves: the Goal sentence "the broker's rebind handler clears the departed session's item" through the call the store documents | adds a mechanism: no; prose only | size: one doc comment, 4 lines to 5 | not building it costs: the store's contract tells the next reader the instant is always the operator's post, which the rebind caller contradicts.
+  Then: appended mid-run from section 1's review (approval drift, recorded in Chapter 1). A trivial comment-only section, so per-section reviews were skipped as the section loop allows; the finishing pass covers it.
+Assumptions: none.
+Review Findings: none; trivial comment-only section, reviews skipped, finishing covers it.
+Stamps: none surfaced.
+Gate: the same targeted lane run as Chapter 1's close, which carried this comment: 148/148/0, exit code 0; `npm run lint` exit code 0. Test delta: 0 added, 0 retired, 0 edited.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: reading taken 2026-09-22 ~19:47 UTC on SCOTT-CLAUDE against the worktree at `fddd1ae` carrying both sections' edits.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
