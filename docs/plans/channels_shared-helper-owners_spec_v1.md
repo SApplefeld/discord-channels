@@ -258,3 +258,32 @@ Files in scope: `broker/board/events.ts`, `broker/board/card.ts`, `broker/board/
   to watch.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-22
+Completed: 1. The capped file read has one owner, and the usage cache's read loops
+Implemented By: implementer-sonnet; close-pass Minors fixed by the main session
+Metrics: review rounds 1, closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations none; consults 0
+Decisions / Surprises:
+- Section 1 open: moves four capped reads onto one exported `readCappedFile` in `broker/capped-read.ts`; serves the Goal sentence "the usage cache's read loops like its siblings" and Approach design item 3; adds one mechanism the design names (the injectable reader parameter, design item 3), nothing unnamed; about +60 lines new module, about -110 lines across four callers; not building it leaves the usage card reading "unavailable" on any short read.
+- The implementer's report carried no add-decision line of its own; every mechanism it built is design item 3's.
+- Status header normalized from `Ready` to `In Progress` at run start (commit 4e7dc49).
+- No file imports `CappedRead` from `usage/cache.ts` or `board/queues.ts`, so both keep the name only as an exported alias of the shared type, because their exported option signatures name it.
+- The spec's "two short reads" test first used a 3-byte reader, which delivers four chunks; the close pass set it to 5 bytes so the test is the two-chunk case the Tests line names.
+Assumptions:
+- assumed 2026-09-22 (the main session, section 1): where a module exported its own `CappedRead`, it keeps that name as a type alias of the shared one rather than dropping the export, so no module's public surface changes; reversal: delete two alias lines and point the option types at the shared type.
+Review Findings: review: adversarial + blind at opus, Workflow (effort high); no Critical, no Major. Minors: 6 fixed in the close pass (two false alias comments, the shared header's "every board reader" claim that the events reader contradicts, a copied "this module refuses to recognize" sentence, the misnamed two-chunk test, and the missing cap-boundary pins, which added two tests), 0 upgraded, 0 left. Close-pass author re-read of the delta done. The two added boundary tests were observed red on scratch copies, not the tree, because section 2's implementer was live: `>=` for `>` failed the exact-cap test, and a one-pass loop failed both chunked tests (pass 4, fail 2, exit 1).
+Stamps: adjudicated 2 listed (both read by other work, skipped); stamped 2 applied outside the list: `worktree-line-endings-are-read-from-git-ls-files-eol-not-inferred-from-autocrlf` (the LF check before commit) and `a-bare-cd-in-the-bash-tool-repoints-every-later-dispatch` (cwd restored before dispatch).
+Gate: targeted lane `node --test broker/usage/cache.test.ts broker/board/plans.test.ts broker/board/queues.test.ts broker/board/roster.test.ts broker/capped-read.test.ts` 115/115/0, exit 0, 1 s, at 2026-09-22T23:45:50Z on the main checkout at bde5c5c plus the close-pass edits, SCOTT-CLAUDE, box poll CLEAR; `npm run lint` exit 0. Baseline on the four-file lane: 109/109/0, exit 0, 1 s, at 2026-09-22T23:37:35Z on 4e7dc49, clean tree. Delta: +6 tests, 0 retired, 0 edited. Added: whole under the cap; oversized; two short reads whole (the usage cache's defect); unopenable reads unreadable; exactly-the-cap whole and cap-plus-one oversized; oversized through short reads. None spawns a process. The short-read test was observed red against the single-read shape by the implementer (pre-probe copy restored, `cmp` exit 0).
+Next: 2. The repeat logger has one owner
+Commit Model: Branch-and-PR
+Delta: 2026-09-22T23:46:12Z, SCOTT-CLAUDE, main checkout.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Interim board 1 - 2026-09-22
+- Section 1: closed (Chapter 1).
+- Section 2: implementing. A live dispatch to implementer-opus was asked to build `broker/repeat-log.ts` and its test, replace the eight private copies, pin each surface's text from `bde5c5c`, and run the whole gate.
+- Sections 3 and 4: not started. Section 3 opens after section 2's first green, and section 4 after section 3.
+- Baselines at 4e7dc49, 2026-09-22T23:37:35Z-23:38:21Z, SCOTT-CLAUDE, clean tree, poll CLEAR: whole gate 2003/2002/0, 1 skipped, exit 0, 40 s; lint exit 0; section 3 lane 31/31 exit 0; section 4 lane 264/264 exit 0.
+- Rulings since the last boundary: none.

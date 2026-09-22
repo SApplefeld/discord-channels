@@ -1,5 +1,6 @@
-// The one capped file read every board and usage reader opens a file through: at most a fixed
-// number of bytes, refused whole rather than truncated when the file runs over that cap.
+// The one capped file read every board and usage text reader opens a file through: at most a
+// fixed number of bytes, refused whole rather than truncated when the file runs over that cap. The
+// board events reader is the exception, since it reads appended bytes from an offset.
 //
 // A recognizer running on a cut copy can manufacture a match the full text never held, so a file
 // over the cap is a failure rather than the prefix that fit. Every failure, whatever stage it
@@ -31,7 +32,7 @@ export type CappedReader = (
  * The read repeats until the buffer fills or a read returns nothing, because one `readSync` is
  * allowed to return fewer bytes than asked for and a network filesystem does. Stopping at the
  * first short read would hand the caller a prefix of the file under the name of the whole, which
- * is the cut copy this module refuses to recognize anything from.
+ * is the cut copy a caller's recognizer must never see.
  *
  * `read` defaults to `readSync` and is injected so a test can prove the loop against a reader that
  * delivers a file in more than one chunk, which a real short read on disk cannot be provoked to do

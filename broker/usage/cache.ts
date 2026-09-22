@@ -118,8 +118,8 @@ export type UsageReading =
   | { available: false; reason: UsageUnavailableReason };
 
 /** What one capped read yields: the file's text, or why there is none. An alias of the shared
- * `CappedRead` in `broker/capped-read.ts`, kept under this name because `ReadUsageOptions.readFile`
- * and this module's own callers import it as `CappedRead`. */
+ * `CappedRead` in `broker/capped-read.ts`, kept exported under this name because the exported
+ * `ReadUsageOptions.readFile` signature names it, so this module's public surface is unchanged. */
 export type CappedRead = SharedCappedRead;
 
 export type ReadUsageOptions = {

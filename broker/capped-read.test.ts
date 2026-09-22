@@ -14,6 +14,12 @@ function scratchFile(text: string): { file: string; cleanup: () => void } {
   return { file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+/** A reader that delegates to the real `readSync` but returns at most `most` bytes per call. */
+function shortReader(most: number): CappedReader {
+  return (fd, buffer, offset, length, position) =>
+    readSync(fd, buffer, offset, Math.min(length, most), position);
+}
+
 test("a file under the cap reads whole", (t) => {
   const held = scratchFile("hello world");
   t.after(held.cleanup);
@@ -35,13 +41,27 @@ test("a file delivered in two short reads reads whole", (t) => {
   t.after(held.cleanup);
 
   // A real `readSync` short read cannot be provoked on disk on demand, so this reader delegates to
-  // the real one but hands back at most three bytes per call, forcing the loop to take more than
-  // one pass to fill a ten-byte file.
-  const twoChunkReader: CappedReader = (fd, buffer, offset, length, position) =>
-    readSync(fd, buffer, offset, Math.min(length, 3), position);
-
-  const read = readCappedFile(held.file, 64, twoChunkReader);
+  // the real one but hands back at most five bytes per call, so the ten-byte file arrives in two
+  // chunks and the loop must take a second pass to read it whole.
+  const read = readCappedFile(held.file, 64, shortReader(5));
   assert.deepEqual(read, { text: "0123456789" });
+});
+
+test("a file of exactly the cap reads whole, and one byte more is oversized", (t) => {
+  const exact = scratchFile("01234");
+  t.after(exact.cleanup);
+  const over = scratchFile("012345");
+  t.after(over.cleanup);
+
+  assert.deepEqual(readCappedFile(exact.file, 5), { text: "01234" });
+  assert.deepEqual(readCappedFile(over.file, 5), { failed: "oversized" });
+});
+
+test("a file over the cap is refused as oversized when it arrives in short reads", (t) => {
+  const held = scratchFile("0123456789");
+  t.after(held.cleanup);
+
+  assert.deepEqual(readCappedFile(held.file, 5, shortReader(2)), { failed: "oversized" });
 });
 
 test("an unopenable file reads as unreadable", (t) => {

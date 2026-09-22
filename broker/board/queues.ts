@@ -195,8 +195,8 @@ export type QueueReader = {
 export type PlanStat = { mtimeMs: number; sizeBytes: number };
 
 /** What one capped read yields: the file's text, or why there is none. An alias of the shared
- * `CappedRead` in `broker/capped-read.ts`, kept under this name because `QueueReaderOptions.readStore`
- * and this module's own tests import it as `CappedRead`. */
+ * `CappedRead` in `broker/capped-read.ts`, kept exported under this name because the exported
+ * `QueueReaderOptions.readStore` signature names it, so this module's public surface is unchanged. */
 export type CappedRead = SharedCappedRead;
 
 /**
