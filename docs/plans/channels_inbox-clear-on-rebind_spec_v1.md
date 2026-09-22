@@ -1,6 +1,6 @@
 # Clear an Ended Session's Inbox Item When Its Thread Rebinds
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -73,12 +73,12 @@ and from the code at `origin/main` `96b8100`, read that day.
   takeover itself.
 - [`../archive/plans/channels_operator-inbox_spec_v1.md`](../archive/plans/channels_operator-inbox_spec_v1.md)
   built the inbox store and its two clearing events. This plan adds the third.
-- [`channels_judge-unmirrored-replies_spec_v1.md`](channels_judge-unmirrored-replies_spec_v1.md)
-  edits the inbox tap in `broker/index.ts` and is open on its own branch. It also removes the
-  `mirrored` signal from `inboxWiring` and from the tests that call it. The two plans touch
-  different regions of that file, and this plan's tests open items with an `ASK:` line rather
-  than through the judge, so neither depends on the mirror and whichever merges second takes a
-  textual merge and nothing more.
+- [`../archive/plans/channels_judge-unmirrored-replies_spec_v1.md`](../archive/plans/channels_judge-unmirrored-replies_spec_v1.md)
+  edited the inbox tap in `broker/index.ts` and removed the `mirrored` signal from `inboxWiring`
+  and from the tests that call it; it is merged. The card-steward-asks plan edits the same tap and
+  is open as pull request #21. Both touch a different region of that file from this plan, and this
+  plan's tests open items with an `ASK:` line rather than through the judge, so whichever merges
+  second takes a textual merge and nothing more.
 
 ## Approach
 
