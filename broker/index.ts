@@ -720,7 +720,7 @@ export type Inbox = OutboundInbox &
 
 /**
  * Builds the operator inbox, or nothing when `CHANNEL_INBOX_CARD` is off: no item store, no
- * snapshot read or written, no judge key read, and no judge, so no reply text can leave the machine.
+ * snapshot read or written, no judge key read, and no judge, so no reply text goes to TypeSafe.
  *
  * Assembled here rather than inline for the reason the card wirings are: `startBroker` builds its
  * inbox from this function and from nothing else, so the seam a test reaches is the one production

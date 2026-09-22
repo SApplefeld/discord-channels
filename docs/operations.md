@@ -1068,7 +1068,7 @@ refused by name rather than guessed at.
 | `CHANNEL_BOARD_PROJECTS` | none | Semicolon-separated absolute project roots swept for `docs/plans/*.md`. Empty switches the folder view off. The card needs this or `CHANNEL_BOARD_ROSTER` |
 | `CHANNEL_BOARD_CARD_REFRESH_MS` | 60 s | How often the board card is re-swept and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from. One stream, two readers: the board card's per-plan blocked marker and the session surface's own `⛔` state and its alert, so redirecting this moves both. Read whenever Discord is configured, board card or not |
-| `CHANNEL_INBOX_CARD` | off | Whether the Fleet: Inbox thread and its card exist on this host. Off builds no item store, no snapshot and no judge, so no reply text leaves the machine |
+| `CHANNEL_INBOX_CARD` | off | Whether the Fleet: Inbox thread and its card exist on this host. Off builds no item store, no snapshot and no judge, so no reply text goes to TypeSafe |
 | `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning |
 | `CHANNEL_INBOX_THRESHOLD` | 0.7 | The judge score at or above which an unmarked reply opens an item; bounded 0.4 to 0.95 |
 | `CHANNEL_INBOX_CARD_REFRESH_MS` | 60 s | How often the inbox card is re-read and re-rendered; bounded 5 s to 1 h |

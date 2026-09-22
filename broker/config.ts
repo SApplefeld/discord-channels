@@ -155,7 +155,7 @@ export type BrokerConfig = {
    * Whether the broker keeps the operator inbox: the one place a session's reply that needs
    * something from the operator is held until the operator answers that session. Off by default,
    * and off is the absence of the machinery rather than a check inside it: no item is held, no
-   * snapshot is written, the judge's key file is never read, and no reply leaves the machine.
+   * snapshot is written, the judge's key file is never read, and no reply goes to TypeSafe.
    */
   inboxCard: boolean;
   /**

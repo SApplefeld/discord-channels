@@ -471,8 +471,8 @@ header carries on every hook post for the process's whole life, so it can never 
 transcript line that both a launch `--name` and a `/rename` write. `displayName`
 (`broker/discord/render.ts`) prefers the title, falls back to the launch name, and falls back again to
 a stub built from the first eight characters of the session ID, and it is the one reading behind the
-thread name, the session card's heading, and the fleet card's session rows, so no two surfaces can
-call one session different things.
+thread name, the session card's heading, the fleet card's session rows, and the inbox card's item
+lines, so no two surfaces can call one session different things.
 
 Two fields rather than a precedence rule inside one is what makes the ordering irrelevant. The header
 arrives on every post and writes only `name`; the transcript writes only `title`; neither can clobber
@@ -853,7 +853,9 @@ that card's fields are a plan's name and a sentence about its state, neither of 
 column bound, so a fence cuts them where a list wraps them. Those draw in live markdown, because the
 alternative is an ellipsis in the middle of every fact worth reading. The card's only fences are
 the group labels, a persona's or a project's, which align with nothing, so `MAX_BLOCK_WIDTH` is what
-the genuinely tabular cards pad to and it bounds nothing on the board.
+the genuinely tabular cards pad to and it bounds nothing on the board. The inbox card takes the same
+side of that trade and draws no fence at all: a session title and an `ASK:` excerpt are prose, so
+its bullets are live markdown under the full escape.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it

@@ -523,9 +523,10 @@ this capability adds nothing to the install's permission list.
 ## Tool approval over the channel
 
 **A permission prompt sends the tool's actual input off this machine.** `input_preview` is the shell
-command, the patch body, the file path and its contents. The mirror is the other surface that sends
-content off the machine: with `CHANNEL_MIRROR` on, every console prompt is posted into the
-session's thread in full, and every turn's final assistant reply is posted unless the thread
+command, the patch body, the file path and its contents. The inbox judge below is the one surface
+that sends conversation content to a third party. The mirror is the other surface that sends it to
+Discord: with `CHANNEL_MIRROR` on, every console prompt is posted into the session's thread in full,
+and every turn's final assistant reply is posted unless the thread
 already carries that text: a reply the transcript tailer posted as narration, or a reply-tool
 answer the final text matches exactly or nearly (the same words within a bounded similarity
 threshold, and never when the final text is materially longer than the answer, so a final text
@@ -844,7 +845,9 @@ three further escape-chain passes instead: the attribution pass described next, 
 pipe neutralizations the register section accounts for. `renderMirror` applies it to
 mirrored, typed, and narration text, `renderAnswer` to the reply tool's, the peer renderings to a
 peer body, and `appendNarration` to a chunk entering an existing message by edit, all before the
-text reaches the message path.
+text reaches the message path. The inbox card's excerpt of a marked reply is conversation text too,
+and it is held to the name's rule rather than this one: it is drawn on a card rather than in the
+thread, so it takes the full markdown escape a title takes.
 
 The first of those three is the attribution pass, and the difference is who is forging what. The
 escape above stops a chip and a line-leading quote marker; it does not stop an attribution line,
