@@ -4357,7 +4357,7 @@ test("a prompt typed while a reply's run is landing still clears it, since the f
     reply: (sessionId, text, postedAt, messageId) => {
       const excerpt = findAsk(text);
       if (excerpt === null) return;
-      store.flag(sessionId, { source: "marked", postedAt, excerpt, ...(messageId === null ? {} : { messageId }) });
+      store.flag(sessionId, { source: "marked", postedAt, excerpt, stewardAsk: false, ...(messageId === null ? {} : { messageId }) });
     },
   };
   let answerDuringRun = true;

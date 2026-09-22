@@ -87,8 +87,9 @@ const STEWARD_ASK = /^ASK:\s*(?=\S)(.+?\?\s*Recommend:\s*.+)$/im;
  * uppercase-only and fence-aware; this one copies the sibling's matcher as it stands, so it is
  * case-insensitive, anchored at the line's first character, and blind to fences. The regular
  * expression is the whole of what is copied (with the lookahead noted at `STEWARD_ASK`, which
- * changes its cost and not its language), so the two agree on the line's shape: where they
- * disagreed, a line the steward is answering could land on the operator's card, or the reverse.
+ * changes its cost and not its language), so the two agree on the line's shape. A line the steward
+ * is answering lands on the operator's card by design, so where the two disagreed, the card's
+ * steward flag would be raised on a line the plugin never read as an ask, or left down on one it did.
  * The sibling then goes one step further than this reading does. It refuses a captured question
  * that still carries a template placeholder (`<...>`), so a worker echoing the template shape
  * opens no steward ask there, while the same line is steward-shaped here. A steward-shaped line
