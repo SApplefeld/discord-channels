@@ -85,4 +85,8 @@ export const INSTRUCTIONS =
   "Use the reply tool to answer one, and to report on your own initiative when something is worth " +
   "the operator's attention: a milestone, a decision you need, or a failure you cannot work " +
   "around. A reply reaches their phone, so it is worth spending on those and not on routine " +
-  "progress, which they can already see on the thread's status card.";
+  "progress, which they can already see on the thread's status card. A reply that hands the " +
+  "operator a decision, a question, or an act only they can perform opens with a line whose " +
+  "first characters are ASK: followed by the ask in one sentence, written plainly rather than " +
+  "bulleted, quoted or wrapped in any other markup, so the operator's inbox can carry the ask " +
+  "itself instead of leaving an unmarked reply to a classifier that can miss it.";

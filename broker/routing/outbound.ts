@@ -32,13 +32,6 @@ import type { ThreadWriter } from "./writer.ts";
  */
 export type OutboundInbox = {
   /**
-   * A mirror post from this session passed the straggler gate. A session whose mirror is off sends
-   * none from its own hooks, since the intake drops a post carrying the off header before it reaches
-   * this router. The header is what is checked, and any process holding the session's token can
-   * post without it, which is the advisory-switch residual `docs/security-model.md` records.
-   */
-  mirrored: (sessionId: string) => void;
-  /**
    * A reply's text reached the session's thread. `postedAt` is this router's clock as the reply
    * arrived, read before its run, and `messageId` is the reply's last message where the writer
    * returned one.
@@ -1117,16 +1110,6 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "no-session" };
       }
       if (sessionId !== located.sessionId) return { status: "no-session" };
-
-      // Past the straggler gate, whatever the post turns out to be: a post from this session is the
-      // evidence its mirror is on, which is what lets the inbox judge its reply-tool answers.
-      if (options.inbox !== undefined) {
-        try {
-          options.inbox.mirrored(located.sessionId);
-        } catch {
-          log(`routing: the inbox could not take a mirror verdict from session ${located.sessionId}`);
-        }
-      }
 
       // What a peer session sent this one while it was idle, read before anything renders: the
       // classification decides both the attribution below and the stamp on the next line, so it is

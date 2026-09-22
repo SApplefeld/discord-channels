@@ -712,7 +712,7 @@ export function boardCardWiring(options: {
  */
 export type Inbox = OutboundInbox &
   InboundInbox & {
-    /** Drops every item and every mirror verdict whose session the registry no longer holds. */
+    /** Drops every item whose session the registry no longer holds. */
     reconcile: (sessions: readonly SessionRecord[]) => void;
     /** Every open item, oldest opened first. */
     items: () => InboxItem[];
@@ -726,16 +726,17 @@ export type Inbox = OutboundInbox &
  * inbox from this function and from nothing else, so the seam a test reaches is the one production
  * runs.
  *
- * What a tapped reply does, in order. A reply from a supervised session (a record carrying a
- * lineage) with a line the persona plugin reads as a worker's ask of its steward opens nothing and
- * is never judged, since its steward answers it rather than the operator. Otherwise a reply with an
- * `ASK:` line opens or refreshes a marked item and is never judged. Otherwise the reply goes to the
- * judge, and only where the judge is on and a mirror post from the session has reached the outbound
- * router. A session whose mirror is off sends none from its own hooks, so its hooks' text never
- * leaves the machine; a process holding its token can post one without the off header, which is
- * the advisory-switch residual `docs/security-model.md` records. A reply for a session the registry
- * no longer holds opens nothing, whether it arrives at the tap or as a late verdict, since a
- * session the registry does not hold is not one the operator can answer.
+ * What a tapped reply does, in order. A reply for a session the registry no longer holds opens
+ * nothing, and a late verdict for it is dropped, since a session the registry does not hold is not
+ * one the operator can answer. The two differ in what has already happened: a reply refused at the
+ * tap is never submitted, while a late verdict is one whose reply was submitted before the session
+ * was pruned, so its text had already left. Otherwise a reply from a supervised session (a record
+ * carrying a lineage) with a line the persona plugin reads as a worker's ask of its steward opens
+ * nothing and is never judged, since its steward answers it rather than the operator. Otherwise a
+ * reply with an `ASK:` line opens or refreshes a marked item and is never judged. Otherwise the
+ * reply goes to the judge where the judge is on, and nowhere when it is off. Whether the session
+ * mirrors its console is not read here, since the mirror switches govern what the session's thread
+ * carries rather than what reaches the vendor. `docs/security-model.md` owns which switches do.
  *
  * The snapshot lives beside the registry snapshot and the card bindings. It restores only items
  * whose session record restored, and it is written on every change, which is a human rate: an item
@@ -797,17 +798,10 @@ export function inboxWiring(options: {
   options.log(
     judge === null
       ? "broker: the operator inbox is on, reading ASK: lines alone with the judge off"
-      : "broker: the operator inbox is on, and the judge reads unmarked replies of mirrored sessions",
+      : "broker: the operator inbox is on, and the judge reads unmarked replies",
   );
 
-  // The sessions a mirror post has come from, which is the evidence a session's mirror is on. Not
-  // persisted: a restart judges a session's reply-tool answers again from its next mirror post.
-  const mirrored = new Set<string>();
-
   return {
-    mirrored(sessionId) {
-      mirrored.add(sessionId);
-    },
     reply(sessionId, text, postedAt, messageId) {
       const record = recordOf(sessionId);
       if (record === undefined) return;
@@ -818,7 +812,8 @@ export function inboxWiring(options: {
         store.flag(sessionId, { source: "marked", postedAt, excerpt, ...shown });
         return;
       }
-      if (judge !== null && mirrored.has(sessionId)) {
+      // Every reply with no mark goes to the judge while the judge is on.
+      if (judge !== null) {
         judge.submit(sessionId, { text, postedAt, ...shown });
       }
     },
@@ -830,9 +825,6 @@ export function inboxWiring(options: {
     },
     reconcile(sessions) {
       const live = new Set(sessions.map((record) => record.sessionId));
-      for (const sessionId of mirrored) {
-        if (!live.has(sessionId)) mirrored.delete(sessionId);
-      }
       store.reconcile(live);
     },
     items: () => store.items(),
