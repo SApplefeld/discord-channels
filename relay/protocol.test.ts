@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
+import { findAsk } from "../broker/inbox/ask.ts";
 import {
   CHANNEL_NOTIFICATION_METHOD,
   INSTRUCTIONS,
@@ -61,6 +62,40 @@ test("the instructions are a static literal with nothing interpolated into them"
   }
   assert.match(INSTRUCTIONS, /reply/);
   assert.match(INSTRUCTIONS, /operator/);
+  assert.match(INSTRUCTIONS, /ASK:/);
+});
+
+test("the instructions teach the ask mark in the one form the broker's own reader accepts", () => {
+  // A cross-component pin: these instructions are the writer of the mark and `findAsk` is its only
+  // reader, so each side tested against its own literal alone is how a mismatch stays invisible.
+  // The reader takes a line whose first non-space characters are exactly ASK:, so any decoration
+  // the instructions show around the mark is a form a session can reproduce and the broker refuses.
+  //
+  // This pins the requirement rather than the sentence carrying it. A later author is free to
+  // reword, and a trim that drops the refusal of markup altogether is what must go red, so the
+  // alternation is over the concept and never over the clause the sentence happens to use. It is
+  // anchored to the mark's own sentence, since an unanchored alternation is satisfied by a word
+  // like "explain" or "quota" anywhere in the constant and would go green on a trim.
+  assert.match(
+    INSTRUCTIONS,
+    /ASK:[^.]*(plain|bullet|quot|markup|fence|bold|unwrapped)/,
+    "the instructions must tell the session to write the mark without markup",
+  );
+  // The regression this pin exists for: the mark shown behind any markdown decoration at all. A
+  // session that reproduces what it was shown then writes a line `findAsk` returns null for. The
+  // class covers a wrapper touching the mark and a bullet or quote marker separated from it, since
+  // the reader refuses both and the sentence has no reason to write either.
+  assert.doesNotMatch(
+    INSTRUCTIONS,
+    /[`*_"'>#|~-]\s*ASK:/,
+    "the instructions must not show the mark behind a markdown decoration",
+  );
+  // The pin that would fail if the reader's rule moved underneath this text: the mark as the
+  // instructions present it is one the reader accepts, and the decorated forms are not.
+  assert.equal(findAsk("ASK: Should I deploy the migration tonight?"), "Should I deploy the migration tonight?");
+  for (const decorated of ["`ASK:` q?", "- ASK: q?", "> ASK: q?", "**ASK:** q?"]) {
+    assert.equal(findAsk(decorated), null, `the reader must refuse ${decorated}`);
+  }
 });
 
 test("the instructions describe the sender gate as the system's control, not verification by the relay", () => {

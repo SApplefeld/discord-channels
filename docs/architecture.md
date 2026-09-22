@@ -741,12 +741,12 @@ mark nothing, and neither does anything inside a fence, because a reply quoting 
 another session's text would otherwise turn every code review into an item. The rest of the first
 such line, whitespace-collapsed and cut to 200 code points, is the item's excerpt, and a reply
 carrying the mark is never sent to the judge. A fence opens as CommonMark opens one, on a run of
-three or more backticks or tildes (`FENCE_OPEN` in `broker/inbox/ask.ts`). The one surface that
-teaches a session to write the mark is the persona plugin, whose workers write the steward ask
-named below. A steward is the supervising persona session a worker reports to, and it answers the
-worker's asks itself rather than passing them to the operator. Neither the relay's instructions nor
-any kit skill names the mark, so for an interactive session the judge is what catches an unmarked
-ask today. One reply is excluded from both readings.
+three or more backticks or tildes (`FENCE_OPEN` in `broker/inbox/ask.ts`). The relay's own
+instructions name the mark for every session that connects, persona or interactive, and the persona
+plugin separately teaches its workers the steward ask named below. A steward is the supervising
+persona session a worker reports to, and it answers the worker's asks itself rather than passing
+them to the operator. No kit skill names the mark. The judge is what catches an ask from a
+session that did not mark it. One reply is excluded from both readings.
 A supervised session is one whose record carries a lineage, which the persona supervisor's launches declare and
 an interactive session never does (see the lineage paragraph above). A reply from such a session
 holding a line of the form `ASK: <question>? Recommend: <choice>`, matched on the persona plugin's
@@ -759,16 +759,14 @@ The judge is the second opener. A tapped reply with no mark goes to TypeSafe's J
 decide, answer or confirm something, and whether it tells the operator that some act is theirs to
 perform now. Each answer comes back as a probability, the larger is the reply's score, and a score
 at or above `CHANNEL_INBOX_THRESHOLD` opens or refreshes the item with source `judged`, recording
-both numbers and which question won. The judge runs only where its key file is set and usable, and
-only for a session whose mirror is on. The router establishes that by having seen a mirror post
-from the session since the broker started. The post must first pass the router's straggler gate,
-which drops a mirror post that names no session or names one the posting token no longer holds,
-since a subprocess `claude` inherits its parent's token and would otherwise post as the parent. A
-turn-final reply is itself a mirror post and it arms the session before it is tapped, so the first
-mirror post after a restart is judged like any later one. A session running with its mirror off
-still posts reply-tool answers, and those are read for `ASK:` lines and not judged, since the
-session's own hooks post no mirror. The switch is advisory against a process holding the session's
-token (`docs/security-model.md`, the per-session mirror switch residual). What goes out
+both numbers and which question won. The judge runs wherever its key file is set and usable, over
+every tapped reply that carries no mark and comes from a session the registry still holds. The
+mirror switches decide only which replies reach the tap. A session launched with its mirror off has
+its turn-final replies dropped at the intake, so what reaches the tap from it is its reply-tool
+answers, and the judge reads those as it reads any session's. The persona supervisor launches every
+channel-attached persona that way, setting `CHANNEL_SESSION_MIRROR` off in the session's
+environment, which is the variable `-NoMirror` sets and the mirror hooks carry as their off header.
+So for a persona fleet the reply-tool answers are the whole of what the card sees. What goes out
 is the reply's text, screened for secret shapes over its whole length and then cut to its first
 12,000 code points, and a reply matching the screen makes no call. The call is detached from the
 post. How it fails is stated once, in the External integrations bullet below. Each
@@ -815,9 +813,7 @@ verdict-shaped message or a held question's answer posted there clears nothing, 
 Items persist in `inbox-items.json` beside `broker-state.json`, written whole to a temp file and
 renamed on every change, which is a human rate. A snapshot that is unreadable, of another version
 or malformed in any one item restores nothing rather than refusing to start, and a restored item
-whose session record did not restore is dropped. Prompt instants are not persisted, and neither is
-the set of sessions whose mirror the router has seen, so after a restart a session's reply-tool
-answers are read for marks and not judged until its next mirror post arrives.
+whose session record did not restore is dropped. Prompt instants are not persisted.
 
 The card (`broker/inbox/card.ts`, with `thread.ts` and `binding.ts` on the board card's pattern) is
 the third permanent pin, its `{messageId, threadId}` binding persisted in `inbox-card.json`. The pin
@@ -916,7 +912,7 @@ Four, and each one fails in its own way.
   inbound messages. Renames are the scarce resource, so the broker reads the rate-limit response
   headers and drops a rename it cannot afford rather than queueing it.
 - **TypeSafe's Jev.** The inbox judge, and the broker's one HTTP call to a host other than
-  Discord. Each unmarked reply from a mirrored session is posted to
+  Discord. Each unmarked reply is posted to
   `https://api.typesafe.ai/v1/systemone` as a JSON body carrying the reply's text, the model name
   `jev-latest` and the two fixed questions, under a bearer key read from the file
   `CHANNEL_INBOX_JUDGE_KEY_FILE` names. The host is a constant that no setting can redirect, and a

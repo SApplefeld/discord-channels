@@ -7,11 +7,11 @@ Two plans are parked as Ready for the worker's queue.
 [`channels_inbox-clear-on-rebind_spec_v1.md`](channels_inbox-clear-on-rebind_spec_v1.md) has the
 broker's rebind handler clear the inbox item an ended session leaves behind when its thread passes
 to a successor, so a persona restart no longer strands an ask on the `Fleet: Inbox` card. The other is
-[`channels_judge-unmirrored-replies_spec_v1.md`](channels_judge-unmirrored-replies_spec_v1.md),
-which has the inbox judge read every unmarked reply whether or not the session mirrors, so the
-`Fleet: Inbox` card fills for persona sessions, and has the relay's instructions name the `ASK:`
-mark. It builds on the operator inbox,
-[`../archive/plans/channels_operator-inbox_spec_v1.md`](../archive/plans/channels_operator-inbox_spec_v1.md).
+[`channels_card-steward-asks_spec_v1.md`](channels_card-steward-asks_spec_v1.md), which has a
+supervised session's steward-shaped `ASK: <question>? Recommend: <choice>` reply open an item on the
+`Fleet: Inbox` card with a `supervisor ask` marker, instead of opening nothing. It builds on
+[`../archive/plans/channels_judge-unmirrored-replies_spec_v1.md`](../archive/plans/channels_judge-unmirrored-replies_spec_v1.md).
+
 Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
 

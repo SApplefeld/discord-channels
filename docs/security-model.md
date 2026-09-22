@@ -720,11 +720,12 @@ or `-` (which takes the `sk-proj-` and `sk-ant-` shapes with their infix), a Git
 `SECRET_SCREEN` in `broker/inbox/judge.ts`. Length never blocks a send. What is never sent: a reply
 carrying an `ASK:` line, which the inbox reads locally and does not judge; a supervised session's
 reply carrying the steward-shaped `ASK: <question>? Recommend: <choice>` line; any reply from a
-session no mirror post has reached the outbound router from since the broker started, which is how a
-`-NoMirror` session's reply-tool answers stay on the machine under the advisory bound the
-per-session mirror switch residual below states; prompts, narration chunks and peer
-messages, which the tap never sees; tool input and the status card's preview, which ride another
-path; and any file path, since the judge is handed a string and nothing it names. The response is
+session the registry no longer holds, which is not a session the operator can answer; prompts,
+narration chunks and peer messages, which the tap never sees; tool input and the status card's
+preview, which ride another path; and any file path, since the judge is handed a string and nothing
+it names. Whether the session mirrors its console decides only which of its replies reach the tap:
+a mirror-off session's turn-final replies are dropped at the intake, and its reply-tool answers are
+judged like any other session's. The response is
 read for two numbers and nothing else, and neither the request body, the response body nor any part
 of the key reaches the broker log: a failure line names the kind of failure and the session, on the
 rule every mirror and transcript path here already holds to. Conversation text is what every other
@@ -1236,24 +1237,23 @@ authenticated account or a non-administrative service account.
   that a string is secret, so a session that puts a credential in its own reply has already sent it
   to Discord, and with the judge on has sent it to TypeSafe as well.
 - **While the judge is on, every unmarked reply's text leaves the machine to a third party.** Not the
-  flagged ones: every turn-final reply and reply-tool answer from a mirrored session that carries no
-  `ASK:` line and passes the screen is posted to TypeSafe, whatever the verdict comes back as, and
-  the vendor's retention of a request body is the vendor's. The privacy cost is one glance per
-  reply, paid for the day-one case where no session marks its asks. Naming no key file removes the
-  path, and a session launched with `-NoMirror` keeps its replies off it under the advisory bound
-  the next bullet states.
-- **The per-session mirror switch is advisory for the judge as it is for the mirror.** The judge
-  reads a session's reply-tool answers only once a mirror post from that session has passed the
-  router's straggler gate, the check that drops a mirror post naming no session or naming one the
-  posting token no longer holds (`docs/architecture.md`, the operator inbox). Ahead of that gate,
-  the intake's `/mirror` handler drops a post carrying the off header. Both the header and the
-  session named in the post are poster-supplied. A process holding the session's token can post a
-  mirror without the off header and arm the judge for a session the operator marked no-mirror, and
-  from then on that session's reply-tool answers go to the vendor. This is the same door "The
-  per-session switch is advisory" above describes, reaching one more surface. The host-wide switch
-  holds here as it holds there:
-  `CHANNEL_MIRROR=off` drops every mirror post at the intake, ahead of the router, so no session is
-  ever armed and the judge reads nothing. Removing the key file holds against any poster too.
+  flagged ones: every reply that reaches the operator's thread, turn-final or sent through the reply
+  tool, and carries no `ASK:` line and passes the screen is posted to TypeSafe, whatever the verdict
+  comes back as, and the vendor's retention of a request body is the vendor's. The privacy cost is
+  one glance per reply, paid for the day-one case where no session marks its asks. Naming no key
+  file removes the path.
+- **Neither mirror switch keeps reply-tool answers from the judge.** The host-wide
+  `CHANNEL_MIRROR=off` setting drops every mirror post at the intake, so while it is set no
+  turn-final reply reaches the judge. The per-session `-NoMirror` switch drops the turn-final
+  replies its session's hooks post, and it is advisory here as it is for the mirror. A process
+  holding the session's token can post without the off header, and a turn-final reply posted that
+  way is tapped and judged. A reply-tool answer takes another route to the thread, which neither
+  switch gates, and it is judged whatever the session's mirror state. What keeps reply text from the
+  vendor is one of two host-wide settings: turning the inbox card off with `CHANNEL_INBOX_CARD`, or
+  naming no usable judge key file. Neither is poster-supplied, so no token holder can undo either one
+  by leaving a header out. A reply-tool answer is already on the operator's Discord thread
+  before the tap sees it, so its text already sits with Discord, and the judge sends it to a second
+  third party.
 - **A session's own subprocess can clear its own ask.** The clear fires on the registry's
   operator-prompt stamp, and a mirrored prompt post from any process holding the session's token
   stamps it, since the mirror route authenticates on the token alone. So a shell subprocess of a
