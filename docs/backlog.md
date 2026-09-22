@@ -581,7 +581,8 @@ and none carries a date of its own. An item added from here on carries `(parked 
 
 - Run `npm audit fix` for the three pre-existing transitive advisories (parked 2026-09-21, surfaced by
   the operator inbox plan's section 1 and 2 security reviews). `npm audit` exits 1 on `main` at
-  32939cd with one high and two moderate findings, all transitive (hono, qs). Neither section adds a
+  32939cd with one high and two moderate findings, all transitive (the high is fast-uri, the two
+  moderates hono and qs). Neither section adds a
   dependency, so the fix is its own change, gated on the whole suite.
 
 - Walk `sliceCodePoints` in `broker/sanitize.ts` up to its limit instead of spreading the whole

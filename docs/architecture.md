@@ -80,10 +80,10 @@ Four pieces per host, plus an installer.
   stream open to the broker for the life of the process.
 - **Broker** (`broker/`). The per-host daemon. It owns the bot token, one Discord gateway
   connection, the session registry, the thread bindings, every Discord surface (a session's thread
-  name, its status card, the messages written into it, the fleet usage and board cards' own threads,
-  and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live session's own
-  transcript file for mid-turn narration. It runs as a scheduled task at system startup, so an
-  unattended reboot brings it back without waiting for anyone to sign in.
+  name, its status card, the messages written into it, the fleet usage, board and inbox cards' own
+  threads, and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live
+  session's own transcript file for mid-turn narration. It runs as a scheduled task at system
+  startup, so an unattended reboot brings it back without waiting for anyone to sign in.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
   and the scheduled task. The same directory holds the operator's repair path, `Repair-Broker.ps1`,
@@ -743,8 +743,10 @@ such line, whitespace-collapsed and cut to 200 code points, is the item's excerp
 carrying the mark is never sent to the judge. A fence opens as CommonMark opens one, on a run of
 three or more backticks or tildes (`FENCE_OPEN` in `broker/inbox/ask.ts`). The one surface that
 teaches a session to write the mark is the persona plugin, whose workers write the steward ask
-named below. Neither the relay's instructions nor any kit skill names it, so for an interactive
-session the judge is what catches an unmarked ask today. One reply is excluded from both readings.
+named below. A steward is the supervising persona session a worker reports to, and it answers the
+worker's asks itself rather than passing them to the operator. Neither the relay's instructions nor
+any kit skill names the mark, so for an interactive session the judge is what catches an unmarked
+ask today. One reply is excluded from both readings.
 A supervised session is one whose record carries a lineage, which the persona supervisor's launches declare and
 an interactive session never does (see the lineage paragraph above). A reply from such a session
 holding a line of the form `ASK: <question>? Recommend: <choice>`, matched on the persona plugin's
@@ -764,13 +766,15 @@ which drops a mirror post that names no session or names one the posting token n
 since a subprocess `claude` inherits its parent's token and would otherwise post as the parent. A
 turn-final reply is itself a mirror post and it arms the session before it is tapped, so the first
 mirror post after a restart is judged like any later one. A session running with its mirror off
-still posts reply-tool answers, and those are read for `ASK:` lines and sent nowhere. What goes out
+still posts reply-tool answers, and those are read for `ASK:` lines and not judged, since the
+session's own hooks post no mirror. The switch is advisory against a process holding the session's
+token (`docs/security-model.md`, the per-session mirror switch residual). What goes out
 is the reply's text, screened for secret shapes over its whole length and then cut to its first
 12,000 code points, and a reply matching the screen makes no call. The call is detached from the
 post. How it fails is stated once, in the External integrations bullet below. Each
 session has at most one call in flight and one reply waiting, a newer reply replacing the one
 waiting, and the verdict of the call in flight is always used. The card renderer makes no model
-call: the judge runs once per reply at intake and nowhere else.
+call: the judge runs once per reply, at the tap, and nowhere else.
 
 The store (`broker/inbox/store.ts`) holds at most one item per session, keyed by session ID, so its
 size is bounded by `CHANNEL_MAX_SESSIONS`. An item carries the instant it opened, the instant it was
@@ -909,7 +913,7 @@ Four, and each one fails in its own way.
 - **Discord.** The REST API for thread creation, renames, and message writes, and the gateway for
   inbound messages. Renames are the scarce resource, so the broker reads the rate-limit response
   headers and drops a rename it cannot afford rather than queueing it.
-- **TypeSafe's Jev.** The inbox judge, and the broker's one outbound call to a host other than
+- **TypeSafe's Jev.** The inbox judge, and the broker's one HTTP call to a host other than
   Discord. Each unmarked reply from a mirrored session is posted to
   `https://api.typesafe.ai/v1/systemone` as a JSON body carrying the reply's text, the model name
   `jev-latest` and the two fixed questions, under a bearer key read from the file

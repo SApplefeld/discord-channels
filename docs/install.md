@@ -216,10 +216,11 @@ directory must be owned by the broker's account or an administrative identity, m
 beyond those three trustees, and must not be a symbolic link or junction. Where that check failing
 on the token file stops the broker, failing on this file only turns the judge off, with one warning
 in the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. A file
-that is missing, unreadable or empty, or one holding anything outside printable ASCII, is refused
-the same way. Both keys are on
-the installer's allowlist, so values set by hand here survive the next install, and
-[`operations.md`](operations.md) carries the threshold and refresh knobs beside them.
+that is missing, unreadable or empty, or one whose content, once leading and trailing whitespace is
+dropped, holds anything but visible ASCII with no spaces, is refused the same way. A trailing
+newline is fine. Both keys are on the installer's allowlist, so values set by hand here
+survive the next install, and [`operations.md`](operations.md) carries the threshold and refresh
+knobs beside them.
 
 ## 3. Install the service
 

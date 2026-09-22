@@ -788,7 +788,7 @@ export function inboxWiring(options: {
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           log: options.log,
           // Handed over whole and uncast: the judge's flag type is checked against the store's here,
-          // so a field or a winner one side adds and the other lacks fails the build at this line.
+          // so a field one side adds and the other lacks fails the build at this line.
           onVerdict: (sessionId, flag) => {
             if (!holds(sessionId)) return;
             store.flag(sessionId, flag);

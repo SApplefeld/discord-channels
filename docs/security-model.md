@@ -266,8 +266,9 @@ and for an in-session `/rename` alike, and its value becomes the session's title
 carries as its name: composed into the call that opens the thread when a title is already known at
 that moment, and written with a `PATCH /channels/{threadId}` on every change after. So the goal's
 inventory does not describe it and is not borrowed. Where the goal is withheld from `GET /sessions`
-and omitted from the on-disk snapshot, the title reaches six places: the thread's own name, the
-session card body and the fleet card's session rows, all three by way of `displayName`;
+and omitted from the on-disk snapshot, the title reaches seven places: the thread's own name, the
+session card body, the fleet card's session rows and the inbox card's item lines, all four by way of
+`displayName`;
 `GET /sessions`, as a field of the published record; and two files on disk, the registry snapshot
 and the thread binding, the latter so a restart does not spend a rename repainting a thread that
 already says the right thing. The broker log is not among them, and no line puts it there: the
@@ -692,41 +693,42 @@ their lead position on the line. The consequence is a plan that reads as blocked
 a surface that reports state rather than authorizing anything; it draws no live pill, chip, or
 prompt, and the neutralization above is what holds that line.
 
-**The inbox judge sends session reply text to a third party, and it is the one egress here that
-reaches a host other than Discord.** With `CHANNEL_INBOX_CARD` on and `CHANNEL_INBOX_JUDGE_KEY_FILE`
-naming a usable file, a turn-final reply or reply-tool answer that carries no `ASK:` line is posted
-to `https://api.typesafe.ai/v1/systemone` over HTTPS, as a JSON body holding the reply's text, the
-model name and the two fixed yes-or-no questions, under `Authorization: Bearer <key>`. The host and
-the model are constants in `broker/inbox/judge.ts`, no setting or argument can point the call
-elsewhere, and a redirect fails the call so a 307 or 308 can never re-post the text to another host.
-The key is read once at start from the named file and never from `broker.env`, because a scheduled
-task's environment is readable by anything that can read the task definition. That file is held to
-the bot token file's own protection check: it and its directory must be owned by the broker's
-account or an administrative identity, must grant nobody beyond the owner, Administrators and
-SYSTEM, and must not be a reparse point. Where the token file's failure stops the broker, this
-file's failure only turns the judge off with one warning, since the judge adds a second reading of
-unmarked replies rather than the channel itself. With no key file named, or one that cannot be used,
-nothing leaves the machine on this path, and the inbox runs on `ASK:` lines alone.
+**The inbox judge sends session reply text to a third party, and it is the one HTTP egress here
+that reaches a host other than Discord.** With `CHANNEL_INBOX_CARD` on and
+`CHANNEL_INBOX_JUDGE_KEY_FILE` naming a usable file, a turn-final reply or reply-tool answer that
+carries no `ASK:` line is posted to `https://api.typesafe.ai/v1/systemone` over HTTPS, as a JSON
+body holding the reply's text, the model name and the two fixed yes-or-no questions, under
+`Authorization: Bearer <key>`. The host and the model are constants in `broker/inbox/judge.ts`, no
+setting or argument can point the call elsewhere, and a redirect fails the call so a 307 or 308 can
+never re-post the text to another host. The key is read once at start from the named file and never
+from `broker.env`, because a scheduled task's environment is readable by anything that can read the
+task definition. That file is held to the bot token file's own protection check, which
+`docs/install.md` states with the key file's step. Where the token file's failure stops the broker,
+this file's failure only turns the judge off with one warning, since the judge adds a second reading
+of unmarked replies rather than the channel itself. With no key file named, or one that cannot be
+used, nothing leaves the machine on this path, and the inbox runs on `ASK:` lines alone.
 
 What is sent is closed at the text of one reply, cut to its first 12,000 code points after the
 secret screen has run over its whole length. The screen is one case-insensitive pattern with six
 branches, and a reply matching any of them makes no call: an `api_key` or `api-key` assignment to a
-quoted value of 12 or more characters, `bearer` followed by 20 or more token characters, a PEM
-private-key header, `sk-` at a word boundary followed by 20 or more token characters (which takes
-the `sk-proj-` and `sk-ant-` shapes with their infix), a GitHub token prefix (`gho_`, `ghp_`, `ghs_`,
-`github_pat_`) followed by 20 or more token characters, and a `password` assignment to a quoted value
-of any length. Length never blocks a send. What is never sent: a reply carrying an `ASK:` line, which
-the inbox reads locally and does not judge; a supervised session's reply carrying the steward-shaped
-`ASK: <question>? Recommend: <choice>` line; any reply from a session no mirror post has reached the
-outbound router from since the broker started, which is how a `-NoMirror` session's reply-tool
-answers stay on the machine; prompts, narration chunks and peer messages, which the tap never sees;
-tool input and the status card's preview, which ride another path; and any file path, since the
-judge is handed a string and nothing it names. The response is read for two numbers and nothing
-else, and neither the request body, the response body nor any part of the key reaches the broker
-log: a failure line names the kind of failure and the session, on the rule every mirror and
-transcript path here already holds to. Conversation text is what every other control in this
-document keeps on the machine or inside Discord, and the judge is the one place it is sent
-elsewhere on purpose. The accepted-risk list below carries what that costs.
+quoted value of 12 or more characters, `bearer` followed by 20 or more letters, digits, `.`, `_` or
+`-`, a PEM private-key header, `sk-` at a word boundary followed by 20 or more letters, digits, `_`
+or `-` (which takes the `sk-proj-` and `sk-ant-` shapes with their infix), a GitHub token prefix
+(`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more letters, digits or `_`, and a
+`password` assignment to a quoted value of one or more characters. The pattern itself is
+`SECRET_SCREEN` in `broker/inbox/judge.ts`. Length never blocks a send. What is never sent: a reply
+carrying an `ASK:` line, which the inbox reads locally and does not judge; a supervised session's
+reply carrying the steward-shaped `ASK: <question>? Recommend: <choice>` line; any reply from a
+session no mirror post has reached the outbound router from since the broker started, which is how a
+`-NoMirror` session's reply-tool answers stay on the machine under the advisory bound the
+per-session mirror switch residual below states; prompts, narration chunks and peer
+messages, which the tap never sees; tool input and the status card's preview, which ride another
+path; and any file path, since the judge is handed a string and nothing it names. The response is
+read for two numbers and nothing else, and neither the request body, the response body nor any part
+of the key reaches the broker log: a failure line names the kind of failure and the session, on the
+rule every mirror and transcript path here already holds to. Conversation text is what every other
+control in this document keeps on the machine or inside Discord, and the judge is the one place it
+is sent elsewhere on purpose. The accepted-risk list below carries what that costs.
 
 **The blocked-goal alert is the fourth mention-bearing write, and its trigger credential is the
 weakest in the set.** The session surface reads the same goal event stream through a second fold,
@@ -1060,8 +1062,9 @@ The installer strips inheritance and grants only the owner, Administrators, and 
 - the bot token file
 - the state root, unconditionally, since `broker.env`, the registry snapshot, the inbox snapshot,
   the log file, and the per-launch relay registration all live there whether a token does or not.
-  The inbox judge's key file, where one is named, sits inside it and inherits the same list, and the
-  broker holds that file to the token file's own check before reading it
+  The install guide's key-file step has the operator create the inbox judge's key file inside it,
+  where the file inherits the same list. The broker holds that file to the token file's own check
+  wherever it sits, which is the guarantee, before reading it
 
 It also refuses to harden a drive root, and refuses a token file outside the state root, because
 rewriting the access control list of an arbitrary directory an operator happened to name is a

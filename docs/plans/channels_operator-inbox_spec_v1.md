@@ -272,8 +272,9 @@ Model: sonnet
 `broker/inbox/card.ts`, `thread.ts` and `binding.ts`, cloned from `broker/board/card.ts`,
 `thread.ts` and `binding.ts` with the inbox's renderer. It joins `permanentCards`. The glyphs, the empty-inbox line and the age format are the
 implementer's to choose on the board card's conventions, and the renderer takes its clock as an
-argument so a fixed clock yields fixed bytes. The session title goes through `inertName` and the
-excerpt through `inertField`, both in `broker/discord/render.ts`. Acceptance:
+argument so a fixed clock yields fixed bytes. The session title and the excerpt both go through
+`inertField` in `broker/discord/render.ts` (amended at finishing from `inertName` for the title, the
+decision Chapter 4 records). Acceptance:
 the rendered card for a fixed item set is byte-stable; an unchanged render issues no edit; an
 excerpt carrying a mention, a masked link, a heading marker and a backtick fence draws inert; an
 empty inbox draws the fixed line; the pin keeper's sweep recognizes the card as the broker's own.
@@ -442,3 +443,12 @@ Delta: read at f0d7a36 plus the fix round, SCOTT-CLAUDE, no contention:
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 3 - 2026-09-21
+- Finishing pass, base ref 32939cdeff55a3252396133a678debff17adf13c (merge-base with main). Changeset listing checked against the Files in scope union: outside it only the plan doc, docs/backlog.md (the section 1 audit entry) and the four documents section 5 names, so the base is right.
+- Step 1 QA: PASS. `npm run lint` exit 0; `npm test` from Git Bash exit 0, 1988 tests, 1987 pass, 0 fail, 1 skipped, 35.0 s, against the 98535d6 baseline 1910/1909/0/1. No contention lane defined. The verifier's "operator-only" label on the unpinned router spreads is wrong: that is a disclosed test gap, not an operator check.
+- Steps 2 and 3, one Workflow round at fable/high, bracket clean: security CLEAR (threat model: absent, already carried at backlog line 560, so it goes to Operator Verification in the final Chapter), performance CLEAR, adversarial APPROVED_WITH_CONCERNS (Minors only), prose one Major and Minors.
+- Advisory dispositions (all Minor): fixed in the Minors pass: security-model title-consumer count six to seven; key-file placement stated as install instruction with the check as the guarantee; the key check refuses spaces too; backlog audit entry names fast-uri; the answered-narration timing edge named under Edges worth knowing; JudgeWinner declared once; a non-2xx judge response body cancelled; index.ts:670 "two cards" comment. Deferred with reason: the per-tick registry copy in the card's session lookup and recordOf (bounded at single-digit ms at the 500-session cap, human-rate or tick-rate); reconcile per hook post (beside a larger pre-existing per-hook save); judge latency unmeasured (recorded in the close-out as not measured; a timeout already logs its kind). Refused: none.
+- Owed Major (prose, spec-traceable to section 5's "the accepted residuals"): the -NoMirror "never sent to the judge" absolutes in operations.md and architecture.md contradict security-model.md's advisory-switch residual. Add-decision: scope the sentence to the session's own hooks and point at the residual; adds no mechanism; two sentences; not fixing it ships a contradiction on the egress question the section must answer. Route: fix round 1, prose lens alone over the fix delta.
+- Adversarial Minors for the Minors pass: spec section 4's inertName amended to inertField as approval drift; the mirror-arming log line and reconcile docstring say "mirror signal" rather than "mirror verdict"; open question 1 closed at close-out; README row at close-out. Left: boundedFraction key naming (parity with the pre-existing bounded convention); snapshot load on the info tier (parity with the board binding).
+- Next: step 4 goal read, then the fix round and Minors pass, then docs-curator, then close.

@@ -8,6 +8,7 @@
 | Thread bindings | `%LOCALAPPDATA%\sapplefeld-channels\discord-threads.json` |
 | Host configuration | `%LOCALAPPDATA%\sapplefeld-channels\broker.env` |
 | Bot token | `%LOCALAPPDATA%\sapplefeld-channels\discord-token.txt`, or wherever `CHANNEL_DISCORD_TOKEN_FILE` points inside the state root |
+| Operator inbox items, and the inbox card's thread binding | `%LOCALAPPDATA%\sapplefeld-channels\inbox-items.json` and `inbox-card.json`, beside the registry, written only while `CHANNEL_INBOX_CARD` is on |
 | Relay registration, rewritten per launch | `%LOCALAPPDATA%\sapplefeld-channels\relay-mcp.json` |
 | Log file | `CHANNEL_BROKER_LOG_FILE` in `broker.env`, by default `%LOCALAPPDATA%\sapplefeld-channels\broker.log`, rotated at 5 MB with 5 files kept |
 | Scheduled task | `SapplefeldChannelsBroker`, at system startup and again at logon, restarting every minute on failure |
@@ -584,12 +585,14 @@ entries. A plan document opened through the join takes the same 256 KB cap as a 
 ## The fleet inbox card
 
 One thread named **Fleet: Inbox** carries a third broker-edited card, answering "which sessions are
-waiting on me" without opening every thread. It is off unless the host sets `CHANNEL_INBOX_CARD`,
-and like the other cards it needs Discord configured. Off means nothing is built: no item store, no
-snapshot file, no thread, no timer, and no call to the judge. Switched on, the broker logs one of
-two lines at start, `broker: the operator inbox is on, reading ASK: lines alone with the judge off`
-or `broker: the operator inbox is on, and the judge reads unmarked replies of mirrored sessions`,
-and that line is the quickest way to confirm which mode a host is in.
+waiting on me" without opening every thread. It is off unless the host sets `CHANNEL_INBOX_CARD`.
+Off means nothing is built: no item store, no snapshot file, no thread, no timer, and no call to the
+judge. On, the knob builds the store, the snapshot and, where a usable key file is named, the judge,
+whether or not Discord is
+configured, and only the card's thread and timer wait on Discord, as the other cards do. Switched
+on, the broker logs one of two lines at start, `broker: the operator inbox is on, reading ASK: lines
+alone with the judge off` or `broker: the operator inbox is on, and the judge reads unmarked replies
+of mirrored sessions`, and that line is the quickest way to confirm which mode a host is in.
 
 ### Reading the card
 
@@ -600,9 +603,10 @@ something, and ⚡ for a reply the judge read as handing you an act to perform n
 Then the session's title in bold, the age since the ask first opened (`just now`, `12m ago`,
 `3h ago`, `2d ago`), a link, and the word `ended` where the session has since ended. The age counts
 from the opening rather than the latest restatement, so a session that keeps repeating its ask does
-not climb the card. The link is a jump link to the flagged message itself when the broker holds
-that message's ID, and a channel chip to the session's thread otherwise, which is what a reply the
-tailer narrated first gets, since the message on the thread is the tailer's. A marked ask draws its
+not climb the card. The link is a jump link to the most recent flagged message whose ID the
+broker holds, and a channel chip to the session's thread where the item holds no message ID. A reply
+the tailer narrated first carries no ID, since the message on the thread is the tailer's, so an item
+opened that way draws the chip until a later flag brings an ID. A marked ask draws its
 `ASK:` line on a sub-bullet beneath, cut to **200** code points. A judged ask draws no text, by
 design, so you open the thread to read it. A card with nothing open reads `No open asks.`, and one
 that runs out of room ends `(+N more asks not shown)`.
@@ -616,10 +620,12 @@ the reply's text goes to TypeSafe's Jev classifier, which scores whether the mes
 decide, answer or confirm something and whether it hands you an act to do now. A score at or above
 `CHANNEL_INBOX_THRESHOLD` opens the item. A session holds one item at most, so a later reply that
 restates the ask refreshes the same line rather than adding one, and a session's own `ASK:` line
-outranks the judge's reading of it. Replies from a session launched with `-NoMirror` are read for
-`ASK:` lines and never sent to the judge. One shape is skipped on purpose: a worker persona's
-`ASK: <question>? Recommend: <choice>` line is addressed to its steward, so a supervised session's
-reply carrying one opens nothing and is not judged.
+outranks the judge's reading of it. A session launched with `-NoMirror` has its turn-final replies
+dropped at the broker's intake, and its reply-tool answers are read for `ASK:` lines and not sent to
+the judge, since its own hooks post no mirror. That switch is advisory
+against a process holding the session's token, which `security-model.md` states. One shape is
+skipped on purpose: a worker persona's `ASK: <question>? Recommend: <choice>` line is addressed to
+its steward, so a supervised session's reply carrying one opens nothing and is not judged.
 
 An item clears when you send that session a prompt, from its Discord thread or from its console,
 later than the reply that opened or last refreshed it. Reading the thread clears nothing, and
@@ -633,17 +639,18 @@ nothing there, as in a live thread. A stale session keeps its item, since it may
 
 ### Edges worth knowing
 
-Three edges follow from where the clear and the link are read. A console prompt you queued mid-turn
-is stamped with the instant you typed it, read from the transcript line, so it lands earlier than
-the turn's final reply and clears nothing that reply asks. The item waits for your next prompt.
-A jump link joins
-the session's current thread to the message ID the flag carried, so a link into a thread the broker
-has since rebuilt, after you deleted the old one, still lands you in the right thread, with
-Discord's notice that the message is unknown. And a broker restart forgets which sessions it has
-seen mirror posts from, so after a restart a session's reply-tool answers are read for `ASK:` lines
-and not judged until its next mirror post arrives. That post is judged itself where it is a reply,
-so the window is the reply-tool answers between the restart and the session's next mirrored turn.
-An unmarked ask in that window is missed, which is the status quo without the inbox.
+A console prompt you queued mid-turn is stamped with the instant you typed it, read from the
+transcript line, so it lands earlier than the turn's final reply and clears nothing that reply asks.
+The item waits for your next prompt. Answering the transcript tailer's narration of a final reply
+from Discord before that reply's own mirror post reaches the broker clears nothing that post asks
+either: the post is tapped after your answer, so its item opens, and it stays until your next
+prompt. A jump link joins the session's current thread to the message ID the flag carried, so a link
+into a thread the broker has since rebuilt, after you deleted the old one, still lands you in the
+right thread, with Discord's notice that the message is unknown. And a broker restart forgets which
+sessions it has seen mirror posts from, so after a restart a session's reply-tool answers are read
+for `ASK:` lines and not judged until its next mirror post arrives. That post is judged itself where
+it is a reply, so the window is the reply-tool answers between the restart and the session's next
+mirrored turn. An unmarked ask in that window is missed, which is the status quo without the inbox.
 
 ### Turning the judge off
 

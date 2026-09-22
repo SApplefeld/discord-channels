@@ -22,6 +22,7 @@
 // call is in flight takes the waiting place, replacing whatever was there. The call in flight is
 // never aborted, its verdict is always delivered, and the waiting reply is judged when it settles.
 import { sliceCodePoints } from "../sanitize.ts";
+import type { JudgeScores, JudgeWinner } from "./store.ts";
 
 /** The one host a reply is ever sent to. A constant, so no argument or setting can redirect it. */
 export const JUDGE_URL = "https://api.typesafe.ai/v1/systemone";
@@ -51,7 +52,7 @@ const REPEAT_WINDOW_MS = 60_000;
  * `sk-proj-` or `sk-ant-api03-` shaped key is caught with its infix, while a hyphenated name
  * such as `task-runner-config-loader` that merely contains `sk-` is not); a GitHub token prefix
  * (`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more token characters; and a
- * `password` assignment to a quoted value of any length. Case-insensitive throughout. Run over
+ * `password` assignment to a quoted value of one or more characters. Case-insensitive throughout. Run over
  * the whole reply before the cut, so a secret past the cut still blocks the send.
  */
 export const SECRET_SCREEN =
@@ -91,8 +92,6 @@ export const QUESTIONS = {
   },
 } as const;
 
-export type JudgeWinner = "needs_reply" | "needs_act";
-
 /**
  * What a verdict at or above the threshold delivers: the shape the inbox store records for a
  * judged item. `postedAt` and `messageId` are the reply's own, carried through from what was
@@ -102,7 +101,7 @@ export type JudgeWinner = "needs_reply" | "needs_act";
 export type JudgedFlag = {
   source: "judged";
   postedAt: number;
-  scores: { needsReply: number; needsAct: number };
+  scores: JudgeScores;
   /** The question with the larger number. A tie goes to `needs_reply`. */
   winner: JudgeWinner;
   messageId?: string;
