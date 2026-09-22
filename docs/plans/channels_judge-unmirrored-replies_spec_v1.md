@@ -340,3 +340,23 @@ Delta: reading taken 2026-09-22 on SCOTT-CLAUDE against the worktree at `9e5df75
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 2 - 2026-09-22
+All three sections are closed and pushed; `a49f2a9` carries section 3 and Chapter 3. The finishing
+pass is in step 1 through 3, on its second dispatch of the reviewer wave.
+Live dispatches: the finishing wave at `wf_d06708f8-ab2` (task `wdg6mitdq`), asked for QA
+verification, the security and adversarial lenses over the whole changeset, and the prose lens over
+the four documents, at base `96b8100`. The `qa-verifier` returned PASS at 14:27 UTC and its result
+replays from the run's cache. The first pair of fable reviewers (`a551b638f11f73138` security,
+`a75a75964368bb79f` adversarial) each stalled after taking turns at 14:29 UTC, answered no probe by
+15:05, and were stopped at 15:53. The resumed run's pair (`a60dba9ee43b78808`, `a6a76d9e5bfe86062`)
+holds both never-started counts at zero an hour after dispatch and was probed at 16:53. The prose
+lens has not started in either dispatch. `.kit/scratch/judge-unmirrored-replies/finishing/wedges.md`
+holds the chain. If the probe window closes with the counts still zero, the pair meets the
+unavailability rule's second trigger and the round compensates at opus, effort max.
+Gate baseline: the whole gate at `a49f2a9`, run by the verifier at 14:27 UTC on a clean worktree:
+1989 tests, 1988 pass, 0 fail, 1 skipped, exit 0, 45.2s, against 1988/1987/0/1 at `96b8100`.
+Rulings since the last boundary: none.
+Next: read the probe, then either adjudicate the returned reviews or compensate the round; then the
+goal read, the performance lens, the docs curator, the final Chapter, the archive, the handoff gate
+and the pull request.
