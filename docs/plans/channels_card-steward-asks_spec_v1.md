@@ -344,6 +344,16 @@ Next: finishing-work
 Commit Model: Branch-and-PR
 Delta: reading taken 2026-09-22 on SCOTT-CLAUDE against the worktree at `ea312f2` carrying section 3's four dirty files.
 
+### Interim board 1 - 2026-09-22
+The finishing pass is past steps 1 to 3 and its fix round; base ref `4408da7`, the merge-base with main.
+QA verifier PASS: lint exit 0, whole suite 1997 tests, 1996 pass, 0 fail, 1 skipped, exit 0, at `ff4a303` on a clean worktree; every acceptance bullet and both amendment cases pinned; the live-card check is the operator's.
+Finishing wave at fable, high, through Workflow: adversarial APPROVED_WITH_CONCERNS (5 Minors), security CLEAR (2 Minors, `threat model: absent`), performance CLEAR (1 Minor), prose CHANGES_REQUIRED (1 Critical, 1 Major, 6 Minors). The adversarial lens confirmed the persona plugin's matcher and reply backstop at the installed plugin's own source, so the documents' claims about what it reads are confirmed rather than reported.
+The prose Critical: all three documents said a supervisor's answer "clears nothing", while the installed plugin delivers that answer as a prompt submitted into the worker, which the broker does not tell from the operator's. Neither this session's transcript nor the broker's session record could settle whether that prompt reaches the mirror route, so the documents now say either may clear the item, and Operator Verification carries the live check. This also puts the plan's second assumption and its `## Out of Scope` fifth bullet in doubt; the final Chapter records it.
+Fix round committed at `033bc4a`: the documents' clear claim, the architecture "goes to the judge" condition, the indented-line case named, the security model's never-sent clause split, the tap's double scan replaced by one `findAskLine` call and an exported `excerptOf`, `hasStewardAsk`'s doc, the backlog entry's reader claims checked and cited, and `docs/backlog.md` added to section 3's Files in scope. Targeted lane 291/291/0 exit 0, lint exit 0.
+Live dispatch: the scope adjudicator's whole-changeset goal read, at fable through the Agent tool.
+Rulings since the last boundary: none.
+Next: the goal read, the docs curator, the final Chapter, the archive, the handoff whole gate, and the pull request.
+
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
