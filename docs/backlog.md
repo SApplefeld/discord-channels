@@ -14,6 +14,13 @@ promote, retire, or keep call at the next close-out. Every item below this line 
 2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
+- Operator check, inbox clear on rebind (parked 2026-09-22): once the running broker carries
+  `rebindHandling`, the next persona restart should leave no item for the ended session on the
+  `Fleet: Inbox` card. An item that stays for the ended session after its thread passes to the
+  new one reopens the work as a new round of
+  `archive/plans/channels_inbox-clear-on-rebind_spec_v1.md`. The orphaned item for session
+  `edb1c801` expires on its own and is not evidence either way.
+
 - Root-cause the intermittent timing failure in `broker/tail.test.ts:2469`, "a long reply the
   tailer is still posting is not posted again by the Stop mirror" (parked 2026-08-21, found while
   baselining an unrelated round). It fails with `AssertionError: the condition never held` from the

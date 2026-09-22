@@ -133,10 +133,11 @@ export type InboxStore = {
    */
   clear: (sessionId: string, promptAt: number) => boolean;
   /**
-   * Removes the session's item unconditionally and records `at`, the instant the operator posted
-   * in the ended session's thread, as a prompt instant. No prompt reaches an ended session, but a
-   * judge verdict on one of its earlier replies can still return after that post, and without the
-   * instant it would reopen the item just removed. True where an item left.
+   * Removes the session's item unconditionally and records `at` as a prompt instant. A caller
+   * passes the instant the operator posted in the ended session's thread, or the instant that
+   * thread rebound to a successor session. No prompt reaches an ended session, but a judge verdict
+   * on one of its earlier replies can still return after either, and without the instant it would
+   * reopen the item just removed. True where an item left.
    */
   clearEnded: (sessionId: string, at: number) => boolean;
   /** Drops every item, and every prompt instant, whose session is no longer in the registry. */

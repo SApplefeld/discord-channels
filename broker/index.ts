@@ -837,6 +837,41 @@ export function inboxWiring(options: {
   };
 }
 
+/**
+ * The lineage takeover's caller-side act: the departed session's inbox item leaves at the same
+ * moment its thread passes to the successor, and the restart notice still posts.
+ *
+ * The clear runs first and the post second, and neither depends on the other landing. A throw out
+ * of `clearEnded` is caught here, on `toInbox`'s shape in `broker/routing/inbound.ts`. There a
+ * message already routed must not read as failed. Here a rebind already under way must not stop the
+ * notice. The one log line names the departed session rather than the error, whose owner reports
+ * its own.
+ * The clear runs whether or not the thread is open yet, because the rebind happened either way. The
+ * post is skipped on a null thread ID, since there is nowhere to post into and the very next pass
+ * opens the thread.
+ */
+export function rebindHandling(options: {
+  /** Null when `CHANNEL_INBOX_CARD` is off, which leaves the clear a no-op. */
+  inbox: Pick<Inbox, "clearEnded"> | null;
+  post: (input: { threadId: string; text: string }) => Promise<CallOutcome<{ messageId: string | null }>>;
+  now: () => number;
+  log: (message: string) => void;
+}): (event: { lineage: string; fromSessionId: string; toSessionId: string; threadId: string | null }) => void {
+  return (event) => {
+    if (options.inbox !== null) {
+      try {
+        options.inbox.clearEnded(event.fromSessionId, options.now());
+      } catch {
+        options.log(
+          `broker: the inbox could not clear session ${event.fromSessionId}'s item on its rebind`,
+        );
+      }
+    }
+    if (event.threadId === null) return;
+    void options.post({ threadId: event.threadId, text: renderRestartNotice(event.lineage) });
+  };
+}
+
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
   // it. The logger writes the same lines to a rotating file too, when one is configured, because a
@@ -1338,14 +1373,23 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         stopRefresh();
       },
       // Item 3: the reconciler itself never posts (see ThreadMessenger's own comment on why), so
-      // this is the caller that turns a rebind into the one-line notice the thread gets. A rebind
-      // with no thread ID yet (the surface has posted the starter message but has not opened the
-      // thread on it) has nowhere to post into; the very next pass opens it, and there is nothing
-      // here worth retrying for, since the notice is a courtesy line, not state anything depends on.
-      onRebind: (event) => {
-        if (event.threadId === null) return;
-        void messenger.postToThread({ threadId: event.threadId, text: renderRestartNotice(event.lineage) });
-      },
+      // this is the caller that turns a rebind into the one-line notice the thread gets and clears
+      // the departed session's inbox item, guarded so neither a failure in the clear nor a missing
+      // thread can stop the other. A rebind with no thread ID yet (the surface has posted the
+      // starter message but has not opened the thread on it) has nowhere to post into; the very
+      // next pass opens it, and there is nothing here worth retrying for, since the notice is a
+      // courtesy line, not state anything depends on.
+      onRebind: rebindHandling({
+        inbox,
+        post: (input) => messenger.postToThread(input),
+        now: Date.now,
+        // A failed clear leaves an ask stuck on the card, so it logs at the level the inbox's
+        // other failures do.
+        log: (message) => {
+          console.error(message);
+          logger.error(message);
+        },
+      }),
     });
     // The channel's pin list, driven from the same timer the surfaces are. Its own budgets and its
     // own routes: a pin and an unpin are their own rate buckets, and the read is a third.

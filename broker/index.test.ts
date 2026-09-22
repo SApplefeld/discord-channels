@@ -26,9 +26,11 @@ import {
   questionUpgrade,
   boardCardWiring,
   inboxWiring,
+  rebindHandling,
   startBroker,
   usageCardWiring,
 } from "./index.ts";
+import { renderRestartNotice } from "./discord/render.ts";
 import type { JudgeFetch } from "./inbox/judge.ts";
 import { saveInboxSnapshot } from "./inbox/store.ts";
 import type { InboxItem } from "./inbox/store.ts";
@@ -2394,4 +2396,135 @@ test("the inbox card knob builds nothing on a broker with no discord configured"
     logged,
     /broker: the operator inbox is on, reading ASK: lines alone with the judge off/,
   );
+});
+
+// The rebind handler: the third clearing event. Driven through `rebindHandling`, the one seam
+// `startBroker` builds its `onRebind` handler from, over a fake inbox and a fake poster.
+
+const REBIND_EVENT = {
+  lineage: "lineage-1",
+  fromSessionId: "session-a",
+  toSessionId: "session-b",
+  threadId: "thread-9",
+};
+
+/** A poster that records every post and reports the wire's own ok shape. */
+function postSpy() {
+  const posts: { threadId: string; text: string }[] = [];
+  const post = async (input: { threadId: string; text: string }) => {
+    posts.push(input);
+    return { status: "ok" as const, value: { messageId: null }, rate: NO_RATE_INFO };
+  };
+  return { posts, post };
+}
+
+/** An inbox double holding open items by session id, clearing one on `clearEnded`. */
+function fakeInbox(held: string[]) {
+  const items = new Set(held);
+  return {
+    clearEnded: (sessionId: string, _at: number) => {
+      items.delete(sessionId);
+    },
+    items,
+  };
+}
+
+test("a rebind with the inbox handle present drops the predecessor's item and leaves the successor's untouched", () => {
+  const { posts, post } = postSpy();
+  const inbox = fakeInbox(["session-a", "session-b"]);
+  const handler = rebindHandling({ inbox, post, now: () => 5_000, log: () => {} });
+
+  handler(REBIND_EVENT);
+
+  assert.deepEqual([...inbox.items], ["session-b"], "only the departed session's item leaves");
+  assert.deepEqual(posts, [{ threadId: "thread-9", text: renderRestartNotice("lineage-1") }]);
+});
+
+test("a rebind with the inbox handle null posts the notice and touches nothing", () => {
+  const { posts, post } = postSpy();
+  const logs: string[] = [];
+  const handler = rebindHandling({
+    inbox: null,
+    post,
+    now: () => 5_000,
+    log: (message) => logs.push(message),
+  });
+
+  handler(REBIND_EVENT);
+
+  assert.deepEqual(posts, [{ threadId: "thread-9", text: renderRestartNotice("lineage-1") }]);
+  assert.deepEqual(logs, [], "a null handle has nothing to clear and nothing to log");
+});
+
+test("a rebind whose predecessor holds no item changes nothing and throws nothing", (t) => {
+  // Over the real inbox, since a double's delete of an absent key cannot throw and would prove
+  // nothing about the store's own no-item path.
+  const { posts, post } = postSpy();
+  const logs: string[] = [];
+  const { inbox } = inboxUnderTest(t);
+  assert.ok(inbox);
+  const handler = rebindHandling({ inbox, post, now: () => 5_000, log: (message) => logs.push(message) });
+
+  assert.doesNotThrow(() => handler(REBIND_EVENT));
+
+  assert.deepEqual(inbox.items(), []);
+  assert.deepEqual(logs, []);
+  assert.deepEqual(posts, [{ threadId: "thread-9", text: renderRestartNotice("lineage-1") }]);
+});
+
+test("an inbox handle whose clearEnded throws still posts the restart notice, with one log line naming the departed session", () => {
+  const { posts, post } = postSpy();
+  const logs: string[] = [];
+  const inbox = {
+    clearEnded: () => {
+      throw new Error("store is unavailable");
+    },
+  };
+  const handler = rebindHandling({
+    inbox,
+    post,
+    now: () => 5_000,
+    log: (message) => logs.push(message),
+  });
+
+  assert.doesNotThrow(() => handler(REBIND_EVENT));
+
+  assert.deepEqual(posts, [{ threadId: "thread-9", text: renderRestartNotice("lineage-1") }]);
+  assert.equal(logs.length, 1, logs.join("\n"));
+  assert.ok(logs[0].includes("session-a"), logs[0]);
+  assert.ok(!logs[0].includes("store is unavailable"), "the error detail is withheld");
+});
+
+test("a rebind with a null thread ID still clears the predecessor's item and posts nothing", () => {
+  const { posts, post } = postSpy();
+  const inbox = fakeInbox(["session-a"]);
+  const handler = rebindHandling({ inbox, post, now: () => 5_000, log: () => {} });
+
+  handler({ ...REBIND_EVENT, threadId: null });
+
+  assert.deepEqual([...inbox.items], [], "the clear does not wait on the thread being open");
+  assert.deepEqual(posts, [], "nowhere to post into yet");
+});
+
+test("a late flag for the departed session, carrying its reply's original instant, opens no item after the rebind", async (t) => {
+  // The regression this clearing event would otherwise hide: a flag arriving late, the shape a
+  // judge verdict on an earlier reply takes, must not reopen an ask the rebind already cleared.
+  // The flag is presented through the tap with the reply's original `postedAt` rather than
+  // through the judge, since the guard this pins is the store's own comparison between a flag's
+  // `postedAt` and the instant `clearEnded` recorded, which a judged flag meets the same way.
+  const { posts, post } = postSpy();
+  const { inbox } = inboxUnderTest(t);
+  assert.ok(inbox);
+  inbox.reply("session-a", "ASK: merge it?", 2_000, null);
+  assert.equal(inbox.items().length, 1, "the ask opened before the rebind");
+
+  const handler = rebindHandling({ inbox, post, now: () => 9_000, log: () => {} });
+  handler(REBIND_EVENT);
+  assert.deepEqual(inbox.items(), [], "the rebind cleared it");
+
+  // The late flag: the same reply's mark, carrying its original `postedAt`, arrives after the
+  // rebind's clear already recorded a later prompt instant for this session.
+  inbox.reply("session-a", "ASK: merge it?", 2_000, null);
+  assert.deepEqual(inbox.items(), [], "a late flag reopening a cleared ask is the regression");
+  assert.equal(posts.length, 1, "the restart notice still posted, independent of the late flag");
 });
