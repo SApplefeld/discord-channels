@@ -657,6 +657,31 @@ and none carries a date of its own. An item added from here on carries `(parked 
   reply that hands the operator a decision opens with an `ASK:` line drawn on the card with its
   excerpt; its absence on a session started after the update reopens section 2. Operator-pending.
 
+- Run the steward-ask marker's two live checks (handoff 2026-09-22, from
+  `archive/plans/channels_card-steward-asks_spec_v1.md`'s Operator Verification). After the broker
+  is updated on a host running personas, a persona worker's reply carrying
+  `ASK: <question>? Recommend: <choice>` on one line appears on the `Fleet: Inbox` card with its
+  excerpt and the `supervisor ask` marker within one refresh interval; its absence two intervals
+  later reopens that plan's section 1, and its presence without the marker reopens section 2. Then
+  let the worker's supervisor answer a flagged item and note whether the item clears without a
+  prompt of your own. Either result matches the host documents; the result settles whether the
+  plan's second assumption, that a supervisor's answer does not clear the item, holds on this
+  plugin. Operator-pending.
+
+- Refuse a template placeholder in the broker's steward-shape reading, as the persona plugin does
+  (parked 2026-09-22, surfaced by the card-steward-asks plan's documentation curation). The plugin
+  refuses a captured question still carrying a `<...>` placeholder, and `hasStewardAsk` in
+  `broker/inbox/ask.ts` copies only its regular expression, so a supervised worker echoing the
+  template literally draws the `supervisor ask` marker where the plugin opens no ask. The host
+  documents state the case. The fix is one condition in `hasStewardAsk` and a test, and whether it
+  is wanted is the operator's call, since the marker is defined as the line's shape and the echo
+  has that shape.
+
+- Move the retired-account-suppression plan's row out of the Reference table in `docs/README.md`
+  (parked 2026-09-22, surfaced by the card-steward-asks plan's documentation curation). The row
+  sits in the two-column Reference table with three cells, so the archived plan is missing from the
+  Plans list and the Reference table draws a stray cell. It belongs in the Plans table at its date.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

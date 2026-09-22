@@ -1,6 +1,6 @@
 # Show Steward Asks on the Inbox Card
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -56,7 +56,7 @@ cannot observe that.
 **Rulings after the spec shipped.** None yet.
 
 **Provenance.** Drafted 2026-09-22 by the DEV-DISCORD session at the close of
-`../archive/plans/channels_judge-unmirrored-replies_spec_v1.md`, whose finishing review found the
+`channels_judge-unmirrored-replies_spec_v1.md`, whose finishing review found the
 gap and whose `## Intent` records the operator's ruling to ship with it and plan this separately.
 Finalized the same day by the Architect seat on the coordinator persona's record, after reading
 the installed persona plugin's hook.
@@ -286,9 +286,9 @@ clear the item; steward-flagged items sort as every item does.
 
 ## Related plans
 
-- Builds on `../archive/plans/channels_judge-unmirrored-replies_spec_v1.md`, whose `## Intent`
+- Builds on `channels_judge-unmirrored-replies_spec_v1.md`, whose `## Intent`
   ruling records the gap this plan closes, and on
-  `../archive/plans/channels_operator-inbox_spec_v1.md`, which introduced the steward-ask
+  `channels_operator-inbox_spec_v1.md`, which introduced the steward-ask
   exclusion.
 
 ## Chapters
@@ -353,6 +353,24 @@ Fix round committed at `033bc4a`: the documents' clear claim, the architecture "
 Live dispatch: the scope adjudicator's whole-changeset goal read, at fable through the Agent tool.
 Rulings since the last boundary: none.
 Next: the goal read, the docs curator, the final Chapter, the archive, the handoff whole gate, and the pull request.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 4 - 2026-09-22
+Completed: finishing pass
+Implemented By: main thread (the fix round, the Minor pass, the merge and the close), with qa-verifier, adversarial-reviewer, security-reviewer, performance-reviewer and prose-reviewer at fable/high through Workflow, scope-adjudicator at fable through the Agent tool, and docs-curator
+Metrics: review rounds 1, closed major-closed; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 3 findings, 2 fixed, 0 deferred, 1 refused; NEEDS_CONTEXT count 0; escalations 0; consults 0. The prose lens's Critical and Major sit outside the provenance read and are counted on the Review Findings line.
+Recap: Goal, verbatim: "A supervised session's reply carrying the steward-shaped line `ASK: <question>? Recommend: <choice>` opens an item on the `Fleet: Inbox` card, drawn with a marker that says the line takes the form a worker uses to ask its supervisor. Today the broker returns at that line before the mark read and the judge, so the reply reaches the session's Discord thread and never the card. The card is the roll-up that answers "who is waiting on me" without opening every thread, so an ask missing from it is one the operator only finds by visiting that thread. When this is done the card lists the ask with its excerpt and the marker, the item clears the way every other item clears, the steward-ask exclusion is gone from the tap, and the three host documents that state the exclusion state the marker instead."; What the tree does now: when a persona worker writes its supervisor-style question on its own `ASK:` line, the broker's inbox opens an item for it on the operator's standing inbox card, with the question's excerpt and the words `supervisor ask`, and it never sends that reply to the outside classifier; the words appear only when the session declared itself a persona worker at launch and only when the very line the excerpt came from has that shape, so a plain ask beside it or an indented line draws no marker; the flag survives a broker restart, and an older broker reading the new save file keeps every item and simply loses the words; the architecture, operations and security documents say what the words mean, that they are the session's own report rather than proof, and that the item clears on the next prompt to that session, which may include the supervisor's own answer; Refinements during the run: the flag reads the marked line alone rather than the whole reply (Standing Brief Amendments, section 1 fix round); the card draws the marker for a marked item only, not for any item carrying the flag (section 2 close pass); `docs/backlog.md` was added to section 3's Files in scope (finishing fix round); the documents' claim that a supervisor's answer never clears the item was withdrawn, since the persona plugin submits that answer as a prompt the broker cannot tell from the operator's, which puts this plan's second assumption, its Open Questions answer and its fifth Out of Scope bullet in doubt until the operator's live check settles it; Operator-pending: the live marker check, then the supervisor-answer clear check, both below.
+Decisions / Surprises: no add-decision was owed at finishing, since the wave raised no correctness-lens Critical or Major. The prose Critical (the "clears nothing" sentence in all three documents) could not be settled from this seat: the session transcript records no `UserPromptSubmit` for a plugin-submitted prompt either way, and the broker record's `lastEngagementAt` equals its `lastHookAt`, which does not separate the two. The documents were reworded to say either may clear the item, and the Operator Verification gained the check. The fix round also replaced the tap's double scan with one `findAskLine` call and an exported `excerptOf` (the performance Minor and the adversarial Minor on the dead guard). Main advanced by the inbox-clear-on-rebind spec (#20) during the pass and was merged in at `adf4150`; the docs index conflicted on its plan rows, and the resolution restored the archived judge-unmirrored-replies row, which main's own merge of #20 had dropped. Drift adjudications, all six from the docs curator classed `deviation`, none `mistake`, so no pre-change read was owed: D1, whether a supervisor's answer clears the item, recorded above and carried to the operator; D2, the Approach and section 1 body still compute the flag over the whole reply while the Standing Brief Amendments govern, and the code and documents follow the amendment; D3, the persona plugin refuses a question still holding a `<...>` template placeholder and the broker's copy of its pattern does not, so a literal template echo draws the marker, a divergence `broker/inbox/ask.ts:112-115` documented before this effort and the documents now name, parked on the backlog for the operator's call; D4, the architecture document's "an interactive session never does" carry a lineage was rewritten to the wrapper never setting one, confirmed at `hooks/session-start.ps1:52-58`; D5, the plan indexes read Ready and are rewritten by this close; D6, the retired-account-suppression row sits in the Reference table, predating this effort, parked on the backlog. Library hygiene H1 and H2, forward links from the two archived plans this one builds on, are left one-way under the curating-docs rule for an already-archived plan; this plan's `## Related plans` carries the links.
+Assumptions: none beyond the plan's own `## Assumptions` section, whose second entry is in doubt as recorded above.
+Review Findings: `review: finishing wave at fable, Workflow (adversarial high, security high, performance high, prose high)`. Adversarial APPROVED_WITH_CONCERNS, 5 Minors; security CLEAR, 2 Minors, `threat model: absent`; performance CLEAR, 1 Minor; prose CHANGES_REQUIRED, 1 Critical, 1 Major, 6 Minors. Critical fixed by rewording (above); Major fixed (the architecture sentence now conditions on the reply carrying no mark). Minors: 14 fixed in `033bc4a` (the `hasStewardAsk` doc and module header, the double scan and dead guard, the backlog entry's scope and unchecked claims, the security model's packed never-sent clause, the indented case named, the architecture nested qualifications split, the operations line-parts enumeration trimmed, the four-point paragraphs split, the security model's marker-meaning sentence, the performance duplicate scan), 1 fixed by this close (the docs index row status), 1 left with the reason (the security lens's note that the words `supervisor ask` in a title or excerpt draw beside the real marker: the same class as the existing `ended` marker, weaker than declaring a lineage, and the documents already call the marker a report). The threat model's absence is carried on the existing backlog item. goal read: 2 built-but-unasked (0 refused, 2 declared, 0 asked), 0 asked-but-unbuilt. Declared: the card's own `source === "marked"` guard, redundant with the store's refusal and bounded to one conjunct and one test, serving the Goal's marker sentence; and the `docs/backlog.md` append, serving the Goal's host-documents sentence. The qa-verifier returned PASS at `ff4a303`: lint exit 0, whole suite 1997 tests, 1996 pass, 0 fail, 1 skipped, exit 0.
+Stamps: adjudicated 1, stamped 0 (`fan-out-runs-through-workflow-under-a-session-wide-cap`, operator tier, read but not applied in this stretch, which ran no fan-out).
+Gate: handoff whole gate at 2026-09-22 ~19:33 UTC on SCOTT-CLAUDE against the worktree at `adf4150` plus the close's edits (the Chapter, the archive move, both indexes and the backlog): `npm run lint` exit code 0; `npm test` 1997 tests, 1996 pass, 0 fail, 1 skipped, exit code 0, 48 s wall clock with lint. Baseline on the same lane, the qa-verifier's run at `ff4a303`: 1997/1996/0/1 skipped, exit 0; delta none. The merge of main at `adf4150` brought only a plan doc and two indexes across, which no test reads, and this run is the merge's gate as well. Contention: a foreign kit suite (`node --test`, another session's) held the box from 15:25 local and was waited out before the run; the heavy-process claim was written for the run and released at its end. No contention lane is defined in this repository. Finishing test delta: 0 added, 0 retired, 0 edited.
+Next: none; the plan is archived and the pull request carries it
+Commit Model: Branch-and-PR
+Delta: reading taken 2026-09-22 ~19:26 UTC on SCOTT-CLAUDE against the worktree at `adf4150` carrying the close's edits.
 
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
