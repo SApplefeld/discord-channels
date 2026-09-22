@@ -3,7 +3,10 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-One plan is parked as Ready for the worker's queue:
+Two plans are parked as Ready for the worker's queue.
+[`channels_inbox-clear-on-rebind_spec_v1.md`](channels_inbox-clear-on-rebind_spec_v1.md) has the
+broker's rebind handler clear the inbox item an ended session leaves behind when its thread passes
+to a successor, so a persona restart no longer strands an ask on the `Fleet: Inbox` card. The other is
 [`channels_judge-unmirrored-replies_spec_v1.md`](channels_judge-unmirrored-replies_spec_v1.md),
 which has the inbox judge read every unmarked reply whether or not the session mirrors, so the
 `Fleet: Inbox` card fills for persona sessions, and has the relay's instructions name the `ASK:`
