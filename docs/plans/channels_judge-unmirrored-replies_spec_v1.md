@@ -186,6 +186,7 @@ on a quote).
 
 ### 3. Documents
 Model: opus
+Locus: inline
 `docs/security-model.md`: the judge paragraph's "What is never sent" list drops the clause about a
 session no mirror post has reached the router from, and the sentence naming the `-NoMirror`
 session's reply-tool answers with it; the residual "While the judge is on, every unmarked reply's
@@ -312,3 +313,10 @@ Delta: reading taken 2026-09-22 on SCOTT-CLAUDE against the worktree at `b7dc33f
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-09-22
+Section 3 (Documents), inline, in review round 2. Round 1 was the document pair at fable, low, through Workflow: two blind readers (the operator persona, a fresh engineering session) and the prose reviewer. The prose reviewer returned CHANGES_REQUIRED with 1 Critical, 2 Majors and 5 Minors, all on this section's own passages, and all fixed. The Critical and both Majors were one defect: the security model said a mirror-off session is judged exactly as a mirrored one, while `broker/intake.ts:683-687` and `:733-747` drop that session's turn-final replies before the tap, so only its reply-tool answers reach the judge. The spec's instruction to drop "from a mirrored session" with no qualifier led there; the documents now say every reply that reaches the thread is judged. The two readers returned 9 Majors (8 distinct) and 28 Minors, none on this section's passages; they went to `docs/backlog.md` as one entry, with the straggler gate's lost definition as a second entry. The round 1 delta capture was not taken before the fixes; `.kit/scratch/judge-unmirrored-replies/3/fix-round-2.diff` holds the section's delta after them.
+Live dispatch: `wqlgy1e2k`, one prose reviewer at opus, high, through Workflow, over the whole section 3 delta, asked to confirm each round 1 finding resolved and to review the delta afresh. The fix delta was prose-only and owed no round; this one was added by choice, because the Critical was a false statement about what leaves the machine.
+Gate baseline: `npm run lint` exit 0 at 14:30 UTC on the worktree at `14efce7` with the four documents, `docs/backlog.md` and this plan doc dirty; the section changes no code, so no test lane applies.
+Rulings since the last boundary: none.
+Next: adjudicate round 2, write Chapter 3, commit and push, then finishing-work.
