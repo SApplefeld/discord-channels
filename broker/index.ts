@@ -90,6 +90,8 @@ export type Broker = {
   port: number;
   /** The rotating-file logger this broker started with, so the caller can log a line beside it. */
   logger: Logger;
+  /** The operator inbox's item set, read-only, or null while `CHANNEL_INBOX_CARD` is off. */
+  inbox: Pick<Inbox, "items"> | null;
   stop: () => Promise<void>;
 };
 
@@ -722,7 +724,11 @@ export type Inbox = OutboundInbox &
  * is never judged, since its steward answers it rather than the operator. Otherwise a reply with an
  * `ASK:` line opens or refreshes a marked item and is never judged. Otherwise the reply goes to the
  * judge, and only where the judge is on and a mirror post from the session has reached the outbound
- * router: a session whose mirror is off never sends one, so its text never leaves the machine.
+ * router. A session whose mirror is off sends none from its own hooks, so its hooks' text never
+ * leaves the machine; a process holding its token can post one without the off header, which is
+ * the advisory-switch residual `docs/security-model.md` records. A reply for a session the registry
+ * no longer holds opens nothing, whether it arrives at the tap or as a late verdict, since a
+ * session the registry does not hold is not one the operator can answer.
  *
  * The snapshot lives beside the registry snapshot and the card bindings. It restores only items
  * whose session record restored, and it is written on every change, which is a human rate: an item
@@ -757,6 +763,14 @@ export function inboxWiring(options: {
     },
   });
 
+  /** The session's record, or undefined once the registry has pruned it. */
+  function recordOf(sessionId: string): SessionRecord | undefined {
+    return options.registry.list().find((held) => held.sessionId === sessionId);
+  }
+  function holds(sessionId: string): boolean {
+    return recordOf(sessionId) !== undefined;
+  }
+
   const key = readInboxJudgeKey(options.config.inboxJudgeKeyFile, options.warn, options.protectKeyFile);
   const judge =
     key === null
@@ -769,6 +783,7 @@ export function inboxWiring(options: {
           // Handed over whole and uncast: the judge's flag type is checked against the store's here,
           // so a field or a winner one side adds and the other lacks fails the build at this line.
           onVerdict: (sessionId, flag) => {
+            if (!holds(sessionId)) return;
             store.flag(sessionId, flag);
           },
         });
@@ -787,9 +802,9 @@ export function inboxWiring(options: {
       mirrored.add(sessionId);
     },
     reply(sessionId, text, postedAt, messageId) {
-      const record = options.registry.list().find((held) => held.sessionId === sessionId);
-      const supervised = record !== undefined && record.lineage !== null;
-      if (supervised && hasStewardAsk(text)) return;
+      const record = recordOf(sessionId);
+      if (record === undefined) return;
+      if (record.lineage !== null && hasStewardAsk(text)) return;
       const shown = messageId === null ? {} : { messageId };
       const excerpt = findAsk(text);
       if (excerpt !== null) {
@@ -1709,7 +1724,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  return { server, registry, port, logger, stop };
+  return {
+    server,
+    registry,
+    port,
+    logger,
+    inbox: inbox === null ? null : { items: inbox.items },
+    stop,
+  };
 }
 
 if (runDirectly(import.meta.url)) {

@@ -407,6 +407,10 @@ test("the judge key is read from a protected file, and every failure turns the j
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /inbox judge is off/);
     assert.match(warnings[0], /grants access to WD/);
+    assert.ok(
+      warnings[0].includes(`key file ${file}`),
+      `the line names the judge's key file, ahead of a check message written for the token file: ${warnings[0]}`,
+    );
     assert.ok(!warnings[0].includes("sk-jev"), "the contents never ride a warning");
 
     writeFileSync(file, " \n", "utf8");
@@ -418,6 +422,27 @@ test("the judge key is read from a protected file, and every failure turns the j
     assert.equal(readInboxJudgeKey(missing, warn), null, "a missing file turns the judge off");
     assert.equal(warnings.length, 3);
     assert.match(warnings[2], /inbox judge is off/);
+
+    // A key that cannot ride a request header: an interior line break would make every request
+    // throw at submit rather than here, so it is refused where it is read.
+    for (const [index, bad] of ["sk-jev-0123\nsk-jev-4567", "sk-jev-01\r23", "sk-jev\t01", "sk-jév-0123"].entries()) {
+      writeFileSync(file, bad, "utf8");
+      assert.equal(readInboxJudgeKey(file, warn, accept), null, JSON.stringify(bad));
+      assert.equal(warnings.length, 4 + index);
+      assert.match(warnings[3 + index], /request header cannot carry/);
+      assert.ok(!warnings[3 + index].includes("sk-j"), "the contents never ride a warning");
+    }
+
+    // A share root is never opened, on the rule the roster path holds: the check would send
+    // outbound SMB under the operator's own credentials before it could refuse anything.
+    const before = warnings.length;
+    const checked = protectedPaths.length;
+    for (const unc of ["\\\\host\\share\\jev.key", "//host/share/jev.key", "/\\host\\share\\jev.key"]) {
+      assert.equal(readInboxJudgeKey(unc, warn, accept), null, unc);
+      assert.match(warnings.at(-1) ?? "", /share root/);
+    }
+    assert.equal(warnings.length, before + 3);
+    assert.equal(protectedPaths.length, checked, "refused before the file is touched at all");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

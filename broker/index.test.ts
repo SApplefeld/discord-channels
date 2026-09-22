@@ -30,6 +30,9 @@ import {
   usageCardWiring,
 } from "./index.ts";
 import type { JudgeFetch } from "./inbox/judge.ts";
+import { saveInboxSnapshot } from "./inbox/store.ts";
+import type { InboxItem } from "./inbox/store.ts";
+import { saveSessions } from "./persistence.ts";
 import { createRegistry } from "./registry.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
@@ -2100,6 +2103,65 @@ test("a stale session's item stays, and an ended one stays until an operator pos
   assert.deepEqual(inbox.items(), []);
 });
 
+test("a reply or a verdict for a session the registry no longer holds opens nothing", async (t) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slow: JudgeFetch = async () => {
+    await held;
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ answers: { needs_reply: { noul: 0.9 }, needs_act: { noul: 0.1 } } }),
+    };
+  };
+  let clock = 1_000;
+  const registry = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    retainTerminalMs: 1,
+    now: () => clock,
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: INBOX_TOKEN,
+    sessionName: null,
+    lineage: null,
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+  const { inbox } = inboxUnderTest(t, { registry, fetch: slow });
+  assert.ok(inbox);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  inbox.reply("session-pruned", "ASK: merge it?", 2_000, null);
+  assert.deepEqual(inbox.items(), [], "a marked reply for an unheld session opens nothing");
+
+  // The record is pruned between the submit and the verdict.
+  registry.relayClosed(INBOX_TOKEN, "session-a");
+  clock += 10;
+  registry.sweep();
+  assert.deepEqual(registry.list(), []);
+  release();
+  await settled();
+  await settled();
+  assert.deepEqual(inbox.items(), [], "a late verdict for an unheld session opens nothing");
+
+  // The control: the same reply for the held session, verdict landing while it is held.
+  const control = inboxUnderTest(t);
+  assert.ok(control.inbox);
+  control.inbox.mirrored("session-a");
+  control.inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  await settled();
+  assert.equal(control.inbox.items().length, 1);
+});
+
 test("items survive a restart through the snapshot, minus any whose session did not restore", async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-restart-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -2131,6 +2193,7 @@ test("startBroker builds the inbox only when the card is on, and says so", async
   const off = await startBroker(
     config({ stateFile: path.join(dir, "off.json"), logFile: path.join(dir, "off.log"), port: 0 }),
   );
+  assert.equal(off.inbox, null);
   await off.stop();
   const offLog = path.join(dir, "off.log");
   const offLogged = existsSync(offLog) ? readFileSync(offLog, "utf8") : "";
@@ -2144,7 +2207,90 @@ test("startBroker builds the inbox only when the card is on, and says so", async
       inboxCard: true,
     }),
   );
+  assert.ok(on.inbox);
+  assert.deepEqual(on.inbox.items(), []);
   await on.stop();
   const logged = readFileSync(path.join(dir, "on.log"), "utf8");
   assert.match(logged, /operator inbox is on, reading ASK: lines alone with the judge off/);
+});
+
+test("startBroker's inbox restores beside the registry, clears on an operator prompt and follows a prune", async (t) => {
+  // The composition rather than the modules: the registry's prompt stamp and mutate signal reach
+  // the inbox only through the seams `startBroker` threads, and a unit test over `inboxWiring`
+  // stays green with either seam deleted. The items are seeded through the snapshot, since the
+  // tap that opens one sits behind the session's thread and no thread exists without Discord.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-seams-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = path.join(dir, "broker-state.json");
+  const record = (sessionId: string, processToken: string): SessionRecord => ({
+    sessionId,
+    processToken,
+    name: null,
+    lineage: null,
+    host: "NEO",
+    source: "startup",
+    state: "live",
+    lastTool: null,
+    lastToolInput: null,
+    toolCount: 0,
+    turnCount: 0,
+    startedAt: 1_000,
+    lastHookAt: 1_000,
+    lastEngagementAt: 1_000,
+    lastRelayAt: null,
+    endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
+    backgroundTasks: [],
+    goal: null,
+    title: null,
+  });
+  saveSessions(stateFile, [
+    record("session-a", "11111111-2222-3333-4444-555555555555"),
+    record("session-b", "11111111-2222-3333-4444-666666666666"),
+  ]);
+  const item = (sessionId: string): InboxItem => ({
+    sessionId,
+    openedAt: 2_000,
+    refreshedAt: 2_000,
+    source: "marked",
+    excerpt: "merge it?",
+    scores: null,
+    winner: null,
+    count: 1,
+    messageId: null,
+  });
+  saveInboxSnapshot(path.join(dir, "inbox-items.json"), [
+    item("session-a"),
+    item("session-b"),
+    item("session-gone"),
+  ]);
+
+  const broker = await startBroker(
+    config({ stateFile, logFile: null, port: 0, inboxCard: true, retainTerminalMs: 1 }),
+  );
+  t.after(() => broker.stop());
+  assert.ok(broker.inbox);
+  assert.deepEqual(
+    broker.inbox.items().map((held) => held.sessionId),
+    ["session-a", "session-b"],
+    "restored from beside the registry snapshot, minus the session that did not restore",
+  );
+
+  // The registry's prompt stamp is the console-prompt clear.
+  broker.registry.engage("session-a");
+  assert.deepEqual(broker.inbox.items().map((held) => held.sessionId), ["session-b"]);
+
+  // The registry's mutate signal is how a pruned record's item leaves.
+  broker.registry.relayClosed("11111111-2222-3333-4444-666666666666", "session-b");
+  assert.equal(broker.inbox.items().length, 1, "an ended session keeps its item");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  broker.registry.sweep();
+  assert.ok(
+    !broker.registry.list().some((held) => held.sessionId === "session-b"),
+    "the ended record is pruned past the retention horizon",
+  );
+  assert.deepEqual(broker.inbox.items(), []);
 });

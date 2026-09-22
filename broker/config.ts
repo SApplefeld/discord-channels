@@ -677,10 +677,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
  * be handed someone else's. Where the two differ is what a failure costs. A token file that cannot
  * be used stops the broker, because without it nothing reaches Discord at all; this key only adds a
  * second reading of unmarked replies, so a file that is unprotected, missing, unreadable or empty
- * turns the judge off with one warning and the inbox runs on `ASK:` lines alone. No file named is
- * the ordinary off state and warns nothing.
+ * turns the judge off with one warning and the inbox runs on `ASK:` lines alone. A path on a share
+ * root is refused the same way, on the rule `boardRosterPath` holds: opening it would send outbound
+ * SMB under the operator's own credentials. So is a key carrying anything outside printable ASCII,
+ * since it rides an HTTP header and an interior line break would make every request throw. No file
+ * named is the ordinary off state and warns nothing.
  *
- * Never throws. A warning names the file and the cause, never the contents.
+ * Never throws. A warning names the judge's key file and the cause, never the contents.
  */
 export function readInboxJudgeKey(
   file: string | null,
@@ -690,17 +693,21 @@ export function readInboxJudgeKey(
   protect: (file: string) => void = assertTokenFileIsProtected,
 ): string | null {
   if (file === null) return null;
+  const off = (cause: string): null => {
+    warn(`broker: the inbox judge is off, its key file ${file} ${cause}`);
+    return null;
+  };
+  if (UNC_ROOT.test(file)) return off("names a share root, which this broker will not open");
   let key: string;
   try {
     protect(file);
     key = readFileSync(file, "utf8").trim();
   } catch (error) {
-    warn(`broker: the inbox judge is off, its key file cannot be used: ${String(error)}`);
-    return null;
+    // The protection check's own message names the path as a token file, which is what it was
+    // written for; the prefix above is what says this one is the judge's.
+    return off(`cannot be used: ${String(error)}`);
   }
-  if (key === "") {
-    warn(`broker: the inbox judge is off, its key file ${file} is empty`);
-    return null;
-  }
+  if (key === "") return off("is empty");
+  if (!/^[\x21-\x7e]+$/.test(key)) return off("holds a character a request header cannot carry");
   return key;
 }

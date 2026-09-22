@@ -16,6 +16,8 @@ import {
   renderTaskNotice,
 } from "../discord/render.ts";
 import { createBlockedDesk } from "../discord/blocked.ts";
+import { findAsk } from "../inbox/ask.ts";
+import { createInboxStore } from "../inbox/store.ts";
 import type { SessionGoalEvent } from "../board/events.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
@@ -4302,7 +4304,7 @@ function numberedWriter() {
   return { writer: createThreadWriter({ messenger, now: () => 1_000 }), posts };
 }
 
-test("a landed reply-tool post is shown to the inbox at the router's clock, with its last message", async () => {
+test("a landed reply-tool post is shown to the inbox stamped at its arrival, with its last message", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer, posts } = numberedWriter();
@@ -4329,17 +4331,70 @@ test("a landed reply-tool post is shown to the inbox at the router's clock, with
   const long = "x ".repeat(MAX_MESSAGE_LENGTH);
   const messages = renderAnswer(long);
   assert.ok(messages.length > 1, "the fixture must split, or the last message is the only one");
+  const arrival = clock;
   assert.deepEqual(await router.reply(TOKEN, long), { status: "sent" });
+  assert.ok(clock > arrival, "the paced run moved the clock");
 
   assert.deepEqual(taps, [
     {
       sessionId: "session-a",
       text: long,
-      postedAt: clock,
+      postedAt: arrival,
       messageId: String(930000000000000000n + BigInt(messages.length)),
     },
   ]);
   assert.deepEqual(postsAtTap, [messages.length], "shown only once the whole run had landed");
+});
+
+test("a prompt typed while a reply's run is landing still clears it, since the flag carries the reply's arrival", async () => {
+  // A run paces its posts and can wait out a rate limit, and the operator can answer at the
+  // console inside that gap. Stamped at landing, the reply would read as newer than the answer and
+  // an already-answered ask would open. The store behind the seam is the real one, so what is
+  // asserted is the drop and not the number that would produce it.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  let clock = 10_000;
+  const store = createInboxStore();
+  const inbox: OutboundInbox = {
+    mirrored: () => {},
+    reply: (sessionId, text, postedAt, messageId) => {
+      const excerpt = findAsk(text);
+      if (excerpt === null) return;
+      store.flag(sessionId, { source: "marked", postedAt, excerpt, ...(messageId === null ? {} : { messageId }) });
+    },
+  };
+  let answerDuringRun = true;
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      // The run is on the wire: the clock moves and the operator answers at the console.
+      clock += 30_000;
+      if (answerDuringRun) store.clear("session-a", clock);
+      clock += 1;
+      return { status: "ok", value: { messageId: String(940000000000000000n + BigInt(input.text.length)) }, rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => clock }),
+    now: () => clock,
+    inbox,
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, "ASK: merge it?"), { status: "sent" });
+  assert.deepEqual(store.items(), [], "the reply-tool post arrived before the answer, so it opens nothing");
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "ASK: merge it?", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(store.items(), [], "and so does the mirrored reply");
+
+  // The control: with no answer during the run, the same posts open an item at their arrival.
+  answerDuringRun = false;
+  const arrival = clock;
+  await router.mirror(TOKEN, "reply", "ASK: merge it now?", "session-a");
+  assert.equal(store.items().length, 1);
+  assert.equal(store.items()[0].refreshedAt, arrival, "stamped as it arrived, not as it landed");
 });
 
 test("a reply-tool post that did not land whole is never shown to the inbox", async () => {
