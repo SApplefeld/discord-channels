@@ -1,6 +1,6 @@
 # Judge Unmirrored Replies
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
@@ -272,3 +272,24 @@ None.
 
 ## Chapters
 
+
+### Chapter 1 - 2026-09-22
+Completed: 1. Retire the mirror gate
+Implemented By: implementer-opus
+Metrics: review rounds 1, closed clean; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 2 findings, 1 fixed, 1 deferred, 0 refused; NEEDS_CONTEXT count 0; escalations 0; consults 0
+Decisions / Surprises: section 1 open | changes: removes the `mirrored` set, its seam on `OutboundInbox`, the router call, the prune loop and the `mirrored.has(sessionId)` condition, so the judge reads every unmarked reply from a session the registry holds | serves: the Goal sentence "Every reply that reaches a session's Discord thread and carries no `ASK:` line is read by the inbox judge, whether or not that session mirrors its console" | adds a mechanism: no, it removes one; no new unit of behavior runs | size: 19 grep-matched lines across four files at 96b8100, plus the docstring, comment block and log line | not building it costs: the `Fleet: Inbox` card stays structurally empty for the whole persona fleet, which is the defect the plan exists to fix.
+  Then: the spec's "nine tests call `inbox.mirrored`" and the control grep's ten matching lines are both right; two call sites sit inside one test ("a reply or a verdict for a session the registry no longer holds opens nothing"). The performance lens was ruled not triggered and not dispatched: the delta removes a Set, its prune loop and a condition, so it takes work out of `reconcile` rather than adding any, and the external call it widens (`judge.submit`) is itself untouched and unawaited. The implementer put the new order of checks in the `inboxWiring` docstring alone rather than also above the retired set, since the set no longer exists to comment above; the adversarial lens then found it had left a second copy inline, which the Minor pass removed. It also renamed the straggler-gate test, which the spec did not ask for, because the old name asserted a rule this change removes.
+Assumptions: none beyond the plan's own `## Assumptions` section.
+Review Findings: `review: code pair plus security at fable, Workflow (blind low, adversarial low, security medium)`; adversarial APPROVED, blind APPROVED_WITH_CONCERNS, security 2 Minors. 0 Critical, 0 Major. Minors: 3 fixed in the close pass, 0 upgraded, 1 deferred with the reason.
+  Fixed: the inline comment at the judge branch duplicated the `inboxWiring` docstring's rule, and two copies of one rule drift, so the inline copy is now one line; the docstring said a pruned session's reply is "never judged, whether it arrives at the tap or as a late verdict", which is imprecise because a late verdict's reply was submitted before the prune and its text had already left, so it now distinguishes the two; the rewritten test's title still read "a mirror-off session's reply-tool answer is judged", which after this section duplicates its neighbour, so it is retitled to name the judged-to-marked transition it uniquely pins.
+  Deferred: the security lens's `npm audit` Minor (three pre-existing production advisories, `fast-uri` high, `hono` and `qs` moderate). `package.json` and the lockfile are unchanged against the base ref, so this section did not introduce them, and the item is already on `docs/backlog.md` at lines 460 and 592 from two earlier plans. No third entry written.
+  Confirmed and not a finding: the blind lens's privacy-boundary Minor, that a mirror-off session's reply-tool text now reaches the vendor. That is this plan's intended effect under the operator's ruling that the mirror switch governed thread noise rather than the vendor, and the surface that must say so to the operator is section 3's `docs/install.md` paragraph.
+Stamps: adjudicated 5, stamped 2 (`source-code-may-leave-the-lan-to-typesafe`, `typesafe-request-body-retention-risk-accepted`, both operator tier, both load-bearing for the security disposition above). Three skipped: read by dispatched agents rather than applied here.
+Gate: targeted lane `node --test broker/index.test.ts broker/routing/outbound.test.ts` at section close: 209 tests, 209 pass, 0 fail, 0 skipped, exit code 0, 5.96s. Delta against the same lane's baseline captured before the first edit (209/209/0, exit 0, 5.93s): unchanged, no regressions. `npm run lint` (`tsc --noEmit`) exit 0. Whole-gate baseline recorded this run at `96b8100` on a worktree clean but for the plan doc: 1988 tests, 1987 pass, 0 fail, 1 skipped, exit 0, 43.3s. No contention lane: the section's delta is source code and touches no machine-shared state. Test delta: 0 added, 0 retired, 11 edited to stay green on the section's own change. Nine dropped the retired `inbox.mirrored` precondition and assert the same outcomes; one ("an unmarked reply from an unmirrored session is judged") was renamed and pins that the widened tap reaches the fake fetch, which is the section's withheld control; one ("a later ASK: on a judged session turns its open item from judged into marked") was rewritten to the new rule and widened to pin the item's source, the marked upgrade's source and excerpt, and that the marked reply adds no second judge call. 0 added tests spawn a process. Acceptance grep control: the predicate `grep -n "const mirrored\|mirrored(\|mirrored\.has\|mirrored:"` over the four in-scope files returned 19 lines at `96b8100`, including all five file:line anchors the spec named, and returns nothing on the changed tree, exit 1. 45 surviving lines hold the word in its second sense (a prompt or reply the mirror route posted) and were read and kept.
+Next: 2. The relay's instructions name the mark
+Commit Model: Branch-and-PR
+Delta: reading taken 2026-09-22 on SCOTT-CLAUDE against the worktree at this commit.
+
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

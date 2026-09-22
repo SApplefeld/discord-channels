@@ -1918,7 +1918,6 @@ test("with the card off no inbox is built, no snapshot is touched and no fetch i
   // The control: on, the same wiring builds one, says so, and a reply reaches the judge.
   const on = inboxUnderTest(t);
   assert.ok(on.inbox);
-  on.inbox.mirrored("session-a");
   on.inbox.reply("session-a", "should I merge it now?", 2_000, null);
   await settled();
   assert.equal(on.calls.length, 1);
@@ -1928,7 +1927,6 @@ test("with the card off no inbox is built, no snapshot is touched and no fetch i
 test("an ASK: line opens a marked item at the tap's instant and is never sent to the judge", async (t) => {
   const { inbox, calls } = inboxUnderTest(t);
   assert.ok(inbox);
-  inbox.mirrored("session-a");
   inbox.reply("session-a", "Done.\nASK: merge PR 12?\nASK: second", 2_000, "930000000000000001");
   await settled();
   assert.deepEqual(calls, [], "a marked reply never leaves the machine");
@@ -1947,11 +1945,10 @@ test("an ASK: line opens a marked item at the tap's instant and is never sent to
   ]);
 });
 
-test("an unmarked reply from a mirrored session is judged, and the verdict opens a judged item at the tap's instant", async (t) => {
+test("an unmarked reply from an unmirrored session is judged, and the verdict opens a judged item at the tap's instant", async (t) => {
   let clock = 1_000;
   const { inbox, calls } = inboxUnderTest(t, { now: () => clock });
   assert.ok(inbox);
-  inbox.mirrored("session-a");
   inbox.reply("session-a", "should I merge it now?", 2_000, "930000000000000002");
   clock = 50_000;
   await settled();
@@ -1990,7 +1987,6 @@ test("a judge verdict that returns after the operator answered opens nothing", a
   };
   const { inbox } = inboxUnderTest(t, { fetch: slow });
   assert.ok(inbox);
-  inbox.mirrored("session-a");
   inbox.reply("session-a", "should I merge it now?", 2_000, null);
   inbox.clear("session-a", 3_000);
   release();
@@ -1999,24 +1995,24 @@ test("a judge verdict that returns after the operator answered opens nothing", a
   assert.deepEqual(inbox.items(), []);
 });
 
-test("a mirror-off session's reply-tool answer is parsed for ASK: and never judged", async (t) => {
+test("a later ASK: on a judged session turns its open item from judged into marked", async (t) => {
   const { inbox, calls } = inboxUnderTest(t);
   assert.ok(inbox);
-  // No mirror post has come from this session, which is what mirror-off looks like from here.
+  // No mirror post has ever come from this session, which is what mirror-off looks like from here,
+  // and is the whole persona fleet's shape. Its unmarked reply is judged all the same.
   inbox.reply("session-a", "should I merge it now?", 2_000, null);
   await settled();
-  assert.deepEqual(calls, [], "an unmirrored session's text never leaves the machine");
-  assert.deepEqual(inbox.items(), []);
+  assert.equal(calls.length, 1, "an unmirrored session's unmarked reply reaches the judge");
+  assert.ok(calls[0].includes("should I merge it now?"), "the reply text is what was sent");
+  assert.equal(inbox.items().length, 1);
+  assert.equal(inbox.items()[0].source, "judged");
 
   inbox.reply("session-a", "ASK: merge it?", 2_500, null);
+  await settled();
+  assert.equal(calls.length, 1, "a marked reply is still never sent");
   assert.equal(inbox.items().length, 1, "its marks still count");
   assert.equal(inbox.items()[0].source, "marked");
-
-  // The control: once a mirror post has come from it, the same unmarked reply is judged.
-  inbox.mirrored("session-a");
-  inbox.reply("session-a", "should I merge it now?", 3_000, null);
-  await settled();
-  assert.equal(calls.length, 1);
+  assert.equal(inbox.items()[0].excerpt, "merge it?");
 });
 
 test("with no key file the judge is off and the inbox runs on ASK: lines alone", async (t) => {
@@ -2024,7 +2020,6 @@ test("with no key file the judge is off and the inbox runs on ASK: lines alone",
   assert.ok(inbox);
   assert.deepEqual(warnings, [], "no file named warns nothing");
   assert.match(logs.join("\n"), /judge off/);
-  inbox.mirrored("session-a");
   inbox.reply("session-a", "should I merge it now?", 2_000, null);
   await settled();
   assert.deepEqual(calls, []);
@@ -2043,7 +2038,6 @@ test("an unusable key file turns the judge off with one warning, and never stops
   assert.ok(inbox, "the inbox is built whatever became of the key");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /inbox judge is off/);
-  inbox.mirrored("session-a");
   inbox.reply("session-a", "should I merge it now?", 2_000, null);
   await settled();
   assert.deepEqual(calls, []);
@@ -2053,7 +2047,6 @@ test("a supervised session's steward-shaped reply opens nothing and is never jud
   const reply = "ASK: which backend? Recommend: postgres\nASK: also this\nstill working";
   const supervised = inboxUnderTest(t, { lineage: "persona-worker-3" });
   assert.ok(supervised.inbox);
-  supervised.inbox.mirrored("session-a");
   supervised.inbox.reply("session-a", reply, 2_000, null);
   await settled();
   assert.deepEqual(supervised.inbox.items(), [], "the steward answers it, not the operator");
@@ -2138,7 +2131,6 @@ test("a reply or a verdict for a session the registry no longer holds opens noth
   });
   const { inbox } = inboxUnderTest(t, { registry, fetch: slow });
   assert.ok(inbox);
-  inbox.mirrored("session-a");
   inbox.reply("session-a", "should I merge it now?", 2_000, null);
   inbox.reply("session-pruned", "ASK: merge it?", 2_000, null);
   assert.deepEqual(inbox.items(), [], "a marked reply for an unheld session opens nothing");
@@ -2156,7 +2148,6 @@ test("a reply or a verdict for a session the registry no longer holds opens noth
   // The control: the same reply for the held session, verdict landing while it is held.
   const control = inboxUnderTest(t);
   assert.ok(control.inbox);
-  control.inbox.mirrored("session-a");
   control.inbox.reply("session-a", "should I merge it now?", 2_000, null);
   await settled();
   assert.equal(control.inbox.items().length, 1);

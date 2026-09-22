@@ -4278,13 +4278,11 @@ test("a genuine mid-turn peer delivery posts whatever the prompt slots hold", as
 function watchedInbox() {
   const taps: Array<{ sessionId: string; text: string; postedAt: number; messageId: string | null }> =
     [];
-  const mirrored: string[] = [];
   const inbox: OutboundInbox = {
-    mirrored: (sessionId) => mirrored.push(sessionId),
     reply: (sessionId, text, postedAt, messageId) =>
       taps.push({ sessionId, text, postedAt, messageId }),
   };
-  return { inbox, taps, mirrored };
+  return { inbox, taps };
 }
 
 /** A writer whose posts land with numbered snowflakes, so "the last message" is observable. */
@@ -4356,7 +4354,6 @@ test("a prompt typed while a reply's run is landing still clears it, since the f
   let clock = 10_000;
   const store = createInboxStore();
   const inbox: OutboundInbox = {
-    mirrored: () => {},
     reply: (sessionId, text, postedAt, messageId) => {
       const excerpt = findAsk(text);
       if (excerpt === null) return;
@@ -4412,7 +4409,7 @@ test("a landed reply mirror is shown to the inbox, and a prompt mirror never is"
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer } = numberedWriter();
-  const { inbox, taps, mirrored } = watchedInbox();
+  const { inbox, taps } = watchedInbox();
   const router = routerFor({
     registry,
     threadFor: () => THREAD,
@@ -4432,7 +4429,6 @@ test("a landed reply mirror is shown to the inbox, and a prompt mirror never is"
   assert.deepEqual(taps, [
     { sessionId: "session-a", text: "the turn's reply", postedAt: 7_000, messageId: "930000000000000002" },
   ]);
-  assert.deepEqual(mirrored, ["session-a", "session-a"], "both posts are evidence the mirror is on");
 });
 
 test("a reply mirror dropped as narration's echo is shown to the inbox, one dropped as the reply tool's is not", async () => {
@@ -4501,11 +4497,11 @@ test("a narration chunk, a queued prompt, a peer message and a peer delivery nev
   assert.equal(taps.length, 1);
 });
 
-test("a mirror post that never passes the straggler gate is neither shown nor counted as mirrored", async () => {
+test("a mirror post that never passes the straggler gate is never shown to the inbox", async () => {
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   announce(registry, "session-a");
   const { writer } = numberedWriter();
-  const { inbox, taps, mirrored } = watchedInbox();
+  const { inbox, taps } = watchedInbox();
   const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, inbox });
 
   await router.mirror(TOKEN, "reply", "ASK: from a replaced session", "session-old");
@@ -4514,7 +4510,6 @@ test("a mirror post that never passes the straggler gate is neither shown nor co
   await unthreaded.mirror(TOKEN, "reply", "ASK: before the thread opened", "session-a");
   await unthreaded.reply(TOKEN, "ASK: before the thread opened");
   assert.deepEqual(taps, []);
-  assert.deepEqual(mirrored, []);
 
   await router.mirror(TOKEN, "reply", "ASK: from this session", "session-a");
   assert.equal(taps.length, 1, "the control: this session's own reply is shown");
@@ -4531,9 +4526,6 @@ test("an inbox that throws never turns a landed post into a failure, and its lin
     mirrorWriter: writer,
     log: (line) => lines.push(line),
     inbox: {
-      mirrored: () => {
-        throw new Error("mirrored exploded with ASK: secret words");
-      },
       reply: () => {
         throw new Error("reply exploded with ASK: secret words");
       },
