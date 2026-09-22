@@ -13,6 +13,7 @@ import { NO_RATE_INFO } from "../discord/transport.ts";
 const START = 1_000_000;
 const MESSAGE_ID = "111111111111111111";
 const THREAD_ID = "222222222222222222";
+const GUILD_ID = "666666666666666666";
 const SESSION_ID = "session-alpha";
 
 // A clock the tests advance by hand. A budget block is a wait, and a test that waited out a real one
@@ -115,6 +116,7 @@ function card(overrides: Partial<InboxCardOptions> = {}) {
     transport: calls.transport,
     items: () => items,
     session: () => ({ title: "alpha", threadId: THREAD_ID, ended: false }),
+    guildId: () => GUILD_ID,
     binding: () => null,
     refreshMs: 60_000,
     now: time.now,
@@ -367,16 +369,11 @@ test("a rejected token stops the card rather than being retried on every pass", 
   assert.ok(logged.some((line) => line.includes("the bot token was rejected")));
 });
 
-test("a session the lookup cannot resolve still draws a line, under a name built from its ID", async () => {
-  const { calls, card: built } = card({ session: () => undefined });
-
-  await built.tick();
-
-  assert.ok(
-    (calls.posts[0] ?? "").includes(`session ${SESSION_ID.slice(0, 8)}`),
-    calls.posts[0] ?? "",
-  );
-});
+// An unresolved session's fallback name is the renderer's own concern, pinned directly at
+// `card.test.ts` ("a session the lookup cannot resolve still draws a line, under a name built from
+// its ID"); this module's own "the first tick posts the card" test already proves the session lookup
+// this thread wires reaches the renderer at all, so a thread-level duplicate of the fallback case
+// would prove nothing the two together do not.
 
 test("start runs its first pass at once rather than one interval later", async () => {
   const scheduled: number[] = [];

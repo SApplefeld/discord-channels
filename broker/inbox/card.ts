@@ -9,9 +9,9 @@
 // knows nothing about the registry: those are read through `session`, a lookup the caller supplies
 // on every render from the registry and the thread bindings, so this module depends on nothing but
 // what it is handed. A session the lookup cannot resolve, which a prune racing a late judge verdict
-// can leave behind for one tick, still draws a line: an ask silently missing from the one place the
-// operator is meant to see it first is a worse failure than one drawn under a name built from its
-// session ID, the same fallback `displayName` in `../discord/render.ts` falls back to.
+// can leave behind, still draws a line: an ask silently missing from the one place the operator is
+// meant to see it first is a worse failure than one drawn under a name built from its session ID,
+// the same fallback `displayName` in `../discord/render.ts` falls back to.
 //
 // The session's title goes through `inertField`, which strips the invisible class exactly as
 // `inertName` does and additionally escapes the live markdown this card's body renders; `inertName`
@@ -19,16 +19,16 @@
 // `displayName` that composes into a message body wraps its output the same way. The excerpt, the
 // one string on this card a model can have written outside a fence, takes the same escape.
 //
-// No message-specific jump link is drawn. Discord's own link form needs a guild ID
-// (`https://discord.com/channels/<guild>/<channel>/<message>`), and nothing in this broker's
-// configuration carries one (`../discord/config.ts` reads a channel ID and no guild). A channel
-// mention chip (`<#id>`) needs only the ID it names and Discord renders it as a working link, so
-// every item that resolves a thread draws one to that thread, whether or not the flag that opened
-// or last refreshed the item carried a message ID. The chip pings nobody: Discord reserves that
-// syntax for a channel or thread reference, never a mention.
-import { fit, heartbeat, inertField } from "../discord/render.ts";
-import { MAX_CARD_LENGTH } from "../discord/render.ts";
+// A flagged reply's message ID draws as a jump link when the caller also knows the guild the card's
+// channel sits in (`https://discord.com/channels/<guild>/<thread>/<message>`), and as a channel
+// mention chip (`<#thread>`) otherwise: a chip needs only the thread's own ID and Discord still
+// renders it as a working link into the thread, so an item with a resolved thread and no usable
+// link still draws somewhere to go. Every identifier composed into either form is checked against
+// `SNOWFLAKE` first, since both are string interpolations into Discord syntax a hostile value could
+// otherwise steer.
+import { fit, heartbeat, inertField, inertName, MAX_CARD_LENGTH } from "../discord/render.ts";
 import { MAX_EXCERPT_CODE_POINTS } from "./ask.ts";
+import { SNOWFLAKE } from "../security/senders.ts";
 import type { InboxItem } from "./store.ts";
 
 /** One session as the card needs to know it, read fresh on every render. */
@@ -93,9 +93,11 @@ function cutField(value: string, cap: number): string {
 }
 
 /** The name a session with no resolvable record draws under, the same fallback `displayName` in
- * `../discord/render.ts` falls back to for a session with neither a title nor a launch name. */
+ * `../discord/render.ts` falls back to for a session with neither a title nor a launch name.
+ * Neutralized before it is cut rather than after, `displayName`'s own reasoning: a slice of raw
+ * text can end mid-override. */
 function unresolvedTitle(sessionId: string): string {
-  return `session ${sessionId.slice(0, 8)}`;
+  return `session ${inertName(sessionId).slice(0, 8)}`;
 }
 
 function glyphFor(item: InboxItem): string {
@@ -114,17 +116,54 @@ function spent(lines: readonly string[]): number {
   return lines.reduce((sum, line) => sum + 1 + line.length, 0);
 }
 
+/** A value checked against Discord's own identifier shape, or null when it is not one: the guard
+ * every identifier here takes before it is interpolated into a link or a chip. */
+function snowflake(value: string | null): string | null {
+  return value !== null && SNOWFLAKE.test(value) ? value : null;
+}
+
+/**
+ * Where an item's flagged reply points: a jump link when the caller knows the guild the card's
+ * channel sits in and the flag carried a message ID, or a channel mention chip to the thread when
+ * either is missing, or null when even the thread is unknown. Every identifier drawn is checked
+ * against `SNOWFLAKE` first, since both forms interpolate it into Discord syntax.
+ */
+function itemLink(
+  guildId: string | null,
+  threadId: string | null,
+  messageId: string | null,
+): string | null {
+  const thread = snowflake(threadId);
+  if (thread === null) return null;
+  const guild = snowflake(guildId);
+  const message = snowflake(messageId);
+  if (guild !== null && message !== null) {
+    return `https://discord.com/channels/${guild}/${thread}/${message}`;
+  }
+  return `in <#${thread}>`;
+}
+
 /**
  * One item's lines: its session's title in bold on a bullet of its own, marked with the glyph its
- * flag source draws, its age, a link to its thread where one is known, and an ended marker where its
- * session has ended; a marked item with something in its excerpt draws that on a sub-bullet under it.
+ * flag source draws, its age, a link to its thread or its flagged message where one is known, and
+ * an ended marker where its session has ended; a marked item with something in its excerpt draws
+ * that on a sub-bullet under it.
  */
-function itemLines(item: InboxItem, session: InboxCardSession | undefined, now: number): string[] {
-  const title = cutField(session === undefined ? unresolvedTitle(item.sessionId) : session.title, MAX_TITLE_LENGTH);
-  const age = heartbeat(Math.max(now - item.refreshedAt, 0));
+function itemLines(
+  item: InboxItem,
+  session: InboxCardSession | undefined,
+  guildId: string | null,
+  now: number,
+): string[] {
+  const named = session === undefined ? "" : cutField(session.title, MAX_TITLE_LENGTH);
+  const title = named === "" ? cutField(unresolvedTitle(item.sessionId), MAX_TITLE_LENGTH) : named;
+  // Drawn from when the ask opened rather than when it was last refreshed: items draw oldest opened
+  // first, and an age keyed to the latest refresh would show a restated ask as "just now" above a
+  // younger one it is drawn beneath.
+  const age = heartbeat(Math.max(now - item.openedAt, 0));
   const parts = [`${glyphFor(item)} **${title}**`, age];
-  const threadId = session?.threadId ?? null;
-  if (threadId !== null) parts.push(`in <#${threadId}>`);
+  const link = itemLink(guildId, session?.threadId ?? null, item.messageId);
+  if (link !== null) parts.push(link);
   if (session?.ended === true) parts.push(ENDED_MARKER);
   const lines = [`${BULLET} ${parts.join(` ${SEPARATOR} `)}`];
   if (item.excerpt !== null && item.excerpt !== "") {
@@ -148,6 +187,9 @@ export function renderInboxCard(input: {
   /** Every open item, oldest opened first: `InboxStore.items()`'s own order. */
   items: readonly InboxItem[];
   session: InboxSessionLookup;
+  /** The guild the card's channel sits in, or null while the gateway has not cached it yet. Null
+   * makes every item's link fall back to its thread's channel mention chip. */
+  guildId: string | null;
   now: number;
 }): string {
   const lines: string[] = [PREVIEW, TITLE];
@@ -158,7 +200,7 @@ export function renderInboxCard(input: {
   let used = spent(lines);
   let shown = 0;
   for (const item of input.items) {
-    const drawn = itemLines(item, input.session(item.sessionId), input.now);
+    const drawn = itemLines(item, input.session(item.sessionId), input.guildId, input.now);
     const cost = spent(drawn);
     const tail = overflowTail(input.items.length - shown);
     if (used + cost + spent([tail]) > MAX_CARD_LENGTH) {

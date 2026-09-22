@@ -82,12 +82,16 @@ export type InboxCardOptions = {
   items: () => readonly InboxItem[];
   /** The session facts the renderer needs, read fresh on every tick per item. */
   session: InboxSessionLookup;
+  /** The guild the card's channel sits in, read fresh on every tick: null until the gateway has
+   * cached it, which is one of the two things (with a flagged reply's message ID) a jump link to a
+   * specific message needs. */
+  guildId: () => string | null;
   /** What the card writes to and reads its rate limits from. */
   transport: DiscordTransport;
   /**
    * The thread this broker already owns, from the previous run. Read through a call rather than
-   * passed, matching the sibling cards, so a caller that ends up not starting this card touches no
-   * state file on its account.
+   * passed, matching the sibling cards. The read happens at construction, not at `start`, so a
+   * caller with nothing to build must not construct this module at all.
    */
   binding: () => InboxCardBinding | null;
   /** Called whenever the binding is created or changes, so the caller can persist it. */
@@ -297,7 +301,12 @@ export function createInboxCard(options: InboxCardOptions): InboxCard {
 
   async function run(): Promise<void> {
     const at = now();
-    const card = renderInboxCard({ items: options.items(), session: options.session, now: at });
+    const card = renderInboxCard({
+      items: options.items(),
+      session: options.session,
+      guildId: options.guildId(),
+      now: at,
+    });
 
     // Creation first, and it is not held back by anything else: a card is worth far more than an
     // empty channel.
