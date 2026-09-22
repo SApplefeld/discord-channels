@@ -2722,6 +2722,7 @@ const LONG_REPLY = Array.from(
 
 /** The classifying grace `until` polls on wall clock once its primary bound has expired. */
 const UNTIL_GRACE_MS = 2_000;
+/** How often the grace re-checks the condition. */
 const UNTIL_GRACE_STEP_MS = 10;
 /** The primary bound, in event-loop turns. */
 const UNTIL_TURNS = 1_000;
@@ -2729,11 +2730,11 @@ const UNTIL_TURNS = 1_000;
 /**
  * Yields until the condition holds, so a test can act while a run is genuinely still in flight.
  *
- * The primary bound is 1000 event-loop turns. If the condition still has not held by then, the
- * wait keeps polling on wall clock, read from a monotonic clock, for a further grace purely to
- * classify the failure: it did not meet the bound either way, but a condition that holds inside
- * the grace was merely slow, while one that never holds is genuinely stuck. The test fails in
- * both cases; the grace only decides which message it fails with.
+ * The primary bound is `UNTIL_TURNS` event-loop turns. If the condition still has not held by
+ * then, the wait keeps polling on wall clock, read from a monotonic clock, for a further grace
+ * purely to classify the failure: it did not meet the bound either way, but a condition that holds
+ * inside the grace was merely slow, while one that never holds is genuinely stuck. The test fails
+ * in both cases; the grace only decides which message it fails with.
  */
 async function until(label: string, holds: () => boolean): Promise<void> {
   for (let turn = 0; turn < UNTIL_TURNS && !holds(); turn += 1) {

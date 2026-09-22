@@ -220,3 +220,25 @@ Files in scope: `broker/tail.test.ts`, `docs/archive/backlog-2026-Q3.md`.
 - None. The evidence is gathered on this box by the run.
 
 ## Chapters
+
+### Chapter 1 - 2026-09-22
+Completed: 1. The wait names its condition and classifies an expiry
+Implemented By: implementer-sonnet, with two main-session corrections before review
+Metrics: review rounds 1, closed major-closed; provenance 3 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section 1 open: changes `until` in broker/tail.test.ts to take a label and classify an expiry over a 2 s monotonic grace at 10 ms steps; serves the Design step 1 and section 1's acceptance; adds a mechanism the plan names (the classifying grace), none unnamed; size ~20 lines of helper, 3 tests, 7 call-site labels; not building it leaves every red reading "the condition never held", which is the evidence section 2 needs.
+- The implementer's "held only after the bound" test flipped its flag from a 50 ms timer, betting that 1000 event-loop turns finish first. A loaded box can break that bet, which would make the new test flaky in the same way as the group it instruments. The main session replaced the timer with a check counter that turns true on the first grace poll (call `UNTIL_TURNS + 2`), and named the bound `UNTIL_TURNS` so the count follows it.
+- Red first. The implementer observed all three helper tests red at runtime (`TypeError: holds is not a function`, the two-argument call hitting the one-argument helper). The main session then probed the new signature with the old failure body, on its own tree copy, restored and byte-compared. The two classification tests failed on their messages, and the pass-path test passed, as a pass-path lock should.
+- The blind reviewer, which never saw the plan, independently named the plan's leading hypothesis: the turn-counted bound races thread-pool file I/O in `tailer.poll()`. That is independent support for the hypothesis, not confirmation. Section 2 is still the confirmation.
+- Contention: a claude-kit full suite from another session (PID 15548) was live while the implementer ran and at the main session's first lane run at 22:16 UTC. The runner poll (`.kit/scratch/poll-runners.ps1`, validated against a decoy process) was built after that run. The close gate below ran on a box the poll read CLEAR both before and after.
+Assumptions:
+- assumed 2026-09-22 (the plan's section 1 Tests line, section 1): the grace stays a fixed 2 s rather than an injectable parameter, so the never-held test costs 2 s on this file's lane; reversal: one optional parameter.
+Review Findings: review: adversarial + blind at opus, Workflow at high. Major (blind, trace orchestrator-made to the Intent's refused alternative "switching the bound to wall clock without instrumenting first"): the bound is still counted in turns while the tailer waits on thread-pool I/O. Justified-not-fixed: this is the plan's own hypothesis, and section 3 moves the bound if section 2 confirms it. Major (adversarial): red-first unrecorded for the pass-path test. Dispositioned by the record above. Major (adversarial): lane and lint evidence not yet recorded. Dispositioned by the Gate line below. Minors: 2 fixed in the close pass (the doc comment names `UNTIL_TURNS` rather than repeating 1000; the step constant has its own comment), 0 upgraded, 4 left with the reason (2 s grace cost, noted by both lenses, is the plan's fixed grace; full-sentence message anchors are the contract section 2 reads; the pass-path test's reach is covered by the two rejection tests). The close pass was prose-only, and the author re-read its diff.
+Stamps: adjudicated 2, stamped 1 (forward-resource-arrangements-into-dispatch-briefs); the other was a peer session's read.
+Gate: targeted lane `node --test broker/tail.test.ts` at 2026-09-22 22:22 UTC, SCOTT-CLAUDE, box CLEAR before and after: 174 tests / 174 pass / 0 fail, exit 0, 2.6 s. Baseline on the same lane at 22:12 UTC, clean box, f0f6fbc: 171/171/0, exit 0, 0.6 s. Delta +3 tests, +2.0 s (the never-held test's grace). `npm run lint` exit 0 (baseline exit 0). Tests added: 3, each pinning one design-step-1 requirement: a condition held inside the bound passes; a condition held only after the bound fails with "<label> held only after the bound, N ms late"; a condition that never holds fails with "<label> never held within the grace". Retired 0, edited 7 call sites (label argument only, no behaviour change). Spawning tests added 0.
+Next: 2. Evidence: which kind of red the group produces
+Commit Model: Branch-and-PR
+Delta: kit-size at 2026-09-22 22:23 UTC, SCOTT-CLAUDE, exit 2:
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
