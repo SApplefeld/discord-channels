@@ -3,7 +3,12 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open. Everything delivered, shelved or declined is in
+One plan is parked as Ready for the worker's queue:
+[`channels_card-steward-asks_spec_v1.md`](channels_card-steward-asks_spec_v1.md), which has a
+supervised session's steward-shaped `ASK: <question>? Recommend: <choice>` reply open an item on the
+`Fleet: Inbox` card with a `supervisor ask` marker, instead of opening nothing. It builds on
+[`../archive/plans/channels_judge-unmirrored-replies_spec_v1.md`](../archive/plans/channels_judge-unmirrored-replies_spec_v1.md).
+Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
 
 ## Rules

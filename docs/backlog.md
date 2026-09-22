@@ -647,15 +647,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   reply that hands the operator a decision opens with an `ASK:` line drawn on the card with its
   excerpt; its absence on a session started after the update reopens section 2. Operator-pending.
 
-- Show a supervised session's steward-shaped ask on the `Fleet: Inbox` card, marked as one its
-  supervisor was also told about (handoff 2026-09-22, from the judge-unmirrored-replies plan's
-  finishing review and the operator's ruling recorded in its `## Intent`). A reply from a session
-  with a lineage that carries a line `ASK: <question>? Recommend: <choice>` matches `STEWARD_ASK`
-  at `broker/inbox/ask.ts:79` and returns at `broker/index.ts:808` before the mark read and the
-  judge, so it reaches the thread and never the card. A draft plan for the change was written at
-  that plan's close and handed to the Architect seat to review, finalize and dispatch; this entry
-  retires when that plan is registered in `docs/plans/`.
-
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
