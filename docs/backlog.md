@@ -600,6 +600,43 @@ and none carries a date of its own. An item added from here on carries `(parked 
   spreads every code point into an array before comparing the length, which measures 17 ms at the
   4 MB mirror ceiling and 1.2 ms at the 256 KB default, against 0 ms for a walk that stops at the
   limit. Ten other callers share it, so the change lands in `sanitize.ts` with its own tests.
+
+- Give the router's straggler gate a description of its own in `docs/architecture.md` (parked
+  2026-09-22, surfaced by the judge-unmirrored-replies plan's section 3). The gate is live at
+  `broker/routing/outbound.ts:1096` and drops a mirror post that names no session or names one the
+  posting token no longer holds, which is what stops a subprocess posting as its parent. It was
+  defined once, inside the architecture doc's judge paragraph, and `docs/security-model.md` pointed
+  there for it. That plan removed both, correctly, because the judge no longer arms off a mirror
+  post. The gate still runs and now has no description anywhere in `docs/`. It belongs with the
+  mirror route rather than the inbox, which is why it was out of scope there.
+
+- Run a comprehension pass over the four host documents on two blind readers' findings (parked
+  2026-09-22, surfaced by the judge-unmirrored-replies plan's section 3 review, where one reader
+  read as the operator and one as a fresh engineering session). None of these touch the inbox
+  passages that plan changed, which is why they were out of its scope. Majors, each cited passage
+  opened and confirmed present, with the gap each names still the readers' report to check: `docs/architecture.md`'s two hook inventories (the Hooks bullet and
+  "four events and five hooks" in External integrations) omit the `PreToolUse` question hook the
+  other three documents rely on; `docs/operations.md` says the scheduled task restarts the broker at
+  every logon without saying what a logon does to a broker already running; `docs/security-model.md`'s
+  "Files that must not be writable" never names `node_modules/`, which the broker executes at every
+  start; "the kit's frozen v1 plan-doc machine contract" in `docs/architecture.md` names a contract
+  no host document defines; `docs/security-model.md` cites "Operator check E" without linking
+  `docs/operator-checks.md`, where the checks live; `docs/operations.md` gives
+  `CHANNEL_BROKER_LOG_FILE` a default log path in "Where things are" and "unset (console only)" in
+  Tunables; the persona view reads fields of `.agentic-personas.json` the documents never describe;
+  and `docs/security-model.md` opens a paragraph with "Those are model ids" with no antecedent.
+  Minors, as the readers reported them and not yet checked: `CHANNEL_RELAY_HEARTBEAT_MS` is absent
+  from Tunables; `docs/install.md` still frames the channel flag as the per-host difference after
+  saying no host differs, and does not say whether `Install-Elevated.ps1` replaces step 3's
+  `Register-BrokerTask.ps1`; whether a held question moves a title to `needs you`; the third
+  stale-session exemption is named two ways across `docs/operations.md` and `docs/architecture.md`;
+  the board events path is called "fixed" and is configurable; three displaced or orphaned
+  paragraphs in `docs/security-model.md` (the forged-mirror fragment, the queued-command clauses, the
+  one-line `processToken` paragraph); two pointers to an unnamed plan doc; `cswap`, "latent" and the
+  relay, tailer, desk and card names used before they are defined; `D:\sapplefeld-channels` paths
+  that predate the checkout's move; no note on running the broker locally; a five-item list headed
+  "three groups"; and a self-referential layout remark.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

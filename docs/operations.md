@@ -591,8 +591,8 @@ judge. On, the knob builds the store, the snapshot and, where a usable key file 
 whether or not Discord is
 configured, and only the card's thread and timer wait on Discord, as the other cards do. Switched
 on, the broker logs one of two lines at start, `broker: the operator inbox is on, reading ASK: lines
-alone with the judge off` or `broker: the operator inbox is on, and the judge reads unmarked replies
-of mirrored sessions`, and that line is the quickest way to confirm which mode a host is in.
+alone with the judge off` or `broker: the operator inbox is on, and the judge reads unmarked
+replies`, and that line is the quickest way to confirm which mode a host is in.
 
 ### Reading the card
 
@@ -621,11 +621,10 @@ decide, answer or confirm something and whether it hands you an act to do now. A
 `CHANNEL_INBOX_THRESHOLD` opens the item. A session holds one item at most, so a later reply that
 restates the ask refreshes the same line rather than adding one, and a session's own `ASK:` line
 outranks the judge's reading of it. A session launched with `-NoMirror` has its turn-final replies
-dropped at the broker's intake, and its reply-tool answers are read for `ASK:` lines and not sent to
-the judge, since its own hooks post no mirror. That switch is advisory
-against a process holding the session's token, which `security-model.md` states. One shape is
-skipped on purpose: a worker persona's `ASK: <question>? Recommend: <choice>` line is addressed to
-its steward, so a supervised session's reply carrying one opens nothing and is not judged.
+dropped at the broker's intake, so what the card sees from it is its reply-tool answers, and those
+are read and judged exactly as any other session's. One shape is skipped on purpose: a
+worker persona's `ASK: <question>? Recommend: <choice>` line is addressed to its steward, so a
+supervised session's reply carrying one opens nothing and is not judged.
 
 An item clears when you send that session a prompt, from its Discord thread or from its console,
 later than the reply that opened or last refreshed it. Reading the thread clears nothing, and
@@ -646,11 +645,7 @@ from Discord before that reply's own mirror post reaches the broker clears nothi
 either: the post is tapped after your answer, so its item opens, and it stays until your next
 prompt. A jump link joins the session's current thread to the message ID the flag carried, so a link
 into a thread the broker has since rebuilt, after you deleted the old one, still lands you in the
-right thread, with Discord's notice that the message is unknown. And a broker restart forgets which
-sessions it has seen mirror posts from, so after a restart a session's reply-tool answers are read
-for `ASK:` lines and not judged until its next mirror post arrives. That post is judged itself where
-it is a reply, so the window is the reply-tool answers between the restart and the session's next
-mirrored turn. An unmarked ask in that window is missed, which is the status quo without the inbox.
+right thread, with Discord's notice that the message is unknown.
 
 ### Turning the judge off
 
@@ -661,9 +656,10 @@ the checkout root. Deleting the file alone changes nothing until that restart. T
 reads `reading ASK: lines alone with the judge off`, and the inbox runs on marked replies alone. A
 key file that fails the check the install guide states turns the judge off the same way, with one
 warning naming the file and the cause, and never stops the broker. To remove the whole card, set
-`CHANNEL_INBOX_CARD` off and restart; the thread already in the channel is left alone.
-`CHANNEL_MIRROR=off` also keeps every session off the judge, since the judge reads a session only
-after one of its mirror posts has arrived, but it takes the conversation off Discord with it.
+`CHANNEL_INBOX_CARD` off and restart; the thread already in the channel is left alone. Those two
+are the only switches that stop reply text reaching the vendor. `CHANNEL_MIRROR=off` is not one of
+them: it takes the conversation off Discord, and the judge reads reply-tool answers whatever the
+mirror setting.
 
 ## What a session card says about its model
 
