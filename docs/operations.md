@@ -605,7 +605,8 @@ bullet opens with a glyph saying how the ask was recognized: 📝 for a session 
 reply with an `ASK:` line, 💬 for a reply the judge read as asking you to decide, answer or confirm
 something, and ⚡ for a reply the judge read as handing you an act to perform now, such as a merge.
 Then the session's title in bold, the age since the ask first opened (`just now`, `12m ago`,
-`3h ago`, `2d ago`), a link, and the word `ended` where the session has since ended. The age counts
+`3h ago`, `2d ago`), a link, the words `supervisor ask` on some asks (explained below), and the word
+`ended` where the session has since ended. The age counts
 from the opening rather than the latest restatement, so a session that keeps repeating its ask does
 not climb the card. The link is a jump link to the most recent flagged message whose ID the
 broker holds, and a channel chip to the session's thread where the item holds no message ID. A reply
@@ -626,9 +627,29 @@ decide, answer or confirm something and whether it hands you an act to do now. A
 restates the ask refreshes the same line rather than adding one, and a session's own `ASK:` line
 outranks the judge's reading of it. A session launched with `-NoMirror` has its turn-final replies
 dropped at the broker's intake, so what the card sees from it is its reply-tool answers, and those
-are read and judged exactly as any other session's. One shape is skipped on purpose: a
-worker persona's `ASK: <question>? Recommend: <choice>` line is addressed to its steward, so a
-supervised session's reply carrying one opens nothing and is not judged.
+are read and judged exactly as any other session's.
+
+A `supervisor ask` marker on an item means its ask is shaped as a persona worker's question to its
+supervisor, which may already be answering it. Read the worker's thread before you act on it. A
+worker is a session the persona supervisor launched, which declares that parentage (its lineage)
+when it registers. It asks its supervisor with a line of the form
+`ASK: <question>? Recommend: <choice>`, and the marker draws where that is the item's marked line.
+
+The marker does not mean the supervisor read the ask. The broker sees the line's shape and the
+session's declared lineage, never what the persona plugin did with the line. A session can also
+declare a lineage it does not have. An indented line of this shape marks the ask but draws no
+marker, because the plugin's own pattern requires the line to start at its first character. A line
+that still carries the template's angle-bracket placeholders draws the marker, though the plugin
+opens no ask for it.
+
+A marked ask of this shape is never sent to the judge. The same shape written lowercase or inside a
+code block is not a mark, so a reply carrying only that is judged like any other unmarked reply.
+
+The item clears the way every item clears, on a later prompt to that session. The persona plugin
+delivers the supervisor's answer into the worker's session as a submitted prompt, and the broker
+does not tell that from yours. So the supervisor's answer may clear the item too, if that prompt
+reaches the broker's mirror. If a flagged item stays after you have seen the supervisor answer in
+the thread, a prompt of your own clears it.
 
 An item clears when you send that session a prompt, from its Discord thread or from its console,
 later than the reply that opened or last refreshed it. Reading the thread clears nothing, and

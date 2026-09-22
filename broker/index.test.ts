@@ -1937,6 +1937,7 @@ test("an ASK: line opens a marked item at the tap's instant and is never sent to
       refreshedAt: 2_000,
       source: "marked",
       excerpt: "merge PR 12?",
+      stewardAsk: false,
       scores: null,
       winner: null,
       count: 1,
@@ -1961,6 +1962,7 @@ test("an unmarked reply from an unmirrored session is judged, and the verdict op
       refreshedAt: 2_000,
       source: "judged",
       excerpt: null,
+      stewardAsk: false,
       scores: { needsReply: 0.9, needsAct: 0.1 },
       winner: "needs_reply",
       count: 1,
@@ -2043,24 +2045,100 @@ test("an unusable key file turns the judge off with one warning, and never stops
   assert.deepEqual(calls, []);
 });
 
-test("a supervised session's steward-shaped reply opens nothing and is never judged, and the same reply unsupervised marks", async (t) => {
+test("a supervised session's steward-shaped reply opens a marked item carrying the steward flag and is never judged, and the same reply unsupervised marks without it", async (t) => {
   const reply = "ASK: which backend? Recommend: postgres\nASK: also this\nstill working";
   const supervised = inboxUnderTest(t, { lineage: "persona-worker-3" });
   assert.ok(supervised.inbox);
   supervised.inbox.reply("session-a", reply, 2_000, null);
   await settled();
-  assert.deepEqual(supervised.inbox.items(), [], "the steward answers it, not the operator");
-  assert.deepEqual(supervised.calls, [], "and its text never leaves the machine");
+  assert.deepEqual(supervised.inbox.items(), [
+    {
+      sessionId: "session-a",
+      openedAt: 2_000,
+      refreshedAt: 2_000,
+      source: "marked",
+      excerpt: "which backend? Recommend: postgres",
+      stewardAsk: true,
+      scores: null,
+      winner: null,
+      count: 1,
+      messageId: null,
+    },
+  ]);
+  assert.deepEqual(supervised.calls, [], "a marked reply never leaves the machine");
 
-  // The same supervised session's plain reply still takes the ordinary path.
+  // The same supervised session's later plain ask refreshes the item and takes the flag down.
   supervised.inbox.reply("session-a", "ASK: merge it?", 3_000, null);
-  assert.equal(supervised.inbox.items().length, 1, "a plain ASK: line from a worker still marks");
+  assert.equal(supervised.inbox.items().length, 1);
+  assert.equal(supervised.inbox.items()[0].excerpt, "merge it?");
+  assert.equal(supervised.inbox.items()[0].stewardAsk, false);
 
+  // No lineage, no supervisor for the line to be addressed to.
   const interactive = inboxUnderTest(t, { lineage: null });
   assert.ok(interactive.inbox);
   interactive.inbox.reply("session-a", reply, 2_000, null);
   assert.equal(interactive.inbox.items().length, 1);
   assert.equal(interactive.inbox.items()[0].excerpt, "which backend? Recommend: postgres");
+  assert.equal(interactive.inbox.items()[0].stewardAsk, false);
+});
+
+test("an indented steward-shaped line from a supervised session marks with the steward flag down", async (t) => {
+  // The mark rule reads past leading whitespace and the persona plugin's matcher does not, so the
+  // plugin would not have read this line as a steward ask either.
+  const { inbox, calls } = inboxUnderTest(t, { lineage: "persona-worker-3" });
+  assert.ok(inbox);
+  inbox.reply("session-a", "  ASK: which backend? Recommend: postgres", 2_000, null);
+  await settled();
+  assert.equal(inbox.items().length, 1);
+  assert.equal(inbox.items()[0].source, "marked");
+  assert.equal(inbox.items()[0].excerpt, "which backend? Recommend: postgres");
+  assert.equal(inbox.items()[0].stewardAsk, false);
+  assert.deepEqual(calls, []);
+});
+
+test("the steward flag is read from the line the excerpt came from, never from the rest of the reply", async (t) => {
+  // Each reply carries a steward-shaped text somewhere, and the marked line is a plain ask, so the
+  // item is the plain ask's and carries no flag.
+  const cases = [
+    // A steward-shaped line after the marked one.
+    { reply: "ASK: merge it?\nASK: which backend? Recommend: postgres", excerpt: "merge it?" },
+    // The recommendation on the line after the marked one.
+    { reply: "ASK: which?\nRecommend: postgres", excerpt: "which?" },
+    // A steward-shaped line inside a fence, ahead of the marked one.
+    { reply: "```\nASK: which backend? Recommend: postgres\n```\nASK: merge it?", excerpt: "merge it?" },
+  ];
+  for (const { reply, excerpt } of cases) {
+    const { inbox, calls } = inboxUnderTest(t, { lineage: "persona-worker-3" });
+    assert.ok(inbox);
+    inbox.reply("session-a", reply, 2_000, null);
+    await settled();
+    assert.equal(inbox.items().length, 1, reply);
+    assert.equal(inbox.items()[0].source, "marked", reply);
+    assert.equal(inbox.items()[0].excerpt, excerpt, reply);
+    assert.equal(inbox.items()[0].stewardAsk, false, reply);
+    assert.deepEqual(calls, [], `${reply}: a marked reply is never judged`);
+  }
+});
+
+test("a supervised session's steward-shaped line the mark rule refuses opens nothing at the tap and is judged", async (t) => {
+  // The persona plugin's matcher is case-insensitive and fence-blind, and the mark rule is neither,
+  // so these replies are steward-shaped and unmarked. They take the path every unmarked reply takes.
+  const refused = [
+    "ask: which backend? Recommend: postgres",
+    "```\nASK: which backend? Recommend: postgres\n```",
+  ];
+  for (const reply of refused) {
+    const { inbox, calls } = inboxUnderTest(t, { lineage: "persona-worker-3" });
+    assert.ok(inbox);
+    inbox.reply("session-a", reply, 2_000, null);
+    assert.deepEqual(inbox.items(), [], `${reply}: no mark, so nothing opens at the tap`);
+    await settled();
+    assert.equal(calls.length, 1, `${reply}: submitted to the judge`);
+    assert.ok(calls[0].includes("which backend? Recommend: postgres"), "the reply text is what was sent");
+    assert.equal(inbox.items().length, 1, `${reply}: the verdict opens the item`);
+    assert.equal(inbox.items()[0].source, "judged");
+    assert.equal(inbox.items()[0].stewardAsk, false);
+  }
 });
 
 test("a stale session's item stays, and an ended one stays until an operator post there or its prune", async (t) => {
@@ -2248,6 +2326,7 @@ test("startBroker's inbox restores beside the registry, clears on an operator pr
     refreshedAt: 2_000,
     source: "marked",
     excerpt: "merge it?",
+    stewardAsk: false,
     scores: null,
     winner: null,
     count: 1,

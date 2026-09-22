@@ -15,6 +15,7 @@ function marked(overrides: Partial<InboxItem> = {}): InboxItem {
     refreshedAt: NOW - 60_000,
     source: "marked",
     excerpt: "please review the migration",
+    stewardAsk: false,
     scores: null,
     winner: null,
     count: 1,
@@ -30,6 +31,7 @@ function judged(overrides: Partial<InboxItem> = {}): InboxItem {
     refreshedAt: NOW - 60_000,
     source: "judged",
     excerpt: null,
+    stewardAsk: false,
     scores: { needsReply: 0.9, needsAct: 0.2 },
     winner: "needs_reply",
     count: 1,
@@ -160,6 +162,57 @@ test("an ended session's item draws an ended marker", () => {
     now: NOW,
   });
   assert.match(drawn, /ended/);
+});
+
+test("a steward-flagged item draws the marker between its link and its ended marker, and only there", () => {
+  const flagged = marked({ sessionId: "session-a", stewardAsk: true, messageId: MESSAGE_ID });
+  const unflagged = marked({ sessionId: "session-b", stewardAsk: false });
+  // A judged item's flag is always false, a rule the store enforces on the way in; drawn here to pin
+  // that the card draws no marker for it, the same as any other item with the flag down.
+  const plainJudged = judged({ sessionId: "session-c" });
+  const flaggedEnded = marked({ sessionId: "session-d", stewardAsk: true });
+  const session = sessionsOf({
+    "session-a": SESSION_A,
+    "session-b": SESSION_B,
+    "session-c": { title: "charlie worker", threadId: "444444444444444444", ended: false },
+    "session-d": { title: "delta worker", threadId: "555555555555555555", ended: true },
+  });
+
+  const drawn = renderInboxCard({
+    items: [flagged, unflagged, plainJudged, flaggedEnded],
+    session,
+    guildId: GUILD_ID,
+    now: NOW,
+  });
+  const lines = drawn.split("\n");
+  const flaggedLine = lines.find((line) => line.includes("alpha worker")) ?? "";
+  const unflaggedLine = lines.find((line) => line.includes("bravo worker")) ?? "";
+  const judgedLine = lines.find((line) => line.includes("charlie worker")) ?? "";
+  const endedLine = lines.find((line) => line.includes("delta worker")) ?? "";
+
+  assert.match(flaggedLine, /supervisor ask/, flaggedLine);
+  assert.doesNotMatch(unflaggedLine, /supervisor ask/, "an unflagged marked item draws no marker");
+  assert.doesNotMatch(judgedLine, /supervisor ask/, "a judged item's flag, always false, draws no marker");
+  assert.ok(endedLine.includes("supervisor ask") && endedLine.includes("ended"), endedLine);
+  assert.equal(drawn.split("supervisor ask").length - 1, 2, "the marker draws once per flagged item, never on a sub-bullet");
+  const link = `https://discord.com/channels/${GUILD_ID}/${SESSION_A.threadId}/${MESSAGE_ID}`;
+  assert.ok(flaggedLine.includes(link), flaggedLine);
+  assert.ok(flaggedLine.indexOf(link) < flaggedLine.indexOf("supervisor ask"), "the marker follows the link");
+  assert.ok(
+    endedLine.indexOf("supervisor ask") < endedLine.indexOf("ended"),
+    "the marker precedes the ended marker",
+  );
+});
+
+test("a judged item draws no steward marker even where its flag is up, since the marker is a marked item's", () => {
+  // The store never builds this item; the card holds the rule itself rather than trusting every caller.
+  const drawn = renderInboxCard({
+    items: [{ ...judged({ sessionId: "session-a" }), stewardAsk: true }],
+    session: sessionsOf({ "session-a": SESSION_A }),
+    guildId: GUILD_ID,
+    now: NOW,
+  });
+  assert.doesNotMatch(drawn, /supervisor ask/);
 });
 
 test("a session the lookup cannot resolve still draws a line, under a name built from its ID", () => {

@@ -635,7 +635,17 @@ and none carries a date of its own. An item added from here on carries `(parked 
   one-line `processToken` paragraph); two pointers to an unnamed plan doc; `cswap`, "latent" and the
   relay, tailer, desk and card names used before they are defined; `D:\sapplefeld-channels` paths
   that predate the checkout's move; no note on running the broker locally; a five-item list headed
-  "three groups"; and a self-referential layout remark.
+  "three groups"; and a self-referential layout remark. Two more blind readers, run 2026-09-22 by
+  the card-steward-asks plan's section 3 review, repeated several of these and added four, each
+  confirmed present by a grep of the three documents: "the kit" (first use
+  `docs/architecture.md:521`), claude-swap (first use `docs/operations.md:407`) and the persona
+  plugin (`agent_persona`, `docs/architecture.md:504`) are used and never introduced;
+  `docs/operations.md:932` names "the raised mirror timeout" with no timeout defined; and
+  `docs/security-model.md:1005`, "`processToken` never reaches either.", has no recoverable
+  antecedent. Two judgment findings, reported by one reader and not a grep's to confirm: no single
+  inventory of what leaves the machine exists, and whether the judge can run on a host with the
+  inbox on and Discord unconfigured is left to inference between the operations and architecture
+  documents.
 
 - Run the unmirrored-reply judge's three live checks (handoff 2026-09-22, from
   `archive/plans/channels_judge-unmirrored-replies_spec_v1.md`'s Operator Verification). After the
@@ -646,6 +656,31 @@ and none carries a date of its own. An item added from here on carries `(parked 
   open asks.` two intervals later, with the key file in place, reopens section 1. A persona's next
   reply that hands the operator a decision opens with an `ASK:` line drawn on the card with its
   excerpt; its absence on a session started after the update reopens section 2. Operator-pending.
+
+- Run the steward-ask marker's two live checks (handoff 2026-09-22, from
+  `archive/plans/channels_card-steward-asks_spec_v1.md`'s Operator Verification). After the broker
+  is updated on a host running personas, a persona worker's reply carrying
+  `ASK: <question>? Recommend: <choice>` on one line appears on the `Fleet: Inbox` card with its
+  excerpt and the `supervisor ask` marker within one refresh interval; its absence two intervals
+  later reopens that plan's section 1, and its presence without the marker reopens section 2. Then
+  let the worker's supervisor answer a flagged item and note whether the item clears without a
+  prompt of your own. Either result matches the host documents; the result settles whether the
+  plan's second assumption, that a supervisor's answer does not clear the item, holds on this
+  plugin. Operator-pending.
+
+- Refuse a template placeholder in the broker's steward-shape reading, as the persona plugin does
+  (parked 2026-09-22, surfaced by the card-steward-asks plan's documentation curation). The plugin
+  refuses a captured question still carrying a `<...>` placeholder, and `hasStewardAsk` in
+  `broker/inbox/ask.ts` copies only its regular expression, so a supervised worker echoing the
+  template literally draws the `supervisor ask` marker where the plugin opens no ask. The host
+  documents state the case. The fix is one condition in `hasStewardAsk` and a test, and whether it
+  is wanted is the operator's call, since the marker is defined as the line's shape and the echo
+  has that shape.
+
+- Move the retired-account-suppression plan's row out of the Reference table in `docs/README.md`
+  (parked 2026-09-22, surfaced by the card-steward-asks plan's documentation curation). The row
+  sits in the two-column Reference table with three cells, so the archived plan is missing from the
+  Plans list and the Reference table draws a stray cell. It belongs in the Plans table at its date.
 
 ## Snapshots
 

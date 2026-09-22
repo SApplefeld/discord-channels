@@ -99,6 +99,7 @@ function marked(overrides: Partial<InboxItem> = {}): InboxItem {
     refreshedAt: START,
     source: "marked",
     excerpt: "please review the migration",
+    stewardAsk: false,
     scores: null,
     winner: null,
     count: 1,

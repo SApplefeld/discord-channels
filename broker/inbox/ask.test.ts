@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_EXCERPT_CODE_POINTS, findAsk, hasStewardAsk } from "./ask.ts";
+import { MAX_EXCERPT_CODE_POINTS, findAsk, findAskLine, hasStewardAsk } from "./ask.ts";
 
 test("an ASK: line outside a fence marks the reply, with the rest of the line as the excerpt", () => {
   const reply = ["Merged the refactor.", "", "ASK: ship it   tonight  or wait?", "Carrying on."].join(
@@ -98,6 +98,18 @@ test("a steward-shaped line is found on the persona plugin's own pattern", () =>
   assert.equal(hasStewardAsk(" ASK: x? Recommend: y"), false);
   // A run of spaces after the colon is still the persona form.
   assert.equal(hasStewardAsk("ASK:     Ship it? Recommend:    yes"), true);
+});
+
+test("the marked line is returned as it stands in the reply, on findAsk's own mark and fence rules", () => {
+  // Leading whitespace is kept, so a steward reading of the line keeps its first-character anchor.
+  assert.equal(findAskLine("Done.\r\n  ASK: which? Recommend: x\r\nMore."), "  ASK: which? Recommend: x");
+  // The first mark outside a fence is the line, as it is the excerpt's.
+  assert.equal(findAskLine("```\nASK: quoted? Recommend: x\n```\nASK: merge it?\nASK: second"), "ASK: merge it?");
+  assert.equal(findAsk("```\nASK: quoted? Recommend: x\n```\nASK: merge it?\nASK: second"), "merge it?");
+  // No mark, no line: a lowercase ask, a fenced ask and a reply with no ask at all.
+  assert.equal(findAskLine("ask: lowercase"), null);
+  assert.equal(findAskLine("```\nASK: quoted\n```"), null);
+  assert.equal(findAskLine("still working"), null);
 });
 
 test("a long whitespace run after ASK: is refused in linear time", () => {
