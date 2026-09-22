@@ -8,9 +8,9 @@
 // inbox. So a blockquoted `> ASK:` line, a bulleted `- ASK:` line, a lowercase `ask:` and an `ASK:`
 // in the middle of a line all mark nothing, and anything inside a fence marks nothing either.
 //
-// It also answers a second, separate question: whether a reply carries a line the persona plugin
-// reads as a worker's ask of its steward. That reading follows the sibling's matcher, not the mark
-// rule above, and is described at `hasStewardAsk`.
+// It also answers a second, separate question: whether the marked line is shaped as the persona
+// plugin's ask of a worker's steward. That reading follows the sibling's matcher, not the mark rule
+// above, and is described at `hasStewardAsk`.
 //
 // Pure and synchronous, and it logs nothing, since what it reads is session-authored text.
 import { sliceCodePoints, visible } from "../sanitize.ts";
@@ -45,7 +45,14 @@ const FENCE_OPEN = /^(?:(`{3,})[^`]*$|(~{3,}))/;
  */
 export function findAsk(text: string): string | null {
   const line = findAskLine(text);
-  if (line === null) return null;
+  return line === null ? null : excerptOf(line);
+}
+
+/**
+ * The excerpt of a line `findAskLine` returned, built as `findAsk` builds it. A caller that already
+ * holds the marked line takes its excerpt here rather than scanning the reply a second time.
+ */
+export function excerptOf(line: string): string {
   // Whitespace collapses before the strip: a tab is in the invisible class, and stripped first it
   // would join the two words it separated.
   const rest = line.trimStart().slice(MARK.length).replace(/\s+/g, " ");
@@ -89,9 +96,11 @@ export function findAskLine(text: string): string | null {
 const STEWARD_ASK = /^ASK:\s*(?=\S)(.+?\?\s*Recommend:\s*.+)$/im;
 
 /**
- * Whether the reply carries at least one line the persona plugin reads as a worker's ask of its
- * steward: `ASK: <question>? Recommend: <choice>`. Such a line is addressed to the steward rather
- * than to the operator, and the caller that knows the session's lineage decides what that means.
+ * Whether the text holds a line shaped as the persona plugin's ask of a worker's steward:
+ * `ASK: <question>? Recommend: <choice>`. The inbox tap hands it the one marked line
+ * `findAskLine` returned, never the whole reply, so the steward flag describes the line the
+ * excerpt came from; a whole-reply call would raise the flag on some other line. The caller that
+ * knows the session's lineage decides what the shape means.
  *
  * It deliberately differs from `findAsk`'s mark rule. The mark rule is the inbox's own and is
  * uppercase-only and fence-aware; this one copies the sibling's matcher as it stands, so it is

@@ -44,7 +44,7 @@ import { loadUsageBinding, saveUsageBinding } from "./usage/binding.ts";
 import { createBoardCard } from "./board/thread.ts";
 import type { BoardCardOptions } from "./board/thread.ts";
 import { loadBoardBinding, saveBoardBinding } from "./board/binding.ts";
-import { findAsk, findAskLine, hasStewardAsk } from "./inbox/ask.ts";
+import { excerptOf, findAskLine, hasStewardAsk } from "./inbox/ask.ts";
 import { createJudge } from "./inbox/judge.ts";
 import type { JudgeFetch } from "./inbox/judge.ts";
 import { createInboxStore, loadInboxSnapshot, saveInboxSnapshot } from "./inbox/store.ts";
@@ -809,12 +809,12 @@ export function inboxWiring(options: {
       const record = recordOf(sessionId);
       if (record === undefined) return;
       const shown = messageId === null ? {} : { messageId };
-      const excerpt = findAsk(text);
-      if (excerpt !== null) {
-        // The flag reads the marked line alone, untrimmed, so it describes the line the excerpt came
-        // from, and an indented line fails the matcher's first-character anchor as it does there.
-        const line = findAskLine(text);
-        const stewardAsk = record.lineage !== null && line !== null && hasStewardAsk(line);
+      const line = findAskLine(text);
+      if (line !== null) {
+        // The excerpt and the flag both read the marked line alone. The flag takes it untrimmed, so
+        // an indented line fails the matcher's first-character anchor as it does in the plugin.
+        const excerpt = excerptOf(line);
+        const stewardAsk = record.lineage !== null && hasStewardAsk(line);
         store.flag(sessionId, { source: "marked", postedAt, excerpt, stewardAsk, ...shown });
         return;
       }

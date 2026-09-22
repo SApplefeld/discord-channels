@@ -605,8 +605,8 @@ bullet opens with a glyph saying how the ask was recognized: 📝 for a session 
 reply with an `ASK:` line, 💬 for a reply the judge read as asking you to decide, answer or confirm
 something, and ⚡ for a reply the judge read as handing you an act to perform now, such as a merge.
 Then the session's title in bold, the age since the ask first opened (`just now`, `12m ago`,
-`3h ago`, `2d ago`), a link, the words `supervisor ask` where a persona worker's marked ask is shaped
-as a question to its supervisor (see below), and the word `ended` where the session has since ended. The age counts
+`3h ago`, `2d ago`), a link, the words `supervisor ask` on some asks (explained below), and the word
+`ended` where the session has since ended. The age counts
 from the opening rather than the latest restatement, so a session that keeps repeating its ask does
 not climb the card. The link is a jump link to the most recent flagged message whose ID the
 broker holds, and a channel chip to the session's thread where the item holds no message ID. A reply
@@ -637,10 +637,17 @@ when it registers. It asks its supervisor with a line of the form
 
 The marker does not mean the supervisor read the ask. The broker sees the line's shape and the
 session's declared lineage, never what the persona plugin did with the line. A session can also
-declare a lineage it does not have. The item clears the way every item clears, on your own prompt
-to that session, and never on the supervisor's answer, which the broker does not see. A marked ask
-of this shape is never sent to the judge. The same shape written lowercase or inside a code block
-is not a mark, so a reply carrying only that is judged like any other unmarked reply.
+declare a lineage it does not have. An indented line of this shape marks the ask but draws no
+marker, because the plugin's own pattern requires the line to start at its first character.
+
+A marked ask of this shape is never sent to the judge. The same shape written lowercase or inside a
+code block is not a mark, so a reply carrying only that is judged like any other unmarked reply.
+
+The item clears the way every item clears, on a later prompt to that session. The persona plugin
+delivers the supervisor's answer into the worker's session as a submitted prompt, and the broker
+does not tell that from yours. So the supervisor's answer may clear the item too, if that prompt
+reaches the broker's mirror. If a flagged item stays after you have seen the supervisor answer in
+the thread, a prompt of your own clears it.
 
 An item clears when you send that session a prompt, from its Discord thread or from its console,
 later than the reply that opened or last refreshed it. Reading the thread clears nothing, and

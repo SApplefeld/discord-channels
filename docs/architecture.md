@@ -750,21 +750,26 @@ session that did not mark it.
 
 One marked shape carries a flag. A supervised session is one whose record carries a lineage, which
 the persona supervisor's launches declare and an interactive session never does (see the lineage
-paragraph above). Where such a session's marked line, the one the excerpt comes from, also has the
-form `ASK: <question>? Recommend: <choice>`, matched on the persona plugin's own pattern, it is
-shaped as a worker's ask of its steward. It is marked like any other `ASK:` line and is not sent to
-the judge. Its item carries the steward flag, which the card draws as a `supervisor ask` marker.
-Another line of the same reply never raises the flag. The flag records the line's shape and the
-record's lineage, and not whether the persona plugin read the line.
+paragraph above). The flag goes up where such a session's marked line, the one the excerpt comes
+from, has the form `ASK: <question>? Recommend: <choice>`. That form is matched on the persona
+plugin's own pattern, and it is shaped as a worker's ask of its steward. The line is marked like any
+other `ASK:` line and is not sent to the judge. Its item carries the steward flag, which the card
+draws as a `supervisor ask` marker. Another line of the same reply never raises the flag. An
+indented marked line never raises it either, because the plugin's pattern anchors at the line's
+first character while the mark rule allows leading space.
 
-The broker cannot see whether the plugin read it. The plugin matches the shape over a worker's
-turn-final answer. Its reply backstop can post that same answer through the reply tool, so a post's
-route does not say which reading it had. The lineage is the session's own declaration at
-registration (the security model owns how), so the marker is the session's report of what it is
-and never proof. The item clears on the operator's prompt like every item, and the supervisor's
-answer, which the broker does not see, clears nothing. A reply whose only steward-shaped line is
-one the mark rule refuses, such as a lowercase `ask:` or a line inside a fence, carries no mark and
-goes to the judge like any other.
+The flag records the line's shape and the record's lineage, and not whether the persona plugin read
+the line. The broker cannot see that. The plugin matches the shape over a worker's turn-final
+answer. Its reply backstop can post that same answer through the reply tool, so a post's route does
+not say which reading it had. The lineage is the session's own declaration at registration (the
+security model owns how), so the marker is the session's report of what it is and never proof.
+
+A flagged item clears the way every item does, on a later prompt to that session. The persona
+plugin delivers a supervisor's answer to its worker as a prompt submitted into the worker's
+session, and the broker does not tell that prompt from the operator's. Whether the answer clears
+the item therefore turns on whether that submitted prompt reaches the broker's mirror route, which
+this repository does not control. A reply carrying no mark goes to the judge like any other,
+including one whose only steward-shaped line is lowercase or inside a fence.
 
 The judge is the second opener. A tapped reply with no mark goes to TypeSafe's Jev classifier
 (`broker/inbox/judge.ts`) with two yes-or-no questions: whether the message asks the operator to

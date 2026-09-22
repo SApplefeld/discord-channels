@@ -224,7 +224,9 @@ and the acceptance is the read of each named passage; as a second net, `grep -n 
 judged\|skipped on purpose" docs/architecture.md docs/operations.md docs/security-model.md` returns
 no line about a supervised session's steward-shaped reply, with every remaining hit read once
 against its own subject rather than counted.
-Files in scope: `docs/architecture.md`, `docs/operations.md`, `docs/security-model.md`.
+Files in scope: `docs/architecture.md`, `docs/operations.md`, `docs/security-model.md`,
+`docs/backlog.md` (the section review's out-of-scope reader findings, added to the existing
+comprehension-pass entry).
 Audience: the operator, expert in this system; a future session with no context, engineer level.
 Questions each must answer: what a `supervisor ask` marker on the card means; whether such a reply
 is sent to the judge; what clears the item. Voice: company. Fact base: the as-built
@@ -270,6 +272,11 @@ in scope only once a section is amended to name it.
   excerpt and the `supervisor ask` marker within one refresh interval
   (`CHANNEL_INBOX_CARD_REFRESH_MS`, 60 seconds by default). Its absence two intervals later reopens
   section 1; its presence without the marker reopens section 2.
+- With such a flagged item on the card, let the worker's supervisor answer it and note whether the
+  item clears without a prompt of your own. Either result is consistent with the host documents,
+  which say the broker does not tell the supervisor's submitted answer from your prompt; the result
+  settles whether the plan's second assumption (a supervisor's answer does not clear the item) holds
+  on this plugin, and an item that clears is the case the documents' "either may clear it" covers.
 
 ## Open Questions
 
