@@ -2294,3 +2294,40 @@ test("startBroker's inbox restores beside the registry, clears on an operator pr
   );
   assert.deepEqual(broker.inbox.items(), []);
 });
+
+test("the inbox card knob builds nothing on a broker with no discord configured", async (t) => {
+  // The other half of the wiring the seams test above never reaches: with no channel there is
+  // nowhere to draw a card, so the knob alone must still open no thread, start no refresh timer and
+  // write no binding file, on the board card's own test shape.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-wiring-"));
+  const logFile = path.join(dir, "broker.log");
+  const bindingFile = path.join(dir, "inbox-card.json");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(bindingFile, "{not json", "utf8");
+
+  const broker = await startBroker(
+    config({ stateFile: path.join(dir, "state.json"), logFile, inboxCard: true }),
+  );
+  await broker.stop();
+
+  assert.equal(
+    readFileSync(bindingFile, "utf8"),
+    "{not json",
+    "the binding file is never read or rewritten without a channel to draw in",
+  );
+  const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  assert.doesNotMatch(logged, /inbox card/, "no card wiring runs without a channel to draw in");
+});
+
+test("the inbox card stays unbuilt when its own knob is off", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-knob-off-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bindingFile = path.join(dir, "inbox-card.json");
+
+  const broker = await startBroker(
+    config({ stateFile: path.join(dir, "state.json"), logFile: null, inboxCard: false }),
+  );
+  await broker.stop();
+
+  assert.ok(!existsSync(bindingFile), "no binding file is ever created with the knob off");
+});

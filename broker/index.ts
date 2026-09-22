@@ -21,7 +21,12 @@ import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { createPinKeeper } from "./discord/pins.ts";
-import { renderModelChange, renderQuestionNotice, renderRestartNotice } from "./discord/render.ts";
+import {
+  displayName,
+  renderModelChange,
+  renderQuestionNotice,
+  renderRestartNotice,
+} from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import {
   answerableFromThread,
@@ -44,6 +49,8 @@ import { createJudge } from "./inbox/judge.ts";
 import type { JudgeFetch } from "./inbox/judge.ts";
 import { createInboxStore, loadInboxSnapshot, saveInboxSnapshot } from "./inbox/store.ts";
 import type { InboxItem } from "./inbox/store.ts";
+import { createInboxCard } from "./inbox/thread.ts";
+import { loadInboxBinding, saveInboxBinding } from "./inbox/binding.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { CallOutcome, DiscordTransport, ThreadMessenger } from "./discord/transport.ts";
 import {
@@ -921,6 +928,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let fleetCard: () => string | null = () => null;
   // The fleet board card's own message, on the same terms and for the same reason.
   let boardCardMessage: () => string | null = () => null;
+  // The inbox card's own message, on the same terms and for the same reason.
+  let inboxCardMessage: () => string | null = () => null;
   // The blocked-state desk, mutable for the reason `threadFor` is: it is built inside the Discord
   // block below, because its alerts need the sender gate's operator ID and the surface's threads,
   // and the refresh timer that ticks it starts before that block finishes. Without Discord it is
@@ -935,7 +944,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // and each named only while it has a message to name. A card a knob left unbuilt, and one Discord
   // has reported gone until it is rebuilt, hold no slot at all.
   const permanentCards = (): string[] =>
-    [fleetCard(), boardCardMessage()].filter((messageId): messageId is string => messageId !== null);
+    [fleetCard(), boardCardMessage(), inboxCardMessage()].filter(
+      (messageId): messageId is string => messageId !== null,
+    );
   let messenger: ThreadMessenger = {
     postToThread: async () => ({
       status: "failed",
@@ -1687,6 +1698,53 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     );
   }
 
+  // The inbox card, under both of its conditions: the knob (which is what `inbox` being non-null
+  // already reflects, since `inboxWiring` returns null when `CHANNEL_INBOX_CARD` is off) and a
+  // configured channel. Off either way means the machinery is absent rather than idle, so nothing
+  // opens a thread and nothing runs on a timer.
+  const inboxCardBindingFile = path.join(path.dirname(config.stateFile), "inbox-card.json");
+  const inboxCard =
+    inbox !== null && cardTransport !== null
+      ? createInboxCard({
+          items: inbox.items,
+          session: (sessionId) => {
+            const record = registry.list().find((held) => held.sessionId === sessionId);
+            if (record === undefined) return undefined;
+            return {
+              title: displayName(toView(record)),
+              threadId: threadFor(sessionId),
+              ended: record.state === "ended",
+            };
+          },
+          guildId: () => (gateway === null ? null : gateway.guildId()),
+          transport: cardTransport,
+          binding: () => loadInboxBinding(inboxCardBindingFile, { log: note }),
+          onBind: (binding) => {
+            try {
+              saveInboxBinding(inboxCardBindingFile, binding);
+            } catch (error) {
+              const message =
+                `broker: cannot write the inbox card binding to ${inboxCardBindingFile}: ` +
+                String(error);
+              console.error(message);
+              logger.error(message);
+            }
+          },
+          refreshMs: config.inboxCardRefreshMs,
+          log: note,
+        })
+      : null;
+  if (inboxCard !== null) {
+    // The third card the channel keeps pinned permanently. Read through the card rather than from
+    // the binding file, so a card Discord reported gone stops being pinned until it is rebuilt.
+    inboxCardMessage = () => inboxCard.cardMessage();
+    // Started after the listener is bound, for the reason the usage and board cards are: a broker
+    // that never bound leaves no timer editing a Discord thread on behalf of a process that is
+    // about to throw.
+    inboxCard.start();
+    note(`broker: the fleet inbox card refreshes every ${config.inboxCardRefreshMs}ms`);
+  }
+
   async function stop(): Promise<void> {
     clearInterval(sweep);
     clearInterval(heartbeat);
@@ -1697,8 +1755,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // for a broker that has already dropped its gateway. What it returns is the drain, awaited
     // beside the others.
     const cardDrain = usageCard === null ? null : usageCard.stop();
-    // The board card's timer goes down in the same synchronous block, and for the same reason.
+    // The board and inbox cards' timers go down in the same synchronous block, and for the same
+    // reason.
     const boardDrain = boardCard === null ? null : boardCard.stop();
+    const inboxDrain = inboxCard === null ? null : inboxCard.stop();
     if (gateway !== null) await gateway.stop();
     // Clearing the timer does not cancel the pass already running, which may still be waiting on a
     // Discord call and will write the bindings file when it returns. The tailer's pass is awaited
@@ -1709,6 +1769,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // call's return.
     if (cardDrain !== null) await cardDrain;
     if (boardDrain !== null) await boardDrain;
+    if (inboxDrain !== null) await inboxDrain;
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();
