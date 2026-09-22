@@ -590,6 +590,11 @@ $script:ChannelBrokerEnvAllowlist = @(
     'CHANNEL_BOARD_CARD_REFRESH_MS',
     'CHANNEL_BOARD_EVENTS_PATH',
     'CHANNEL_BOARD_ROSTER',
+    'CHANNEL_INBOX_CARD',
+    # The path of the file the judge's key is read from, never the key: the key has no knob here.
+    'CHANNEL_INBOX_JUDGE_KEY_FILE',
+    'CHANNEL_INBOX_THRESHOLD',
+    'CHANNEL_INBOX_CARD_REFRESH_MS',
     'CHANNEL_BROKER_LOG_FILE',
     'CHANNEL_BROKER_LOG_MAX_BYTES',
     'CHANNEL_BROKER_LOG_MAX_FILES',

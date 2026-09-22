@@ -21,6 +21,14 @@ import type { InboundInteraction } from "./interactions.ts";
 export type MessageSource = {
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  /**
+   * The guild the configured channel sits in, or null until the connection's channel cache holds
+   * it. Looked up in that cache on every call rather than latched once, so a cache that was cold
+   * when this was last read still heals on the next: the Guilds intent populates it without a REST
+   * call, but nothing guarantees the channel is cached by any one fixed point in the connection's
+   * life.
+   */
+  guildId: () => string | null;
 };
 
 /**
@@ -324,6 +332,17 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
     },
     stop: async () => {
       await client.destroy();
+    },
+    // Looked up fresh on every call rather than latched once: `channels.cache` costs no REST call
+    // either way, and a value read once at `ClientReady` can stay null for the process's life, since
+    // that event fires once discord.js's own guild wait times out even while a guild is still
+    // unavailable. A channel not in the cache yet, or one that is not a guild channel (only a
+    // guild-scoped channel type carries `guildId`), answers null on the calls it misses and heals on
+    // the first call after the cache catches up.
+    guildId: () => {
+      const channel = client.channels.cache.get(options.channelId);
+      const resolved = channel !== undefined && "guildId" in channel ? channel.guildId : null;
+      return typeof resolved === "string" ? resolved : null;
     },
   };
 }

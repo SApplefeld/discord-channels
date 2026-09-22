@@ -78,6 +78,23 @@ function bounded(text: string): { text: string; truncated: boolean } {
   };
 }
 
+/**
+ * The operator inbox's clearing seam. What reaches it is only what the operator wrote: everything
+ * here sits behind the sender gate.
+ */
+export type InboundInbox = {
+  /**
+   * A message reached a live or stale session at `at`. A message landing mid-turn may fire no
+   * prompt hook, so the delivery is itself the operator answering that session.
+   */
+  clear: (sessionId: string, at: number) => void;
+  /**
+   * The operator wrote in an ended session's thread at `at`. Nothing is delivered, and the post is
+   * still the operator having seen that session's last word.
+   */
+  clearEnded: (sessionId: string, at: number) => void;
+};
+
 export type InboundRouterOptions = {
   registry: Registry;
   relays: RelayHub;
@@ -98,6 +115,12 @@ export type InboundRouterOptions = {
   threadFor: (sessionId: string) => string | null;
   /** Writes a notice back into the thread a message could not be delivered from. */
   writer: ThreadWriter;
+  /**
+   * The operator inbox, present only while it is on. A message consumed as a permission verdict or
+   * a held question's answer never reaches it: each answers a prompt the session is parked on, not
+   * whatever the session last asked in its reply.
+   */
+  inbox?: InboundInbox;
   /** Injected so a test drives the rate ceiling without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
@@ -174,6 +197,20 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       }
     }
     return true;
+  }
+
+  /**
+   * Hands one clear to the inbox. A throw behind it is caught here, since the message it rides on
+   * has already been routed and must not read as failed; the line names the session and never the
+   * error, whose owner reports its own.
+   */
+  function toInbox(clear: (inbox: InboundInbox) => void, sessionId: string): void {
+    if (options.inbox === undefined) return;
+    try {
+      clear(options.inbox);
+    } catch {
+      log(`routing: the inbox could not take a message to session ${sessionId}`);
+    }
   }
 
   async function notice(threadId: string, text: string): Promise<void> {
@@ -270,6 +307,8 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       if (record === null) return;
 
       if (record.state === "ended") {
+        const endedAt = now();
+        toInbox((inbox) => inbox.clearEnded(record.sessionId, endedAt), record.sessionId);
         log(
           `routing: a message reached the ended session ${record.sessionId}, rejecting it in-thread`,
         );
@@ -290,6 +329,8 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         text,
       });
       if (delivered) {
+        const deliveredAt = now();
+        toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
         // Announced only here, after the truncated text reached a live session: on every
         // undelivered path (no thread, ended session, over the rate ceiling, no relay), a cut is
         // noise about text nobody received.

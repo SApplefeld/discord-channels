@@ -16,6 +16,8 @@ import {
   renderTaskNotice,
 } from "../discord/render.ts";
 import { createBlockedDesk } from "../discord/blocked.ts";
+import { findAsk } from "../inbox/ask.ts";
+import { createInboxStore } from "../inbox/store.ts";
 import type { SessionGoalEvent } from "../board/events.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
 import type { CallOutcome, ThreadMessenger } from "../discord/transport.ts";
@@ -31,7 +33,7 @@ import {
 } from "../tail.ts";
 import type { EchoMemory, PeerTraffic } from "../tail.ts";
 import { MAX_RUN_WAIT_MS, RUN_PACE_MS, createOutboundRouter } from "./outbound.ts";
-import type { OutboundRouter, OutboundRouterOptions } from "./outbound.ts";
+import type { OutboundInbox, OutboundRouter, OutboundRouterOptions } from "./outbound.ts";
 import { createThreadWriter } from "./writer.ts";
 import type { ThreadWriter } from "./writer.ts";
 
@@ -4266,4 +4268,286 @@ test("a genuine mid-turn peer delivery posts whatever the prompt slots hold", as
     true,
     "and consumes neither claim on its way past",
   );
+});
+
+// The operator inbox's tap. What reaches it is exactly the reply text that reached the thread, and
+// each kind that must never reach it is a silent bypass if it does, so every refusal below runs in
+// a harness whose own positive case is asserted beside it.
+
+/** An inbox seam that records what it was shown. */
+function watchedInbox() {
+  const taps: Array<{ sessionId: string; text: string; postedAt: number; messageId: string | null }> =
+    [];
+  const mirrored: string[] = [];
+  const inbox: OutboundInbox = {
+    mirrored: (sessionId) => mirrored.push(sessionId),
+    reply: (sessionId, text, postedAt, messageId) =>
+      taps.push({ sessionId, text, postedAt, messageId }),
+  };
+  return { inbox, taps, mirrored };
+}
+
+/** A writer whose posts land with numbered snowflakes, so "the last message" is observable. */
+function numberedWriter() {
+  const posts: string[] = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      return {
+        status: "ok",
+        value: { messageId: String(930000000000000000n + BigInt(posts.length)) },
+        rate: NO_RATE_INFO,
+      };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  return { writer: createThreadWriter({ messenger, now: () => 1_000 }), posts };
+}
+
+test("a landed reply-tool post is shown to the inbox stamped at its arrival, with its last message", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = numberedWriter();
+  const { inbox, taps } = watchedInbox();
+  let clock = 5_000;
+  const postsAtTap: number[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    now: () => clock,
+    inbox: {
+      ...inbox,
+      reply: (sessionId, text, postedAt, messageId) => {
+        postsAtTap.push(posts.length);
+        inbox.reply(sessionId, text, postedAt, messageId);
+      },
+    },
+    sleep: async () => {
+      clock += 1;
+    },
+  });
+
+  const long = "x ".repeat(MAX_MESSAGE_LENGTH);
+  const messages = renderAnswer(long);
+  assert.ok(messages.length > 1, "the fixture must split, or the last message is the only one");
+  const arrival = clock;
+  assert.deepEqual(await router.reply(TOKEN, long), { status: "sent" });
+  assert.ok(clock > arrival, "the paced run moved the clock");
+
+  assert.deepEqual(taps, [
+    {
+      sessionId: "session-a",
+      text: long,
+      postedAt: arrival,
+      messageId: String(930000000000000000n + BigInt(messages.length)),
+    },
+  ]);
+  assert.deepEqual(postsAtTap, [messages.length], "shown only once the whole run had landed");
+});
+
+test("a prompt typed while a reply's run is landing still clears it, since the flag carries the reply's arrival", async () => {
+  // A run paces its posts and can wait out a rate limit, and the operator can answer at the
+  // console inside that gap. Stamped at landing, the reply would read as newer than the answer and
+  // an already-answered ask would open. The store behind the seam is the real one, so what is
+  // asserted is the drop and not the number that would produce it.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  let clock = 10_000;
+  const store = createInboxStore();
+  const inbox: OutboundInbox = {
+    mirrored: () => {},
+    reply: (sessionId, text, postedAt, messageId) => {
+      const excerpt = findAsk(text);
+      if (excerpt === null) return;
+      store.flag(sessionId, { source: "marked", postedAt, excerpt, ...(messageId === null ? {} : { messageId }) });
+    },
+  };
+  let answerDuringRun = true;
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      // The run is on the wire: the clock moves and the operator answers at the console.
+      clock += 30_000;
+      if (answerDuringRun) store.clear("session-a", clock);
+      clock += 1;
+      return { status: "ok", value: { messageId: String(940000000000000000n + BigInt(input.text.length)) }, rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => clock }),
+    now: () => clock,
+    inbox,
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, "ASK: merge it?"), { status: "sent" });
+  assert.deepEqual(store.items(), [], "the reply-tool post arrived before the answer, so it opens nothing");
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "ASK: merge it?", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(store.items(), [], "and so does the mirrored reply");
+
+  // The control: with no answer during the run, the same posts open an item at their arrival.
+  answerDuringRun = false;
+  const arrival = clock;
+  await router.mirror(TOKEN, "reply", "ASK: merge it now?", "session-a");
+  assert.equal(store.items().length, 1);
+  assert.equal(store.items()[0].refreshedAt, arrival, "stamped as it arrived, not as it landed");
+});
+
+test("a reply-tool post that did not land whole is never shown to the inbox", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter({ status: "failed", error: "missing access", rate: NO_RATE_INFO });
+  const { inbox, taps } = watchedInbox();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, inbox });
+
+  assert.equal((await router.reply(TOKEN, "ASK: merge the branch?")).status, "failed");
+  assert.deepEqual(taps, [], "text that is not on the thread is not an ask the operator can see");
+});
+
+test("a landed reply mirror is shown to the inbox, and a prompt mirror never is", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = numberedWriter();
+  const { inbox, taps, mirrored } = watchedInbox();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    now: () => 7_000,
+    inbox,
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "ASK: is this mine?", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(taps, [], "a prompt is the operator's own words, never an ask of the operator");
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "the turn's reply", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(taps, [
+    { sessionId: "session-a", text: "the turn's reply", postedAt: 7_000, messageId: "930000000000000002" },
+  ]);
+  assert.deepEqual(mirrored, ["session-a", "session-a"], "both posts are evidence the mirror is on");
+});
+
+test("a reply mirror dropped as narration's echo is shown to the inbox, one dropped as the reply tool's is not", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = numberedWriter();
+  const echo = createEchoMemory();
+  const { inbox, taps } = watchedInbox();
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    now: () => 9_000,
+    inbox,
+  });
+
+  // The tailer narrated the closing text, and narration is never shown to the inbox, so the
+  // dropped mirror is the only place this text reaches it.
+  echo.noteInterim("session-a", "the closing text, narrated first");
+  assert.deepEqual(
+    await router.mirror(TOKEN, "reply", "the closing text, narrated first", "session-a"),
+    { status: "sent" },
+  );
+  assert.equal(posts.length, 0, "the drop posted nothing");
+  assert.deepEqual(taps, [
+    {
+      sessionId: "session-a",
+      text: "the closing text, narrated first",
+      postedAt: 9_000,
+      messageId: null,
+    },
+  ]);
+
+  // The reply tool posted the answer and was shown it; its Stop mirror echo is dropped and must not
+  // show the same text a second time.
+  assert.deepEqual(await router.reply(TOKEN, "the answer, by the reply tool"), { status: "sent" });
+  assert.equal(taps.length, 2, "the reply tool's own post is shown");
+  assert.deepEqual(
+    await router.mirror(TOKEN, "reply", "the answer, by the reply tool", "session-a"),
+    { status: "sent" },
+  );
+  assert.equal(posts.length, 1, "the mirror was dropped as the reply tool's echo");
+  assert.equal(taps.length, 2, "an answer echo is never shown again");
+});
+
+test("a narration chunk, a queued prompt, a peer message and a peer delivery never reach the inbox", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = numberedWriter();
+  const { inbox, taps } = watchedInbox();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, inbox });
+
+  const ask = "ASK: should I merge it?";
+  assert.equal((await router.interim("session-a", ask)).status, "sent");
+  assert.equal((await router.interimPrompt("session-a", ask, "queued", null)).status, "sent");
+  assert.equal((await router.interimPrompt("session-a", `${ask} again`, "turn-open", 1_000)).status, "sent");
+  assert.equal((await router.peer("session-a", { ...RECEIVED, body: ask })).status, "sent");
+  assert.equal((await router.peer("session-a", { ...SENT, message: ask })).status, "sent");
+  assert.equal((await router.mirror(TOKEN, "prompt", idleDelivery(ask), "session-a")).status, "sent");
+  assert.ok(posts.length >= 6, "every one of them reached the thread");
+  assert.deepEqual(taps, [], "none of them is the session's reply");
+
+  // The control: the same harness does show a reply.
+  await router.mirror(TOKEN, "reply", ask, "session-a");
+  assert.equal(taps.length, 1);
+});
+
+test("a mirror post that never passes the straggler gate is neither shown nor counted as mirrored", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = numberedWriter();
+  const { inbox, taps, mirrored } = watchedInbox();
+  const router = routerFor({ registry, threadFor: () => THREAD, mirrorWriter: writer, inbox });
+
+  await router.mirror(TOKEN, "reply", "ASK: from a replaced session", "session-old");
+  await router.mirror(TOKEN, "reply", "ASK: from nowhere", null);
+  const unthreaded = routerFor({ registry, threadFor: () => null, mirrorWriter: writer, inbox });
+  await unthreaded.mirror(TOKEN, "reply", "ASK: before the thread opened", "session-a");
+  await unthreaded.reply(TOKEN, "ASK: before the thread opened");
+  assert.deepEqual(taps, []);
+  assert.deepEqual(mirrored, []);
+
+  await router.mirror(TOKEN, "reply", "ASK: from this session", "session-a");
+  assert.equal(taps.length, 1, "the control: this session's own reply is shown");
+});
+
+test("an inbox that throws never turns a landed post into a failure, and its line carries no text", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = numberedWriter();
+  const lines: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    log: (line) => lines.push(line),
+    inbox: {
+      mirrored: () => {
+        throw new Error("mirrored exploded with ASK: secret words");
+      },
+      reply: () => {
+        throw new Error("reply exploded with ASK: secret words");
+      },
+    },
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, "ASK: secret words"), { status: "sent" });
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "ASK: secret words", "session-a"), {
+    status: "sent",
+  });
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "the operator's words", "session-a"), {
+    status: "sent",
+  });
+  assert.equal(posts.length, 3, "every post landed");
+  assert.ok(lines.some((line) => line.includes("inbox")), lines.join("\n"));
+  assert.ok(!lines.join("\n").includes("secret"), lines.join("\n"));
 });

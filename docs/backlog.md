@@ -135,20 +135,22 @@ and none carries a date of its own. An item added from here on carries `(parked 
   than guessing at the missing clause. Whoever fixes it should read the surrounding paragraph
   against `GET /sessions`'s actual field list rather than inferring the lost sentence.
   (parked 2026-08-13, backfilled)
-- Fold the six duplicated `createRepeatLog` implementations into one. The rate-limited repeat
+- Fold the eight duplicated `createRepeatLog` implementations into one. The rate-limited repeat
   logger is hand-copied into `broker/tail.ts`, `broker/question-desk.ts`,
-  `broker/routing/interactions.ts`, `broker/discord/pins.ts`, `broker/usage/thread.ts`, and
-  `broker/board/thread.ts`, each with its own window constant, so a fix to the throttling behavior
-  has to be found in six places. Low risk and no behavior change wanted; purely drift. The board
-  card's round took the sixth copy deliberately, on the codebase's own precedent that a small
-  terminal mechanism is duplicated per surface, and named three copies as the extraction threshold.
-  That threshold is now well past, so this is the round that should collapse them.
-  (parked 2026-08-16, backfilled)
-- The board card's binding module is a near-duplicate of the usage card's. `broker/board/binding.ts`
-  and `broker/usage/binding.ts` differ only in identifiers and their header paragraphs. Accepted
-  deliberately at the time, on the same per-surface-duplication precedent, with a fourth card named
-  as the point to extract. If one ever lands, the shape to build is a single card-binding module
-  taking a label. (parked 2026-08-16, backfilled)
+  `broker/routing/interactions.ts`, `broker/discord/pins.ts`, `broker/usage/thread.ts`,
+  `broker/board/thread.ts`, `broker/inbox/thread.ts`, and `broker/inbox/judge.ts`, each with its
+  own window constant, so a fix to the throttling behavior has to be found in eight places. Low risk
+  and no behavior change wanted; purely drift. The board card's round took the sixth copy
+  deliberately, on the codebase's own precedent that a small terminal mechanism is duplicated per
+  surface, and named three copies as the extraction threshold, and the operator inbox took the
+  seventh and eighth on the same precedent. That threshold is now well past, so this is the round
+  that should collapse them. (parked 2026-08-16, backfilled)
+- The three standing cards' binding modules are near-duplicates. `broker/board/binding.ts`,
+  `broker/usage/binding.ts` and `broker/inbox/binding.ts` differ only in identifiers and their
+  header paragraphs. Accepted deliberately at the time, on the same per-surface-duplication precedent, with
+  a fourth card named as the point to extract. The inbox card is that fourth card and took a third
+  copy instead, so the extraction is due: the shape to build is a single card-binding module taking
+  a label. (parked 2026-08-16, backfilled)
 - Decide whether a plan's status should be allowed to spell the board card's own marker vocabulary
   (parked 2026-08-16). A status is drawn whole, so `Status: held 9h 10m · blocked 2d 1h` renders as
   clauses a reader tells from the broker's own markers only by position: the markers lead the facts
@@ -564,7 +566,15 @@ and none carries a date of its own. An item added from here on carries `(parked 
   classes (same-account code, a Discord account that is not the operator's, a peer on the store's
   remote), what each can reach, and which entries are accepted, so a security lens can cite an entry
   rather than reason from the prose. Operator-pending: the operator decides whether that section is
-  written as its own effort.
+  written as its own effort. The operator inbox plan's finishing security review opened `threat
+  model: absent` as well.
+- Run the operator inbox's three live checks (handoff 2026-09-21, from
+  `archive/plans/channels_operator-inbox_spec_v1.md`'s Operator Verification). Find the
+  `Fleet: Inbox` card on the phone; if it is not quick to reach among the pins, that reopens where
+  the card lives. Turn `CHANNEL_INBOX_CARD` and the judge's key file on for SCOTT-CLAUDE and watch
+  one real day; an ask that never reached the card, or a card that fills with updates, reopens the
+  judge's threshold or its two questions. Reply to a flagged session from the phone and confirm its
+  line leaves the card. Operator-pending.
 
 - Move the queue reader's per-tick walk of an entry `id` behind the store's mtime hold (parked
   2026-09-21, surfaced by the Fleet Board worker queues plan's section 4 fix round). A persona's
@@ -579,6 +589,17 @@ and none carries a date of its own. An item added from here on carries `(parked 
   them with the reading, rather than rebuilding them per tick. The bound today is the 2 MiB store
   file cap times sixteen personas, on the broker's only event loop.
 
+- Run `npm audit fix` for the three pre-existing transitive advisories (parked 2026-09-21, surfaced by
+  the operator inbox plan's section 1 and 2 security reviews). `npm audit` exits 1 on `main` at
+  32939cd with one high and two moderate findings, all transitive (the high is fast-uri, the two
+  moderates hono and qs). Neither section adds a
+  dependency, so the fix is its own change, gated on the whole suite.
+
+- Walk `sliceCodePoints` in `broker/sanitize.ts` up to its limit instead of spreading the whole
+  string (parked 2026-09-21, surfaced by the operator inbox plan's section 2 performance review). It
+  spreads every code point into an array before comparing the length, which measures 17 ms at the
+  4 MB mirror ceiling and 1.2 ms at the 256 KB default, against 0 ms for a walk that stops at the
+  limit. Ten other callers share it, so the change lands in `sanitize.ts` with its own tests.
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

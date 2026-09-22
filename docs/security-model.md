@@ -266,8 +266,9 @@ and for an in-session `/rename` alike, and its value becomes the session's title
 carries as its name: composed into the call that opens the thread when a title is already known at
 that moment, and written with a `PATCH /channels/{threadId}` on every change after. So the goal's
 inventory does not describe it and is not borrowed. Where the goal is withheld from `GET /sessions`
-and omitted from the on-disk snapshot, the title reaches six places: the thread's own name, the
-session card body and the fleet card's session rows, all three by way of `displayName`;
+and omitted from the on-disk snapshot, the title reaches seven places: the thread's own name, the
+session card body, the fleet card's session rows and the inbox card's item lines, all four by way of
+`displayName`;
 `GET /sessions`, as a field of the published record; and two files on disk, the registry snapshot
 and the thread binding, the latter so a restart does not spend a rename repainting a thread that
 already says the right thing. The broker log is not among them, and no line puts it there: the
@@ -522,9 +523,10 @@ this capability adds nothing to the install's permission list.
 ## Tool approval over the channel
 
 **A permission prompt sends the tool's actual input off this machine.** `input_preview` is the shell
-command, the patch body, the file path and its contents. The mirror is the other surface that sends
-content off the machine: with `CHANNEL_MIRROR` on, every console prompt is posted into the
-session's thread in full, and every turn's final assistant reply is posted unless the thread
+command, the patch body, the file path and its contents. The inbox judge below is the one surface
+that sends conversation content to a third party. The mirror is the other surface that sends it to
+Discord: with `CHANNEL_MIRROR` on, every console prompt is posted into the session's thread in full,
+and every turn's final assistant reply is posted unless the thread
 already carries that text: a reply the transcript tailer posted as narration, or a reply-tool
 answer the final text matches exactly or nearly (the same words within a bounded similarity
 threshold, and never when the final text is materially longer than the answer, so a final text
@@ -692,6 +694,43 @@ their lead position on the line. The consequence is a plan that reads as blocked
 a surface that reports state rather than authorizing anything; it draws no live pill, chip, or
 prompt, and the neutralization above is what holds that line.
 
+**The inbox judge sends session reply text to a third party, and it is the one HTTP egress here
+that reaches a host other than Discord.** With `CHANNEL_INBOX_CARD` on and
+`CHANNEL_INBOX_JUDGE_KEY_FILE` naming a usable file, a turn-final reply or reply-tool answer that
+carries no `ASK:` line is posted to `https://api.typesafe.ai/v1/systemone` over HTTPS, as a JSON
+body holding the reply's text, the model name and the two fixed yes-or-no questions, under
+`Authorization: Bearer <key>`. The host and the model are constants in `broker/inbox/judge.ts`, no
+setting or argument can point the call elsewhere, and a redirect fails the call so a 307 or 308 can
+never re-post the text to another host. The key is read once at start from the named file and never
+from `broker.env`, because a scheduled task's environment is readable by anything that can read the
+task definition. That file is held to the bot token file's own protection check, which
+`docs/install.md` states with the key file's step. Where the token file's failure stops the broker,
+this file's failure only turns the judge off with one warning, since the judge adds a second reading
+of unmarked replies rather than the channel itself. With no key file named, or one that cannot be
+used, nothing leaves the machine on this path, and the inbox runs on `ASK:` lines alone.
+
+What is sent is closed at the text of one reply, cut to its first 12,000 code points after the
+secret screen has run over its whole length. The screen is one case-insensitive pattern with six
+branches, and a reply matching any of them makes no call: an `api_key` or `api-key` assignment to a
+quoted value of 12 or more characters, `bearer` followed by 20 or more letters, digits, `.`, `_` or
+`-`, a PEM private-key header, `sk-` at a word boundary followed by 20 or more letters, digits, `_`
+or `-` (which takes the `sk-proj-` and `sk-ant-` shapes with their infix), a GitHub token prefix
+(`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more letters, digits or `_`, and a
+`password` assignment to a quoted value of one or more characters. The pattern itself is
+`SECRET_SCREEN` in `broker/inbox/judge.ts`. Length never blocks a send. What is never sent: a reply
+carrying an `ASK:` line, which the inbox reads locally and does not judge; a supervised session's
+reply carrying the steward-shaped `ASK: <question>? Recommend: <choice>` line; any reply from a
+session no mirror post has reached the outbound router from since the broker started, which is how a
+`-NoMirror` session's reply-tool answers stay on the machine under the advisory bound the
+per-session mirror switch residual below states; prompts, narration chunks and peer
+messages, which the tap never sees; tool input and the status card's preview, which ride another
+path; and any file path, since the judge is handed a string and nothing it names. The response is
+read for two numbers and nothing else, and neither the request body, the response body nor any part
+of the key reaches the broker log: a failure line names the kind of failure and the session, on the
+rule every mirror and transcript path here already holds to. Conversation text is what every other
+control in this document keeps on the machine or inside Discord, and the judge is the one place it
+is sent elsewhere on purpose. The accepted-risk list below carries what that costs.
+
 **The blocked-goal alert is the fourth mention-bearing write, and its trigger credential is the
 weakest in the set.** The session surface reads the same goal event stream through a second fold,
 keyed by session id rather than by project root and filtered by no root list: one appended
@@ -806,7 +845,9 @@ three further escape-chain passes instead: the attribution pass described next, 
 pipe neutralizations the register section accounts for. `renderMirror` applies it to
 mirrored, typed, and narration text, `renderAnswer` to the reply tool's, the peer renderings to a
 peer body, and `appendNarration` to a chunk entering an existing message by edit, all before the
-text reaches the message path.
+text reaches the message path. The inbox card's excerpt of a marked reply is conversation text too,
+and it is held to the name's rule rather than this one: it is drawn on a card rather than in the
+thread, so it takes the full markdown escape a title takes.
 
 The first of those three is the attribution pass, and the difference is who is forging what. The
 escape above stops a chip and a line-leading quote marker; it does not stop an attribution line,
@@ -1022,8 +1063,11 @@ The installer strips inheritance and grants only the owner, Administrators, and 
 - `hooks/`, `relay/`, `wrapper/`, `install/`, and `broker/`, as directories, inherited by their
   contents
 - the bot token file
-- the state root, unconditionally, since `broker.env`, the registry snapshot, the log file, and the
-  per-launch relay registration all live there whether a token does or not
+- the state root, unconditionally, since `broker.env`, the registry snapshot, the inbox snapshot,
+  the log file, and the per-launch relay registration all live there whether a token does or not.
+  The install guide's key-file step has the operator create the inbox judge's key file inside it,
+  where the file inherits the same list. The broker holds that file to the token file's own check
+  wherever it sits, which is the guarantee, before reading it
 
 It also refuses to harden a drive root, and refuses a token file outside the state root, because
 rewriting the access control list of an arbitrary directory an operator happened to name is a
@@ -1185,3 +1229,47 @@ authenticated account or a non-administrative service account.
   permissions.
 - **A session cannot be started or restarted remotely.** A channel injects into a running session; it
   cannot create one. This is a property of the mechanism, not a gap to close.
+- **The judge's secret screen is a pattern, not a proof.** Six shapes are refused before a reply is
+  sent, and a credential in any other shape goes with the text: an unquoted `api_key` value, a
+  Discord bot token, a connection string with its password inline. The screen catches the common
+  forms a model quotes back by accident. What it cannot do is know
+  that a string is secret, so a session that puts a credential in its own reply has already sent it
+  to Discord, and with the judge on has sent it to TypeSafe as well.
+- **While the judge is on, every unmarked reply's text leaves the machine to a third party.** Not the
+  flagged ones: every turn-final reply and reply-tool answer from a mirrored session that carries no
+  `ASK:` line and passes the screen is posted to TypeSafe, whatever the verdict comes back as, and
+  the vendor's retention of a request body is the vendor's. The privacy cost is one glance per
+  reply, paid for the day-one case where no session marks its asks. Naming no key file removes the
+  path, and a session launched with `-NoMirror` keeps its replies off it under the advisory bound
+  the next bullet states.
+- **The per-session mirror switch is advisory for the judge as it is for the mirror.** The judge
+  reads a session's reply-tool answers only once a mirror post from that session has passed the
+  router's straggler gate, the check that drops a mirror post naming no session or naming one the
+  posting token no longer holds (`docs/architecture.md`, the operator inbox). Ahead of that gate,
+  the intake's `/mirror` handler drops a post carrying the off header. Both the header and the
+  session named in the post are poster-supplied. A process holding the session's token can post a
+  mirror without the off header and arm the judge for a session the operator marked no-mirror, and
+  from then on that session's reply-tool answers go to the vendor. This is the same door "The
+  per-session switch is advisory" above describes, reaching one more surface. The host-wide switch
+  holds here as it holds there:
+  `CHANNEL_MIRROR=off` drops every mirror post at the intake, ahead of the router, so no session is
+  ever armed and the judge reads nothing. Removing the key file holds against any poster too.
+- **A session's own subprocess can clear its own ask.** The clear fires on the registry's
+  operator-prompt stamp, and a mirrored prompt post from any process holding the session's token
+  stamps it, since the mirror route authenticates on the token alone. So a shell subprocess of a
+  wrapped session can post a prompt-shaped mirror and take that session's item off the card before
+  the operator has seen it. This is one step past the engagement-stamp residual the token
+  paragraphs above already accept: the same forged post already clears a standing blocked state,
+  and the inbox reads the same stamp. A `BLOCKED:` on the desk and an item on the card are evidence
+  when they draw and never proof when they do not.
+- **`inbox-items.json` holds `ASK:` excerpts on disk.** Each marked item carries up to 200 code
+  points of the session's own reply, taken from its first `ASK:` line, in the state root beside the
+  registry snapshot and under the same protection. A judged item holds two scores and no text. The
+  file is one more place a fragment of conversation rests after the reply itself has crossed to
+  Discord, and it is rewritten on every change, the clear included, so an ask the operator answered
+  is gone from it as soon as the clear lands.
+- **A judge-opened item shows where the ask is and never what it says.** The card draws the
+  session's title, the age, which question won and a link to the flagged message, and no excerpt,
+  by design: the judge's reading is a probability and the reply is the source. The operator opens
+  the thread to read it, which is the same glance a marked item costs when its excerpt runs past the
+  card's 200 code points.

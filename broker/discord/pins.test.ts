@@ -211,10 +211,9 @@ test("at the pin ceiling the oldest live sessions keep their pins and the shortf
 });
 
 test("every permanent card is pinned ahead of the sessions and none is evicted at the ceiling", async () => {
-  // Two standing cards is what this broker carries: the fleet usage card and the fleet board. Both
-  // are outside the ceiling, so the arithmetic that decides what the sessions get has to count them
-  // both, and a channel already full of session pins must still give both of them up rather than
-  // leave one unpinned.
+  // Every standing card this broker carries sits outside the ceiling, so the arithmetic that decides
+  // what the sessions get has to count all of them, and a channel already full of session pins must
+  // still give every one of them up rather than leave one unpinned.
   const room = channel([]);
   const logged: string[] = [];
   const keeper = keeperWith(room.pins, logged);

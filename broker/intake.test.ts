@@ -150,6 +150,10 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     boardEventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
     boardCardRefreshMs: 60_000,
     boardRosterPath: "",
+    inboxCard: false,
+    inboxJudgeKeyFile: null,
+    inboxThreshold: 0.7,
+    inboxCardRefreshMs: 60_000,
     ...overrides,
   };
 }

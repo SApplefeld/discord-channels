@@ -25,6 +25,27 @@ import { crossSessionDelivery } from "../tail.ts";
 import type { EchoMemory, EchoSlot, PeerTraffic, PromptSource } from "../tail.ts";
 import type { ThreadWriter } from "./writer.ts";
 
+/**
+ * The operator inbox's tap: where a session's reply is shown the inbox once its text is on the
+ * session's thread. Only a reply is ever shown to it. A prompt is the operator's own words, and a
+ * narration chunk and a peer message are neither the session's reply nor its ask.
+ */
+export type OutboundInbox = {
+  /**
+   * A mirror post from this session passed the straggler gate. A session whose mirror is off sends
+   * none from its own hooks, since the intake drops a post carrying the off header before it reaches
+   * this router. The header is what is checked, and any process holding the session's token can
+   * post without it, which is the advisory-switch residual `docs/security-model.md` records.
+   */
+  mirrored: (sessionId: string) => void;
+  /**
+   * A reply's text reached the session's thread. `postedAt` is this router's clock as the reply
+   * arrived, read before its run, and `messageId` is the reply's last message where the writer
+   * returned one.
+   */
+  reply: (sessionId: string, text: string, postedAt: number, messageId: string | null) => void;
+};
+
 export type OutboundRouterOptions = {
   registry: Registry;
   /** The thread bound to a session, as the Discord surface currently holds it. */
@@ -100,6 +121,15 @@ export type OutboundRouterOptions = {
    * wrote is never the operator's own register and never evidence that a person is driving.
    */
   peerMessages?: "full" | "brief" | "off";
+  /**
+   * The operator inbox, present only while it is on. Told after a reply-tool post lands whole, after
+   * a reply mirror lands whole, and where a reply mirror is dropped because the tailer already
+   * narrated the same text, since narration itself is never shown to it. A reply mirror dropped as
+   * the reply tool's echo is not shown again: the reply tool's own post already was. The calls are
+   * synchronous and made after the post has settled, so nothing here waits on them, and a throw out
+   * of one is caught and logged without the text.
+   */
+  inbox?: OutboundInbox;
   log?: (message: string) => void;
   /**
    * The clock this router reads: the drop log's window, and what a paced run's reactive waits are
@@ -722,11 +752,35 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
   async function deliver(
     threadId: string,
     messages: string[],
-  ): Promise<{ landed: number; error: string | null }> {
+  ): Promise<{ landed: number; error: string | null; lastMessageId: string | null }> {
     return inOrder(threadId, () => {
       narration.delete(threadId);
       return postRun(threadId, messages);
     });
+  }
+
+  /**
+   * Shows the inbox one reply whose text is on the thread. `postedAt` is this router's clock as the
+   * reply arrived, read before its run was dispatched rather than after it landed: a run paces its
+   * posts and can wait out a rate limit, and a console answer typed while it lands stamps the
+   * registry inside that gap. Stamped at landing, the reply would read as newer than the answer to
+   * it and open an item the operator has already dealt with. Caught here for the reason every seam
+   * into the inbox is: the post has already settled, and a failure behind the inbox must not turn
+   * it into a reported failure. The line carries the session and never the text or the error, which
+   * can quote it.
+   */
+  function tapReply(
+    sessionId: string,
+    text: string,
+    postedAt: number,
+    messageId: string | null,
+  ): void {
+    if (options.inbox === undefined) return;
+    try {
+      options.inbox.reply(sessionId, text, postedAt, messageId);
+    } catch {
+      log(`routing: the inbox could not take a reply from session ${sessionId}`);
+    }
   }
 
   /**
@@ -758,7 +812,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
     reclaim: () => void,
     subject: string,
     firstError: string,
-  ): Promise<{ landed: number; error: string | null }> {
+  ): Promise<{ landed: number; error: string | null; lastMessageId: string | null }> {
     // Re-claimed with no await between the release that reported the deferral and this line: the
     // other path consults the memory on its own schedule, and a gap here is that path posting its
     // own copy beside the retry below.
@@ -995,6 +1049,8 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       // conversation volume: it can run many messages, and a rate-limit block earned by one long
       // answer must not be the block that drops the permission prompt a parked session is waiting
       // on. Alert paths hold their own writer and never come through this router.
+      // The reply's arrival, read before the run so a prompt typed while it lands is later than it.
+      const arrivedAt = now();
       const run = await deliver(located.threadId, messages);
       if (run.error === null) {
         // The raw pre-render text, recorded only now that the run landed whole, the same rule
@@ -1004,6 +1060,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         // that closes with the reply tool often ends with the same words, and the mirror
         // arriving seconds later says nothing the thread does not already show.
         options.echo?.noteAnswer(located.sessionId, text);
+        tapReply(located.sessionId, text, arrivedAt, run.lastMessageId);
         return { status: "sent" };
       }
 
@@ -1060,6 +1117,16 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         return { status: "no-session" };
       }
       if (sessionId !== located.sessionId) return { status: "no-session" };
+
+      // Past the straggler gate, whatever the post turns out to be: a post from this session is the
+      // evidence its mirror is on, which is what lets the inbox judge its reply-tool answers.
+      if (options.inbox !== undefined) {
+        try {
+          options.inbox.mirrored(located.sessionId);
+        } catch {
+          log(`routing: the inbox could not take a mirror verdict from session ${located.sessionId}`);
+        }
+      }
 
       // What a peer session sent this one while it was idle, read before anything renders: the
       // classification decides both the attribution below and the stamp on the next line, so it is
@@ -1119,6 +1186,10 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
             `the mirrored reply from session ${located.sessionId} was dropped, the tailer already ` +
               `posted the same text as interim narration`,
           );
+          // Shown to the inbox here, because narration never is: without this, a turn whose final
+          // reply the tailer narrated first would reach the thread and never the inbox. No message
+          // ID rides it, since the narration message is the tailer's and not this post's.
+          tapReply(located.sessionId, text, now(), null);
           return { status: "sent" };
         }
         // The dedup against the reply tool, which posts mid-turn: by the time this mirror
@@ -1284,8 +1355,13 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
               }
             : null;
       claimed?.claim();
+      // The reply's arrival, read before the run so a prompt typed while it lands is later than it.
+      const arrivedAt = now();
       const run = await deliver(located.threadId, messages);
-      if (run.error === null) return { status: "sent" };
+      if (run.error === null) {
+        if (kind === "reply") tapReply(located.sessionId, text, arrivedAt, run.lastMessageId);
+        return { status: "sent" };
+      }
       if (claimed !== null && run.landed === 0) {
         // The release reports whether the tailer had already skipped its own copy of this text over
         // this claim. If it had, its transcript bytes are behind its offset and this run is the last
@@ -1303,7 +1379,10 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
             `mirrored ${kind}`,
             run.error,
           );
-          if (retry.error === null) return { status: "sent" };
+          if (retry.error === null) {
+            if (kind === "reply") tapReply(located.sessionId, text, arrivedAt, retry.lastMessageId);
+            return { status: "sent" };
+          }
           return { status: "failed", error: retry.error };
         }
       }

@@ -8,6 +8,7 @@ import {
   RELAY_RESTART_GRACE_MS,
   REPLY_HEARTBEAT_MS,
   loadConfig,
+  readInboxJudgeKey,
 } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import { createHandler } from "./intake.ts";
@@ -20,7 +21,12 @@ import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { createPinKeeper } from "./discord/pins.ts";
-import { renderModelChange, renderQuestionNotice, renderRestartNotice } from "./discord/render.ts";
+import {
+  displayName,
+  renderModelChange,
+  renderQuestionNotice,
+  renderRestartNotice,
+} from "./discord/render.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import {
   answerableFromThread,
@@ -38,6 +44,13 @@ import { loadUsageBinding, saveUsageBinding } from "./usage/binding.ts";
 import { createBoardCard } from "./board/thread.ts";
 import type { BoardCardOptions } from "./board/thread.ts";
 import { loadBoardBinding, saveBoardBinding } from "./board/binding.ts";
+import { findAsk, hasStewardAsk } from "./inbox/ask.ts";
+import { createJudge } from "./inbox/judge.ts";
+import type { JudgeFetch } from "./inbox/judge.ts";
+import { createInboxStore, loadInboxSnapshot, saveInboxSnapshot } from "./inbox/store.ts";
+import type { InboxItem } from "./inbox/store.ts";
+import { createInboxCard } from "./inbox/thread.ts";
+import { loadInboxBinding, saveInboxBinding } from "./inbox/binding.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
 import type { CallOutcome, DiscordTransport, ThreadMessenger } from "./discord/transport.ts";
 import {
@@ -68,9 +81,10 @@ import {
 import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
+import type { InboundInbox } from "./routing/inbound.ts";
 import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
-import type { ReplyResult } from "./routing/outbound.ts";
+import type { OutboundInbox, ReplyResult } from "./routing/outbound.ts";
 import { createRelayRoutes } from "./routing/http.ts";
 import { createThreadWriter } from "./routing/writer.ts";
 import type { ThreadWriter } from "./routing/writer.ts";
@@ -83,6 +97,8 @@ export type Broker = {
   port: number;
   /** The rotating-file logger this broker started with, so the caller can log a line beside it. */
   logger: Logger;
+  /** The operator inbox's item set, read-only, or null while `CHANNEL_INBOX_CARD` is off. */
+  inbox: Pick<Inbox, "items"> | null;
   stop: () => Promise<void>;
 };
 
@@ -690,6 +706,139 @@ export function boardCardWiring(options: {
   };
 }
 
+/**
+ * The operator inbox as the routers and the registry reach it: the outbound router's tap, the
+ * inbound router's clears, the registry's prompt clear and its reconcile, and the card's read.
+ */
+export type Inbox = OutboundInbox &
+  InboundInbox & {
+    /** Drops every item and every mirror verdict whose session the registry no longer holds. */
+    reconcile: (sessions: readonly SessionRecord[]) => void;
+    /** Every open item, oldest opened first. */
+    items: () => InboxItem[];
+  };
+
+/**
+ * Builds the operator inbox, or nothing when `CHANNEL_INBOX_CARD` is off: no item store, no
+ * snapshot read or written, no judge key read, and no judge, so no reply text goes to TypeSafe.
+ *
+ * Assembled here rather than inline for the reason the card wirings are: `startBroker` builds its
+ * inbox from this function and from nothing else, so the seam a test reaches is the one production
+ * runs.
+ *
+ * What a tapped reply does, in order. A reply from a supervised session (a record carrying a
+ * lineage) with a line the persona plugin reads as a worker's ask of its steward opens nothing and
+ * is never judged, since its steward answers it rather than the operator. Otherwise a reply with an
+ * `ASK:` line opens or refreshes a marked item and is never judged. Otherwise the reply goes to the
+ * judge, and only where the judge is on and a mirror post from the session has reached the outbound
+ * router. A session whose mirror is off sends none from its own hooks, so its hooks' text never
+ * leaves the machine; a process holding its token can post one without the off header, which is
+ * the advisory-switch residual `docs/security-model.md` records. A reply for a session the registry
+ * no longer holds opens nothing, whether it arrives at the tap or as a late verdict, since a
+ * session the registry does not hold is not one the operator can answer.
+ *
+ * The snapshot lives beside the registry snapshot and the card bindings. It restores only items
+ * whose session record restored, and it is written on every change, which is a human rate: an item
+ * opens on a flagged reply and leaves on the operator's answer.
+ */
+export function inboxWiring(options: {
+  config: Pick<BrokerConfig, "stateFile" | "inboxCard" | "inboxJudgeKeyFile" | "inboxThreshold">;
+  registry: Pick<Registry, "list">;
+  /** The judge's request, injected so a test drives it without a network. Global fetch otherwise. */
+  fetch?: JudgeFetch;
+  /** The key file's protection check, injected so a test reaches it without a spawn. */
+  protectKeyFile?: (file: string) => void;
+  log: (message: string) => void;
+  warn: (message: string) => void;
+  onError: (message: string) => void;
+}): Inbox | null {
+  if (!options.config.inboxCard) return null;
+  const file = path.join(path.dirname(options.config.stateFile), "inbox-items.json");
+  const store = createInboxStore({
+    items: loadInboxSnapshot(file, {
+      liveSessionIds: new Set(options.registry.list().map((record) => record.sessionId)),
+      log: options.log,
+    }),
+    onChange: () => {
+      // Caught here, since a change reaches this from a post, a prompt stamp or a delivery, and a
+      // lost save costs the next restart this change rather than costing the caller anything now.
+      try {
+        saveInboxSnapshot(file, store.items());
+      } catch (error) {
+        options.onError(`broker: cannot write the inbox snapshot to ${file}: ${String(error)}`);
+      }
+    },
+  });
+
+  /** The session's record, or undefined once the registry has pruned it. */
+  function recordOf(sessionId: string): SessionRecord | undefined {
+    return options.registry.list().find((held) => held.sessionId === sessionId);
+  }
+  function holds(sessionId: string): boolean {
+    return recordOf(sessionId) !== undefined;
+  }
+
+  const key = readInboxJudgeKey(options.config.inboxJudgeKeyFile, options.warn, options.protectKeyFile);
+  const judge =
+    key === null
+      ? null
+      : createJudge({
+          apiKey: key,
+          threshold: options.config.inboxThreshold,
+          ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+          log: options.log,
+          // Handed over whole and uncast: the judge's flag type is checked against the store's here,
+          // so a field one side adds and the other lacks fails the build at this line.
+          onVerdict: (sessionId, flag) => {
+            if (!holds(sessionId)) return;
+            store.flag(sessionId, flag);
+          },
+        });
+  options.log(
+    judge === null
+      ? "broker: the operator inbox is on, reading ASK: lines alone with the judge off"
+      : "broker: the operator inbox is on, and the judge reads unmarked replies of mirrored sessions",
+  );
+
+  // The sessions a mirror post has come from, which is the evidence a session's mirror is on. Not
+  // persisted: a restart judges a session's reply-tool answers again from its next mirror post.
+  const mirrored = new Set<string>();
+
+  return {
+    mirrored(sessionId) {
+      mirrored.add(sessionId);
+    },
+    reply(sessionId, text, postedAt, messageId) {
+      const record = recordOf(sessionId);
+      if (record === undefined) return;
+      if (record.lineage !== null && hasStewardAsk(text)) return;
+      const shown = messageId === null ? {} : { messageId };
+      const excerpt = findAsk(text);
+      if (excerpt !== null) {
+        store.flag(sessionId, { source: "marked", postedAt, excerpt, ...shown });
+        return;
+      }
+      if (judge !== null && mirrored.has(sessionId)) {
+        judge.submit(sessionId, { text, postedAt, ...shown });
+      }
+    },
+    clear(sessionId, at) {
+      store.clear(sessionId, at);
+    },
+    clearEnded(sessionId, at) {
+      store.clearEnded(sessionId, at);
+    },
+    reconcile(sessions) {
+      const live = new Set(sessions.map((record) => record.sessionId));
+      for (const sessionId of mirrored) {
+        if (!live.has(sessionId)) mirrored.delete(sessionId);
+      }
+      store.reconcile(live);
+    },
+    items: () => store.items(),
+  };
+}
+
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
   // it. The logger writes the same lines to a rotating file too, when one is configured, because a
@@ -700,6 +849,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     maxFiles: config.logMaxFiles,
   });
 
+  // The operator inbox, mutable for the reason `threadFor` below is: it is built from the sessions
+  // the registry restored, so it can only exist once the registry does, and the registry's own
+  // seams into it read it through this closure. Null while the card is off, which leaves each of
+  // those seams a no-op.
+  let inbox: Inbox | null = null;
   const registry = createRegistry({
     host: config.host,
     staleAfterMs: config.staleAfterMs,
@@ -721,13 +875,38 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.error(message);
         logger.error(message);
       }
+      // The mutate signal is also how a pruned record's inbox item leaves. Caught for the reason
+      // the write above is: a throw here would surface out of the sweep's interval or a hook post.
+      try {
+        inbox?.reconcile(sessions);
+      } catch (error) {
+        const message = `broker: the inbox could not reconcile against the registry: ${String(error)}`;
+        console.error(message);
+        logger.error(message);
+      }
     },
+    // An operator prompt answers the session it was typed to, which is what clears its inbox item.
+    onPrompt: (sessionId, at) => inbox?.clear(sessionId, at),
   });
 
   const note = (message: string): void => {
     console.log(message);
     logger.info(message);
   };
+
+  inbox = inboxWiring({
+    config,
+    registry,
+    log: note,
+    warn: (message) => {
+      console.warn(message);
+      logger.warn(message);
+    },
+    onError: (message) => {
+      console.error(message);
+      logger.error(message);
+    },
+  });
 
   // The Discord half of message routing is only wired when Discord is configured, but the relay
   // half is not: a session's relay attaches, holds its session out of the staleness sweep, and
@@ -749,6 +928,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let fleetCard: () => string | null = () => null;
   // The fleet board card's own message, on the same terms and for the same reason.
   let boardCardMessage: () => string | null = () => null;
+  // The inbox card's own message, on the same terms and for the same reason.
+  let inboxCardMessage: () => string | null = () => null;
   // The blocked-state desk, mutable for the reason `threadFor` is: it is built inside the Discord
   // block below, because its alerts need the sender gate's operator ID and the surface's threads,
   // and the refresh timer that ticks it starts before that block finishes. Without Discord it is
@@ -763,7 +944,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // and each named only while it has a message to name. A card a knob left unbuilt, and one Discord
   // has reported gone until it is rebuilt, hold no slot at all.
   const permanentCards = (): string[] =>
-    [fleetCard(), boardCardMessage()].filter((messageId): messageId is string => messageId !== null);
+    [fleetCard(), boardCardMessage(), inboxCardMessage()].filter(
+      (messageId): messageId is string => messageId !== null,
+    );
   let messenger: ThreadMessenger = {
     postToThread: async () => ({
       status: "failed",
@@ -830,6 +1013,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     peerMessages: config.peerMessages,
     log: note,
     ...(echo === null ? {} : { echo }),
+    ...(inbox === null ? {} : { inbox }),
   });
   // The steering writer's notices and permission alerts land in threads without passing the
   // outbound router, so a successful post tells the router directly that the thread's narration
@@ -1376,6 +1560,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       questions: { answerTyped: questionDesk.answerTyped },
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
+      ...(inbox === null ? {} : { inbox }),
       now: Date.now,
       log: note,
     });
@@ -1513,6 +1698,53 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     );
   }
 
+  // The inbox card, under both of its conditions: the knob (which is what `inbox` being non-null
+  // already reflects, since `inboxWiring` returns null when `CHANNEL_INBOX_CARD` is off) and a
+  // configured channel. Off either way means the machinery is absent rather than idle, so nothing
+  // opens a thread and nothing runs on a timer.
+  const inboxCardBindingFile = path.join(path.dirname(config.stateFile), "inbox-card.json");
+  const inboxCard =
+    inbox !== null && cardTransport !== null
+      ? createInboxCard({
+          items: inbox.items,
+          session: (sessionId) => {
+            const record = registry.list().find((held) => held.sessionId === sessionId);
+            if (record === undefined) return undefined;
+            return {
+              title: displayName(toView(record)),
+              threadId: threadFor(sessionId),
+              ended: record.state === "ended",
+            };
+          },
+          guildId: () => (gateway === null ? null : gateway.guildId()),
+          transport: cardTransport,
+          binding: () => loadInboxBinding(inboxCardBindingFile, { log: note }),
+          onBind: (binding) => {
+            try {
+              saveInboxBinding(inboxCardBindingFile, binding);
+            } catch (error) {
+              const message =
+                `broker: cannot write the inbox card binding to ${inboxCardBindingFile}: ` +
+                String(error);
+              console.error(message);
+              logger.error(message);
+            }
+          },
+          refreshMs: config.inboxCardRefreshMs,
+          log: note,
+        })
+      : null;
+  if (inboxCard !== null) {
+    // The third card the channel keeps pinned permanently. Read through the card rather than from
+    // the binding file, so a card Discord reported gone stops being pinned until it is rebuilt.
+    inboxCardMessage = () => inboxCard.cardMessage();
+    // Started after the listener is bound, for the reason the usage and board cards are: a broker
+    // that never bound leaves no timer editing a Discord thread on behalf of a process that is
+    // about to throw.
+    inboxCard.start();
+    note(`broker: the fleet inbox card refreshes every ${config.inboxCardRefreshMs}ms`);
+  }
+
   async function stop(): Promise<void> {
     clearInterval(sweep);
     clearInterval(heartbeat);
@@ -1523,8 +1755,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // for a broker that has already dropped its gateway. What it returns is the drain, awaited
     // beside the others.
     const cardDrain = usageCard === null ? null : usageCard.stop();
-    // The board card's timer goes down in the same synchronous block, and for the same reason.
+    // The board and inbox cards' timers go down in the same synchronous block, and for the same
+    // reason.
     const boardDrain = boardCard === null ? null : boardCard.stop();
+    const inboxDrain = inboxCard === null ? null : inboxCard.stop();
     if (gateway !== null) await gateway.stop();
     // Clearing the timer does not cancel the pass already running, which may still be waiting on a
     // Discord call and will write the bindings file when it returns. The tailer's pass is awaited
@@ -1535,6 +1769,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // call's return.
     if (cardDrain !== null) await cardDrain;
     if (boardDrain !== null) await boardDrain;
+    if (inboxDrain !== null) await inboxDrain;
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();
@@ -1550,7 +1785,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  return { server, registry, port, logger, stop };
+  return {
+    server,
+    registry,
+    port,
+    logger,
+    inbox: inbox === null ? null : { items: inbox.items },
+    stop,
+  };
 }
 
 if (runDirectly(import.meta.url)) {

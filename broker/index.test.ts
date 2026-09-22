@@ -25,9 +25,15 @@ import {
   questionRefresh,
   questionUpgrade,
   boardCardWiring,
+  inboxWiring,
   startBroker,
   usageCardWiring,
 } from "./index.ts";
+import type { JudgeFetch } from "./inbox/judge.ts";
+import { saveInboxSnapshot } from "./inbox/store.ts";
+import type { InboxItem } from "./inbox/store.ts";
+import { saveSessions } from "./persistence.ts";
+import { createRegistry } from "./registry.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import type { SessionRecord } from "./registry.ts";
@@ -80,6 +86,10 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     boardEventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
     boardCardRefreshMs: 60_000,
     boardRosterPath: "",
+    inboxCard: false,
+    inboxJudgeKeyFile: null,
+    inboxThreshold: 0.7,
+    inboxCardRefreshMs: 60_000,
     ...overrides,
   };
 }
@@ -1799,4 +1809,519 @@ test("a write that throws costs the message and nothing else", async () => {
 
   assert.equal(logs.length, 1, logs.join("\n"));
   assert.ok(!logs[0].includes("claude-fable-5"), logs[0]);
+});
+
+// The operator inbox's wiring: what a tapped reply does, what clears, what a restart keeps, and
+// what the card being off leaves unbuilt. Driven through `inboxWiring`, which is the one seam
+// `startBroker` builds the inbox from, over an injected fetch and no network.
+
+const INBOX_TOKEN = "11111111-2222-3333-4444-555555555555";
+
+/** A registry announced with one session, its lineage as given. */
+function inboxRegistry(lineage: string | null = null, now: () => number = () => 1_000) {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now });
+  registry.apply({
+    event: "SessionStart",
+    processToken: INBOX_TOKEN,
+    sessionName: "neo-inbox",
+    lineage,
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+  return registry;
+}
+
+/** A judge fetch that scores every reply as a clear ask, and records what it was sent. */
+function scoringFetch(needsReply = 0.9, needsAct = 0.1) {
+  const calls: string[] = [];
+  const fetch: JudgeFetch = async (_url, init) => {
+    calls.push(init.body);
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          answers: { needs_reply: { noul: needsReply }, needs_act: { noul: needsAct } },
+        }),
+    };
+  };
+  return { fetch, calls };
+}
+
+function settled(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** An inbox over a temp state directory, the judge on unless `keyFile` is null. */
+function inboxUnderTest(
+  t: { after: (fn: () => void) => void },
+  options: {
+    card?: boolean;
+    keyFile?: string | null;
+    lineage?: string | null;
+    now?: () => number;
+    fetch?: JudgeFetch;
+    stateDir?: string;
+    registry?: ReturnType<typeof inboxRegistry>;
+  } = {},
+) {
+  const dir = options.stateDir ?? mkdtempSync(path.join(os.tmpdir(), "channels-inbox-"));
+  if (options.stateDir === undefined) t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let keyFile: string | null = null;
+  if (options.keyFile !== null) {
+    keyFile = options.keyFile ?? path.join(dir, "jev.key");
+    if (options.keyFile === undefined) writeFileSync(keyFile, "SECRET-KEY-0123456789\n", "utf8");
+  }
+  const registry = options.registry ?? inboxRegistry(options.lineage ?? null, options.now);
+  const scoring = scoringFetch();
+  const logs: string[] = [];
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const inbox = inboxWiring({
+    config: {
+      stateFile: path.join(dir, "broker-state.json"),
+      inboxCard: options.card ?? true,
+      inboxJudgeKeyFile: keyFile,
+      inboxThreshold: 0.7,
+    },
+    registry,
+    fetch: options.fetch ?? scoring.fetch,
+    protectKeyFile: () => {},
+    log: (message) => logs.push(message),
+    warn: (message) => warnings.push(message),
+    onError: (message) => errors.push(message),
+  });
+  return {
+    dir,
+    registry,
+    inbox,
+    calls: scoring.calls,
+    logs,
+    warnings,
+    errors,
+    snapshot: path.join(dir, "inbox-items.json"),
+  };
+}
+
+test("with the card off no inbox is built, no snapshot is touched and no fetch is made", async (t) => {
+  const { inbox, calls, logs, snapshot } = inboxUnderTest(t, { card: false });
+  assert.equal(inbox, null);
+  await settled();
+  assert.deepEqual(calls, []);
+  assert.deepEqual(logs, []);
+  assert.equal(existsSync(snapshot), false);
+
+  // The control: on, the same wiring builds one, says so, and a reply reaches the judge.
+  const on = inboxUnderTest(t);
+  assert.ok(on.inbox);
+  on.inbox.mirrored("session-a");
+  on.inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  await settled();
+  assert.equal(on.calls.length, 1);
+  assert.match(on.logs.join("\n"), /operator inbox is on/);
+});
+
+test("an ASK: line opens a marked item at the tap's instant and is never sent to the judge", async (t) => {
+  const { inbox, calls } = inboxUnderTest(t);
+  assert.ok(inbox);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "Done.\nASK: merge PR 12?\nASK: second", 2_000, "930000000000000001");
+  await settled();
+  assert.deepEqual(calls, [], "a marked reply never leaves the machine");
+  assert.deepEqual(inbox.items(), [
+    {
+      sessionId: "session-a",
+      openedAt: 2_000,
+      refreshedAt: 2_000,
+      source: "marked",
+      excerpt: "merge PR 12?",
+      scores: null,
+      winner: null,
+      count: 1,
+      messageId: "930000000000000001",
+    },
+  ]);
+});
+
+test("an unmarked reply from a mirrored session is judged, and the verdict opens a judged item at the tap's instant", async (t) => {
+  let clock = 1_000;
+  const { inbox, calls } = inboxUnderTest(t, { now: () => clock });
+  assert.ok(inbox);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 2_000, "930000000000000002");
+  clock = 50_000;
+  await settled();
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes("should I merge it now?"), "the reply text is what was sent");
+  assert.deepEqual(inbox.items(), [
+    {
+      sessionId: "session-a",
+      openedAt: 2_000,
+      refreshedAt: 2_000,
+      source: "judged",
+      excerpt: null,
+      scores: { needsReply: 0.9, needsAct: 0.1 },
+      winner: "needs_reply",
+      count: 1,
+      messageId: "930000000000000002",
+    },
+  ]);
+});
+
+test("a judge verdict that returns after the operator answered opens nothing", async (t) => {
+  // The tap's instant rides the flag, so the store compares the reply's post against the prompt
+  // and never the later verdict against it.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slow: JudgeFetch = async () => {
+    await held;
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ answers: { needs_reply: { noul: 0.9 }, needs_act: { noul: 0.1 } } }),
+    };
+  };
+  const { inbox } = inboxUnderTest(t, { fetch: slow });
+  assert.ok(inbox);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  inbox.clear("session-a", 3_000);
+  release();
+  await settled();
+  await settled();
+  assert.deepEqual(inbox.items(), []);
+});
+
+test("a mirror-off session's reply-tool answer is parsed for ASK: and never judged", async (t) => {
+  const { inbox, calls } = inboxUnderTest(t);
+  assert.ok(inbox);
+  // No mirror post has come from this session, which is what mirror-off looks like from here.
+  inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  await settled();
+  assert.deepEqual(calls, [], "an unmirrored session's text never leaves the machine");
+  assert.deepEqual(inbox.items(), []);
+
+  inbox.reply("session-a", "ASK: merge it?", 2_500, null);
+  assert.equal(inbox.items().length, 1, "its marks still count");
+  assert.equal(inbox.items()[0].source, "marked");
+
+  // The control: once a mirror post has come from it, the same unmarked reply is judged.
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 3_000, null);
+  await settled();
+  assert.equal(calls.length, 1);
+});
+
+test("with no key file the judge is off and the inbox runs on ASK: lines alone", async (t) => {
+  const { inbox, calls, logs, warnings } = inboxUnderTest(t, { keyFile: null });
+  assert.ok(inbox);
+  assert.deepEqual(warnings, [], "no file named warns nothing");
+  assert.match(logs.join("\n"), /judge off/);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  await settled();
+  assert.deepEqual(calls, []);
+  assert.deepEqual(inbox.items(), []);
+  inbox.reply("session-a", "ASK: merge it?", 2_500, null);
+  assert.equal(inbox.items().length, 1);
+});
+
+test("an unusable key file turns the judge off with one warning, and never stops the inbox", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-nokey-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { inbox, calls, warnings } = inboxUnderTest(t, {
+    stateDir: dir,
+    keyFile: path.join(dir, "absent.key"),
+  });
+  assert.ok(inbox, "the inbox is built whatever became of the key");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /inbox judge is off/);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  await settled();
+  assert.deepEqual(calls, []);
+});
+
+test("a supervised session's steward-shaped reply opens nothing and is never judged, and the same reply unsupervised marks", async (t) => {
+  const reply = "ASK: which backend? Recommend: postgres\nASK: also this\nstill working";
+  const supervised = inboxUnderTest(t, { lineage: "persona-worker-3" });
+  assert.ok(supervised.inbox);
+  supervised.inbox.mirrored("session-a");
+  supervised.inbox.reply("session-a", reply, 2_000, null);
+  await settled();
+  assert.deepEqual(supervised.inbox.items(), [], "the steward answers it, not the operator");
+  assert.deepEqual(supervised.calls, [], "and its text never leaves the machine");
+
+  // The same supervised session's plain reply still takes the ordinary path.
+  supervised.inbox.reply("session-a", "ASK: merge it?", 3_000, null);
+  assert.equal(supervised.inbox.items().length, 1, "a plain ASK: line from a worker still marks");
+
+  const interactive = inboxUnderTest(t, { lineage: null });
+  assert.ok(interactive.inbox);
+  interactive.inbox.reply("session-a", reply, 2_000, null);
+  assert.equal(interactive.inbox.items().length, 1);
+  assert.equal(interactive.inbox.items()[0].excerpt, "which backend? Recommend: postgres");
+});
+
+test("a stale session's item stays, and an ended one stays until an operator post there or its prune", async (t) => {
+  let clock = 1_000;
+  const registry = inboxRegistry(null, () => clock);
+  const { inbox } = inboxUnderTest(t, { registry });
+  assert.ok(inbox);
+  inbox.reply("session-a", "ASK: merge it?", 2_000, null);
+  assert.equal(inbox.items().length, 1);
+
+  clock += 10 * 60_000;
+  registry.sweep();
+  assert.equal(registry.list()[0].state, "stale");
+  inbox.reconcile(registry.list());
+  assert.equal(inbox.items().length, 1, "a stale session can revive");
+
+  registry.relayClosed(INBOX_TOKEN, "session-a");
+  assert.equal(registry.list()[0].state, "ended");
+  inbox.reconcile(registry.list());
+  assert.equal(inbox.items().length, 1, "an act such as a merge outlives the session");
+
+  inbox.clearEnded("session-a", clock);
+  assert.deepEqual(inbox.items(), [], "the operator posting in its thread is what clears it");
+
+  // A late flag on an older reply is refused by the instant clearEnded recorded.
+  inbox.reply("session-a", "ASK: still?", clock - 1, null);
+  assert.deepEqual(inbox.items(), []);
+
+  // And the prune: a record the registry dropped takes its item with it.
+  inbox.reply("session-a", "ASK: once more", clock + 1, null);
+  assert.equal(inbox.items().length, 1);
+  inbox.reconcile([]);
+  assert.deepEqual(inbox.items(), []);
+});
+
+test("a reply or a verdict for a session the registry no longer holds opens nothing", async (t) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slow: JudgeFetch = async () => {
+    await held;
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ answers: { needs_reply: { noul: 0.9 }, needs_act: { noul: 0.1 } } }),
+    };
+  };
+  let clock = 1_000;
+  const registry = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    retainTerminalMs: 1,
+    now: () => clock,
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: INBOX_TOKEN,
+    sessionName: null,
+    lineage: null,
+    sessionId: "session-a",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+  const { inbox } = inboxUnderTest(t, { registry, fetch: slow });
+  assert.ok(inbox);
+  inbox.mirrored("session-a");
+  inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  inbox.reply("session-pruned", "ASK: merge it?", 2_000, null);
+  assert.deepEqual(inbox.items(), [], "a marked reply for an unheld session opens nothing");
+
+  // The record is pruned between the submit and the verdict.
+  registry.relayClosed(INBOX_TOKEN, "session-a");
+  clock += 10;
+  registry.sweep();
+  assert.deepEqual(registry.list(), []);
+  release();
+  await settled();
+  await settled();
+  assert.deepEqual(inbox.items(), [], "a late verdict for an unheld session opens nothing");
+
+  // The control: the same reply for the held session, verdict landing while it is held.
+  const control = inboxUnderTest(t);
+  assert.ok(control.inbox);
+  control.inbox.mirrored("session-a");
+  control.inbox.reply("session-a", "should I merge it now?", 2_000, null);
+  await settled();
+  assert.equal(control.inbox.items().length, 1);
+});
+
+test("items survive a restart through the snapshot, minus any whose session did not restore", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-restart-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const first = inboxUnderTest(t, { stateDir: dir, keyFile: null });
+  assert.ok(first.inbox);
+  first.inbox.reply("session-a", "ASK: merge it?", 2_000, null);
+  assert.ok(existsSync(first.snapshot), "written on change, beside the registry snapshot");
+  assert.deepEqual(first.errors, []);
+  const written = JSON.parse(readFileSync(first.snapshot, "utf8")) as { items: unknown[] };
+  assert.equal(written.items.length, 1);
+
+  const second = inboxUnderTest(t, { stateDir: dir, keyFile: null });
+  assert.ok(second.inbox);
+  assert.deepEqual(second.inbox.items(), first.inbox.items(), "restored whole");
+
+  const third = inboxUnderTest(t, {
+    stateDir: dir,
+    keyFile: null,
+    registry: createRegistry({ host: "NEO", staleAfterMs: 60_000 }),
+  });
+  assert.ok(third.inbox);
+  assert.deepEqual(third.inbox.items(), [], "an item whose session did not restore is dropped");
+});
+
+test("startBroker builds the inbox only when the card is on, and says so", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-start-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const off = await startBroker(
+    config({ stateFile: path.join(dir, "off.json"), logFile: path.join(dir, "off.log"), port: 0 }),
+  );
+  assert.equal(off.inbox, null);
+  await off.stop();
+  const offLog = path.join(dir, "off.log");
+  const offLogged = existsSync(offLog) ? readFileSync(offLog, "utf8") : "";
+  assert.ok(!offLogged.includes("operator inbox"), offLogged);
+
+  const on = await startBroker(
+    config({
+      stateFile: path.join(dir, "on.json"),
+      logFile: path.join(dir, "on.log"),
+      port: 0,
+      inboxCard: true,
+    }),
+  );
+  assert.ok(on.inbox);
+  assert.deepEqual(on.inbox.items(), []);
+  await on.stop();
+  const logged = readFileSync(path.join(dir, "on.log"), "utf8");
+  assert.match(logged, /operator inbox is on, reading ASK: lines alone with the judge off/);
+});
+
+test("startBroker's inbox restores beside the registry, clears on an operator prompt and follows a prune", async (t) => {
+  // The composition rather than the modules: the registry's prompt stamp and mutate signal reach
+  // the inbox only through the seams `startBroker` threads, and a unit test over `inboxWiring`
+  // stays green with either seam deleted. The items are seeded through the snapshot, since the
+  // tap that opens one sits behind the session's thread and no thread exists without Discord.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-seams-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = path.join(dir, "broker-state.json");
+  const record = (sessionId: string, processToken: string): SessionRecord => ({
+    sessionId,
+    processToken,
+    name: null,
+    lineage: null,
+    host: "NEO",
+    source: "startup",
+    state: "live",
+    lastTool: null,
+    lastToolInput: null,
+    toolCount: 0,
+    turnCount: 0,
+    startedAt: 1_000,
+    lastHookAt: 1_000,
+    lastEngagementAt: 1_000,
+    lastRelayAt: null,
+    endedAt: null,
+    openingModel: null,
+    model: null,
+    contextTokens: null,
+    downgrade: null,
+    backgroundTasks: [],
+    goal: null,
+    title: null,
+  });
+  saveSessions(stateFile, [
+    record("session-a", "11111111-2222-3333-4444-555555555555"),
+    record("session-b", "11111111-2222-3333-4444-666666666666"),
+  ]);
+  const item = (sessionId: string): InboxItem => ({
+    sessionId,
+    openedAt: 2_000,
+    refreshedAt: 2_000,
+    source: "marked",
+    excerpt: "merge it?",
+    scores: null,
+    winner: null,
+    count: 1,
+    messageId: null,
+  });
+  saveInboxSnapshot(path.join(dir, "inbox-items.json"), [
+    item("session-a"),
+    item("session-b"),
+    item("session-gone"),
+  ]);
+
+  const broker = await startBroker(
+    config({ stateFile, logFile: null, port: 0, inboxCard: true, retainTerminalMs: 1 }),
+  );
+  t.after(() => broker.stop());
+  assert.ok(broker.inbox);
+  assert.deepEqual(
+    broker.inbox.items().map((held) => held.sessionId),
+    ["session-a", "session-b"],
+    "restored from beside the registry snapshot, minus the session that did not restore",
+  );
+
+  // The registry's prompt stamp is the console-prompt clear.
+  broker.registry.engage("session-a");
+  assert.deepEqual(broker.inbox.items().map((held) => held.sessionId), ["session-b"]);
+
+  // The registry's mutate signal is how a pruned record's item leaves.
+  broker.registry.relayClosed("11111111-2222-3333-4444-666666666666", "session-b");
+  assert.equal(broker.inbox.items().length, 1, "an ended session keeps its item");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  broker.registry.sweep();
+  assert.ok(
+    !broker.registry.list().some((held) => held.sessionId === "session-b"),
+    "the ended record is pruned past the retention horizon",
+  );
+  assert.deepEqual(broker.inbox.items(), []);
+});
+
+test("the inbox card knob builds nothing on a broker with no discord configured", async (t) => {
+  // The other half of the wiring the seams test above never reaches: with no channel there is
+  // nowhere to draw a card, so the knob alone must still open no thread, start no refresh timer and
+  // write no binding file, on the board card's own test shape.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-wiring-"));
+  const logFile = path.join(dir, "broker.log");
+  const bindingFile = path.join(dir, "inbox-card.json");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(bindingFile, "{not json", "utf8");
+
+  const broker = await startBroker(
+    config({ stateFile: path.join(dir, "state.json"), logFile, inboxCard: true }),
+  );
+  await broker.stop();
+
+  assert.equal(
+    readFileSync(bindingFile, "utf8"),
+    "{not json",
+    "the binding file is never read or rewritten without a channel to draw in",
+  );
+  const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  assert.doesNotMatch(logged, /inbox card/, "no card wiring runs without a channel to draw in");
+  // The withheld control: `inboxWiring` itself runs whether or not Discord is configured, and its
+  // own line is in this same log, which is what tells an unwritten "inbox card" line apart from a
+  // log nothing here ever wrote to at all.
+  assert.match(
+    logged,
+    /broker: the operator inbox is on, reading ASK: lines alone with the judge off/,
+  );
 });

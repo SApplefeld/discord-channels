@@ -80,10 +80,10 @@ Four pieces per host, plus an installer.
   stream open to the broker for the life of the process.
 - **Broker** (`broker/`). The per-host daemon. It owns the bot token, one Discord gateway
   connection, the session registry, the thread bindings, every Discord surface (a session's thread
-  name, its status card, the messages written into it, the fleet usage and board cards' own threads,
-  and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live session's own
-  transcript file for mid-turn narration. It runs as a scheduled task at system startup, so an
-  unattended reboot brings it back without waiting for anyone to sign in.
+  name, its status card, the messages written into it, the fleet usage, board and inbox cards' own
+  threads, and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live
+  session's own transcript file for mid-turn narration. It runs as a scheduled task at system
+  startup, so an unattended reboot brings it back without waiting for anyone to sign in.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
   and the scheduled task. The same directory holds the operator's repair path, `Repair-Broker.ps1`,
@@ -471,8 +471,8 @@ header carries on every hook post for the process's whole life, so it can never 
 transcript line that both a launch `--name` and a `/rename` write. `displayName`
 (`broker/discord/render.ts`) prefers the title, falls back to the launch name, and falls back again to
 a stub built from the first eight characters of the session ID, and it is the one reading behind the
-thread name, the session card's heading, and the fleet card's session rows, so no two surfaces can
-call one session different things.
+thread name, the session card's heading, the fleet card's session rows, and the inbox card's item
+lines, so no two surfaces can call one session different things.
 
 Two fields rather than a precedence rule inside one is what makes the ordering irrelevant. The header
 arrives on every post and writes only `name`; the transcript writes only `title`; neither can clobber
@@ -709,6 +709,130 @@ truncated at the field bound, the kept map is capped at 200 sessions, and every 
 writes carries a cause and a session id and never the plan text. [`security-model.md`](security-model.md)
 carries what that credential admits and what the surface is therefore worth as evidence.
 
+## The operator inbox
+
+A fourth surface answers what the blocked desk cannot: which sessions have asked the operator for
+something and are still waiting. A session that stops on the operator raises `BLOCKED:` and the desk
+carries it. A session that asks a question, needs a ruling, or hands the operator a merge and keeps
+working raises nothing, and its ask sits inside a long status reply where a reader scrolling forward
+from Discord's last-read marker can miss it. The inbox, built from `broker/inbox/`, holds one item
+per such session until the operator answers that session, and one more broker-owned thread,
+`Fleet: Inbox`, carries a card listing them. It is off unless `CHANNEL_INBOX_CARD` is on, and off
+means no store, no snapshot, no thread, no timer, and no call to the judge.
+
+The tap sits in the outbound router (`broker/routing/outbound.ts`) and never in the intake handler,
+so the inbox sees only a reply that reached the thread and a hook's 202 is never held for it. What
+it sees is the reply as the model wrote it, before the renderer's escape and table transform. A
+reply is shown to the inbox at three points: after a reply-tool answer lands, after a turn-final
+reply mirror lands, and where a reply mirror is dropped because the transcript tailer already posted
+the same text as interim narration. Narration itself is never tapped, so without that third point a
+turn whose final reply the tailer narrated first would reach the thread and never the inbox. A reply
+mirror dropped as an echo of the reply tool's own answer is not tapped, because the reply-tool tap
+already saw that text. Prompts, narration chunks and peer messages never reach it. The instant
+recorded with a tapped reply is the router's clock as the reply arrived, read before its posting run
+rather than after it landed: a run paces its posts and can wait out a rate limit, and an answer
+typed inside that gap has to read as later than the reply it answers. A reply-tool run that lands
+some of its messages and then fails is not tapped, since what landed is a partial answer.
+
+An ask is recognized two ways. The producer signal is a line whose first non-space characters are
+exactly `ASK:`, uppercase with the colon, outside a fenced code block (`broker/inbox/ask.ts`). A
+blockquoted `> ASK:`, a bulleted `- ASK:`, a lowercase `ask:` and an `ASK:` in the middle of a line
+mark nothing, and neither does anything inside a fence, because a reply quoting code, a log or
+another session's text would otherwise turn every code review into an item. The rest of the first
+such line, whitespace-collapsed and cut to 200 code points, is the item's excerpt, and a reply
+carrying the mark is never sent to the judge. A fence opens as CommonMark opens one, on a run of
+three or more backticks or tildes (`FENCE_OPEN` in `broker/inbox/ask.ts`). The one surface that
+teaches a session to write the mark is the persona plugin, whose workers write the steward ask
+named below. A steward is the supervising persona session a worker reports to, and it answers the
+worker's asks itself rather than passing them to the operator. Neither the relay's instructions nor
+any kit skill names the mark, so for an interactive session the judge is what catches an unmarked
+ask today. One reply is excluded from both readings.
+A supervised session is one whose record carries a lineage, which the persona supervisor's launches declare and
+an interactive session never does (see the lineage paragraph above). A reply from such a session
+holding a line of the form `ASK: <question>? Recommend: <choice>`, matched on the persona plugin's
+own pattern, is a worker's ask of its steward, answered there rather than by the operator. It opens
+nothing and its text is not judged, whatever else the reply carries. The same line from a session
+with no lineage is an ordinary mark.
+
+The judge is the second opener. A tapped reply with no mark goes to TypeSafe's Jev classifier
+(`broker/inbox/judge.ts`) with two yes-or-no questions: whether the message asks the operator to
+decide, answer or confirm something, and whether it tells the operator that some act is theirs to
+perform now. Each answer comes back as a probability, the larger is the reply's score, and a score
+at or above `CHANNEL_INBOX_THRESHOLD` opens or refreshes the item with source `judged`, recording
+both numbers and which question won. The judge runs only where its key file is set and usable, and
+only for a session whose mirror is on. The router establishes that by having seen a mirror post
+from the session since the broker started. The post must first pass the router's straggler gate,
+which drops a mirror post that names no session or names one the posting token no longer holds,
+since a subprocess `claude` inherits its parent's token and would otherwise post as the parent. A
+turn-final reply is itself a mirror post and it arms the session before it is tapped, so the first
+mirror post after a restart is judged like any later one. A session running with its mirror off
+still posts reply-tool answers, and those are read for `ASK:` lines and not judged, since the
+session's own hooks post no mirror. The switch is advisory against a process holding the session's
+token (`docs/security-model.md`, the per-session mirror switch residual). What goes out
+is the reply's text, screened for secret shapes over its whole length and then cut to its first
+12,000 code points, and a reply matching the screen makes no call. The call is detached from the
+post. How it fails is stated once, in the External integrations bullet below. Each
+session has at most one call in flight and one reply waiting, a newer reply replacing the one
+waiting, and the verdict of the call in flight is always used. The card renderer makes no model
+call: the judge runs once per reply, at the tap, and nowhere else.
+
+The store (`broker/inbox/store.ts`) holds at most one item per session, keyed by session ID, so its
+size is bounded by `CHANNEL_MAX_SESSIONS`. An item carries the instant it opened, the instant it was
+last refreshed, its source (`marked` or `judged`), its excerpt where marked, its scores where
+judged, a count of flagged replies since it opened, and the Discord message ID of the most recent
+flagged post where the writer returned one. The refresh instant is the instant the tap passed,
+the reply's arrival at two of the three tap points and the handling time at the echo-drop point.
+The card does not draw the count. A flagged reply for a session that already holds an item
+refreshes that item and never opens a second, which is how a close-out recap restating a standing
+wait attaches to the ask it restates. A marked flag upgrades a judged item, because the session's
+own word outranks a classifier's reading of it, and a judged flag never takes a marked item back. Flags can arrive out of
+posting order, since a verdict takes as long as the judge takes, so an older flag counts toward the
+item and overwrites nothing a newer one already wrote.
+
+What clears an item is an operator prompt to its session carrying an instant later than the item's
+last refresh, and never the operator having read it, because reading is how asks get missed. Two
+sources feed the clear. The registry's operator-prompt stamp (`engage` in `broker/registry.ts`)
+fires on every path a typed prompt reaches the broker by, console or channel, with the two
+exclusions the blocked desk applies: the harness's background-task wake injection and a peer
+session's message are machine-generated and clear nothing. A Discord message the inbound router
+delivered to a live or stale session is the other source, because a channel message landing
+mid-turn may fire no prompt hook. A message the router consumed as a permission verdict or a held
+question's answer clears nothing, since each answers a prompt the session is parked on rather than
+its last reply. Neither `SessionStart` nor `PostToolUse` clears anything, which is the deliberate
+difference from the blocked desk: a session that asks and keeps working makes tool calls all the
+while. The store also keeps each session's latest prompt instant, which both clear sources advance,
+and drops a flag posted at or before it, so a judge verdict returning after the operator has
+answered opens nothing. A prompt typed at the console while the session is working stamps the
+instant it was typed, read from the transcript line, so it is earlier than the reply that closes
+the turn and clears nothing that reply asks. A stale
+record keeps its item, since a stale session can revive. An ended record keeps its item too, drawn
+with an `ended` marker, because an act such as a merge outlives the session that asked for it. That
+item leaves when the operator posts a plain message in the ended session's thread, or when the
+registry prunes the record, which the store learns from the registry's mutate signal. The router
+sees that message behind the sender gate (`docs/security-model.md`) though it delivers nothing. A
+verdict-shaped message or a held question's answer posted there clears nothing, as in a live thread.
+
+Items persist in `inbox-items.json` beside `broker-state.json`, written whole to a temp file and
+renamed on every change, which is a human rate. A snapshot that is unreadable, of another version
+or malformed in any one item restores nothing rather than refusing to start, and a restored item
+whose session record did not restore is dropped. Prompt instants are not persisted, and neither is
+the set of sessions whose mirror the router has seen, so after a restart a session's reply-tool
+answers are read for marks and not judged until its next mirror post arrives.
+
+The card (`broker/inbox/card.ts`, with `thread.ts` and `binding.ts` on the board card's pattern) is
+the third permanent pin, its `{messageId, threadId}` binding persisted in `inbox-card.json`. The pin
+keeper pins what is missing and never reorders, so where Discord draws it among the pins is
+Discord's. It draws one bullet per item, oldest opened first: a glyph for the source (the session's
+own mark, or which judge question won), the session's title through the full live-markdown escape,
+the age from when the ask opened, a link, and the `ended` marker where the record has ended. The
+link is a jump link to the flagged message where the item holds a message ID and the gateway's
+channel cache has yielded the guild, and a channel chip to the session's thread otherwise. A marked
+item's excerpt draws on a sub-bullet through the same escape, the one model-authored string this
+card draws outside a fence. An empty inbox draws `No open asks.`, and a card that runs out of room
+names how many asks it left out. The renderer takes its clock as an argument, so a fixed item set
+composes fixed bytes, and the thread module edits the card only when those bytes change, on
+`CHANNEL_INBOX_CARD_REFRESH_MS`.
+
 ## What the cards are made of
 
 The session and fleet cards draw their bodies inside fenced monospace blocks so the columns line up
@@ -729,7 +853,9 @@ that card's fields are a plan's name and a sentence about its state, neither of 
 column bound, so a fence cuts them where a list wraps them. Those draw in live markdown, because the
 alternative is an ellipsis in the middle of every fact worth reading. The card's only fences are
 the group labels, a persona's or a project's, which align with nothing, so `MAX_BLOCK_WIDTH` is what
-the genuinely tabular cards pad to and it bounds nothing on the board.
+the genuinely tabular cards pad to and it bounds nothing on the board. The inbox card takes the same
+side of that trade and draws no fence at all: a session title and an `ASK:` excerpt are prose, so
+its bullets are live markdown under the full escape.
 
 A fence is also a security surface, and the shape of its protection is measured rather than
 reasoned. Escaping a backtick does not defend it, because Discord resolves the escape before it
@@ -773,7 +899,7 @@ whatever the session's lifecycle.
 
 ## External integrations
 
-Three, and each one fails in its own way.
+Four, and each one fails in its own way.
 
 - **Claude Code's hook protocol.** The user-level settings file registers four events and five hooks:
   `SessionStart`, `PostToolUse`, and a `Stop` liveness tick post payloads the broker reads only as
@@ -789,6 +915,18 @@ Three, and each one fails in its own way.
 - **Discord.** The REST API for thread creation, renames, and message writes, and the gateway for
   inbound messages. Renames are the scarce resource, so the broker reads the rate-limit response
   headers and drops a rename it cannot afford rather than queueing it.
+- **TypeSafe's Jev.** The inbox judge, and the broker's one HTTP call to a host other than
+  Discord. Each unmarked reply from a mirrored session is posted to
+  `https://api.typesafe.ai/v1/systemone` as a JSON body carrying the reply's text, the model name
+  `jev-latest` and the two fixed questions, under a bearer key read from the file
+  `CHANNEL_INBOX_JUDGE_KEY_FILE` names. The host is a constant that no setting can redirect, and a
+  redirect response fails the call rather than being followed. It fails in two layers. A key file
+  that fails the install guide's check turns the judge off at start with one warning, and the
+  inbox runs on `ASK:` lines alone; no key file named is the ordinary off state and warns nothing.
+  A call that fails, returns a non-2xx status, answers with a body the reader cannot parse into two probabilities, or takes longer than 5 seconds opens nothing,
+  is not retried, and logs one rate-limited line naming the kind of failure and the session. The
+  broker never stops for it, and an outage costs the operator the judged reading of the replies
+  posted during it.
 
 ## Runtime model
 
