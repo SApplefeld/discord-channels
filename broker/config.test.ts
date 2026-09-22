@@ -432,17 +432,6 @@ test("the judge key is read from a protected file, and every failure turns the j
       assert.match(warnings[3 + index], /request header cannot carry/);
       assert.ok(!warnings[3 + index].includes("sk-j"), "the contents never ride a warning");
     }
-
-    // A share root is never opened, on the rule the roster path holds: the check would send
-    // outbound SMB under the operator's own credentials before it could refuse anything.
-    const before = warnings.length;
-    const checked = protectedPaths.length;
-    for (const unc of ["\\\\host\\share\\jev.key", "//host/share/jev.key", "/\\host\\share\\jev.key"]) {
-      assert.equal(readInboxJudgeKey(unc, warn, accept), null, unc);
-      assert.match(warnings.at(-1) ?? "", /share root/);
-    }
-    assert.equal(warnings.length, before + 3);
-    assert.equal(protectedPaths.length, checked, "refused before the file is touched at all");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

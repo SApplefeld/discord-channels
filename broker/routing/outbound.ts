@@ -39,8 +39,9 @@ export type OutboundInbox = {
    */
   mirrored: (sessionId: string) => void;
   /**
-   * A reply's text reached the session's thread. `postedAt` is this router's clock at the tap, and
-   * `messageId` is the reply's last message where the writer returned one.
+   * A reply's text reached the session's thread. `postedAt` is this router's clock as the reply
+   * arrived, read before its run, and `messageId` is the reply's last message where the writer
+   * returned one.
    */
   reply: (sessionId: string, text: string, postedAt: number, messageId: string | null) => void;
 };

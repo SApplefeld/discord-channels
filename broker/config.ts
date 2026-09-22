@@ -677,11 +677,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
  * be handed someone else's. Where the two differ is what a failure costs. A token file that cannot
  * be used stops the broker, because without it nothing reaches Discord at all; this key only adds a
  * second reading of unmarked replies, so a file that is unprotected, missing, unreadable or empty
- * turns the judge off with one warning and the inbox runs on `ASK:` lines alone. A path on a share
- * root is refused the same way, on the rule `boardRosterPath` holds: opening it would send outbound
- * SMB under the operator's own credentials. So is a key carrying anything outside printable ASCII,
- * since it rides an HTTP header and an interior line break would make every request throw. No file
- * named is the ordinary off state and warns nothing.
+ * turns the judge off with one warning and the inbox runs on `ASK:` lines alone. So does a key
+ * carrying anything outside printable ASCII, since it rides an HTTP header and an interior line
+ * break would make every request throw. No file named is the ordinary off state and warns nothing.
  *
  * Never throws. A warning names the judge's key file and the cause, never the contents.
  */
@@ -697,7 +695,6 @@ export function readInboxJudgeKey(
     warn(`broker: the inbox judge is off, its key file ${file} ${cause}`);
     return null;
   };
-  if (UNC_ROOT.test(file)) return off("names a share root, which this broker will not open");
   let key: string;
   try {
     protect(file);
