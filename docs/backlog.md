@@ -635,7 +635,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   one-line `processToken` paragraph); two pointers to an unnamed plan doc; `cswap`, "latent" and the
   relay, tailer, desk and card names used before they are defined; `D:\sapplefeld-channels` paths
   that predate the checkout's move; no note on running the broker locally; a five-item list headed
-  "three groups"; and a self-referential layout remark.
+  "three groups"; and a self-referential layout remark. Two more blind readers, run 2026-09-22 by
+  the card-steward-asks plan's section 3 review, repeated several of these and added, not yet
+  checked: "the kit", claude-swap and `cswap`, the persona plugin and `agent_persona` are used in
+  all three host documents and introduced in none; `docs/operations.md` names "the raised mirror
+  timeout" with no timeout defined; `docs/security-model.md`'s standalone "`processToken` never
+  reaches either." has no recoverable antecedent; no single inventory of what leaves the machine
+  exists; and whether the judge can run on a host with the inbox on and Discord unconfigured is
+  left to inference between `docs/operations.md` and `docs/architecture.md`.
 
 - Run the unmirrored-reply judge's three live checks (handoff 2026-09-22, from
   `archive/plans/channels_judge-unmirrored-replies_spec_v1.md`'s Operator Verification). After the

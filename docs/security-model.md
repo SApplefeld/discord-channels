@@ -718,14 +718,20 @@ or `-` (which takes the `sk-proj-` and `sk-ant-` shapes with their infix), a Git
 (`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more letters, digits or `_`, and a
 `password` assignment to a quoted value of one or more characters. The pattern itself is
 `SECRET_SCREEN` in `broker/inbox/judge.ts`. Length never blocks a send. What is never sent: a reply
-carrying an `ASK:` line, which the inbox reads locally and does not judge; a supervised session's
-reply carrying the steward-shaped `ASK: <question>? Recommend: <choice>` line; any reply from a
+carrying an `ASK:` line, which the inbox reads locally and does not judge whatever the line's shape,
+the `ASK: <question>? Recommend: <choice>` shape a persona worker asks its supervisor with
+included; any reply from a
 session the registry no longer holds, which is not a session the operator can answer; prompts,
 narration chunks and peer messages, which the tap never sees; tool input and the status card's
 preview, which ride another path; and any file path, since the judge is handed a string and nothing
 it names. Whether the session mirrors its console decides only which of its replies reach the tap:
 a mirror-off session's turn-final replies are dropped at the intake, and its reply-tool answers are
-judged like any other session's. The response is
+judged like any other session's. That supervisor-ask shape written lowercase or inside a fence is
+not a mark. A reply carrying only such a line is judged like any unmarked reply. The card's
+`supervisor ask` marker rests on the record's lineage, which a session declares at registration
+through the `x-channel-lineage` header. So the marker is the session's own report and never proof
+that a supervisor exists or read the line. Its item clears on the operator's prompt like every
+item, never on the supervisor's answer, which the broker does not see. The response is
 read for two numbers and nothing else, and neither the request body, the response body nor any part
 of the key reaches the broker log: a failure line names the kind of failure and the session, on the
 rule every mirror and transcript path here already holds to. Conversation text is what every other
