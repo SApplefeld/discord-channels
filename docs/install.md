@@ -53,8 +53,8 @@ an optional classifier at TypeSafe, which the operator inbox uses once you name 
 "The inbox judge's key file" below. While the inbox card is on and that key file is usable, a
 reply-tool answer that carries no `ASK:` line and does not match the judge's screen for secrets
 is sent to TypeSafe, whether or not the session is mirrored. To stop that, turn the card off, or
-remove the key from `broker.env` and restart the broker, as [`operations.md`](operations.md)
-describes under "Turning the judge off".
+unset `CHANNEL_INBOX_JUDGE_KEY_FILE` in `broker.env` and restart the broker, as
+[`operations.md`](operations.md) describes under "Turning the judge off".
 
 The per-session switch needs the hooks installed from this version of the repository: it works by a
 header the mirror hooks carry, so a host installed before the switch existed has no such header. The

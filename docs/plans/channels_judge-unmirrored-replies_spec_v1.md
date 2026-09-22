@@ -261,6 +261,12 @@ The list is closed at these six items.
 - Read one persona's next reply that hands you a decision. An `ASK:` line at its top, drawn on the
   card with its excerpt, confirms section 2 reached the session; its absence on a session started
   after the update reopens section 2.
+- Write a `## Threat model` section for `docs/security-model.md`. The document inventories what
+  leaves the machine and now states that a reply-tool answer reaches the vendor whatever the mirror
+  setting, but it names no attacker classes and no assets, so a security review of any later change
+  has nothing to rule a finding against. This is the finishing pass's security lens reporting
+  `threat model: absent`, carried here because writing the model is the operator's call rather than
+  this plan's work. It is on `docs/backlog.md` too, so it survives this plan's archive.
 
 ## Open Questions
 
@@ -360,3 +366,64 @@ Rulings since the last boundary: none.
 Next: read the probe, then either adjudicate the returned reviews or compensate the round; then the
 goal read, the performance lens, the docs curator, the final Chapter, the archive, the handoff gate
 and the pull request.
+
+### Interim board 3 - 2026-09-22
+The finishing pass has cleared steps 1 through 5. What remains is the final Chapter, the handoff
+whole gate, and the pull request, and one operator decision gates the last of those.
+
+Correction to interim board 2. That entry recorded the resumed run's pair as holding both
+never-started counts at zero an hour after dispatch. That reading was wrong, and the cause is the
+path rather than the instrument: a resumed Workflow run writes its agents' transcripts into the
+original run id's directory, and no directory exists under the resumed handle at all. Both agents
+were working the whole time. They sit at `subagents/workflows/wf_d06708f8-ab2/` with 26 and 32
+assistant lines, and both returned full reviews. No compensation round was needed or run.
+
+Reviews, all at fable and effort high. Adversarial: APPROVED_WITH_CONCERNS, 1 Major, 4 Minors; its
+resolved model reads `claude-fable-5-1` on its own transcript, so the tier held. Security: CLEAR,
+0 Critical, 0 Major, 3 Minors, opening `threat model: absent`. Performance: CLEAR, 2 Minors, both
+rated nothing-to-fix. Goal read: RULED, 5 built-but-unasked all ACCEPT-AND-DECLARE, 0
+asked-but-unbuilt. Each declare was checked against the item itself; two of the judge's line
+citations pointed at lines that do not exist or hold unrelated text, while every claim held in
+substance at another location.
+
+The adversarial Major is held and is the operator decision below. A doctrine-shaped ask,
+`ASK: <question>? Recommend: <choice>` on one line, matches `STEWARD_ASK` at
+`broker/inbox/ask.ts:79` and is dropped for a lineage-carrying session at `broker/index.ts:808`
+before both the mark read and the judge. The scope adjudicator ruled ASK on the ground that the fix
+reopens a risk the plan accepted.
+
+Minor close pass, run and gated. Four fixes: the judge off-switch wording in `docs/install.md` and
+`docs/operations.md` now names unsetting `CHANNEL_INBOX_JUDGE_KEY_FILE` rather than removing a key
+from `broker.env`, which contradicted `docs/security-model.md:703-704`; a comment seam at
+`broker/index.ts:735`; and the markup pin at `relay/protocol.test.ts:80`, anchored to the mark's
+own sentence. The pin's tightening was proved with a withheld control: a trimmed clause carrying
+innocent decoy words elsewhere passes the old pattern and fails the new one.
+
+Documentation curation, adjudicated. Three drift items, all `deviation`, none blocking; the record
+is at `.kit/scratch/judge-unmirrored-replies/finishing/drift-adjudication.md`. Two are the known
+spec-wording departures from sections 2 and 3. The third is the curator's own find and is fixed: the
+rename carve-out at `docs/operations.md:188` claimed `-NoMirror` keeps a session's transcript
+content on the machine, which section 1 made false. Its replacement prose was rewritten to house
+style. Two library-hygiene rows for the close-out: `docs/README.md:34` and
+`docs/plans/README.md:6` both still describe the plan as parked and Ready.
+
+Gate: targeted lane at the Minor pass, `node --test relay/protocol.test.ts broker/index.test.ts`,
+64 tests, 64 pass, 0 fail, exit 0 read from the run; `npm run lint` exit 0. The handoff whole gate
+has not run yet and runs after the last tree change.
+
+Rulings since the last boundary: the threat model is absent and is carried to this plan's
+`## Operator Verification` and to `docs/backlog.md`, so it survives the archive.
+
+Operator decision in flight, asked on the Discord thread and not yet answered. The operator's reply
+reframed it: he wants such asks visible on the card, marked as ones the supervisor was also told
+about. That is a change to the steward-ask exclusion, which `## Out of Scope` keeps out of this
+plan. The recommendation put to him is to ship this branch with the gap recorded and write the card
+change as its own plan, and it withdraws the earlier recommendation to add an instruction clause,
+which was a dodge around the matcher rather than a fix.
+
+Live dispatch: the finishing prose lens over the four documents, which never started in either wave
+1 dispatch and is the one lens still ungated. The documents changed after their section review, so
+it is owed rather than waived.
+
+Next: read the prose lens; then the operator's answer, the final Chapter, the archive and the two
+index rows, the handoff whole gate, and the pull request.

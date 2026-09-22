@@ -73,10 +73,12 @@ test("the instructions teach the ask mark in the one form the broker's own reade
   //
   // This pins the requirement rather than the sentence carrying it. A later author is free to
   // reword, and a trim that drops the refusal of markup altogether is what must go red, so the
-  // alternation is over the concept and never over the clause the sentence happens to use.
+  // alternation is over the concept and never over the clause the sentence happens to use. It is
+  // anchored to the mark's own sentence, since an unanchored alternation is satisfied by a word
+  // like "explain" or "quota" anywhere in the constant and would go green on a trim.
   assert.match(
     INSTRUCTIONS,
-    /plain|bullet|quot|markup|fence|bold|unwrapped/,
+    /ASK:[^.]*(plain|bullet|quot|markup|fence|bold|unwrapped)/,
     "the instructions must tell the session to write the mark without markup",
   );
   // The regression this pin exists for: the mark shown behind any markdown decoration at all. A

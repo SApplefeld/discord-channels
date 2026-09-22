@@ -183,12 +183,14 @@ Renaming twice inside that window spends one rename rather than two, because the
 each change and only the settled name is painted. A session already reading `needs you` or `exited`
 skips the dwell and repaints on the next pass.
 
-Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never follows
-a rename, because its transcript is never read at all, and that is the flag working as intended rather
-than a fault: `-NoMirror` says this session's transcript content does not leave the machine, and the
-name is transcript content. Its thread keeps the launch name for the session's life. And nothing
-clears a title once set: a later `/rename` replaces it, but there is no path back to the launch name
-short of starting a session under it.
+Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never
+follows a rename, because its transcript is never read at all, and that is the flag working as
+intended rather than a fault: `-NoMirror` tells the broker to read nothing from this session's
+transcript, and the name is transcript content. Its thread keeps the launch name for the session's
+life. The switch covers the transcript alone. What the session sends through the reply tool reaches
+Discord by another route, and "The fleet inbox card" below says where those answers go from there.
+And nothing clears a title once set: a later `/rename` replaces it, but there is no path back to
+the launch name short of starting a session under it.
 
 The launch name is still what a session with no `/rename` is called, and it is still what the thread
 falls back to when a rename yields nothing readable. A session launched without the wrapper, carrying
@@ -650,16 +652,16 @@ right thread, with Discord's notice that the message is unknown.
 ### Turning the judge off
 
 The judge runs only while `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file, and the file is
-read once at start. To keep the inbox and stop reply text leaving the machine, remove that key from
-`broker.env` and restart the broker with `.\install\Repair-Broker.ps1` from an elevated prompt at
-the checkout root. Deleting the file alone changes nothing until that restart. The start log then
-reads `reading ASK: lines alone with the judge off`, and the inbox runs on marked replies alone. A
-key file that fails the check the install guide states turns the judge off the same way, with one
-warning naming the file and the cause, and never stops the broker. To remove the whole card, set
-`CHANNEL_INBOX_CARD` off and restart; the thread already in the channel is left alone. Those two
-are the only switches that stop reply text reaching the vendor. `CHANNEL_MIRROR=off` is not one of
-them: it takes the conversation off Discord, and the judge reads reply-tool answers whatever the
-mirror setting.
+read once at start. To keep the inbox and stop reply text leaving the machine, unset
+`CHANNEL_INBOX_JUDGE_KEY_FILE` in `broker.env` and restart the broker with
+`.\install\Repair-Broker.ps1` from an elevated prompt at the checkout root. Deleting the key file
+alone changes nothing until that restart. The start log then reads `reading ASK: lines alone with
+the judge off`, and the inbox runs on marked replies alone. A key file that fails the check the
+install guide states turns the judge off the same way, with one warning naming the file and the
+cause, and never stops the broker. To remove the whole card, set `CHANNEL_INBOX_CARD` off and
+restart; the thread already in the channel is left alone. Those two are the only switches that
+stop reply text reaching the vendor. `CHANNEL_MIRROR=off` is not one of them: it takes the
+conversation off Discord, and the judge reads reply-tool answers whatever the mirror setting.
 
 ## What a session card says about its model
 

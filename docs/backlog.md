@@ -637,6 +637,15 @@ and none carries a date of its own. An item added from here on carries `(parked 
   that predate the checkout's move; no note on running the broker locally; a five-item list headed
   "three groups"; and a self-referential layout remark.
 
+- Write a `## Threat model` section for `docs/security-model.md` (parked 2026-09-22, surfaced by
+  the judge-unmirrored-replies plan's finishing security review, which opened `threat model:
+  absent`). The document inventories what leaves the machine, names the assets a token reaches and
+  states which switches are enforced against a poster, but it declares no attacker classes and no
+  asset list under a heading a reviewer can cite. The kit's security lens reads that section first
+  and rules a finding's relevance against it, so with none present every advisory finding falls
+  back to whatever deployment sentence a plan happens to carry. Writing it is the operator's call,
+  and it is on that plan's `## Operator Verification` list too.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
