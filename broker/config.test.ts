@@ -1,6 +1,8 @@
 // Configuration bounds that nothing at runtime would report as wrong.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   DEFAULT_QUESTION_HOLD_MS,
@@ -10,6 +12,7 @@ import {
   RELAY_REPLY_IDLE_MS,
   REPLY_HEARTBEAT_MS,
   loadConfig,
+  readInboxJudgeKey,
 } from "./config.ts";
 
 test("the relay heartbeat is refused outside the window the relay can survive", () => {
@@ -317,6 +320,106 @@ test("the board card refresh is a minute by default and refuses a value outside 
       /expected an integer/,
       raw,
     );
+  }
+});
+
+test("the inbox card is off unless asked for, and its refresh takes the board card's bounds", () => {
+  assert.equal(loadConfig({}).inboxCard, false);
+  assert.equal(loadConfig({ CHANNEL_INBOX_CARD: "on" }).inboxCard, true);
+  assert.equal(loadConfig({ CHANNEL_INBOX_CARD: "off" }).inboxCard, false);
+  assert.throws(() => loadConfig({ CHANNEL_INBOX_CARD: "yse" }), /expected one of/);
+
+  assert.equal(loadConfig({}).inboxCardRefreshMs, loadConfig({}).boardCardRefreshMs);
+  assert.equal(loadConfig({ CHANNEL_INBOX_CARD_REFRESH_MS: "5000" }).inboxCardRefreshMs, 5_000);
+  assert.equal(
+    loadConfig({ CHANNEL_INBOX_CARD_REFRESH_MS: "3600000" }).inboxCardRefreshMs,
+    3_600_000,
+  );
+  for (const raw of ["4999", "3600001", "0", "-1", "1.5", "soon"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_INBOX_CARD_REFRESH_MS: raw }),
+      /expected an integer/,
+      raw,
+    );
+  }
+});
+
+test("the inbox threshold is 0.7 by default and refuses a value outside 0.4 to 0.95", () => {
+  assert.equal(loadConfig({}).inboxThreshold, 0.7);
+  assert.equal(loadConfig({ CHANNEL_INBOX_THRESHOLD: "0.4" }).inboxThreshold, 0.4);
+  assert.equal(loadConfig({ CHANNEL_INBOX_THRESHOLD: "0.95" }).inboxThreshold, 0.95);
+  assert.equal(loadConfig({ CHANNEL_INBOX_THRESHOLD: " .85 " }).inboxThreshold, 0.85);
+  for (const raw of ["0.39", "0.951", "1", "0", "-0.5", "NaN", "Infinity", "high"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_INBOX_THRESHOLD: raw }),
+      /expected a number between 0.4 and 0.95/,
+      raw,
+    );
+  }
+});
+
+test("the judge key file is a path alone, never read at load, and the key has no knob", () => {
+  // Read where the inbox is built, so a broker with the card off never opens it, and a stale path
+  // left in the environment cannot stop a broker from starting.
+  assert.equal(loadConfig({}).inboxJudgeKeyFile, null);
+  assert.equal(loadConfig({ CHANNEL_INBOX_JUDGE_KEY_FILE: "  " }).inboxJudgeKeyFile, null);
+  assert.equal(
+    loadConfig({ CHANNEL_INBOX_JUDGE_KEY_FILE: " Z:/nothing/here.key " }).inboxJudgeKeyFile,
+    "Z:/nothing/here.key",
+  );
+  const source = readFileSync(new URL("./config.ts", import.meta.url), "utf8");
+  assert.ok(
+    !/CHANNEL_INBOX_JUDGE_KEY\b/.test(source.replace(/CHANNEL_INBOX_JUDGE_KEY_FILE/g, "")),
+    "the key itself is never read from the environment",
+  );
+});
+
+test("the judge key is read from a protected file, and every failure turns the judge off with one warning", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-key-"));
+  try {
+    const file = path.join(directory, "jev.key");
+    writeFileSync(file, "  sk-jev-0123456789abcdefghij\n", "utf8");
+    const warnings: string[] = [];
+    const warn = (message: string): void => {
+      warnings.push(message);
+    };
+    const protectedPaths: string[] = [];
+    const accept = (checked: string): void => {
+      protectedPaths.push(checked);
+    };
+
+    assert.equal(readInboxJudgeKey(null, warn, accept), null, "no file named is the off state");
+    assert.equal(warnings.length, 0, "and warns nothing");
+    assert.deepEqual(protectedPaths, [], "nothing is checked where nothing is named");
+
+    assert.equal(readInboxJudgeKey(file, warn, accept), "sk-jev-0123456789abcdefghij");
+    assert.deepEqual(protectedPaths, [file], "the protection check runs on the named file");
+    assert.equal(warnings.length, 0);
+
+    // The real check, on a file under the operator's own temp directory, is what the default runs.
+    assert.equal(readInboxJudgeKey(file, warn), "sk-jev-0123456789abcdefghij");
+    assert.equal(warnings.length, 0);
+
+    const refuse = (checked: string): void => {
+      throw new Error(`${checked} grants access to WD`);
+    };
+    assert.equal(readInboxJudgeKey(file, warn, refuse), null, "unprotected turns the judge off");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /inbox judge is off/);
+    assert.match(warnings[0], /grants access to WD/);
+    assert.ok(!warnings[0].includes("sk-jev"), "the contents never ride a warning");
+
+    writeFileSync(file, " \n", "utf8");
+    assert.equal(readInboxJudgeKey(file, warn, accept), null, "an empty file turns the judge off");
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[1], /is empty/);
+
+    const missing = path.join(directory, "absent.key");
+    assert.equal(readInboxJudgeKey(missing, warn), null, "a missing file turns the judge off");
+    assert.equal(warnings.length, 3);
+    assert.match(warnings[2], /inbox judge is off/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

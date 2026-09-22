@@ -29,7 +29,7 @@ import {
   UNREACHABLE_NOTICE,
   createInboundRouter,
 } from "./inbound.ts";
-import type { InboundMessage } from "./inbound.ts";
+import type { InboundInbox, InboundMessage } from "./inbound.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
@@ -144,6 +144,8 @@ function harness(
     questions?: { answerTyped: (sessionId: string, response: string) => boolean };
     /** Whether the permission desk has an open request for the id a verdict names. */
     verdictResolves?: boolean;
+    inbox?: InboundInbox;
+    log?: (message: string) => void;
   } = {},
 ) {
   const now = options.now ?? ((): number => 1_000);
@@ -186,6 +188,8 @@ function harness(
     },
     threadFor: (sessionId) => (sessionId === "session-a" ? THREAD : null),
     writer: createThreadWriter({ messenger, now }),
+    ...(options.inbox === undefined ? {} : { inbox: options.inbox }),
+    ...(options.log === undefined ? {} : { log: options.log }),
     now,
   });
   return {
@@ -678,4 +682,115 @@ test("a failed notice does not propagate out of the router", async () => {
     }),
   });
   await assert.doesNotReject(() => router.deliver(message()));
+});
+
+// The operator inbox's clears. A clear that fires on a message that did not answer the session
+// silently empties the inbox, so each never-clearing message runs in a harness whose own delivered
+// message is asserted to clear.
+
+/** An inbox seam that records every clear it was asked for. */
+function watchedInbox() {
+  const cleared: Array<{ sessionId: string; at: number }> = [];
+  const ended: Array<{ sessionId: string; at: number }> = [];
+  const inbox: InboundInbox = {
+    clear: (sessionId, at) => cleared.push({ sessionId, at }),
+    clearEnded: (sessionId, at) => ended.push({ sessionId, at }),
+  };
+  return { inbox, cleared, ended };
+}
+
+test("a delivered message clears the session's inbox item at the router's clock", async () => {
+  const { inbox, cleared, ended } = watchedInbox();
+  const { router, sent } = harness({ inbox, now: () => 4_000 });
+
+  await router.deliver(message());
+  assert.equal(sent.length, 1);
+  assert.deepEqual(cleared, [{ sessionId: "session-a", at: 4_000 }]);
+  assert.deepEqual(ended, []);
+});
+
+test("a permission verdict and a held question's answer clear nothing", async () => {
+  const question = heldQuestion();
+  const { inbox, cleared, ended } = watchedInbox();
+  const { router, sent, verdicts } = harness({
+    inbox,
+    questions: { answerTyped: question.desk.answerTyped },
+  });
+  question.hold();
+
+  await router.deliver(message({ text: "y abcde" }));
+  assert.equal(verdicts.length, 1, "consumed as a verdict");
+  await router.deliver(message({ text: "the beverage is coffee" }));
+  assert.equal(question.writes.length, 1, "consumed as the held question's answer");
+  assert.deepEqual(sent, []);
+  assert.deepEqual(cleared, [], "neither answered what the session last asked in its reply");
+  assert.deepEqual(ended, []);
+
+  // The control: with the question answered, the next message is delivered and clears.
+  await router.deliver(message({ text: "carry on" }));
+  assert.equal(sent.length, 1);
+  assert.equal(cleared.length, 1);
+});
+
+test("a message that reaches no session clears nothing", async () => {
+  const { inbox, cleared, ended } = watchedInbox();
+  const unattached = harness({ inbox, attachRelay: false });
+  await unattached.router.deliver(message());
+  assert.deepEqual(unattached.notices, [{ threadId: THREAD, text: UNREACHABLE_NOTICE }]);
+
+  const attached = harness({ inbox });
+  await attached.router.deliver(message({ senderId: STRANGER }));
+  await attached.router.deliver(message({ fromBot: true }));
+  await attached.router.deliver(message({ threadId: "900000000000000099" }));
+  for (let index = 0; index < MAX_INBOUND_PER_WINDOW + 1; index += 1) {
+    await attached.router.deliver(message({ text: `message ${String(index)}` }));
+  }
+  assert.equal(attached.sent.length, MAX_INBOUND_PER_WINDOW, "the last one was over the ceiling");
+  assert.equal(cleared.length, MAX_INBOUND_PER_WINDOW, "only the delivered messages cleared");
+  assert.deepEqual(ended, []);
+});
+
+test("a message to a stale session is delivered and clears, since a stale session can revive", async () => {
+  let clock = 1_000;
+  const { inbox, cleared } = watchedInbox();
+  const { registry, router, sent } = harness({ inbox, now: () => clock });
+  clock += 10 * 60_000;
+  registry.sweep();
+  assert.equal(registry.list()[0].state, "stale");
+
+  await router.deliver(message());
+  assert.equal(sent.length, 1);
+  assert.deepEqual(cleared, [{ sessionId: "session-a", at: clock }]);
+});
+
+test("a message in an ended session's thread clears its item as ended, and nothing else", async () => {
+  const { inbox, cleared, ended } = watchedInbox();
+  const { registry, router, sent, notices } = harness({ inbox, now: () => 6_000 });
+  registry.relayClosed(TOKEN, "session-a");
+
+  await router.deliver(message());
+  assert.deepEqual(sent, []);
+  assert.deepEqual(notices, [{ threadId: THREAD, text: ENDED_NOTICE }], "still told it was not delivered");
+  assert.deepEqual(ended, [{ sessionId: "session-a", at: 6_000 }]);
+  assert.deepEqual(cleared, []);
+});
+
+test("an inbox that throws never costs a delivery, and its line names only the session", async () => {
+  const lines: string[] = [];
+  const { router, sent } = harness({
+    log: (line) => lines.push(line),
+    inbox: {
+      clear: () => {
+        throw new Error("clear exploded carrying the operator's words");
+      },
+      clearEnded: () => {
+        throw new Error("clearEnded exploded");
+      },
+    },
+  });
+
+  await assert.doesNotReject(() => router.deliver(message()));
+  assert.equal(sent.length, 1);
+  assert.ok(lines.some((line) => line.includes("inbox") && line.includes("session-a")), lines.join("\n"));
+  assert.ok(!lines.join("\n").includes("operator's words"), lines.join("\n"));
 });

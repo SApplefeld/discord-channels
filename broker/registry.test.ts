@@ -585,6 +585,69 @@ test("an engagement instant is a high-water mark bounded by now, in both directi
   );
 });
 
+test("an operator prompt is reported with its clamped instant, and no other stamp is", () => {
+  // The operator inbox clears an item on this report, so what reaches it is exactly the prompts a
+  // person typed: a SessionStart, a completed tool call, a Stop and a question opening all move
+  // liveness or engagement and report nothing, since none of them is the operator answering.
+  const time = clock();
+  const prompts: Array<{ sessionId: string; at: number }> = [];
+  const sessions = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    now: time.now,
+    onPrompt: (sessionId, at) => prompts.push({ sessionId, at }),
+  });
+  sessions.apply(sessionStart("session-a", "startup"));
+  time.advance(1_000);
+  sessions.apply(postToolUse("Bash"));
+  sessions.apply(askUserQuestion());
+  sessions.apply(stop());
+  sessions.apply(sessionStart("session-a", "resume"));
+  assert.deepEqual(prompts, [], "no hook event is an operator prompt");
+
+  time.advance(1_000);
+  sessions.engage("session-a");
+  assert.deepEqual(prompts, [{ sessionId: "session-a", at: time.now() }], "an absent instant is now");
+
+  sessions.engage("session-a", time.now() - 4_000);
+  assert.deepEqual(prompts.at(-1), { sessionId: "session-a", at: time.now() - 4_000 });
+  assert.equal(
+    sessions.list()[0].lastEngagementAt,
+    time.now(),
+    "the older prompt is reported as typed, while the field keeps its high-water mark",
+  );
+
+  sessions.engage("session-a", time.now() + 86_400_000);
+  assert.deepEqual(prompts.at(-1), { sessionId: "session-a", at: time.now() }, "clamped to now");
+
+  sessions.engage("nobody");
+  sessions.relayClosed(TOKEN, "session-a");
+  sessions.engage("session-a");
+  assert.equal(prompts.length, 3, "an unknown or ended session reports nothing");
+});
+
+test("a prompt listener that throws costs neither the stamp nor the snapshot", () => {
+  const time = clock();
+  let writes = 0;
+  const sessions = createRegistry({
+    host: "NEO",
+    staleAfterMs: 60_000,
+    now: time.now,
+    onMutate: () => {
+      writes += 1;
+    },
+    onPrompt: () => {
+      throw new Error("the inbox is broken");
+    },
+  });
+  sessions.apply(sessionStart("session-a", "startup"));
+  const written = writes;
+  time.advance(5_000);
+  assert.doesNotThrow(() => sessions.engage("session-a"));
+  assert.equal(sessions.list()[0].lastEngagementAt, time.now());
+  assert.equal(writes, written + 1);
+});
+
 test("a silent session goes stale on the sweep with no inbound event", () => {
   const time = clock();
   const sessions = registry(time.now, 60_000);

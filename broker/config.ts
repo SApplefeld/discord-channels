@@ -1,8 +1,10 @@
 // Broker configuration, resolved entirely from the environment so an installed service can be
 // pointed at a different port or state file without editing source.
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { comparablePath, defaultEventsPath } from "./board/events.ts";
+import { assertTokenFileIsProtected } from "./discord/credentials.ts";
 
 export type BrokerConfig = {
   /** Bound on 127.0.0.1 only. The listener is never exposed off-box. */
@@ -149,6 +151,24 @@ export type BrokerConfig = {
    * input this reads out of the roster or a persona's files that is ever trusted as configuration.
    */
   boardRosterPath: string;
+  /**
+   * Whether the broker keeps the operator inbox: the one place a session's reply that needs
+   * something from the operator is held until the operator answers that session. Off by default,
+   * and off is the absence of the machinery rather than a check inside it: no item is held, no
+   * snapshot is written, the judge's key file is never read, and no reply leaves the machine.
+   */
+  inboxCard: boolean;
+  /**
+   * The file the inbox judge's TypeSafe key is read from, or null when none is named. Null leaves
+   * the judge off and the inbox running on `ASK:` lines alone. The key itself is never a setting:
+   * a scheduled task's environment is readable by anything that can read the task definition, and
+   * a file can be locked to one account.
+   */
+  inboxJudgeKeyFile: string | null;
+  /** The judge score at or above which an unmarked reply opens an item, from 0.4 to 0.95. */
+  inboxThreshold: number;
+  /** How often the inbox card is re-rendered. An edit is spent only when it changed. */
+  inboxCardRefreshMs: number;
 };
 
 /**
@@ -273,6 +293,16 @@ const MAX_USAGE_CARD_REFRESH_MS = 60 * 60 * 1000;
 const DEFAULT_BOARD_CARD_REFRESH_MS = 60 * 1000;
 const MIN_BOARD_CARD_REFRESH_MS = 5 * 1000;
 const MAX_BOARD_CARD_REFRESH_MS = 60 * 60 * 1000;
+// The inbox card draws ages in minutes as the board card does, so its refresh takes the board
+// card's default and bounds, for the board card's reasons.
+const DEFAULT_INBOX_CARD_REFRESH_MS = DEFAULT_BOARD_CARD_REFRESH_MS;
+const MIN_INBOX_CARD_REFRESH_MS = MIN_BOARD_CARD_REFRESH_MS;
+const MAX_INBOX_CARD_REFRESH_MS = MAX_BOARD_CARD_REFRESH_MS;
+// The calibrated threshold. The floor keeps a typo from flagging most replies, and the ceiling
+// keeps one from flagging almost none while still reading as on.
+const DEFAULT_INBOX_THRESHOLD = 0.7;
+const MIN_INBOX_THRESHOLD = 0.4;
+const MAX_INBOX_THRESHOLD = 0.95;
 // One list, one entry per project root. A semicolon rather than a colon or a comma because a Windows
 // path carries a drive letter and a colon with it, and a comma is a legal character in a directory
 // name.
@@ -307,6 +337,21 @@ function bounded(
     throw new Error(
       `expected an integer between ${minimum} and ${maximum}, got ${JSON.stringify(raw)}`,
     );
+  }
+  return value;
+}
+
+/** `bounded` for a knob that is a fraction rather than a count: any finite number in the range. */
+function boundedFraction(
+  raw: string | undefined,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`expected a number between ${minimum} and ${maximum}, got ${JSON.stringify(raw)}`);
   }
   return value;
 }
@@ -602,5 +647,60 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
     // Read here for the same reason: the roster is opened in broker/board/roster.ts, and the
     // allowlist pin only sees a knob this file names itself.
     boardRosterPath: rosterPath(env),
+    // Off by default: with the judge's key file named, the inbox sends reply text to a third party,
+    // and that belongs on a host that asked for it.
+    inboxCard: strictFlag(env.CHANNEL_INBOX_CARD, false),
+    // The path alone. The file is read only where the inbox is built, by `readInboxJudgeKey`, so a
+    // broker with the card off never opens it.
+    inboxJudgeKeyFile: env.CHANNEL_INBOX_JUDGE_KEY_FILE?.trim() || null,
+    inboxThreshold: boundedFraction(
+      env.CHANNEL_INBOX_THRESHOLD,
+      MIN_INBOX_THRESHOLD,
+      MAX_INBOX_THRESHOLD,
+      DEFAULT_INBOX_THRESHOLD,
+    ),
+    inboxCardRefreshMs: bounded(
+      env.CHANNEL_INBOX_CARD_REFRESH_MS,
+      MIN_INBOX_CARD_REFRESH_MS,
+      MAX_INBOX_CARD_REFRESH_MS,
+      DEFAULT_INBOX_CARD_REFRESH_MS,
+    ),
   };
+}
+
+/**
+ * The inbox judge's key, read from the file `CHANNEL_INBOX_JUDGE_KEY_FILE` names, or null where the
+ * judge is to stay off.
+ *
+ * Held to the Discord token file's protection check, since the key is a bearer credential of the
+ * same kind: readable means anyone on the machine can spend it, and writable means the broker can
+ * be handed someone else's. Where the two differ is what a failure costs. A token file that cannot
+ * be used stops the broker, because without it nothing reaches Discord at all; this key only adds a
+ * second reading of unmarked replies, so a file that is unprotected, missing, unreadable or empty
+ * turns the judge off with one warning and the inbox runs on `ASK:` lines alone. No file named is
+ * the ordinary off state and warns nothing.
+ *
+ * Never throws. A warning names the file and the cause, never the contents.
+ */
+export function readInboxJudgeKey(
+  file: string | null,
+  warn: (message: string) => void,
+  // Injectable so a test reaches each refusal without a spawn or a hardened file; the default is
+  // the check the token file is held to.
+  protect: (file: string) => void = assertTokenFileIsProtected,
+): string | null {
+  if (file === null) return null;
+  let key: string;
+  try {
+    protect(file);
+    key = readFileSync(file, "utf8").trim();
+  } catch (error) {
+    warn(`broker: the inbox judge is off, its key file cannot be used: ${String(error)}`);
+    return null;
+  }
+  if (key === "") {
+    warn(`broker: the inbox judge is off, its key file ${file} is empty`);
+    return null;
+  }
+  return key;
 }
