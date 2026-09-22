@@ -67,8 +67,9 @@ const MARK_GLYPH = "📝";
 const REPLY_GLYPH = "💬";
 const ACT_GLYPH = "⚡";
 
-/** What a marked item whose reply is shaped as an ask of the session's supervisor draws, past its
- * link: names the line's shape, never whether the supervisor read it, which the broker cannot see. */
+/** What a marked item whose marked line is shaped as an ask of the session's supervisor draws, after
+ * its link where one is drawn and before the ended marker. It names the line's shape, never whether
+ * the supervisor read it, which the broker cannot see. */
 const STEWARD_MARKER = "supervisor ask";
 
 /** What an ended session's item is marked with, past its age. */
@@ -168,7 +169,7 @@ function itemLines(
   const parts = [`${glyphFor(item)} **${title}**`, age];
   const link = itemLink(guildId, session?.threadId ?? null, item.messageId);
   if (link !== null) parts.push(link);
-  if (item.stewardAsk) parts.push(STEWARD_MARKER);
+  if (item.source === "marked" && item.stewardAsk) parts.push(STEWARD_MARKER);
   if (session?.ended === true) parts.push(ENDED_MARKER);
   const lines = [`${BULLET} ${parts.join(` ${SEPARATOR} `)}`];
   if (item.excerpt !== null && item.excerpt !== "") {
