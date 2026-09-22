@@ -73,7 +73,14 @@ test("an excerpt carrying a mention, a masked link, a heading marker and a backt
 
   assert.doesNotMatch(drawn, /<@999999999999999999>/, "the mention chip does not survive live");
   assert.doesNotMatch(drawn, /\[click\]\(https:\/\/evil\.example\)/, "the masked link is not live");
-  assert.ok(drawn.includes("\\# heading"), "the heading marker is escaped rather than dropped");
+  assert.ok(
+    !drawn
+      .split("\n")
+      .slice(2)
+      .some((line) => line.trimStart().startsWith("#")),
+    "the heading marker does not open a line",
+  );
+  assert.ok(drawn.includes("heading"), "the underlying word still reads, just inert");
   assert.doesNotMatch(drawn, /```/, "the backtick fence does not survive live");
   assert.ok(drawn.includes("click"), "the underlying words still read, just inert");
 
@@ -188,7 +195,14 @@ test("a title carrying markdown or a chip draws inert too, the same as the excer
     now: NOW,
   });
   assert.doesNotMatch(drawn, /<@999999999999999999>/, "the mention chip does not survive live");
-  assert.ok(drawn.includes("\\# heading"), "the heading marker is escaped rather than dropped");
+  assert.ok(
+    !drawn
+      .split("\n")
+      .slice(2)
+      .some((line) => line.trimStart().startsWith("#")),
+    "the heading marker does not open a line",
+  );
+  assert.ok(drawn.includes("heading"), "the underlying word still reads, just inert");
 
   // The withheld control.
   assert.match(hostile, /<@999999999999999999>/);

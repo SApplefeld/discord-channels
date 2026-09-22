@@ -198,6 +198,33 @@ test("an item that changed spends one edit", async () => {
   assert.match(calls.edits[1]?.card ?? "", /a new excerpt/);
 });
 
+test("the guild is read fresh on every tick, not latched once at construction", async () => {
+  // The item already carries a message ID, so a resolved guild is the only thing standing between
+  // the chip fallback and a jump link: the edit body is the tell that this tick's own read, not a
+  // value captured once when the card was built, decided which one drew.
+  let guild: string | null = null;
+  const { calls, card: built } = card({
+    binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
+    guildId: () => guild,
+    items: () => [marked({ messageId: MESSAGE_ID })],
+  });
+
+  await built.tick();
+  assert.doesNotMatch(
+    calls.edits[0]?.card ?? "",
+    /discord\.com\/channels\//,
+    "no guild is known yet, so the chip fallback draws",
+  );
+
+  guild = GUILD_ID;
+  await built.tick();
+  assert.match(
+    calls.edits[1]?.card ?? "",
+    /discord\.com\/channels\//,
+    "the guild this tick's own read found draws the jump link",
+  );
+});
+
 test("a refused edit is skipped rather than queued, and retried on the next tick", async () => {
   const { calls, time, card: built, setItems } = card({
     binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
@@ -368,12 +395,6 @@ test("a rejected token stops the card rather than being retried on every pass", 
   assert.equal(calls.edits.length, 1, "the card makes no further call of any kind");
   assert.ok(logged.some((line) => line.includes("the bot token was rejected")));
 });
-
-// An unresolved session's fallback name is the renderer's own concern, pinned directly at
-// `card.test.ts` ("a session the lookup cannot resolve still draws a line, under a name built from
-// its ID"); this module's own "the first tick posts the card" test already proves the session lookup
-// this thread wires reaches the renderer at all, so a thread-level duplicate of the fallback case
-// would prove nothing the two together do not.
 
 test("start runs its first pass at once rather than one interval later", async () => {
   const scheduled: number[] = [];

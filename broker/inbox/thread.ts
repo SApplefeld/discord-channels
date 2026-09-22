@@ -8,11 +8,12 @@
 //
 // Unlike the board and usage cards, this module reads no setting of its own: whether the card is
 // built at all, and what it reads to draw it, are its caller's to decide. It takes the store's items,
-// a session lookup, the refresh interval and the transport to write with, and does nothing else with
-// configuration. The knob that turns this card off, and the null check for a broker with no Discord
-// configured, both live in the wiring that constructs it, the way `../board/thread.ts`'s own
-// `createBoardCard` folds them in for the board card; this one leaves them to its caller instead, so
-// a caller with nothing to build never constructs this module at all.
+// a session lookup, the guild accessor a jump link needs, the refresh interval and the transport to
+// write with, and does nothing else with configuration. The knob that turns this card off, and the
+// null check for a broker with no Discord configured, both live in the wiring that constructs it,
+// the way `../board/thread.ts`'s own `createBoardCard` folds them in for the board card; this one
+// leaves them to its caller instead, so a caller with nothing to build never constructs this module
+// at all.
 //
 // Nothing is queued. A call that cannot be afforded, or that Discord refuses for the moment, is
 // dropped and retried on the next tick, because the next tick reads the store fresh: a queued edit

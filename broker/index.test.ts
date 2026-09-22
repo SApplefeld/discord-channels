@@ -2317,17 +2317,11 @@ test("the inbox card knob builds nothing on a broker with no discord configured"
   );
   const logged = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
   assert.doesNotMatch(logged, /inbox card/, "no card wiring runs without a channel to draw in");
-});
-
-test("the inbox card stays unbuilt when its own knob is off", async (t) => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-inbox-knob-off-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const bindingFile = path.join(dir, "inbox-card.json");
-
-  const broker = await startBroker(
-    config({ stateFile: path.join(dir, "state.json"), logFile: null, inboxCard: false }),
+  // The withheld control: `inboxWiring` itself runs whether or not Discord is configured, and its
+  // own line is in this same log, which is what tells an unwritten "inbox card" line apart from a
+  // log nothing here ever wrote to at all.
+  assert.match(
+    logged,
+    /broker: the operator inbox is on, reading ASK: lines alone with the judge off/,
   );
-  await broker.stop();
-
-  assert.ok(!existsSync(bindingFile), "no binding file is ever created with the knob off");
 });

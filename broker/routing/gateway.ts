@@ -23,10 +23,10 @@ export type MessageSource = {
   stop: () => Promise<void>;
   /**
    * The guild the configured channel sits in, or null until the connection's channel cache holds
-   * it. Read once at `ClientReady` rather than per message or from a REST fetch: the cache is
-   * already populated by then for any channel the Guilds intent has seen, and a cold cache (the
-   * channel not yet cached, or not a guild channel at all) leaves this null forever rather than
-   * spending a call to chase it down.
+   * it. Looked up in that cache on every call rather than latched once, so a cache that was cold
+   * when this was last read still heals on the next: the Guilds intent populates it without a REST
+   * call, but nothing guarantees the channel is cached by any one fixed point in the connection's
+   * life.
    */
   guildId: () => string | null;
 };
@@ -243,19 +243,6 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
   });
   const reportUnexpectedSystem = createUnexpectedSystemReport(log);
 
-  // The configured channel's guild, read once the client is ready. `channels.cache` is already
-  // populated for a guild's channels once the Guilds intent connects, so this costs no REST call.
-  // A channel not in the cache yet, or one that is not a guild channel (only a guild-scoped channel
-  // type carries `guildId`), leaves this null: the card falls back to its thread chip rather than
-  // a jump link.
-  let guildId: string | null = null;
-  client.on(Events.ClientReady, () => {
-    const channel = client.channels.cache.get(options.channelId);
-    const resolved = channel !== undefined && "guildId" in channel ? channel.guildId : null;
-    guildId = typeof resolved === "string" ? resolved : null;
-    log(`gateway: ready, the channel's guild is ${guildId === null ? "not resolved" : "resolved"}`);
-  });
-
   client.on(Events.MessageCreate, (message) => {
     // Every message takes one decision and is then handed to what that decision names, so the paths
     // out of here are the ones `classifyMessage` allows and there is no other.
@@ -346,6 +333,16 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
     stop: async () => {
       await client.destroy();
     },
-    guildId: () => guildId,
+    // Looked up fresh on every call rather than latched once: `channels.cache` costs no REST call
+    // either way, and a value read once at `ClientReady` can stay null for the process's life, since
+    // that event fires once discord.js's own guild wait times out even while a guild is still
+    // unavailable. A channel not in the cache yet, or one that is not a guild channel (only a
+    // guild-scoped channel type carries `guildId`), answers null on the calls it misses and heals on
+    // the first call after the cache catches up.
+    guildId: () => {
+      const channel = client.channels.cache.get(options.channelId);
+      const resolved = channel !== undefined && "guildId" in channel ? channel.guildId : null;
+      return typeof resolved === "string" ? resolved : null;
+    },
   };
 }
