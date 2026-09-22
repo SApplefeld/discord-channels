@@ -53,16 +53,19 @@ header the mirror hooks carry, so a host installed before the switch existed has
 wrapper refuses to launch with `-NoMirror` against settings that lack it rather than mirroring the
 session anyway, and the fix is re-running the installer.
 
-**The optional fleet cards send content of their own, and both are off until you turn them on.** The
-usage card (`CHANNEL_USAGE_CARD`) carries each account's identity and headroom. The board card
+**The optional fleet cards send content of their own, and all three are off until you turn them
+on.** The usage card (`CHANNEL_USAGE_CARD`) carries each account's identity and headroom. The board card
 (`CHANNEL_BOARD_CARD` plus `CHANNEL_BOARD_ROSTER`, `CHANNEL_BOARD_PROJECTS` or both) puts plan
 titles, progress, and next steps in the channel. With `CHANNEL_BOARD_ROSTER` set it draws each
 worker persona the fleet roster names, with that persona's name, its queued plan titles, and the
 reason a worker wrote on a blocked entry. With
 `CHANNEL_BOARD_PROJECTS` set it sweeps plan documents under the project roots you name, and uses
 the last path segment of each root as the project name. So a root at or just under your home
-directory would put your account name there too. Both cards are configured in `broker.env` and documented in
-[`operations.md`](operations.md); a value tuned by hand there survives a re-install.
+directory would put your account name there too. The inbox card (`CHANNEL_INBOX_CARD`) lists the
+sessions waiting on you, and with a judge key file named (the optional step under "Provision the
+host") it sends each unmarked session reply to TypeSafe's classifier, which is the one path here
+that reaches a host other than Discord. All three cards are configured in `broker.env` and
+documented in [`operations.md`](operations.md); a value tuned by hand there survives a re-install.
 
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a
 starter message successfully and then cannot open a thread on it.
@@ -185,6 +188,37 @@ hook entries by their headers, ignores their timeouts, and re-adds them from the
 written. For the same reason a host already installed keeps whatever value it was installed with
 until its next `Install-Host` run, and nothing at launch reports the difference, so a fleet host
 that has not been re-installed since a timeout change is still running the old one.
+
+### The inbox judge's key file (optional)
+
+The operator inbox (`CHANNEL_INBOX_CARD`) can send each unmarked session reply to TypeSafe's Jev
+classifier, which scores whether the reply needs something from you. That call needs a TypeSafe API
+key, and the key is read from a file rather than from `broker.env`, because a scheduled task's
+environment is readable by anything that can read the task definition. This step is optional.
+Without it the inbox still runs and holds every reply a session marks with an `ASK:` line, and
+nothing leaves the machine on this path. With it the judge also catches asks a session did not
+mark, at the cost that every unmarked reply's text is sent to TypeSafe, which
+[`security-model.md`](security-model.md) states in full.
+
+Create the file inside the state root, `%LOCALAPPDATA%\sapplefeld-channels\`, beside
+`discord-token.txt`, from the same plain non-elevated session step 2 requires. It holds one line,
+the key alone. Step 2 hardens the state root with the access control list the token file carries,
+granting only the owner, Administrators and SYSTEM, and a file created under that directory inherits
+the list, so a file placed there needs no hardening of its own. Then add two keys to `broker.env`:
+
+```
+CHANNEL_INBOX_CARD=on
+CHANNEL_INBOX_JUDGE_KEY_FILE=C:\Users\<you>\AppData\Local\sapplefeld-channels\inbox-judge-key.txt
+```
+
+The broker checks the key file at start exactly as it checks the token file: the file and its
+directory must be owned by the broker's account or an administrative identity, must grant nobody
+beyond those three trustees, and must not be a symbolic link or junction. Where that check failing
+on the token file stops the broker, failing on this file only turns the judge off, with one warning
+in the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. An empty
+file, or one holding anything outside printable ASCII, is refused the same way. Both keys are on
+the installer's allowlist, so values set by hand here survive the next install, and
+[`operations.md`](operations.md) carries the threshold and refresh knobs beside them.
 
 ## 3. Install the service
 
