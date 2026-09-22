@@ -2720,13 +2720,61 @@ const LONG_REPLY = Array.from(
   (_, index) => `Paragraph ${index + 1}: ${"the migration is green and pushed. ".repeat(12)}`,
 ).join("\n\n");
 
-/** Yields until the condition holds, so a test can act while a run is genuinely still in flight. */
-async function until(holds: () => boolean): Promise<void> {
-  for (let turn = 0; turn < 1_000 && !holds(); turn += 1) {
+/** The classifying grace `until` polls on wall clock once its primary bound has expired. */
+const UNTIL_GRACE_MS = 2_000;
+const UNTIL_GRACE_STEP_MS = 10;
+/** The primary bound, in event-loop turns. */
+const UNTIL_TURNS = 1_000;
+
+/**
+ * Yields until the condition holds, so a test can act while a run is genuinely still in flight.
+ *
+ * The primary bound is 1000 event-loop turns. If the condition still has not held by then, the
+ * wait keeps polling on wall clock, read from a monotonic clock, for a further grace purely to
+ * classify the failure: it did not meet the bound either way, but a condition that holds inside
+ * the grace was merely slow, while one that never holds is genuinely stuck. The test fails in
+ * both cases; the grace only decides which message it fails with.
+ */
+async function until(label: string, holds: () => boolean): Promise<void> {
+  for (let turn = 0; turn < UNTIL_TURNS && !holds(); turn += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  assert.ok(holds(), "the condition never held");
+  if (holds()) return;
+
+  const expiredAt = performance.now();
+  while (performance.now() - expiredAt < UNTIL_GRACE_MS) {
+    await new Promise((resolve) => setTimeout(resolve, UNTIL_GRACE_STEP_MS));
+    if (holds()) {
+      assert.fail(`${label} held only after the bound, ${Math.round(performance.now() - expiredAt)} ms late`);
+    }
+  }
+  assert.fail(`${label} never held within the grace`);
 }
+
+test("until: passes when the condition holds within the primary bound", async () => {
+  let flag = false;
+  setImmediate(() => {
+    flag = true;
+  });
+  await until("test condition", () => flag);
+});
+
+test("until: a condition true only after the bound fails naming the label and the ms late", async () => {
+  // Counted rather than timed, so the test cannot pass by the bound happening to outlast a timer:
+  // the primary loop checks once per turn and once after, and the first grace poll is the next.
+  let checks = 0;
+  await assert.rejects(
+    until("late condition", () => (checks += 1) > UNTIL_TURNS + 1),
+    (error: Error) => /^late condition held only after the bound, \d+ ms late$/.test(error.message),
+  );
+});
+
+test("until: a condition that never holds fails naming the label", async () => {
+  await assert.rejects(
+    until("stuck condition", () => false),
+    (error: Error) => /^stuck condition never held within the grace$/.test(error.message),
+  );
+});
 
 test("the fixture reply takes more than one message on both paths that carry it", () => {
   // A single-message fixture cannot exercise a claim held across a paced run, and the two paths
@@ -2750,7 +2798,7 @@ test("a long reply the tailer is still posting is not posted again by the Stop m
 
   appendFileSync(file, assistantText(LONG_REPLY), "utf8");
   const polling = tailer.poll();
-  await until(() => posts.length === 1); // the run's first message is on the wire
+  await until("the run's first message is on the wire", () => posts.length === 1);
 
   const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
   release();
@@ -2777,7 +2825,7 @@ test("a long reply the Stop mirror is still posting is not posted again by the t
 
   appendFileSync(file, assistantText(LONG_REPLY), "utf8");
   const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
-  await until(() => posts.length === 1); // the run's first message is on the wire
+  await until("the run's first message is on the wire", () => posts.length === 1);
 
   // The poll settles while that run is still going only because the tailer skipped the text: a
   // poll that dispatched a delivery of its own would be queued behind the run on the thread's
@@ -2786,7 +2834,7 @@ test("a long reply the Stop mirror is still posting is not posted again by the t
   const polling = tailer.poll().then(() => {
     polled = true;
   });
-  await until(() => polled);
+  await until("the tailer's poll has settled", () => polled);
 
   release();
   await polling;
@@ -2878,7 +2926,7 @@ test("a tailer run that landed nothing after the mirror deferred still gets the 
 
   appendFileSync(file, assistantText(LONG_REPLY), "utf8");
   const polling = tailer.poll();
-  await until(() => posts.length === 1); // the run's first message is on the wire
+  await until("the run's first message is on the wire", () => posts.length === 1);
 
   const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
   assert.deepEqual(await mirrored, { status: "sent" }, "the mirror deferred to the claim");
@@ -2910,7 +2958,7 @@ test("a mirror run that landed nothing after the tailer deferred still gets the 
 
   appendFileSync(file, assistantText(LONG_REPLY), "utf8");
   const mirrored = outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION);
-  await until(() => posts.length === 1); // the run's first message is on the wire
+  await until("the run's first message is on the wire", () => posts.length === 1);
 
   // The poll settles while that run is still going only because the tailer skipped the text, which
   // is the deferral this test is about.
@@ -2918,7 +2966,7 @@ test("a mirror run that landed nothing after the tailer deferred still gets the 
   const polling = tailer.poll().then(() => {
     polled = true;
   });
-  await until(() => polled);
+  await until("the tailer's poll has settled", () => polled);
 
   release();
   await polling;
@@ -2993,7 +3041,7 @@ test("a reply record left by a deferral dies with the interim run that never lan
 
   appendFileSync(file, assistantText(LONG_REPLY), "utf8");
   const polling = tailer.poll();
-  await until(() => posts.length === 1); // the run's first message is on the wire
+  await until("the run's first message is on the wire", () => posts.length === 1);
 
   assert.deepEqual(
     await outbound.mirror(TOKEN, "reply", LONG_REPLY, SESSION),

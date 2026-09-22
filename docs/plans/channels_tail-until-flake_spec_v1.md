@@ -1,6 +1,6 @@
 # Make the Tailer Tests' Wait Say Why It Failed, Then Fix the Flake From That Evidence
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-22
 
