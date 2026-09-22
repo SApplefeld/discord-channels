@@ -74,16 +74,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   is silent on it. Worth a fixture the day a quote-bearing display name is seen live, and not
   before, since inventing the escaping rule is what the ground-truth discipline exists to prevent.
 
-- **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
-  from the title-states security review).** `classifyMessage`'s thread branch drops
-  `ChannelNameChange` and delivers everything else, so any other system message type Discord posts
-  into a thread reaches `onMessage` and the sender gate, stopped today only because no such type
-  carries composed content, and past that by the empty-content guard in `inbound.ts`. A future
-  Discord type that does carry text would reach a session as if the operator typed it. The
-  hardening is to deliver `Default` and `Reply` in a thread and drop the rest; the pin-notice test
-  ("a pin notice in a thread is delivered like any message") flips with it. Do it when the gateway
-  is next open, and pin both directions.
-
 - Run operator check F (`operator-checks.md`), now the side-by-side fidelity watch: console beside
   thread, one long turn, on SCOTT and on NEO with both restarted onto this code. It covers the
   coalesced surface (one growing `(edited)` message under one header, and a typed message breaking

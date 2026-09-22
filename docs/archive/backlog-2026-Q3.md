@@ -140,3 +140,19 @@ the live backlog carries active items only.
   whose Chapters carry the delivered design, the eight live readings, and the one accepted
   residual: inside a spoiler a tap has revealed, a peer body can compose a line shaped like the
   renderer's own attribution, because the escape that would mark it is one the client consumes.
+
+## Declined 2026-09-22
+
+- **Allow-list what a thread delivers instead of deny-listing one system type (parked 2026-08-17,
+  from the title-states security review).** `classifyMessage`'s thread branch drops
+  `ChannelNameChange` and delivers everything else, so any other system message type Discord posts
+  into a thread reaches `onMessage` and the sender gate, stopped today only because no such type
+  carries composed content, and past that by the empty-content guard in `inbound.ts`. A future
+  Discord type that does carry text would reach a session as if the operator typed it. The
+  hardening is to deliver `Default` and `Reply` in a thread and drop the rest; the pin-notice test
+  ("a pin notice in a thread is delivered like any message") flips with it. Do it when the gateway
+  is next open, and pin both directions.
+
+  Declined by the operator on 2026-09-22, relayed by the coordinator, as excessive hardening not
+  worth its review cost. No system message type carries composed text today, and the router drops
+  empty text, so the thread keeps delivering every type but the rename notice.
