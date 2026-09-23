@@ -25,8 +25,10 @@
 // is gone", and a failure carries the stat it was observed at so that caller can skip the file until
 // it moves. Nothing read here is logged: a failure carries a static reason, and the errors
 // themselves are discarded unread because each carries a path under the operator's own profile.
-import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { readCappedFile } from "../capped-read.ts";
+import type { CappedRead } from "../capped-read.ts";
 
 /**
  * Ceiling on one plan doc: 256 KiB, which is roughly ten times the tens of kilobytes a long plan
@@ -133,8 +135,10 @@ export type PlanFailure = {
   stat?: { mtimeMs: number; sizeBytes: number };
 };
 
-/** What one capped read yields: the file's text, or why there is none. */
-export type PlanRead = { text: string } | { failed: "unreadable" | "oversized" };
+/** What one capped read yields: the file's text, or why there is none. An alias of the shared
+ * `CappedRead` in `broker/capped-read.ts`, kept under this name because this module's own callers
+ * import it as `PlanRead`. */
+export type PlanRead = CappedRead;
 
 export type SweepPlansOptions = {
   /**
@@ -332,7 +336,7 @@ const WHITESPACE_RUN = /\s+/g;
  * read or parsed again, where a renderer runs on every refresh tick over whatever the last parse
  * held.
  */
-function bounded(value: string, limit: number): string {
+export function bounded(value: string, limit: number): string {
   const collapsed = value.replace(WHITESPACE_RUN, " ").trim();
   // A code point takes at most two UTF-16 units, so this prefix holds at least `limit` of them and
   // the array the cut is made on stays small whatever the value's size. Cutting on code points is
@@ -383,7 +387,16 @@ export function parsePlan(text: string): PlanParse | null {
 }
 
 /**
- * The modification time and size of one plan file, or null when it cannot be stat'd at all.
+ * The modification time and size of one plan file, or null when it cannot be stat'd at all, or when
+ * `regularFileOnly` is set and the path names something other than a regular file (a directory, a
+ * symbolic link to one, or a FIFO). The stat follows a symbolic link, so a link to a regular file
+ * passes here, where a sweep's own directory listing reads a dirent and refuses every link whatever
+ * it points at.
+ *
+ * `regularFileOnly` defaults to off, which is the plan sweep's own behaviour: the sweep stats names
+ * from its own listing or from a caller's held copy of one, and does not refuse a non-regular file
+ * standing at such a name. The queue reader turns the check on for every file it stats, the plans
+ * its store names and the store and heartbeat files alike, and refuses a directory or a FIFO there.
  *
  * This runs before the read, so a write landing between the two leaves the stat older than the
  * bytes parsed. That is the direction a caller gating on movement needs: the next tick sees a newer
@@ -393,9 +406,13 @@ export function parsePlan(text: string): PlanParse | null {
  * The size cap is not enforced here for the same reason: a file can grow between the stat and the
  * read, so refusing an over-cap file stays the read's own job.
  */
-function statPlanFile(file: string): { mtimeMs: number; sizeBytes: number } | null {
+export function statPlanFile(
+  file: string,
+  regularFileOnly = false,
+): { mtimeMs: number; sizeBytes: number } | null {
   try {
     const stat = statSync(file);
+    if (regularFileOnly && !stat.isFile()) return null;
     return { mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
   } catch {
     return null;
@@ -403,59 +420,19 @@ function statPlanFile(file: string): { mtimeMs: number; sizeBytes: number } | nu
 }
 
 /**
- * One read of at most `MAX_PLAN_FILE_BYTES`, into a buffer one byte larger so an oversized file is
- * recognized by the read itself rather than by a stat the file could have outgrown in between. The
- * buffer is uninitialized because only the bytes the read actually returned are ever decoded, so
- * nothing beyond them can escape.
- *
- * The read repeats until the buffer fills or a read returns nothing, because one `readSync` is
- * allowed to return fewer bytes than asked for and a network filesystem does. Stopping at the first
- * short read would hand the parser a prefix of the file under the name of the whole, which is the
- * cut copy this module refuses to recognize anything from.
- *
- * A failure at any stage reports "unreadable", which covers an absent file, a permission refusal,
- * and a read that failed after the open succeeded. The distinction changes nothing the caller does,
- * and the errors themselves are discarded unread because each carries the path.
- *
- * The close carries its own guard rather than riding a bare `finally`: a close that throws there
- * replaces whatever the read produced, so a healthy read would surface as a failure and a failed
- * one would surface with the wrong reason.
+ * One capped read of a plan doc, at `MAX_PLAN_FILE_BYTES`, through the shared reader in
+ * `broker/capped-read.ts`.
  *
  * It is exported because the queue reader opens a plan doc through it too, so a document a persona's
  * queue names takes the same cap and the same failure classes as a swept one.
  */
 export function readPlanFile(file: string): PlanRead {
-  let handle: number;
-  try {
-    handle = openSync(file, "r");
-  } catch {
-    return { failed: "unreadable" };
-  }
-  try {
-    const buffer = Buffer.allocUnsafe(MAX_PLAN_FILE_BYTES + 1);
-    let filled = 0;
-    while (filled < buffer.length) {
-      const read = readSync(handle, buffer, filled, buffer.length - filled, filled);
-      if (read === 0) break;
-      filled += read;
-    }
-    if (filled > MAX_PLAN_FILE_BYTES) return { failed: "oversized" };
-    return { text: buffer.subarray(0, filled).toString("utf8") };
-  } catch {
-    return { failed: "unreadable" };
-  } finally {
-    try {
-      closeSync(handle);
-    } catch {
-      // A handle that will not close is the operating system's problem, not the card's: the reading
-      // in hand is still good and there is nothing here left to do about the descriptor.
-    }
-  }
+  return readCappedFile(file, MAX_PLAN_FILE_BYTES);
 }
 
 // The `.md` suffix, matched without regard to case because the filesystems this runs on do not
 // distinguish `spec_v1.md` from `SPEC_V1.MD` and neither does the operator naming a plan.
-const MARKDOWN_SUFFIX = /\.md$/i;
+export const MARKDOWN_SUFFIX = /\.md$/i;
 
 // A file whose whole stem case-folds to this is a directory index, not a plan: `README.md` under
 // `docs/plans` describes the folder, it is not itself a piece of open work. Matched on the whole
@@ -468,12 +445,12 @@ const EXCLUDED_README_STEM = "readme";
  * disk. Both the exclusion rule and the stem a reading carries are drawn from this one function, so
  * what counts as the suffix can never diverge between the two.
  */
-function planStem(name: string): string {
+export function planStem(name: string): string {
   return name.replace(MARKDOWN_SUFFIX, "");
 }
 
 /** Whether a plan file's name is a directory index rather than a plan, whatever its case. */
-function isReadmeStem(name: string): boolean {
+export function isReadmeStem(name: string): boolean {
   return planStem(name).toLowerCase() === EXCLUDED_README_STEM;
 }
 

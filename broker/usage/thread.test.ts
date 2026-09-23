@@ -361,7 +361,11 @@ test("a suppressed repeat reports its window in minutes", async () => {
   await usage.tick();
 
   assert.ok(
-    logged.some((line) => line.includes("occurred 1 more time(s) in the last 5 minutes")),
+    logged.some(
+      (line) =>
+        line.startsWith("usage card: ") &&
+        line.includes("occurred 1 more time(s) in the last 5 minutes"),
+    ),
     "the window reads the way every line beside it does, not as a millisecond count",
   );
 });

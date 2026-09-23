@@ -210,6 +210,23 @@ function text(value: unknown): string | null {
 }
 
 /**
+ * A modification time as the card and the status module order by it: the value itself, or negative
+ * infinity for anything that is not a finite number.
+ *
+ * The values are plan documents' modification times, and `renderBoardCard` in `./card.ts` is
+ * exported and takes its plans as they are handed over, so an mtime that names no instant is bounded
+ * here. A comparator handed a value that is neither above, below nor equal to another orders
+ * nothing, and what the card and the status module draw from that order (a project's sort position,
+ * the word `in flight`) would land on whichever entry the comparison happened to leave standing.
+ *
+ * It lives in this module because both callers already import it and it imports nothing from the
+ * board, where an export from the status module would close an import cycle with the card.
+ */
+export function touchedAt(value: number): number {
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+/**
  * The first `max` UTF-16 units of a value, less one when that cut would land between the halves of
  * a surrogate pair. A lone surrogate is not a character: it renders as a replacement glyph or
  * throws at whatever encodes it next, so one dropped astral character is the cheaper end.

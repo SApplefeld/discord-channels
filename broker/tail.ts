@@ -38,6 +38,8 @@ import {
 import type { AskedOption, AskedQuestion } from "./discord/render.ts";
 import type { ModelFallback, ModelFallbackCause, ModelReading } from "./registry.ts";
 import type { ReplyResult } from "./routing/outbound.ts";
+import { createRepeatLog } from "./repeat-log.ts";
+import type { RepeatLogSurface } from "./repeat-log.ts";
 import { MAX_PEER_NAME_LENGTH, boundedTitle, withoutInvisible } from "./sanitize.ts";
 import { NEAR_MATCH_THRESHOLD, normalizeForSketch, similarity, sketchOf } from "./similarity.ts";
 import type { Sketch } from "./similarity.ts";
@@ -768,50 +770,17 @@ const MAX_OUTSTANDING_QUESTION_DIGESTS = 8;
 const MAX_REPEAT_KEYS = 64;
 
 /**
- * Rate-limits a repeating log line by its reason, which carries the session and the cause and
- * nothing that varies per repeat; the varying detail (a byte count, an offset) rides beside it.
- *
- * An unreadable transcript is not a one-off: a session whose file cannot be opened logs on every
- * poll for as long as that lasts, and one line each would push earlier evidence out through
- * rotation. The first of a reason is written at once; a repeat inside the window is counted and
- * the count rides on the next line that window admits. Local rather than shared with the intake's
- * refusal limiter or the router's drop limiter, because each layer holds a different log seam.
+ * The tailer's repeat log, keyed by a reason that carries the session and the cause; the varying
+ * detail (a byte count, an offset) rides beside it. An unreadable transcript logs on every poll for
+ * as long as it lasts, and a reason is minted per session, which is why this surface sweeps.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (reason: string, detail: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (reason, detail) => {
-    const at = now();
-    const held = state.get(reason);
-    if (held !== undefined && at - held.windowStart < REPEAT_WINDOW_MS) {
-      held.suppressed += 1;
-      return;
-    }
-    if (held !== undefined && held.suppressed > 0) {
-      log(`tail: ${reason} occurred ${held.suppressed} more time(s) in the last ${REPEAT_WINDOW_MS}ms`);
-    }
-    log(`tail: ${reason} (${detail})`);
-    state.set(reason, { windowStart: at, suppressed: 0 });
-    if (state.size <= MAX_REPEAT_KEYS) return;
-    // Oldest closed window first, and whatever it still owes is written on the way out. A reason
-    // carries a session id, so an entry left in the map because it owes a count is one only that
-    // same session could ever flush, and a session that went away never will: the map would then
-    // grow by one for the life of the process. Open windows are left alone, where the count riding
-    // on the next line of a reason is still the reason's to report.
-    const closed = [...state]
-      .filter(([, kept]) => at - kept.windowStart >= REPEAT_WINDOW_MS)
-      .sort(([, left], [, right]) => left.windowStart - right.windowStart);
-    for (const [key, kept] of closed) {
-      if (state.size <= MAX_REPEAT_KEYS) return;
-      if (kept.suppressed > 0) {
-        log(`tail: ${key} occurred ${kept.suppressed} more time(s) in the last ${REPEAT_WINDOW_MS}ms`);
-      }
-      state.delete(key);
-    }
-  };
-}
+export const TAIL_REPEAT_LOG: RepeatLogSurface<[detail: string]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  maxKeys: MAX_REPEAT_KEYS,
+  firstLine: (reason, detail) => `tail: ${reason} (${detail})`,
+  countLine: (reason, suppressed) =>
+    `tail: ${reason} occurred ${suppressed} more time(s) in the last ${REPEAT_WINDOW_MS}ms`,
+};
 
 /**
  * One thing a transcript line contributes. Three of them are posted as their own message and carry
@@ -1939,7 +1908,7 @@ type TailEntry = {
 export function createTranscriptTailer(options: TranscriptTailerOptions): TranscriptTailer {
   const log = options.log ?? ((): void => {});
   const now = options.now ?? Date.now;
-  const repeats = createRepeatLog(log, now);
+  const repeats = createRepeatLog(TAIL_REPEAT_LOG, log, now);
   const read = options.readFile ?? readSlice;
   const passWatchdogMs = options.passWatchdogMs ?? DEFAULT_PASS_WATCHDOG_MS;
   const sessions = new Map<string, TailEntry>();

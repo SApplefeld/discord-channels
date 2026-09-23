@@ -326,6 +326,22 @@ test("a card Discord keeps refusing permanently is given up on", async () => {
   assert.ok(logged.some((line) => line.includes("refused 3 times in a row")));
 });
 
+test("a repeat-logged failure line carries this surface's own prefix", async () => {
+  // The edit-failed line is one of this card's repeat-logged lines, and the prefix is what
+  // proves it went through this surface's own `INBOX_CARD_REPEAT_LOG` rather than another surface's.
+  const { calls, logged, card: built } = card({
+    binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),
+  });
+  calls.nextEdit = permanent();
+
+  await built.tick();
+
+  assert.ok(
+    logged.some((line) => line.startsWith("inbox card: ") && line.includes("the card edit failed")),
+    logged.join("\n"),
+  );
+});
+
 test("a route refused past the ceiling stops alone, and the rest of the card keeps working", async () => {
   let step = 0;
   const { calls, card: built, setItems } = card({

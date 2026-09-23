@@ -21,6 +21,8 @@
 // Each session holds at most one call in flight and one reply waiting. A reply arriving while a
 // call is in flight takes the waiting place, replacing whatever was there. The call in flight is
 // never aborted, its verdict is always delivered, and the waiting reply is judged when it settles.
+import { createRepeatLog } from "../repeat-log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
 import { sliceCodePoints } from "../sanitize.ts";
 import type { JudgeScores, JudgeWinner } from "./store.ts";
 
@@ -38,8 +40,7 @@ export const MAX_JUDGED_CODE_POINTS = 12_000;
 
 /**
  * How long a run of the same failure kind is aggregated before its next line. The same window the
- * intake's refusal log and the question desk's repeat log hold, kept local for the reason they keep
- * theirs: each layer owns its own log seam.
+ * intake's refusal log and the question desk's repeat log hold.
  */
 const REPEAT_WINDOW_MS = 60_000;
 
@@ -190,37 +191,17 @@ function noul(answers: unknown, question: JudgeWinner): number | null {
 }
 
 /**
- * Rate-limits a repeating failure line by its kind. The first of a kind is written at once; a
- * repeat inside the window is counted, and the count rides on the next line that window admits.
- * The kinds are a closed set (a timeout, a network failure, a malformed body, a handler throw,
- * and one per HTTP status), so the map is bounded without a sweep. The same bound is why a
- * trailing suppressed count is never flushed when a kind's failures stop: no timer or sweep runs,
- * so the count rides only on the next line of its kind, and stays unwritten where none comes.
+ * The judge's repeat log, keyed by the failure kind; the session rides beside it. The kinds are a
+ * closed set (a timeout, a network failure, a malformed body, a handler throw, and one per HTTP
+ * status), so the map is bounded without a sweep.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (kind: string, sessionId: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (kind, sessionId) => {
-    const at = now();
-    const entry = state.get(kind);
-    if (entry !== undefined && at - entry.windowStart < REPEAT_WINDOW_MS) {
-      entry.suppressed += 1;
-      return;
-    }
-    // The window is refreshed before either line is written, so a log that throws cannot leave
-    // it stale and turn every later failure of the kind into a fresh line.
-    state.set(kind, { windowStart: at, suppressed: 0 });
-    if (entry !== undefined && entry.suppressed > 0) {
-      log(
-        `inbox judge: ${kind} occurred ${String(entry.suppressed)} more time(s) in the last ` +
-          `${String(REPEAT_WINDOW_MS)}ms`,
-      );
-    }
-    log(`inbox judge: ${kind} session=${sessionId}`);
-  };
-}
+export const JUDGE_REPEAT_LOG: RepeatLogSurface<[sessionId: string]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  firstLine: (kind, sessionId) => `inbox judge: ${kind} session=${sessionId}`,
+  countLine: (kind, suppressed) =>
+    `inbox judge: ${kind} occurred ${String(suppressed)} more time(s) in the last ` +
+    `${String(REPEAT_WINDOW_MS)}ms`,
+};
 
 /** The failure kind a thrown fetch reports: the timeout signal's own name, or a network failure. */
 function thrownKind(error: unknown): string {
@@ -236,7 +217,7 @@ export function createJudge(options: JudgeOptions): Judge {
   const log = options.log ?? ((): void => {});
   const now = options.now ?? Date.now;
   const request: JudgeFetch = options.fetch ?? globalThis.fetch;
-  const failed = createRepeatLog(log, now);
+  const failed = createRepeatLog(JUDGE_REPEAT_LOG, log, now);
   const flights = new Map<string, Flight>();
 
   /**

@@ -29,6 +29,8 @@ import {
   parseOptionValue,
 } from "../discord/question-message.ts";
 import type { QuestionDesk, QuestionEntryView, QuestionSubmission } from "../question-desk.ts";
+import { createRepeatLog } from "../repeat-log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
 import type { InteractionResponder } from "../discord/transport.ts";
 import type { Verdict } from "../security/permission.ts";
 import type { SenderGate } from "../security/senders.ts";
@@ -97,51 +99,18 @@ const REPEAT_WINDOW_MS = 60_000;
 const MAX_REPEAT_KEYS = 64;
 
 /**
- * Rate-limits a repeating log line by its reason, which carries the account and the cause and
- * nothing that varies per repeat.
- *
- * The first of a reason is written at once; a repeat inside the window is counted, and the count
- * rides on the next line that window admits. Over the key bound the oldest closed windows are swept
- * and what each still owes is written on the way out, so the map is bounded over the life of the
- * process rather than by how many accounts ever pressed a button. Held locally, the same rule the
- * tailer's limiter and the desk's follow: each layer owns its own log seam.
+ * The interaction router's repeat log, keyed by a reason that carries the account and the cause.
+ * The reason is minted per presser, which is why this surface sweeps: the map is bounded over the
+ * life of the process rather than by how many accounts ever pressed a button.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (reason: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (reason) => {
-    const at = now();
-    const entry = state.get(reason);
-    if (entry !== undefined && at - entry.windowStart < REPEAT_WINDOW_MS) {
-      entry.suppressed += 1;
-      return;
-    }
-    if (entry !== undefined && entry.suppressed > 0) {
-      log(
-        `routing: ${reason} occurred ${String(entry.suppressed)} more time(s) in the last ` +
-          `${String(REPEAT_WINDOW_MS)}ms`,
-      );
-    }
-    log(`routing: ${reason}`);
-    state.set(reason, { windowStart: at, suppressed: 0 });
-    if (state.size <= MAX_REPEAT_KEYS) return;
-    const closed = [...state]
-      .filter(([, kept]) => at - kept.windowStart >= REPEAT_WINDOW_MS)
-      .sort(([, left], [, right]) => left.windowStart - right.windowStart);
-    for (const [key, kept] of closed) {
-      if (state.size <= MAX_REPEAT_KEYS) return;
-      if (kept.suppressed > 0) {
-        log(
-          `routing: ${key} occurred ${String(kept.suppressed)} more time(s) in the last ` +
-            `${String(REPEAT_WINDOW_MS)}ms`,
-        );
-      }
-      state.delete(key);
-    }
-  };
-}
+export const ROUTING_REPEAT_LOG: RepeatLogSurface<[]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  maxKeys: MAX_REPEAT_KEYS,
+  firstLine: (reason) => `routing: ${reason}`,
+  countLine: (reason, suppressed) =>
+    `routing: ${reason} occurred ${String(suppressed)} more time(s) in the last ` +
+    `${String(REPEAT_WINDOW_MS)}ms`,
+};
 
 /**
  * What a submit is answered with: nothing at all when it landed, since the ask's own message is
@@ -159,7 +128,7 @@ function submissionReply(submission: QuestionSubmission): string | null {
 export function createInteractionRouter(options: InteractionRouterOptions): InteractionRouter {
   const log = options.log ?? ((): void => {});
   const now = options.now ?? Date.now;
-  const repeats = createRepeatLog(log, now);
+  const repeats = createRepeatLog(ROUTING_REPEAT_LOG, log, now);
   // The callback route's own bucket. A callback and a message write are separate Discord rate
   // surfaces reporting their limits independently, so folding them into one budget would let a
   // message route's headroom clear a block this route earned, or the reverse.

@@ -380,6 +380,19 @@ test("a refused press is one log line however many times it is pressed", async (
   );
 });
 
+test("a refused press's log line carries this surface's own prefix", async () => {
+  // The refused-press line is this router's only repeat-logged line, and the prefix is what proves
+  // it went through this surface's own `ROUTING_REPEAT_LOG` rather than another surface's.
+  const { router, entryId, logged } = harness();
+
+  await router.deliver(press({ senderId: INTRUDER, customId: `qd:${entryId}:0`, values: ["0"] }));
+
+  assert.ok(
+    logged.some((line) => line.startsWith("routing: ") && line.includes("is not the allowed sender")),
+    logged.join("\n"),
+  );
+});
+
 test("a press from a thread the ask's message does not live in resolves nothing", async () => {
   // A custom_id is opaque, but it is still a string that travels: nothing else in the reference ties
   // it to the one thread its message was drawn in. Defence behind the allowlist, and one comparison.

@@ -21,6 +21,8 @@
 import { createBudget } from "../discord/budget.ts";
 import type { Budget } from "../discord/budget.ts";
 import type { CallOutcome, DiscordTransport } from "../discord/transport.ts";
+import { createRepeatLog } from "../repeat-log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
 import { renderInboxCard } from "./card.ts";
 import type { InboxSessionLookup } from "./card.ts";
 import type { InboxItem } from "./store.ts";
@@ -51,32 +53,17 @@ const MAX_REBUILDS = 3;
 const DECAY_PASSES = 3;
 
 /**
- * Rate-limits a repeating log line by its reason, the fixed phrase naming the cause; the varying
- * detail rides beside it and never keys the limiter. The sibling cards' own shape, held locally for
- * the reason they hold their own: each layer owns its own log seam.
+ * The inbox card's repeat log, keyed by the fixed phrase naming the cause; the varying detail rides
+ * beside it. Its reasons are a fixed handful of literals, like the sibling cards', so it needs no
+ * sweep.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (reason: string, detail: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (reason, detail) => {
-    const at = now();
-    const held = state.get(reason);
-    if (held !== undefined && at - held.windowStart < REPEAT_WINDOW_MS) {
-      held.suppressed += 1;
-      return;
-    }
-    if (held !== undefined && held.suppressed > 0) {
-      log(
-        `inbox card: ${reason} occurred ${String(held.suppressed)} more time(s) in the last ` +
-          `${String(REPEAT_WINDOW_MS / 60_000)} minutes`,
-      );
-    }
-    log(`inbox card: ${reason} (${detail})`);
-    state.set(reason, { windowStart: at, suppressed: 0 });
-  };
-}
+export const INBOX_CARD_REPEAT_LOG: RepeatLogSurface<[detail: string]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  firstLine: (reason, detail) => `inbox card: ${reason} (${detail})`,
+  countLine: (reason, suppressed) =>
+    `inbox card: ${reason} occurred ${String(suppressed)} more time(s) in the last ` +
+    `${String(REPEAT_WINDOW_MS / 60_000)} minutes`,
+};
 
 export type InboxCardOptions = {
   /** Every open item, oldest opened first, read fresh on every tick. */
@@ -164,7 +151,7 @@ export function createInboxCard(options: InboxCardOptions): InboxCard {
   const log = options.log ?? ((): void => {});
   const transport = options.transport;
   const now = options.now ?? Date.now;
-  const repeats = createRepeatLog(log, now);
+  const repeats = createRepeatLog(INBOX_CARD_REPEAT_LOG, log, now);
   const setTimer = options.setTimer ?? setInterval;
   const clearTimer = options.clearTimer ?? clearInterval;
 

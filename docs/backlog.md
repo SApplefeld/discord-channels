@@ -563,6 +563,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   sits in the two-column Reference table with three cells, so the archived plan is missing from the
   Plans list and the Reference table draws a stray cell. It belongs in the Plans table at its date.
 
+- Correct the comment on `SNOWFLAKE` in `broker/security/senders.ts` (parked 2026-09-23, surfaced
+  by the shared-helper-owners plan's section 3 review). It says the pattern is "Shared with the
+  channel ID's check in discord/config.ts", but five modules import it, and it now guards every
+  Discord identifier the broker interpolates into bot-token request paths. The comment should say
+  that, so an edit loosening the pattern for one caller sees what it weakens. The file sat outside
+  that section's scope, which is why it was not fixed there.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

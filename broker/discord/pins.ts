@@ -19,6 +19,8 @@
 // The permission is Discord's `PIN_MESSAGES` bit, and this ships dark without it: the two writes are
 // refused, the refusal is logged once per reason through the repeat limiter, the route stops being
 // attempted, and every other surface behaves exactly as it does with no pins at all.
+import { createRepeatLog } from "../repeat-log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
 import { createBudget } from "./budget.ts";
 import type { Budget } from "./budget.ts";
 import type { CallOutcome, ChannelPins } from "./transport.ts";
@@ -105,33 +107,16 @@ function createRoute(): Route {
 }
 
 /**
- * Rate-limits a repeating log line by its reason, which is a fixed phrase naming the cause; the
- * varying detail rides beside it and never keys the limiter. The same shape the fleet card's
- * limiter has, held locally for the reason it holds one: each layer owns its own log seam. It needs
- * no eviction, because the reasons this module logs are a fixed handful of literals.
+ * The pin keeper's repeat log, keyed by a fixed phrase naming the cause; the varying detail rides
+ * beside it. The reasons this module logs are a fixed handful of literals, so it needs no sweep.
  */
-function createRepeatLog(
-  log: (message: string) => void,
-  now: () => number,
-): (reason: string, detail: string) => void {
-  const state = new Map<string, { windowStart: number; suppressed: number }>();
-  return (reason, detail) => {
-    const at = now();
-    const held = state.get(reason);
-    if (held !== undefined && at - held.windowStart < REPEAT_WINDOW_MS) {
-      held.suppressed += 1;
-      return;
-    }
-    if (held !== undefined && held.suppressed > 0) {
-      log(
-        `discord pins: ${reason} occurred ${String(held.suppressed)} more time(s) in the last ` +
-          `${String(REPEAT_WINDOW_MS / 60_000)} minutes`,
-      );
-    }
-    log(`discord pins: ${reason} (${detail})`);
-    state.set(reason, { windowStart: at, suppressed: 0 });
-  };
-}
+export const PINS_REPEAT_LOG: RepeatLogSurface<[detail: string]> = {
+  windowMs: REPEAT_WINDOW_MS,
+  firstLine: (reason, detail) => `discord pins: ${reason} (${detail})`,
+  countLine: (reason, suppressed) =>
+    `discord pins: ${reason} occurred ${String(suppressed)} more time(s) in the last ` +
+    `${String(REPEAT_WINDOW_MS / 60_000)} minutes`,
+};
 
 /**
  * Oldest first. A Discord id is a snowflake whose value rises with time, and it is the only age
@@ -165,7 +150,7 @@ function signature(intended: IntendedPins): string {
 export function createPinKeeper(options: PinKeeperOptions): PinKeeper {
   const log = options.log ?? ((): void => {});
   const now = options.now;
-  const repeats = createRepeatLog(log, now);
+  const repeats = createRepeatLog(PINS_REPEAT_LOG, log, now);
   const reads = createRoute();
   const pins = createRoute();
   const unpins = createRoute();

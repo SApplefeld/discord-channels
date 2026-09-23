@@ -210,6 +210,22 @@ test("at the pin ceiling the oldest live sessions keep their pins and the shortf
   assert.match(shortfall[0], /11 live session\(s\) are left unpinned/);
 });
 
+test("a repeat-logged line carries this surface's own prefix", async () => {
+  // The pin-ceiling shortfall is one of this keeper's repeat-logged lines, and the prefix is what
+  // proves it went through this surface's own `PINS_REPEAT_LOG` rather than another surface's.
+  const room = channel([]);
+  const logged: string[] = [];
+  const keeper = keeperWith(room.pins, logged);
+  const live = Array.from({ length: MAX_CHANNEL_PINS + 1 }, (_, at) => String(6000 + at));
+
+  await keeper.reconcile(intended([], live));
+
+  assert.ok(
+    logged.some((line) => line.startsWith("discord pins: ") && line.includes("pin ceiling")),
+    logged.join("\n"),
+  );
+});
+
 test("every permanent card is pinned ahead of the sessions and none is evicted at the ceiling", async () => {
   // Every standing card this broker carries sits outside the ceiling, so the arithmetic that decides
   // what the sessions get has to count all of them, and a channel already full of session pins must

@@ -32,9 +32,17 @@
 //
 // Nothing here is logged but a static failure-class word. A `workdir`, a store path and a plan path
 // all embed the operator's OS account name, and the log is a lower-trust surface than the card.
-import { closeSync, openSync, readSync, statSync } from "node:fs";
 import path from "node:path";
-import { parsePlan, readPlanFile } from "./plans.ts";
+import { readCappedFile } from "../capped-read.ts";
+import type { CappedRead as SharedCappedRead } from "../capped-read.ts";
+import {
+  bounded,
+  isReadmeStem,
+  parsePlan,
+  planStem,
+  readPlanFile,
+  statPlanFile,
+} from "./plans.ts";
 import type { PlanParse, PlanRead, PlanReading } from "./plans.ts";
 import type { RosterPersona } from "./roster.ts";
 
@@ -192,53 +200,10 @@ export type QueueReader = {
 /** One file's modification time and size, which is the whole of what a hold is keyed on. */
 export type PlanStat = { mtimeMs: number; sizeBytes: number };
 
-/** What one capped read yields: the file's text, or why there is none. */
-export type CappedRead = { text: string } | { failed: "unreadable" | "oversized" };
-
-/**
- * One read of at most `maxBytes`, into a buffer one byte larger so an oversized file is recognized
- * by the read itself rather than by a stat the file could have outgrown in between. The buffer is
- * uninitialized because only the bytes the read actually returned are ever decoded.
- *
- * The read repeats until the buffer fills or a read returns nothing, because one `readSync` is
- * allowed to return fewer bytes than asked for and a network filesystem does. Stopping at the first
- * short read would hand the parser a prefix of the file under the name of the whole.
- *
- * A failure at any stage reports "unreadable", which covers an absent file, a permission refusal,
- * and a read that failed after the open succeeded. The distinction changes nothing the caller does,
- * and the errors themselves are discarded unread because each carries the path.
- *
- * The close carries its own guard rather than riding a bare `finally`: a close that throws there
- * replaces whatever the read produced.
- */
-function readCappedFile(file: string, maxBytes: number): CappedRead {
-  let handle: number;
-  try {
-    handle = openSync(file, "r");
-  } catch {
-    return { failed: "unreadable" };
-  }
-  try {
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
-    let filled = 0;
-    while (filled < buffer.length) {
-      const read = readSync(handle, buffer, filled, buffer.length - filled, filled);
-      if (read === 0) break;
-      filled += read;
-    }
-    if (filled > maxBytes) return { failed: "oversized" };
-    return { text: buffer.subarray(0, filled).toString("utf8") };
-  } catch {
-    return { failed: "unreadable" };
-  } finally {
-    try {
-      closeSync(handle);
-    } catch {
-      // A handle that will not close is the operating system's problem, not the card's: the reading
-      // in hand, good or bad, is already decided.
-    }
-  }
-}
+/** What one capped read yields: the file's text, or why there is none. An alias of the shared
+ * `CappedRead` in `broker/capped-read.ts`, kept exported under this name because the exported
+ * `QueueReaderOptions.readStore` signature names it, so this module's public surface is unchanged. */
+export type CappedRead = SharedCappedRead;
 
 /**
  * The modification time and size of one file, or null when it cannot be stat'd or is not a regular
@@ -246,18 +211,12 @@ function readCappedFile(file: string, maxBytes: number): CappedRead {
  * is never opened. The stat follows a symbolic link, so a link to a regular file is a regular file
  * here, where the sweep's own listing reads a dirent and refuses every link whatever it points at.
  *
- * This runs before the read, the direction `statPlanFile` in `plans.ts` takes and for the same
- * reason: a write landing between the two leaves the stat older than the bytes parsed, so the next
- * tick sees a newer stat than the one it recorded and reads again.
+ * A thin wrapper over the shared `statPlanFile` in `./plans.ts`, passing the regular-file check that
+ * function turns off by default: a sweep only ever stats a name its own listing confirmed, where this
+ * reader stats names taken from free-form store text.
  */
 function statFile(file: string): PlanStat | null {
-  try {
-    const stat = statSync(file);
-    if (!stat.isFile()) return null;
-    return { mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
-  } catch {
-    return null;
-  }
+  return statPlanFile(file, true);
 }
 
 // The name kept from a queue entry, whatever it was taken from. Anchored whole: one leading
@@ -276,13 +235,6 @@ const PLAN_IN_TEXT = /docs\/plans\/([A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-
 
 // Either separator spelling, because a store written on this platform carries both.
 const PATH_SEPARATOR = /[\\/]/;
-
-// The `.md` suffix, matched without regard to case, as `plans.ts` matches it.
-const MARKDOWN_SUFFIX = /\.md$/i;
-
-// A file whose whole stem case-folds to this is a directory index rather than a plan, the rule the
-// sweep applies to `README.md` under `docs/plans`.
-const EXCLUDED_README_STEM = "readme";
 
 /**
  * The closed list of places a named plan is looked for, under that persona's own `workdir`, in this
@@ -305,30 +257,6 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-const WHITESPACE_RUN = /\s+/g;
-
-/**
- * One store string held to a cap: whitespace runs collapsed to single spaces, trimmed, then cut to
- * `limit` code points.
- *
- * That order is the whole of it, and it is `bounded` in `./plans.ts` by the same reasoning. A reader
- * of this value collapses whitespace before it draws or compares, so cutting the raw text first
- * would keep a prefix that is whitespace and hand on a value whose meaningful text was dropped for
- * spaces. Collapsing first makes what is kept a prefix of what a reader would have seen.
- *
- * The collapse walks the whole value once, which is `MAX_STORE_FILE_BYTES` at worst. That cost is
- * paid here rather than downstream because this runs behind the store's own hold: a file that has
- * not moved is never read or parsed again, where the join and the renderer run on every refresh tick
- * over whatever the last parse held.
- */
-function bounded(value: string, limit: number): string {
-  const collapsed = value.replace(WHITESPACE_RUN, " ").trim();
-  // A code point takes at most two UTF-16 units, so this prefix holds at least `limit` of them and
-  // the array the cut is made on stays small whatever the value's size. Cutting on code points is
-  // what keeps an astral character from being left as half of itself.
-  return [...collapsed.slice(0, limit * 2)].slice(0, limit).join("");
-}
-
 /**
  * One store field held to a cap, or `undefined` when the store wrote something other than a string.
  *
@@ -343,11 +271,6 @@ function boundedField(value: unknown, limit: number): string | undefined {
 
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/** The stem of a plan file's name: everything before the `.md` suffix, case preserved. */
-function planStem(name: string): string {
-  return name.replace(MARKDOWN_SUFFIX, "");
 }
 
 /**
@@ -372,7 +295,7 @@ function planNameFor(entry: QueueEntry): string | null {
   if (segment === null) return null;
   const candidate = segment === undefined ? entry.textPlanName : segment;
   if (candidate === undefined || !PLAN_NAME.test(candidate)) return null;
-  if (planStem(candidate).toLowerCase() === EXCLUDED_README_STEM) return null;
+  if (isReadmeStem(candidate)) return null;
   return candidate;
 }
 
