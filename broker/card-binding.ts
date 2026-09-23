@@ -8,9 +8,8 @@
 //
 // Each card keeps its own file rather than a record inside another surface's, because every
 // standing card is independent: each is built under its own knob, and a broker running one of
-// them writes and reads nothing on another's account. The label composes every log line so an
-// operator grepping for "the board card binding" or "the usage card binding" still finds it after
-// the move.
+// them writes and reads nothing on another's account. The label composes every log line, so an
+// operator grepping for "the board card binding" or "the usage card binding" finds it.
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -93,6 +92,7 @@ export function loadCardBinding(
     messageId: clean(held.messageId),
     threadId: held.threadId === null ? null : clean(held.threadId),
   };
+  // Both identifiers are interpolated into token-bearing request paths, the way the channel is.
   const threadIdValid = binding.threadId === null || SNOWFLAKE.test(binding.threadId);
   if (!SNOWFLAKE.test(binding.messageId) || !threadIdValid) {
     log(

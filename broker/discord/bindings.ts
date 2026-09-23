@@ -169,6 +169,7 @@ export function loadBindings(file: string, options: LoadOptions = {}): ThreadBin
   // Normalized first, then checked: a padded identifier on disk is exactly what the normalization
   // is for, and what is checked has to be the value that will actually reach a request path.
   const cleaned = parsed.bindings.map(cleanBinding);
+  // Both identifiers are interpolated into token-bearing request paths, the way the channel is.
   const identified = (binding: ThreadBinding): boolean =>
     SNOWFLAKE.test(binding.messageId) &&
     (binding.threadId === null || SNOWFLAKE.test(binding.threadId));
