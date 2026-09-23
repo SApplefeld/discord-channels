@@ -3,11 +3,9 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-One plan is parked as Ready for the worker's queue, drafted from the backlog at the operator's
-ruling. [`channels_shared-helper-owners_spec_v1.md`](channels_shared-helper-owners_spec_v1.md)
-gives the broker's repeat logger, card binding, capped file read and modification-time clamp one
-owner each, fixing the usage cache's single-read copy on the way. The most recently archived plan is
-[`../archive/plans/channels_tail-until-flake_spec_v1.md`](../archive/plans/channels_tail-until-flake_spec_v1.md).
+No plan is open. The most recently archived plan is
+[`../archive/plans/channels_shared-helper-owners_spec_v1.md`](../archive/plans/channels_shared-helper-owners_spec_v1.md),
+which gave the broker's hand-copied helpers one owner each.
 
 Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).
