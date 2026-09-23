@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { MAX_PEER_NAME_LENGTH, boundedTitle, clean, cleanWellFormed } from "../sanitize.ts";
+import { SNOWFLAKE } from "../security/senders.ts";
 
 const FORMAT_VERSION = 1;
 
@@ -62,9 +63,6 @@ type Snapshot = {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-/** Both identifiers are interpolated into token-bearing request paths, the way the channel is. */
-const SNOWFLAKE = /^\d{17,20}$/;
 
 function optionalString(value: unknown): boolean {
   return value === null || typeof value === "string";
