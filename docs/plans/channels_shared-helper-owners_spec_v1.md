@@ -287,3 +287,28 @@ kit-size: measured no file at all under the measured roots, no tracked path a ro
 - Sections 3 and 4: not started. Section 3 opens after section 2's first green, and section 4 after section 3.
 - Baselines at 4e7dc49, 2026-09-22T23:37:35Z-23:38:21Z, SCOTT-CLAUDE, clean tree, poll CLEAR: whole gate 2003/2002/0, 1 skipped, exit 0, 40 s; lint exit 0; section 3 lane 31/31 exit 0; section 4 lane 264/264 exit 0.
 - Rulings since the last boundary: none.
+
+### Chapter 2 - 2026-09-23
+Completed: 2. The repeat logger has one owner
+Implemented By: implementer-opus; close-pass Minor fixed by the main session
+Metrics: review rounds 1, closed major-closed; provenance 1 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations none; consults 0
+Decisions / Surprises:
+- Section 2 open: replaces eight private `createRepeatLog` copies with one exported from `broker/repeat-log.ts`, parameterised by window, optional key cap, and a per-surface line composer; serves the Goal sentence "Each small mechanism ... lives in one place that every caller imports" and Approach design item 1; adds no mechanism the design does not name (the composer and the optional key cap are design item 1's own); about +90 lines new module and test, about -250 lines across eight callers; not building it leaves eight copies drifting, with the state-after-log order in seven of them leaving a window stale when a log throws.
+- Implementer add-decision (section 2, adjudicated): exports one surface const per module (eight export-list additions) so the Tests line's per-surface pins drive each surface's real text; serves section 2's Tests line; adds no mechanism that runs; 8 lines; not building it leaves pins that only restate the shared core and cannot catch a drifted prefix.
+- `MAX_REPEAT_KEYS` stays exported from `broker/question-desk.ts`; the tailer and the router keep their own private constant of the same value, as before the move.
+Assumptions: none
+Review Findings: review: adversarial + blind at fable, Agent tool (frontmatter effort). No Critical. One Major, orchestrator-traced (the lens returned `trace: none`): the "each surface keeps its own key cap" test pins a literal cap per surface. Justified-not-fixed: it traces to the Intent clause "It does not change any window, cap or log wording", and the same table pins windows and text as literals for that clause. Minors: 1 fixed in the close pass (the new `../repeat-log.ts` import in `broker/discord/pins.ts` moved above the `./` imports, as every sibling orders them), 0 upgraded, 2 left: the router's import already sits beside its `../question-desk.ts` neighbour, and the blind lens's note that state-before-log changes seven surfaces' behaviour on a throwing log is the change design item 1 and the refused alternative order. Close-pass author re-read of the one-file delta done.
+Stamps: adjudicated 2 listed; stamped `forward-resource-arrangements-into-dispatch-briefs` (section 3's brief named section 2's files off-limits while both were live); skipped `subagent-can-report-a-documented-past-injection-as-a-live-one` (read, not applied).
+Gate: whole gate `npm test` 2026/2025/0, 1 skipped, exit 0, 39 s, and `npm run lint` exit 0, at 2026-09-23T00:00:24Z-00:01:05Z on the main checkout at c0eb885 plus this section's close-pass edit and section 3's unstaged implementation (`broker/card-binding.ts`, its test, the three card binding modules, `broker/discord/bindings.ts`), SCOTT-CLAUDE, box poll CLEAR. Baseline: 2003/2002/0, 1 skipped, exit 0, 40 s at 4e7dc49. Delta +23 tests: section 1's 6, this section's 16, section 3's 1; 0 retired, 0 edited. This section's 16 in `broker/repeat-log.test.ts` pin the first line, the in-window silence, the count-then-new-line close, the sweep past the cap with owed counts, an open window never swept, no sweep without a cap, the window left fresh by a throwing log, eight per-surface first-and-count-line pins taken from `bde5c5c`, and each surface's cap. None spawns a process.
+Next: 3. The card binding has one owner
+Commit Model: Branch-and-PR
+Delta: 2026-09-23T00:01:25Z, SCOTT-CLAUDE, main checkout.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Interim board 2 - 2026-09-23
+- Sections 1 and 2: closed (Chapters 1 and 2).
+- Section 3: implemented by implementer-sonnet and verified (lint exit 0; its lane 32/32 exit 0 by the implementer; whole gate above green with it in the tree). Next: first-green commit, then review round 1 at opus, effort high, through Workflow, with the security reviewer, since the binding identifiers reach token-bearing request paths.
+- Section 4: not started; opens after section 3's first-green commit.
+- Rulings since the last boundary: none.

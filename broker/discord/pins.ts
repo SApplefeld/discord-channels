@@ -19,11 +19,11 @@
 // The permission is Discord's `PIN_MESSAGES` bit, and this ships dark without it: the two writes are
 // refused, the refusal is logged once per reason through the repeat limiter, the route stops being
 // attempted, and every other surface behaves exactly as it does with no pins at all.
+import { createRepeatLog } from "../repeat-log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
 import { createBudget } from "./budget.ts";
 import type { Budget } from "./budget.ts";
 import type { CallOutcome, ChannelPins } from "./transport.ts";
-import { createRepeatLog } from "../repeat-log.ts";
-import type { RepeatLogSurface } from "../repeat-log.ts";
 
 /**
  * Discord's own ceiling on a channel's pins. At the ceiling the oldest live sessions keep their
