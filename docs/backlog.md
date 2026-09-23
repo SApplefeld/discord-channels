@@ -570,18 +570,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   that, so an edit loosening the pattern for one caller sees what it weakens. The file sat outside
   that section's scope, which is why it was not fixed there.
 
-- Clear the three `npm audit` findings (parked 2026-09-23, surfaced by the shared-helper-owners
-  plan's section 4 security review). `fast-uri` 3.1.5 is rated high, and `hono` 4.13.0 and `qs`
-  6.15.3 moderate, all transitive through `@modelcontextprotocol/sdk` 1.30.0; no file under
-  `broker/` or `relay/` imports them directly. The fix is `npm audit fix` or an SDK bump, in its own
-  change with the whole gate behind it.
-
-- Write the project's threat model (parked 2026-09-23, surfaced by the shared-helper-owners plan's
-  finishing security review). `docs/security-model.md` states the trust boundary, the sender gate
-  and the accepted risks, but has no threat-model section naming the attackers and what each can
-  reach. So a security review has no entry to cite, and every finding stays advisory by default.
-  This is the operator's to write, or to approve a draft of.
-
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

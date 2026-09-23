@@ -400,7 +400,11 @@ order of thirty requests an hour per account, shared across every machine and co
 so a card that shelled the tool would compete with the auto-switcher for a budget already near its
 ceiling. Reading the cache costs nothing and mutates nothing, and the reader opens exactly two
 files, uses no field of either as a path, and leaves the failure detail of a failed poll unread,
-because an authentication error is where a token would appear.
+because an authentication error is where a token would appear. Both files come through the broker's
+shared capped read at 64 KiB each (see "Helpers with one owner" below). One `readSync` call may
+return fewer bytes than asked, so the read repeats until the file is whole or the cap is passed. A
+short read therefore reaches the parser as the whole file, never as a prefix it would refuse as
+malformed.
 
 The card is drawn as a bold label over a fenced block per account, and the label is the one field
 on this card that lands outside a fence: a bold line is live markdown, where a crafted account
@@ -581,7 +585,10 @@ for one that succeeds: a malformed or oversized document is held shut at the sta
 than being re-read every tick forever. The per-file ceiling is well above a real plan and far below
 what would hurt, the per-root file count is capped, a truncated sweep says on the card what it
 dropped, and each untrusted field is cut to length as it enters rather than after it has been walked
-for escaping.
+for escaping. Every file the card reads whole goes through the same shared capped read the usage
+card uses: the roster, each persona's store and heartbeat, and every plan document. A file past its
+cap is refused whole rather than read as a prefix. The goal event stream is the exception, since its
+reader takes appended bytes from a held offset.
 
 A torn read is drawn rather than hidden. A plan caught mid-write redraws its last good parse under a
 held marker whose age climbs, so the operator sees staleness instead of a plan that silently stopped
@@ -850,8 +857,9 @@ whose session record did not restore is dropped. An item with no steward flag, t
 from before the flag wrote, restores with the flag down. A steward flag that is not a boolean, or
 one raised on a judged item, makes the item malformed. Prompt instants are not persisted.
 
-The card (`broker/inbox/card.ts`, with `thread.ts` and `binding.ts` on the board card's pattern) is
-the third permanent pin, its `{messageId, threadId}` binding persisted in `inbox-card.json`. The pin
+The card (`broker/inbox/card.ts`, with `thread.ts` on the board card's pattern, and `binding.ts` a
+thin caller of the shared card binding as the other two cards' are) is the third permanent pin,
+its `{messageId, threadId}` binding persisted in `inbox-card.json`. The pin
 keeper pins what is missing and never reorders, so where Discord draws it among the pins is
 Discord's. It draws one bullet per item, oldest opened first: a glyph for the source (the session's
 own mark, or which judge question won), the session's title through the full live-markdown escape,
@@ -928,6 +936,59 @@ the record to `live` makes the next pass build both. A stale session reading `ne
 `blocked` or `working` is outside the rule and rebuilt as usual. The guard sits in the surface's
 build path alone, so a card and thread that still exist are reconciled to their current state
 whatever the session's lifecycle.
+
+## Helpers with one owner
+
+Six small mechanisms that several broker modules need each live in one module, and every caller
+imports it. A hand-made second copy is where two surfaces start to drift apart. So a change to one
+of these lands at its owner, and a new caller imports the owner rather than copying it.
+
+- **The capped file read** (`readCappedFile` in `broker/capped-read.ts`). It reads at most a cap
+  into a buffer one byte larger, repeating a short read until the buffer fills or a read returns
+  nothing. It answers the text, `oversized` or `unreadable`. A file over the cap is refused whole,
+  because a recognizer running on a cut copy can match something the full file never held. Every
+  failure reads as `unreadable` with its error discarded, since the error carries the path. The
+  callers are the usage cache (`broker/usage/cache.ts`), the roster (`broker/board/roster.ts`), the
+  queue reader's store and heartbeat (`broker/board/queues.ts`), and plan documents through
+  `readPlanFile` in `broker/board/plans.ts`, which the sweep and the queue reader both call. An
+  optional third argument replaces `readSync`, so a test can deliver a file in chunks. The goal
+  event reader in `broker/board/events.ts` keeps its own read, which takes bytes from an offset.
+- **The repeat logger** (`createRepeatLog` in `broker/repeat-log.ts`). It rate-limits a log line by
+  key. The first call of a key writes at once, and a repeat inside the window is counted. The count
+  is written on the next call the window admits, just before that call's line. No timer runs, so a
+  count whose key never recurs stays unwritten. The window is refreshed before either line is
+  written, so a log function that throws cannot leave it stale. Eight surfaces use it, each
+  exporting a `*_REPEAT_LOG` constant that fixes its window, key cap and exact text. The tailer, the
+  question desk and the interaction router run 60 second windows and sweep past 64 keys. The inbox
+  judge runs 60 seconds with no sweep. The pin keeper and the usage, board and inbox cards run 5
+  minutes with no sweep. `broker/repeat-log.test.ts` pins each surface's two lines verbatim, because
+  operators and memory records grep for them. The intake's refusal limiter and the router's drop
+  limiter keep local versions of the same counting.
+- **The standing cards' thread binding** (`loadCardBinding` and `saveCardBinding` in
+  `broker/card-binding.ts`). It persists a card's `{messageId, threadId}` as a versioned snapshot,
+  written to a temp file and renamed over the target, so a restart edits the card it already owns.
+  A missing file is an ordinary first boot and logs nothing. An unreadable, malformed or
+  non-identifier file logs one line and loads as no binding, which costs a duplicate thread rather
+  than a dead broker. The load takes a label that composes every log line it writes, such as `the
+  board card binding`. The save takes none, because it writes no log line. `broker/board/binding.ts`,
+  `broker/usage/binding.ts` and `broker/inbox/binding.ts` are thin callers that pass their label and
+  keep their own file names and type names. Each card still keeps its own file.
+- **The Discord identifier pattern** (`SNOWFLAKE` in `broker/security/senders.ts`). Five modules
+  import it, and no other copy exists under `broker/`: the card binding, the session thread bindings
+  (`broker/discord/bindings.ts`), the channel ID's check (`broker/discord/config.ts`), and the inbox
+  store and card. Each checks an identifier before it reaches a bot-token request path or Discord
+  syntax, so loosening the pattern for one caller loosens it for all five.
+- **The board's modification-time clamp** (`touchedAt` in `broker/board/events.ts`). It maps a
+  non-finite modification time to negative infinity, so a sort comparator never meets `NaN`. The
+  card renderer and the status module import it. It lives in the events module because both
+  already import that module and it imports nothing from the board, where an export from the status
+  module would close an import cycle with the card.
+- **The plan-file helpers** (`broker/board/plans.ts`). `bounded`, `planStem`, `isReadmeStem`,
+  `statPlanFile` and `readPlanFile` belong to the sweep, and the queue reader imports them. A plan a
+  persona's queue names is therefore bounded, stemmed, excluded as an index and capped by the same
+  rules as a swept one. The card renderer imports `MARKDOWN_SUFFIX` from the same module.
+  `statPlanFile(file, regularFileOnly)` refuses anything but a regular file only when asked. The
+  queue reader asks for every file it stats, and the sweep does not.
 
 ## External integrations
 
