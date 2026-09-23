@@ -327,7 +327,7 @@ test("a card Discord keeps refusing permanently is given up on", async () => {
 });
 
 test("a repeat-logged failure line carries this surface's own prefix", async () => {
-  // The permanent-refusal line is one of this card's repeat-logged lines, and the prefix is what
+  // The edit-failed line is one of this card's repeat-logged lines, and the prefix is what
   // proves it went through this surface's own `INBOX_CARD_REPEAT_LOG` rather than another surface's.
   const { calls, logged, card: built } = card({
     binding: () => ({ messageId: MESSAGE_ID, threadId: THREAD_ID }),

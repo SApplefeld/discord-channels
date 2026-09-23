@@ -526,7 +526,7 @@ function cutBlockField(value: string, cap: number): string {
 }
 
 /** A plan's filename stem as the card draws it, escaped whole and never shortened. */
-function planStem(stem: string): string {
+function drawnStem(stem: string): string {
   const named = field(stem, MAX_STEM_LENGTH);
   return named === "" ? UNNAMED_PLAN : named;
 }
@@ -592,7 +592,7 @@ function factsLine(plan: BoardPlan, blocked: number | null, now: number): string
  */
 function planLines(plan: BoardPlan, blocked: number | null, now: number): string[] {
   const lines = [
-    `${BULLET} **${planStem(plan.reading.stem)}**`,
+    `${BULLET} **${drawnStem(plan.reading.stem)}**`,
     factsLine(plan, blocked, now),
   ];
   const next =
@@ -604,7 +604,7 @@ function planLines(plan: BoardPlan, blocked: number | null, now: number): string
 /** The one bullet a plan the card holds no parse for draws: its name, and why there are no facts
  * under it. Unemphasized, which is what tells it apart at a glance from the plans that parsed. */
 function failureLine(failure: PlanFailure): string {
-  return `${BULLET} ${planStem(failure.stem)} (${NO_PARSE.get(failure.reason) ?? NO_PARSE_FALLBACK})`;
+  return `${BULLET} ${drawnStem(failure.stem)} (${NO_PARSE.get(failure.reason) ?? NO_PARSE_FALLBACK})`;
 }
 
 /**

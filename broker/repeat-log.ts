@@ -18,16 +18,16 @@
  */
 export type RepeatLogSurface<Detail extends readonly unknown[]> = {
   /** How long a run of one key is aggregated before its next line. */
-  windowMs: number;
+  readonly windowMs: number;
   /**
    * How many keys are held before the closed windows are swept. Absent where the keys are a closed
    * set, which bounds the map without a sweep.
    */
-  maxKeys?: number;
+  readonly maxKeys?: number;
   /** The line written for the first call of a key, and for the first call after its window closes. */
-  firstLine: (key: string, ...detail: Detail) => string;
+  readonly firstLine: (key: string, ...detail: Detail) => string;
   /** The line naming how many calls of a key the window it just closed counted and did not write. */
-  countLine: (key: string, suppressed: number) => string;
+  readonly countLine: (key: string, suppressed: number) => string;
 };
 
 /**
