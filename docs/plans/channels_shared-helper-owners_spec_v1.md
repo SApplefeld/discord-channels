@@ -254,8 +254,11 @@ Files in scope: `broker/board/events.ts`, `broker/board/card.ts`, `broker/board/
 
 ## Operator Verification
 
-- None beyond the gate. The usage card's short read fails closed today, so there is nothing live
-  to watch.
+- None beyond the gate for the change itself. The usage card's short read fails closed today, so
+  there is nothing live to watch.
+- Write the project's threat model. The finishing security review found none:
+  `docs/security-model.md` carries the trust boundary and the accepted risks but no threat-model
+  section, so advisory findings had nothing to cite. Carried on `docs/backlog.md`.
 
 ## Chapters
 
@@ -361,3 +364,12 @@ Delta: 2026-09-23T00:11:26Z, SCOTT-CLAUDE, main checkout.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 4 - 2026-09-23
+- Sections 1 to 4: closed (Chapters 1 to 4). Finishing pass under way against base ref f0f6fbc (merge-base with origin/main).
+- Step 1, QA: qa-verifier PASS on every section's acceptance line; lint exit 0; whole gate `npm test` 2029/2028/0, 1 skipped, exit 0, 42 s, at HEAD 9bed809 on a clean tree, box poll CLEAR. Contention lane: this repository defines none.
+- Steps 2 and 3: one Workflow wave at fable, effort high (performance, security, adversarial) over f0f6fbc..9bed809. Resolved models: 29, 38 and 36 assistant turns, all `claude-fable-5-1`. Tree state unchanged across the round.
+- Advisory dispositions. Performance, verdict CLEAR: the repeat logger's key-cap sweep copies and sorts its map per written line past the cap, deferred, since it is identical to the three pre-move copies and gated to the log-line rate; the capped read's loop would not end on a negative count from an injected reader, refused, since `readSync` never returns one and no production caller injects a reader. Security, verdict CLEAR, `threat model: absent` (`docs/security-model.md` carries no threat-model section): "write the threat model" goes to Operator Verification and the backlog; the `npm audit` transitive findings and the `SNOWFLAKE` comment are already on the backlog, deferred there; `statPlanFile`'s fail-open default goes to the Minor pass.
+- Add-decision, fix round 1: the adversarial Major (five of the eight repeat-log surfaces have no test that the module hands the core its own surface) is spec-traceable to the Intent's "keeps its exact text per surface"; fix: one prefix assertion per surface through the module's own factory, tests only; adds no mechanism. Confirmed before dispatch: the prefix grep speaks on `broker/board/thread.test.ts` (2 hits) and is silent on the five suites. Dispatched to implementer-sonnet.
+- Adversarial Minors (docs index row reads Ready, mutable surface constants, two `planStem` functions, inline `type` imports in the thin callers) go to the Minor pass after the goal read.
+- Next: verify the fix, run the adversarial lens over the fix delta beside the goal read, then the Minor pass, docs curation and the close.

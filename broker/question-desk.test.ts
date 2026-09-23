@@ -753,7 +753,9 @@ test("the refused-retry line is rate-limited, unlike every other line here", () 
   at += 60_000;
   assert.equal(desk.hold("session-a", ask(), askInput(), heldResponse().response, false), false);
   assert.ok(
-    logged.some((line) => line.includes("occurred 4 more time(s)")),
+    logged.some(
+      (line) => line.startsWith("question desk: ") && line.includes("occurred 4 more time(s)"),
+    ),
     logged.join("\n"),
   );
 });
@@ -875,7 +877,9 @@ test("the hold-stands line a console report writes is rate-limited", () => {
   at += 60_000;
   assert.equal(desk.answeredAtConsole("session-a", digest), false);
   assert.ok(
-    logged.some((line) => line.includes("occurred 4 more time(s)")),
+    logged.some(
+      (line) => line.startsWith("question desk: ") && line.includes("occurred 4 more time(s)"),
+    ),
     logged.join("\n"),
   );
 });

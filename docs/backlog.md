@@ -576,6 +576,12 @@ and none carries a date of its own. An item added from here on carries `(parked 
   `broker/` or `relay/` imports them directly. The fix is `npm audit fix` or an SDK bump, in its own
   change with the whole gate behind it.
 
+- Write the project's threat model (parked 2026-09-23, surfaced by the shared-helper-owners plan's
+  finishing security review). `docs/security-model.md` states the trust boundary, the sender gate
+  and the accepted risks, but has no threat-model section naming the attackers and what each can
+  reach. So a security review has no entry to cite, and every finding stays advisory by default.
+  This is the operator's to write, or to approve a draft of.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.
