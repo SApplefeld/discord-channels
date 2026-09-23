@@ -55,9 +55,9 @@ import {
   inertField,
   span,
 } from "../discord/render.ts";
-import { eventKey } from "./events.ts";
+import { eventKey, touchedAt } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
-import { MAX_INTAKE_STATUS_LENGTH } from "./plans.ts";
+import { MARKDOWN_SUFFIX, MAX_INTAKE_STATUS_LENGTH } from "./plans.ts";
 import type { PlanFailure, PlanFailureReason, PlanReading, PlanTruncation } from "./plans.ts";
 
 /**
@@ -336,7 +336,6 @@ function unnamedPersona(index: number): string {
 // writes are Windows and POSIX text in the same body. This is a string operation: nothing here
 // opens, resolves, or asks the filesystem anything about a value another program wrote.
 const PATH_SEPARATOR = /[\\/]/;
-const MARKDOWN_SUFFIX = /\.md$/i;
 
 /** The last segment of a path, as text. Empty for a value that is nothing but separators. */
 function lastSegment(value: string): string {
@@ -431,19 +430,6 @@ export function blockedAt(
   if (Number.isNaN(stamped)) return null;
   const at = Math.min(stamped, now);
   return plan.reading.mtimeMs > at ? null : at;
-}
-
-/**
- * A modification time as the card orders by it: the value itself, or negative infinity for anything
- * that is not a finite number.
- *
- * `renderBoardCard` is exported and takes its plans as they are handed over, so an mtime that names
- * no instant is bounded here the way the section counts are. A comparator handed one would answer
- * with something that is neither above, below nor equal, which is not an order at all, and the card
- * would draw its projects in whatever arrangement the sort happened to leave.
- */
-function touchedAt(value: number): number {
-  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
 }
 
 /** A count as the card draws it: whole, and inside a range a line can carry. */

@@ -21,7 +21,7 @@
 // reads the store under.
 import { span } from "../discord/render.ts";
 import { blockedAt, eventIndex } from "./card.ts";
-import { comparablePath } from "./events.ts";
+import { comparablePath, touchedAt } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
 import { queueKey } from "./queues.ts";
 import type { PersonaQueue, QueueEntry, QueuePlanReading } from "./queues.ts";
@@ -127,18 +127,6 @@ const IDLE = "idle";
 /** A store string as the rules compare it: trimmed, case-folded, and empty for anything absent. */
 function plain(value: string | undefined): string {
   return value === undefined ? "" : value.trim().toLowerCase();
-}
-
-/**
- * A modification time as the in-flight rule orders by it: the value itself, or negative infinity for
- * anything that is not a finite number.
- *
- * The same guard `./card.ts` puts on the mtime it sorts projects by, and here for the same reason: a
- * comparator handed a value that is neither above, below nor equal to another orders nothing, and
- * the word `in flight` would land on whichever entry the comparison happened to leave standing.
- */
-function touchedAt(value: number): number {
-  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
 }
 
 /** A reading the join parsed, which is the arm of the union that carries a status and a modification

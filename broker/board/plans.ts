@@ -336,7 +336,7 @@ const WHITESPACE_RUN = /\s+/g;
  * read or parsed again, where a renderer runs on every refresh tick over whatever the last parse
  * held.
  */
-function bounded(value: string, limit: number): string {
+export function bounded(value: string, limit: number): string {
   const collapsed = value.replace(WHITESPACE_RUN, " ").trim();
   // A code point takes at most two UTF-16 units, so this prefix holds at least `limit` of them and
   // the array the cut is made on stays small whatever the value's size. Cutting on code points is
@@ -387,7 +387,15 @@ export function parsePlan(text: string): PlanParse | null {
 }
 
 /**
- * The modification time and size of one plan file, or null when it cannot be stat'd at all.
+ * The modification time and size of one plan file, or null when it cannot be stat'd at all, or when
+ * `regularFileOnly` is set and the path names something other than a regular file (a directory, a
+ * symbolic link to one, or a FIFO). The stat follows a symbolic link, so a link to a regular file
+ * passes here, where a sweep's own directory listing reads a dirent and refuses every link whatever
+ * it points at.
+ *
+ * `regularFileOnly` defaults to off because a sweep only ever stats a name its own listing already
+ * confirmed is a plan file; the queue reader stats names taken from free-form store text instead, so
+ * it turns the check on and refuses a directory or a FIFO standing at a plan's name.
  *
  * This runs before the read, so a write landing between the two leaves the stat older than the
  * bytes parsed. That is the direction a caller gating on movement needs: the next tick sees a newer
@@ -397,9 +405,13 @@ export function parsePlan(text: string): PlanParse | null {
  * The size cap is not enforced here for the same reason: a file can grow between the stat and the
  * read, so refusing an over-cap file stays the read's own job.
  */
-function statPlanFile(file: string): { mtimeMs: number; sizeBytes: number } | null {
+export function statPlanFile(
+  file: string,
+  regularFileOnly = false,
+): { mtimeMs: number; sizeBytes: number } | null {
   try {
     const stat = statSync(file);
+    if (regularFileOnly && !stat.isFile()) return null;
     return { mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
   } catch {
     return null;
@@ -419,20 +431,20 @@ export function readPlanFile(file: string): PlanRead {
 
 // The `.md` suffix, matched without regard to case because the filesystems this runs on do not
 // distinguish `spec_v1.md` from `SPEC_V1.MD` and neither does the operator naming a plan.
-const MARKDOWN_SUFFIX = /\.md$/i;
+export const MARKDOWN_SUFFIX = /\.md$/i;
 
 // A file whose whole stem case-folds to this is a directory index, not a plan: `README.md` under
 // `docs/plans` describes the folder, it is not itself a piece of open work. Matched on the whole
 // stem rather than a prefix, so `readme-rework_spec_v1.md`, a plan legitimately named for a rework
 // of this very rule, still sweeps normally.
-const EXCLUDED_README_STEM = "readme";
+export const EXCLUDED_README_STEM = "readme";
 
 /**
  * The stem of a plan file's name: everything before the `.md` suffix, case preserved as written on
  * disk. Both the exclusion rule and the stem a reading carries are drawn from this one function, so
  * what counts as the suffix can never diverge between the two.
  */
-function planStem(name: string): string {
+export function planStem(name: string): string {
   return name.replace(MARKDOWN_SUFFIX, "");
 }
 

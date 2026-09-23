@@ -32,11 +32,17 @@
 //
 // Nothing here is logged but a static failure-class word. A `workdir`, a store path and a plan path
 // all embed the operator's OS account name, and the log is a lower-trust surface than the card.
-import { statSync } from "node:fs";
 import path from "node:path";
 import { readCappedFile } from "../capped-read.ts";
 import type { CappedRead as SharedCappedRead } from "../capped-read.ts";
-import { parsePlan, readPlanFile } from "./plans.ts";
+import {
+  bounded,
+  EXCLUDED_README_STEM,
+  parsePlan,
+  planStem,
+  readPlanFile,
+  statPlanFile,
+} from "./plans.ts";
 import type { PlanParse, PlanRead, PlanReading } from "./plans.ts";
 import type { RosterPersona } from "./roster.ts";
 
@@ -205,18 +211,12 @@ export type CappedRead = SharedCappedRead;
  * is never opened. The stat follows a symbolic link, so a link to a regular file is a regular file
  * here, where the sweep's own listing reads a dirent and refuses every link whatever it points at.
  *
- * This runs before the read, the direction `statPlanFile` in `plans.ts` takes and for the same
- * reason: a write landing between the two leaves the stat older than the bytes parsed, so the next
- * tick sees a newer stat than the one it recorded and reads again.
+ * A thin wrapper over the shared `statPlanFile` in `./plans.ts`, passing the regular-file check that
+ * function turns off by default: a sweep only ever stats a name its own listing confirmed, where this
+ * reader stats names taken from free-form store text.
  */
 function statFile(file: string): PlanStat | null {
-  try {
-    const stat = statSync(file);
-    if (!stat.isFile()) return null;
-    return { mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
-  } catch {
-    return null;
-  }
+  return statPlanFile(file, true);
 }
 
 // The name kept from a queue entry, whatever it was taken from. Anchored whole: one leading
@@ -235,13 +235,6 @@ const PLAN_IN_TEXT = /docs\/plans\/([A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-
 
 // Either separator spelling, because a store written on this platform carries both.
 const PATH_SEPARATOR = /[\\/]/;
-
-// The `.md` suffix, matched without regard to case, as `plans.ts` matches it.
-const MARKDOWN_SUFFIX = /\.md$/i;
-
-// A file whose whole stem case-folds to this is a directory index rather than a plan, the rule the
-// sweep applies to `README.md` under `docs/plans`.
-const EXCLUDED_README_STEM = "readme";
 
 /**
  * The closed list of places a named plan is looked for, under that persona's own `workdir`, in this
@@ -264,30 +257,6 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-const WHITESPACE_RUN = /\s+/g;
-
-/**
- * One store string held to a cap: whitespace runs collapsed to single spaces, trimmed, then cut to
- * `limit` code points.
- *
- * That order is the whole of it, and it is `bounded` in `./plans.ts` by the same reasoning. A reader
- * of this value collapses whitespace before it draws or compares, so cutting the raw text first
- * would keep a prefix that is whitespace and hand on a value whose meaningful text was dropped for
- * spaces. Collapsing first makes what is kept a prefix of what a reader would have seen.
- *
- * The collapse walks the whole value once, which is `MAX_STORE_FILE_BYTES` at worst. That cost is
- * paid here rather than downstream because this runs behind the store's own hold: a file that has
- * not moved is never read or parsed again, where the join and the renderer run on every refresh tick
- * over whatever the last parse held.
- */
-function bounded(value: string, limit: number): string {
-  const collapsed = value.replace(WHITESPACE_RUN, " ").trim();
-  // A code point takes at most two UTF-16 units, so this prefix holds at least `limit` of them and
-  // the array the cut is made on stays small whatever the value's size. Cutting on code points is
-  // what keeps an astral character from being left as half of itself.
-  return [...collapsed.slice(0, limit * 2)].slice(0, limit).join("");
-}
-
 /**
  * One store field held to a cap, or `undefined` when the store wrote something other than a string.
  *
@@ -302,11 +271,6 @@ function boundedField(value: unknown, limit: number): string | undefined {
 
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/** The stem of a plan file's name: everything before the `.md` suffix, case preserved. */
-function planStem(name: string): string {
-  return name.replace(MARKDOWN_SUFFIX, "");
 }
 
 /**

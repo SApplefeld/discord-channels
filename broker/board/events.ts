@@ -210,6 +210,18 @@ function text(value: unknown): string | null {
 }
 
 /**
+ * A modification time as the card and the status module order by it: the value itself, or negative
+ * infinity for anything that is not a finite number.
+ *
+ * A comparator handed a value that is neither above, below nor equal to another orders nothing, and
+ * a word this reader's callers draw from that order (`in flight`, a project's sort position) would
+ * land on whichever entry the comparison happened to leave standing.
+ */
+export function touchedAt(value: number): number {
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+/**
  * The first `max` UTF-16 units of a value, less one when that cut would land between the halves of
  * a surrogate pair. A lone surrogate is not a character: it renders as a replacement glyph or
  * throws at whatever encodes it next, so one dropped astral character is the cheaper end.
