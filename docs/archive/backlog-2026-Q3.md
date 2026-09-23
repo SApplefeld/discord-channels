@@ -300,3 +300,17 @@ Owned by `plans/channels_shared-helper-owners_spec_v1.md`:
   through which a later edit to either moves a word with neither side's tests noticing. The fix is
   one exported clamp the two call. It was not taken in section 3 because exporting a fifth name from
   the card renderer would contradict a section line the operator approved.
+
+## Completed 2026-09-23
+
+- Write `docs/security-model.md` a `## Threat model` section (handoff 2026-09-21, from the Fleet
+  Board worker queues plan's finishing security review, which opened `threat model: absent`). The
+  document carries the accepted-risk sizing for each surface in prose, and the board-card passage
+  plus the plan's Intent stood in for a model at that review. A stated model names the attacker
+  classes (same-account code, a Discord account that is not the operator's, a peer on the store's
+  remote), what each can reach, and which entries are accepted, so a security lens can cite an entry
+  rather than reason from the prose. Operator-pending: the operator decides whether that section is
+  written as its own effort. The operator inbox plan's finishing security review opened `threat
+  model: absent` as well, and so did the judge-unmirrored-replies plan's on 2026-09-22.
+  Done 2026-09-23: `docs/security-model.md` now opens with a `## Threat model` section naming
+  eight attacker classes, T1 to T8, each with its reach and the entries that hold or accept it.

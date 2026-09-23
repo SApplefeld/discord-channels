@@ -440,15 +440,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   milliseconds. The figures are sized from microbenchmarks on the broker's own host, recorded with
   their moment in the Fleet Board plan's finishing Chapter. No requirement is failed, so this is a
   trim rather than a fix, and it waits on a real fleet that approaches the caps.
-- Write `docs/security-model.md` a `## Threat model` section (handoff 2026-09-21, from the Fleet
-  Board worker queues plan's finishing security review, which opened `threat model: absent`). The
-  document carries the accepted-risk sizing for each surface in prose, and the board-card passage
-  plus the plan's Intent stood in for a model at that review. A stated model names the attacker
-  classes (same-account code, a Discord account that is not the operator's, a peer on the store's
-  remote), what each can reach, and which entries are accepted, so a security lens can cite an entry
-  rather than reason from the prose. Operator-pending: the operator decides whether that section is
-  written as its own effort. The operator inbox plan's finishing security review opened `threat
-  model: absent` as well, and so did the judge-unmirrored-replies plan's on 2026-09-22.
 - Run the operator inbox's three live checks (handoff 2026-09-21, from
   `archive/plans/channels_operator-inbox_spec_v1.md`'s Operator Verification). Find the
   `Fleet: Inbox` card on the phone; if it is not quick to reach among the pins, that reopens where
@@ -569,6 +560,18 @@ and none carries a date of its own. An item added from here on carries `(parked 
   Discord identifier the broker interpolates into bot-token request paths. The comment should say
   that, so an edit loosening the pattern for one caller sees what it weakens. The file sat outside
   that section's scope, which is why it was not fixed there.
+
+- Argue or close what a second account on the host reaches through the loopback intake (parked
+  2026-09-23, surfaced by the review of the threat model section in `docs/security-model.md`, where
+  it is entry T5's "Not argued" line). The intake checks the socket peer and the `Host` header
+  and not the account, so another local account can mint a process token and register a session.
+  That session's thread and question alert then reach the operator's phone, and the forged-question
+  case is argued only for the operator's own account. Whether the same token can arm the transcript
+  tailer against an operator-owned file is open too, since the tailer's case that a read confers no
+  privilege rests on the poster running as the broker's own account. Read the registration, the
+  mirror-on verdict and the transcript path validation in `broker/` for an account-level bound.
+  Either argue the bound in the body and drop T5's "Not argued" line, or close the route in code.
+  The exposure is latent on a host with a single account.
 
 ## Snapshots
 
