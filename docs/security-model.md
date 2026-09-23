@@ -7,6 +7,149 @@ so the intake is the main attack surface, and every field crossing it is data ra
 instruction. What standing a channel message then has with the model is a separate question,
 settled by the relay's instructions and resting on the sender gate below.
 
+## Threat model
+ This section names who can act against the system, what each can reach, and where the rest of this
+ document defends or accepts that reach. It adds no fact of its own: every claim points at the
+ section that argues it, and a quoted name is either a heading or the opening words of a bold lead
+ under one. A review cites an entry by its id. A finding that fits no entry is either a new class,
+ which belongs here, or a sign an entry below is drawn too narrow. What is worth protecting is four
+ things. The first is the operator's approval authority, since a verdict typed in a thread runs a
+ real tool call. The second is conversation content: prompts, replies, narration and tool input. The
+ third is the bot token and the operator's account on this machine. The fourth is the operator's
+ attention, meaning the phone this system is allowed to ring.
+
+**T1. A web page or remote host.** It reaches the loopback port only through a browser the operator
+runs. The loopback bind, the socket-peer check, the `Host` check against DNS rebinding and the
+event-name header that forces a preflight refuse it before the registry is read ("The trust
+boundary"). This document accepts nothing against this class.
+
+**T2. Content that passes through a session.** Anything a session reads can shape what it writes: a
+web page, a file, tool output, or a crafted file name, plan status or roster field the board card
+draws. That text reaches the session's thread and cards. Some of it also rests on disk and on `GET
+/sessions`, as the tool-input preview and the task roster, and reaches TypeSafe while the inbox
+judge is on (see T8). Render-site neutralization, the empty mention list, embed suppression and
+labelled cuts hold what it can draw ("Untrusted strings", "Tool approval over the channel").
+Accepted:
+
+- a masked link whose words and target differ, and a chip left unescaped where this project's
+  reading of a code fence and Discord's disagree, which the empty mention list still keeps from
+  pinging ("Untrusted strings")
+- status text that spells the board card's own markers ("The board card reads foreign files", a lead
+  under "Tool approval over the channel")
+- a subagent's report drawn under the operator's attribution when `CHANNEL_TASK_NOTIFICATION=full`
+  is set ("Accepted, and worth stating")
+
+**T3. Another Claude session sending peer messages.** It holds the weakest credential of any author:
+the ability to message a session this host watches. Its text reaches the session's thread. The peer
+register escapes keep its body in small type and keep it from composing a fence, a spoiler, a quote
+block or an attribution in the collapsed reading. Its display name is the one exception, drawn full
+size under the full markdown escape ("Untrusted strings"). Accepted, each argued under "Untrusted
+strings":
+
+- the masked link, and the readable-notice text
+- a line shaped like an attribution inside a spoiler the operator has opened
+- a harness change that stops peer text being recognized, which draws it at reading size inside the
+  operator-attributed quoted block
+- a standing blocked state cleared one tool call after a peer message makes the session act
+
+**T4. Code running as the operator.** This is the widest class, and most residuals belong to it. It
+includes every subprocess of a wrapped session, which inherits that session's process token, and any
+unwrapped session or package install script. The model treats it as already able to read every file
+the operator owns, and able to rewrite the hooks and settings that run the operator's sessions. The
+controls therefore aim at two narrower goals. The channel must not be its route to approving a real
+tool call. Only a forged broker holding the port while the real one is down answers real approvals,
+and the pipe race below reaches prompts of its own devising rather than real ones. And it must not
+ring the phone without a bound.
+
+- Held:
+ - Permission prompts and the reply tool demand the per-attachment reply key, which no subprocess
+   inherits.
+ - The first relay stream to claim a token keeps it.
+ - A `SessionStart` naming a session ID that a different live token holds is refused.
+ - Each of the four writes that mention the operator rides a per-thread window ("The process token
+   authenticates reports, never instructions", "Tool approval over the channel", "Untrusted
+   strings", "The transcript is read, not posted").
+- Accepted:
+ - mirror posts on the token alone, and the session's own status distorted: marked working or idle,
+   or its record ended
+ - a relay pipe attached before the real one, which holds the token and its key, can issue
+   permission prompts of its own, and is open for every session at once after a broker restart
+ - a forged broker on the port while the real one is down, which answers real tool approvals
+ - the forged question, whose answer returns to the forger, and the question surface's two residues:
+   a continuation left above an ask rewritten to the console line, and pacing that narrows a burst
+   rather than proving it away
+ - words put in the operator's mouth by appending to a transcript
+ - a thread renamed through a transcript line, including to a title of printable-blank characters
+   that draws as an empty-looking name, and a title alternating in the `needs you` or `exited` state
+   that spends the rename bucket and leaves the thread stale and unarchived
+ - a crafted model string that makes a forged downgrade draw unmarked
+ - the blocked-goal alert raised from the goal event stream, and that stream's suppression and
+   rename-budget spend
+ - a lineage's thread taken over, reachable through a non-`startup` `SessionStart` under the
+   session's own token
+ - a session's own ask, and its standing blocked state, cleared by a prompt-shaped mirror post
+ - a claimed unregistered session ID
+ - hook and relay traffic read off loopback
+ - a turn-final reply posted without the no-mirror header, which the judge then reads
+ - a crafted `planPath` reaching a plan-shaped file in the persona's own tree, and a symbolic link
+   planted there, which the board card's join follows
+ - a project `.mcp.json` that squats the relay's name and inherits the reply tool's machine-wide
+   pre-approval These are argued under "The process token authenticates reports, never
+   instructions", "The transcript is read, not posted", "Tool approval over the channel" and
+   "Accepted, and worth stating".
+
+**T5. A second account on the host.** Another authenticated user or a non-administrative service
+account does not run as the operator. Two routes reach this system from it. It can post to the
+loopback intake like any local process, since the origin checks look at the socket peer and the
+`Host` header rather than the account. So it can announce sessions of its own and read everything
+`GET /sessions` publishes ("The trust boundary", "Untrusted strings"). Writing a file on the
+execution chain or reading a secret would reach further. The installer's access-control hardening,
+its ownership and reparse-point checks, and the three independent checks that re-verify it hold that
+("Files that must not be writable"). The file exposure is latent on a single-operator host and live
+once a second account exists. Accepted: the published session record, including the tool-input
+preview, the task roster, the title, the model reading and the engagement timestamp, which this
+class could not otherwise read ("The trust boundary", "The process token authenticates reports,
+never instructions"). Not argued: what a session this class announces reaches. Minting its own token
+gives it that session's thread and the question alert, which rings the phone under the per-thread
+windows. The forged question is argued only for the operator's own account, under "The transcript is
+read, not posted". Nor is it argued whether that token can arm the transcript tailer against an
+operator-owned file, which the broker would then read as the operator. The tailer's case for
+conferring no privilege rests on the poster running as the broker's own account, and this class does
+not.
+
+**T6. A Discord account that is not the operator's.** A member of the channel or the server can post
+in a thread and press a component. The sender gate on the operator's user ID refuses every inbound
+action from it before anything is read, verdicts included ("The sender gate", "Tool approval over
+the channel"). The gate governs who writes and not who reads, so this class can read everything the
+channel holds. The channel must therefore be private to the operator (`install.md`). Accepted: its
+messages can end a coalesced block early, which costs one attribution header.
+
+**T7. Whoever holds the operator's Discord account.** It holds the operator's full authority by
+design: it steers every session on the host and approves any tool call. Nothing here defends against
+it. That account's password, second factor and notified devices are part of the trust boundary ("The
+sender gate").
+
+**T8. The parties that receive data.** Discord stores what a thread and the cards carry under its
+own retention. That includes prompts, replies, tool input, peer messages, the `/goal` line, titles,
+the board card's project labels, which draw the account name when a root sits at or just under a
+home directory, and the fleet card's account labels, which on two hosts are corporate identities.
+With the inbox card and the judge's key file both set, TypeSafe receives the text of every unmarked
+reply that passes the secret screen. The screen is a pattern rather than a proof, so a credential in
+another shape goes with the text. These parties are where content rests once it leaves the machine,
+and this model does not treat them as attackers. The mirror switches, the inbox card switch and the
+judge's key file decide how much reaches them ("Tool approval over the channel", and its leads "The
+fleet card sends account identity" and "The inbox judge sends session reply text"). On the machine
+itself, `inbox-items.json` holds each marked ask's excerpt ("Accepted, and worth stating").
+
+Outside the model:
+
+- An administrator or SYSTEM on the host, which can rewrite anything here.
+- Discord's own service.
+- The operator's own `broker.env`, which this document treats as configuration of the same trust as
+  code. The paragraph after "The blocked-goal alert is the fourth mention-bearing write", under
+  "Tool approval over the channel", argues it.
+- A writer to a remote that a store on this host syncs from. This document argues no such surface,
+  so a finding that reaches the system that way is a new class and belongs in this section.
 ## The trust boundary
 
 The broker listens on `127.0.0.1` only, and three origin checks refuse a request before it reaches
