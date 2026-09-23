@@ -213,9 +213,14 @@ function text(value: unknown): string | null {
  * A modification time as the card and the status module order by it: the value itself, or negative
  * infinity for anything that is not a finite number.
  *
- * A comparator handed a value that is neither above, below nor equal to another orders nothing, and
- * a word this reader's callers draw from that order (`in flight`, a project's sort position) would
- * land on whichever entry the comparison happened to leave standing.
+ * The values are plan documents' modification times, and `renderBoardCard` in `./card.ts` is
+ * exported and takes its plans as they are handed over, so an mtime that names no instant is bounded
+ * here. A comparator handed a value that is neither above, below nor equal to another orders
+ * nothing, and what the card and the status module draw from that order (a project's sort position,
+ * the word `in flight`) would land on whichever entry the comparison happened to leave standing.
+ *
+ * It lives in this module because both callers already import it and it imports nothing from the
+ * board, where an export from the status module would close an import cycle with the card.
  */
 export function touchedAt(value: number): number {
   return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;

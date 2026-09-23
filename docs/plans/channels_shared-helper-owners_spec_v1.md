@@ -333,3 +333,31 @@ Delta: 2026-09-23T00:07:28Z, SCOTT-CLAUDE, main checkout.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 3 - 2026-09-23
+- Sections 1 to 3: closed (Chapters 1 to 3).
+- Section 4: implemented by implementer-sonnet, verified, and committed at first green (10c5c0a). The main session folded a third `MARKDOWN_SUFFIX` copy in `broker/board/card.ts` onto the `plans.ts` export and dropped the unused `WHITESPACE_RUN` export. A live Workflow dispatch runs review round 1 at opus, effort high: adversarial, blind and security over 46577ae..10c5c0a.
+- Gate: whole gate 2029/2028/0, 1 skipped, exit 0, 41 s; board lane 264/264, exit 0; lint exit 0; at 2026-09-23T00:06:34Z on the main checkout, SCOTT-CLAUDE, box poll CLEAR, tree equal to 10c5c0a.
+- Rulings since the last boundary: none.
+- Next: adjudicate section 4's round, close it, then finishing-work against base ref f0f6fbc (merge-base with origin/main). The tail-until-flake plan's PR #25 merged at 2026-09-22T23:38:11Z, so finishing merges origin/main into this branch and runs the whole gate over the merge.
+
+### Chapter 4 - 2026-09-23
+Completed: 4. The clamp and the queue reader's helpers import from one place
+Implemented By: implementer-sonnet; the verification fold and close-pass Minors by the main session
+Metrics: review rounds 1, closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 0 findings, 0 fixed, 0 deferred, 0 refused; NEEDS_CONTEXT 0; escalations none; consults 0
+Decisions / Surprises:
+- Section 4 open: exports `touchedAt` once from `broker/board/events.ts` for the card and status modules, and exports the plan helpers (`WHITESPACE_RUN`, `bounded`, `MARKDOWN_SUFFIX`, the README stem, `planStem`, the stat) from `broker/board/plans.ts` for `broker/board/queues.ts`, the shared stat taking a regular-file option off by default; serves the Goal sentence "Each small mechanism ... lives in one place that every caller imports" and Approach design item 4; adds no mechanism the design does not name (the regular-file option is design item 4's own); about +10 lines of exports, about -60 lines of copies; not building it leaves two clamp copies and six queue-reader copies to drift.
+- Implementer add-decision (section 4, adjudicated): `statPlanFile` takes `regularFileOnly`, default false, and the queue reader's `statFile` stays as a one-line wrapper passing true because `PlanStat` and the `statPlan` option fix its one-argument shape; design item 4's own option; adds no mechanism beyond it; one branch.
+- Verification fold (section 4, main session): `broker/board/card.ts:339` held a third identical `MARKDOWN_SUFFIX` copy the Approach did not list; it now imports the one from `plans.ts` (card.ts already imported from plans.ts and sits in Files in scope, so the section's file list is unchanged). `WHITESPACE_RUN`'s new export was dropped, since nothing outside plans.ts imports it; adds no mechanism; -1 line.
+- The close pass exported `isReadmeStem` in place of the `EXCLUDED_README_STEM` constant, so the README rule itself, not only its constant, has one owner; the queue reader calls it.
+- `card.ts` keeps a private function also named `planStem` whose behaviour differs (it reduces a path, not a file name); it is not a copy of the plans helper and was left.
+Assumptions: none
+Review Findings: review: adversarial + blind + security at opus, Workflow (effort high). No Critical, no Major. Minors: 4 fixed in the close pass (the `statPlanFile` comment's false claim that a sweep stats only names its own listing confirmed, raised by all three lenses and reworded with no behaviour change; the README rule shared through `isReadmeStem`; the `card.ts` fold recorded above; the `touchedAt` comment rewritten to name its callers and keep the card's reason), 0 upgraded, 2 left (the positional `true` in the one wrapper, whose comment names it; and the security lens's advisory `npm audit` finding, three transitive packages through `@modelcontextprotocol/sdk` 1.30.0, confirmed by `npm ls`, which predates this plan and went to `docs/backlog.md`). The close-pass code change is covered by `queues.test.ts:221`, which refuses a README by the case-folded stem; it adds no module and no outward action, so it owed no further round; author re-read done. The security lens found `docs/security-model.md` carries no `## Threat model` section and reported CLEAR.
+Stamps: adjudicated 1 listed; skipped `subagent-can-report-a-documented-past-injection-as-a-live-one` (read by a reviewer, not applied).
+Gate: board lane `node --test broker/board/*.test.ts` 264/264/0, exit 0, 0.6 s, and `npm run lint` exit 0, at 2026-09-23T00:11:18Z on the main checkout at 10c5c0a plus this section's close-pass edits, SCOTT-CLAUDE, box poll CLEAR. Baseline on the same lane: 264/264, exit 0 at 4e7dc49, and the implementer's own run at 199726c plus its edits, 264/264 exit 0. Delta: 0 tests added, 0 retired, 0 edited. The directory refusal stays pinned by `queues.test.ts:308`, which goes through the module's own stat. `touchedAt` is defined once across `broker/board/`, at `events.ts:225` (`grep -rn "function touchedAt" broker/board/`, one match). The whole gate at 00:06:34Z (Interim board 3) ran on the first-green tree; finishing runs it again.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: 2026-09-23T00:11:26Z, SCOTT-CLAUDE, main checkout.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```

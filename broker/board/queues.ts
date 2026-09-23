@@ -37,7 +37,7 @@ import { readCappedFile } from "../capped-read.ts";
 import type { CappedRead as SharedCappedRead } from "../capped-read.ts";
 import {
   bounded,
-  EXCLUDED_README_STEM,
+  isReadmeStem,
   parsePlan,
   planStem,
   readPlanFile,
@@ -295,7 +295,7 @@ function planNameFor(entry: QueueEntry): string | null {
   if (segment === null) return null;
   const candidate = segment === undefined ? entry.textPlanName : segment;
   if (candidate === undefined || !PLAN_NAME.test(candidate)) return null;
-  if (planStem(candidate).toLowerCase() === EXCLUDED_README_STEM) return null;
+  if (isReadmeStem(candidate)) return null;
   return candidate;
 }
 

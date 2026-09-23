@@ -393,9 +393,10 @@ export function parsePlan(text: string): PlanParse | null {
  * passes here, where a sweep's own directory listing reads a dirent and refuses every link whatever
  * it points at.
  *
- * `regularFileOnly` defaults to off because a sweep only ever stats a name its own listing already
- * confirmed is a plan file; the queue reader stats names taken from free-form store text instead, so
- * it turns the check on and refuses a directory or a FIFO standing at a plan's name.
+ * `regularFileOnly` defaults to off, which is the plan sweep's own behaviour: the sweep stats names
+ * from its own listing or from a caller's held copy of one, and does not refuse a non-regular file
+ * standing at such a name. The queue reader turns the check on for every file it stats, the plans
+ * its store names and the store and heartbeat files alike, and refuses a directory or a FIFO there.
  *
  * This runs before the read, so a write landing between the two leaves the stat older than the
  * bytes parsed. That is the direction a caller gating on movement needs: the next tick sees a newer
@@ -437,7 +438,7 @@ export const MARKDOWN_SUFFIX = /\.md$/i;
 // `docs/plans` describes the folder, it is not itself a piece of open work. Matched on the whole
 // stem rather than a prefix, so `readme-rework_spec_v1.md`, a plan legitimately named for a rework
 // of this very rule, still sweeps normally.
-export const EXCLUDED_README_STEM = "readme";
+const EXCLUDED_README_STEM = "readme";
 
 /**
  * The stem of a plan file's name: everything before the `.md` suffix, case preserved as written on
@@ -449,7 +450,7 @@ export function planStem(name: string): string {
 }
 
 /** Whether a plan file's name is a directory index rather than a plan, whatever its case. */
-function isReadmeStem(name: string): boolean {
+export function isReadmeStem(name: string): boolean {
   return planStem(name).toLowerCase() === EXCLUDED_README_STEM;
 }
 
