@@ -561,18 +561,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   that, so an edit loosening the pattern for one caller sees what it weakens. The file sat outside
   that section's scope, which is why it was not fixed there.
 
-- Argue or close what a second account on the host reaches through the loopback intake (parked
-  2026-09-23, surfaced by the review of the threat model section in `docs/security-model.md`, where
-  it is entry T5's "Not argued" line). The intake checks the socket peer and the `Host` header
-  and not the account, so another local account can mint a process token and register a session.
-  That session's thread and question alert then reach the operator's phone, and the forged-question
-  case is argued only for the operator's own account. Whether the same token can arm the transcript
-  tailer against an operator-owned file is open too, since the tailer's case that a read confers no
-  privilege rests on the poster running as the broker's own account. Read the registration, the
-  mirror-on verdict and the transcript path validation in `broker/` for an account-level bound.
-  Either argue the bound in the body and drop T5's "Not argued" line, or close the route in code.
-  The exposure is latent on a host with a single account.
-
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

@@ -314,3 +314,19 @@ Owned by `plans/channels_shared-helper-owners_spec_v1.md`:
   model: absent` as well, and so did the judge-unmirrored-replies plan's on 2026-09-22.
   Done 2026-09-23: `docs/security-model.md` now opens with a `## Threat model` section naming
   eight attacker classes, T1 to T8, each with its reach and the entries that hold or accept it.
+
+## Ruled won't-fix 2026-09-24
+
+- Argue or close what a second account on the host reaches through the loopback intake (parked
+  2026-09-23, surfaced by the review of the threat model section in `docs/security-model.md`, where
+  it is entry T5's "Not argued" line). The intake checks the socket peer and the `Host` header
+  and not the account, so another local account can mint a process token and register a session.
+  That session's thread and question alert then reach the operator's phone, and the forged-question
+  case is argued only for the operator's own account. Whether the same token can arm the transcript
+  tailer against an operator-owned file is open too, since the tailer's case that a read confers no
+  privilege rests on the poster running as the broker's own account.
+
+  Ruled won't-fix by the operator on 2026-09-24 and accepted as a risk in T5. A second person's
+  account takes administrator rights to create, and those read the operator's files directly, so
+  the broker offers that attacker nothing new. A built-in service account reaches the intake only
+  after its Windows service is compromised. The broker code was not read for an account-level bound.

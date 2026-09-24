@@ -109,13 +109,14 @@ its ownership and reparse-point checks, and the three independent checks that re
 once a second account exists. Accepted: the published session record, including the tool-input
 preview, the task roster, the title, the model reading and the engagement timestamp, which this
 class could not otherwise read ("The trust boundary", "The process token authenticates reports,
-never instructions"). Not argued: what a session this class announces reaches. Minting its own token
-gives it that session's thread and the question alert, which rings the phone under the per-thread
-windows. The forged question is argued only for the operator's own account, under "The transcript is
-read, not posted". Nor is it argued whether that token can arm the transcript tailer against an
-operator-owned file, which the broker would then read as the operator. The tailer's case for
-conferring no privilege rests on the poster running as the broker's own account, and this class does
-not.
+never instructions"). Also accepted: whatever a session this class announces reaches. Minting its
+own token gives it that session's thread and the question alert, which rings the phone under the
+per-thread windows. Whether that token can also arm the transcript tailer against an operator-owned
+file, which the broker would then read as the operator, is left unexamined, because the operator
+accepts the whole route on two grounds. A second person's account can be created only with
+administrator rights, and those read the operator's files directly, so the broker gives that
+attacker nothing new. A built-in service account exists without anyone creating it, but posting from
+one first takes compromising the Windows service that runs as it.
 
 **T6. A Discord account that is not the operator's.** A member of the channel or the server can post
 in a thread and press a component. The sender gate on the operator's user ID refuses every inbound
