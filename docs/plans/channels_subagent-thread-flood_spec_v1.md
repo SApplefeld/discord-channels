@@ -77,3 +77,13 @@ The trace:
 Live dispatches: a consultant is ruling on whether the broker can gate this and what Section 2 becomes. ARCHITECT, the spec author, has been told (record ARCHITECT-017df7a7-87ab-4a78-8062-f0955f41ecbf-1).
 Gate baseline: none taken; no code changed.
 Next: the consult ruling, then the scope decision to the operator, since the fix sits in a component the plan excludes.
+
+### Interim board 2 - 2026-09-25
+The consult ruled, and the operator's scope decision is pending.
+
+- The broker cannot gate this. The reply wire carries text, process token and reply key only (`broker/routing/http.ts:157`, `:207`, `:254`, `:289`; `relay/index.ts:183` reads only `message`). A no-mirror session's prompt post is dropped unread and its tailer suppressed (`broker/intake.ts:733-746`), so no broker gate keyed on the wake prompt can see it. Confirmed by the consultant and spot-checked by reading.
+- The backfilled turn was not the persona's own. Now confirmed rather than inferred. `.agentic-channel.jsonl` line 692 backfills id `0e2d64f0`, the only line in the log carrying that id, so no `turn_start` ever opened it. The parent turn is `f033b3e8` (line 689).
+- The fix shape, in the plugin's `hooks/index.ts` (the installed cache is byte-identical to `D:\personas\ARCHITECT\repos\agent_persona` at `b9e6e28`, checked with `cmp`). Capture `isOwnTurn = e.turnId === currentGateTurnId` before the reset at :6347, which nulls `currentGateTurnId`. Add it to the backstop condition at :6376. Guard the `currentTurnIsChannelOrigin = false` reset at :6403 with it, or a subagent completion consumes the parent's flag and the parent's own missing reply is no longer backfilled. Test both directions.
+- Section 2 as written is void: its premise, "the flood is the channel's to gate", is false. The consult recommends rewriting it as a handoff spec executed in the plugin's own repo, with the backlog item retiring when the plugin change ships.
+
+Next: the operator's pick between a handoff spec to the plugin repo and extending this plan across repos.
