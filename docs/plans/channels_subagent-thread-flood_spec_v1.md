@@ -1,6 +1,6 @@
 # Stop the finishing-subagent thread flood
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 
@@ -61,3 +61,19 @@ Tests: at minimum, lock that a subagent's report is compressed under `brief` and
 
 ## Chapters
 (Appended by executing-work as sections complete. Leave empty at creation.)
+
+### Interim board 1 - 2026-09-25
+Section 1 (reproduce and pin): trace done, disposition pending. The flood's posting path is not in the broker. It is the persona plugin's reply backstop, which this plan's Out of Scope list excludes.
+
+The trace:
+- The posting call. `📣 Claude · answer` is drawn only by `renderAnswer` (`broker/discord/render.ts:1557`), whose one caller is the router's `reply()` at `broker/routing/outbound.ts:1036`, serving `POST /relay/reply` from the relay's reply tool. `render.ts:547` only lists glyphs for escaping. The mirror draws `✨ Claude` (`render.ts:263`). Confirmed by reading.
+- Who called the reply tool. The agentic-plugin's reply backstop (installed `~/.claude/plugins/cache/agent-persona/agentic-plugin/a62aadc8c7d0/hooks/index.ts`, about lines 6366-6400) calls `mcp__plugin_relay_channel-relay__reply` with `e.answer` on `turn.complete` when the turn opened from a channel message and no reply was sent. Its own comment (about line 2355) says a background subagent's completion reaches `turn.complete` while the persona's turn is open, and the backstop does not check `e.turnId === currentGateTurnId`. Confirmed by reading.
+- The flooded instance. ARCHITECT's plugin log (`D:\personas\ARCHITECT\repos\agent_persona\.agentic-channel.jsonl`) records `channel_reply_backfilled` at 2026-09-25T01:19:55.143Z: 8 s after the blind reader's completion was queued (01:19:47Z) and 21 s before ARCHITECT's own first reply (01:20:16Z), inside the turn the operator's message opened at 01:18:59Z. Confirmed. That the backfilled turn id was the subagent's is inferred from timing, since the id is plugin-internal.
+- Why each broker guard misses it. Both `isTaskNotification` gates (`outbound.ts:1215`, `:1581`) read prompt text, and the report arrives as a reply-tool call. The sidechain filter (`broker/tail.ts:1694`) reads the transcript, and nothing here came off the transcript. ARCHITECT's mirroring was off (`broker.log`, "suppressed by session switch" at 01:20:17Z and 01:21:44Z).
+- Ruled out, by a controlled capture (`claude` 2.1.281, `-p`, hooks posted to a scratch listener): a background subagent's finish fires `SubagentStop` and never `Stop`. The parent's `Stop` carries only the parent's text. The wake prompt opens with `<task-notification>`. The broker declares no `SubagentStop` hook.
+- Setting. `broker.env` does not set `CHANNEL_TASK_NOTIFICATION`, so the broker runs the default `brief`. A genuine bypass, not a `full` setting.
+- Reproduction a reviewer can run: in a persona session with the agentic-plugin, have the operator's Discord message open a turn, dispatch a background subagent in that turn before any reply-tool call, and let it finish while the turn is still running. Expected: a `channel_reply_backfilled` decision in the persona's `.agentic-channel.jsonl` or `.agentic-personas.json`, and the subagent's report on the thread under `📣 Claude · answer`.
+
+Live dispatches: a consultant is ruling on whether the broker can gate this and what Section 2 becomes. ARCHITECT, the spec author, has been told (record ARCHITECT-017df7a7-87ab-4a78-8062-f0955f41ecbf-1).
+Gate baseline: none taken; no code changed.
+Next: the consult ruling, then the scope decision to the operator, since the fix sits in a component the plan excludes.
