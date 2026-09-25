@@ -20,8 +20,9 @@ and none carries a date of its own. An item added from here on carries `(parked 
   completion answer through the relay's reply tool when the completion lands inside a
   Discord-opened persona turn, because it never checks that the completing turn is the persona's
   own. The broker receives that as an ordinary reply and cannot tell it apart. The trace is in
-  `archive/plans/channels_subagent-thread-flood_spec_v1.md`. The fix is ARCHITECT's plan in the
-  persona plugin's repository, and no broker work remains. This item retires when that fix ships.
+  `archive/plans/channels_subagent-thread-flood_spec_v1.md`. The fix is
+  `agent_persona_backstop-turn-guard_spec_v1.md` in the persona plugin's repository
+  (https://github.com/SApplefeld/agent_persona/pull/96), and no broker work remains. This item retires when that fix ships.
 
 - Operator check, inbox clear on rebind (parked 2026-09-22): once the running broker carries
   `rebindHandling`, the next persona restart should leave no item for the ended session on the

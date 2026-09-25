@@ -59,6 +59,9 @@ Tests: at minimum, lock that a subagent's report is compressed under `brief` and
 ## Open Questions
 - Whether the bypass is the prefix-defeated recognizer, the parent-turn mirror, or a third path. Owner: Section 1, which reproduces and pins it before Section 2 gates it.
 
+## Related plans
+- Superseded by `docs/plans/agent_persona_backstop-turn-guard_spec_v1.md` in the persona plugin's repository (SApplefeld/agent_persona, https://github.com/SApplefeld/agent_persona/pull/96), which guards the reply backstop to the persona's own turn.
+
 ## Chapters
 (Appended by executing-work as sections complete. Leave empty at creation.)
 
