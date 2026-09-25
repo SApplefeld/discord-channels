@@ -1,6 +1,6 @@
 # Stop the finishing-subagent thread flood
 
-Status: In Progress
+Status: Superseded
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 
@@ -89,3 +89,17 @@ The consult ruled, and the operator's scope decision is pending.
 - ARCHITECT, the spec author, concurs (reported, its own read of the backstop). It says the backstop has no reason to fire on any turn but the persona's own, and that Section 2 is retired. It names the same null-reset trap and an alternative discriminator: `turnIsOpen()` reading false after the `openTurns.delete`, the true-boundary pattern its boundary-compaction plan uses. It offers to write the plugin fix as an `agent_persona` plan once the operator confirms the cross-repo scope.
 
 Next: the operator's pick between a handoff spec to the plugin repo and extending this plan across repos.
+
+### Chapter 1 - 2026-09-25
+Completed: 1. Reproduce the flood and pin the exact bypass path
+
+The flood is not the broker's. It is the persona plugin's reply backstop, which forwards a background subagent's completion answer through the relay's reply tool when that completion lands inside a Discord-opened persona turn. The trace, the evidence and the fix shape are in Interim boards 1 and 2 above.
+
+Section 2 is retired unexecuted. Its premise, stated in Out of Scope as "the flood is the channel's to gate", is false: the broker receives the report as an ordinary reply-tool call and has no signal that tells it from the persona's own answer. Gating it there would treat the symptom and risk silencing real replies.
+
+Decided 2026-09-25 by the operator: the fix belongs to the persona plugin ("Personas should do the fix"), and this plan is abandoned. ARCHITECT, the spec's author, owns the fix as a plan in `D:\personas\ARCHITECT\repos\agent_persona`, built from the full handoff DEV-DISCORD sent it: the evidence, the two-site guard, the two-direction test and the two inferences left to confirm live.
+
+No code changed in this repo, so no test lane ran. The backlog item stays open, rewritten to name the plugin as the fix's home, and retires when the plugin fix ships.
+
+Commit Model: Branch-and-PR.
+Next: none in this repo. The plan is archived as Superseded.
