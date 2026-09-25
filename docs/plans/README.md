@@ -3,7 +3,10 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open. The most recently archived plan is
+One plan is open: [`channels_subagent-thread-flood_spec_v1.md`](channels_subagent-thread-flood_spec_v1.md),
+which stops a finishing subagent's full report from flooding the operator's thread. Status Ready.
+
+The most recently archived plan is
 [`../archive/plans/channels_shared-helper-owners_spec_v1.md`](../archive/plans/channels_shared-helper-owners_spec_v1.md),
 which gave the broker's hand-copied helpers one owner each.
 
