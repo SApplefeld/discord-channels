@@ -1,6 +1,6 @@
 # Stop the finishing-subagent thread flood
 
-Status: Ready
+Status: Superseded
 Commit Model: Branch-and-PR
 Created: 2026-09-24
 
@@ -59,5 +59,50 @@ Tests: at minimum, lock that a subagent's report is compressed under `brief` and
 ## Open Questions
 - Whether the bypass is the prefix-defeated recognizer, the parent-turn mirror, or a third path. Owner: Section 1, which reproduces and pins it before Section 2 gates it.
 
+## Related plans
+- Superseded by `docs/plans/agent_persona_backstop-turn-guard_spec_v1.md` in the persona plugin's repository (SApplefeld/agent_persona, https://github.com/SApplefeld/agent_persona/pull/96), which guards the reply backstop to the persona's own turn.
+
 ## Chapters
 (Appended by executing-work as sections complete. Leave empty at creation.)
+
+### Interim board 1 - 2026-09-25
+Section 1 (reproduce and pin): trace done, disposition pending. The flood's posting path is not in the broker. It is the persona plugin's reply backstop, which this plan's Out of Scope list excludes.
+
+The trace:
+- The posting call. `📣 Claude · answer` is drawn only by `renderAnswer` (`broker/discord/render.ts:1557`), whose one caller is the router's `reply()` at `broker/routing/outbound.ts:1036`, serving `POST /relay/reply` from the relay's reply tool. `render.ts:547` only lists glyphs for escaping. The mirror draws `✨ Claude` (`render.ts:263`). Confirmed by reading.
+- Who called the reply tool. The agentic-plugin's reply backstop (installed `~/.claude/plugins/cache/agent-persona/agentic-plugin/a62aadc8c7d0/hooks/index.ts`, about lines 6366-6400) calls `mcp__plugin_relay_channel-relay__reply` with `e.answer` on `turn.complete` when the turn opened from a channel message and no reply was sent. Its own comment (about line 2355) says a background subagent's completion reaches `turn.complete` while the persona's turn is open, and the backstop does not check `e.turnId === currentGateTurnId`. Confirmed by reading.
+- The flooded instance. ARCHITECT's plugin log (`D:\personas\ARCHITECT\repos\agent_persona\.agentic-channel.jsonl`) records `channel_reply_backfilled` at 2026-09-25T01:19:55.143Z: 8 s after the blind reader's completion was queued (01:19:47Z) and 21 s before ARCHITECT's own first reply (01:20:16Z), inside the turn the operator's message opened at 01:18:59Z. Confirmed. That the backfilled turn id was the subagent's is inferred from timing, since the id is plugin-internal.
+- Why each broker guard misses it. Both `isTaskNotification` gates (`outbound.ts:1215`, `:1581`) read prompt text, and the report arrives as a reply-tool call. The sidechain filter (`broker/tail.ts:1694`) reads the transcript, and nothing here came off the transcript. ARCHITECT's mirroring was off (`broker.log`, "suppressed by session switch" at 01:20:17Z and 01:21:44Z).
+- Ruled out, by a controlled capture (`claude` 2.1.281, `-p`, hooks posted to a scratch listener): a background subagent's finish fires `SubagentStop` and never `Stop`. The parent's `Stop` carries only the parent's text. The wake prompt opens with `<task-notification>`. The broker declares no `SubagentStop` hook.
+- Setting. `broker.env` does not set `CHANNEL_TASK_NOTIFICATION`, so the broker runs the default `brief`. A genuine bypass, not a `full` setting.
+- Reproduction a reviewer can run: in a persona session with the agentic-plugin, have the operator's Discord message open a turn, dispatch a background subagent in that turn before any reply-tool call, and let it finish while the turn is still running. Expected: a `channel_reply_backfilled` decision in the persona's `.agentic-channel.jsonl` or `.agentic-personas.json`, and the subagent's report on the thread under `📣 Claude · answer`.
+
+Live dispatches: a consultant is ruling on whether the broker can gate this and what Section 2 becomes. ARCHITECT, the spec author, has been told (record ARCHITECT-017df7a7-87ab-4a78-8062-f0955f41ecbf-1).
+Gate baseline: none taken; no code changed.
+Next: the consult ruling, then the scope decision to the operator, since the fix sits in a component the plan excludes.
+
+### Interim board 2 - 2026-09-25
+The consult ruled, and the operator's scope decision is pending.
+
+- The broker cannot gate this. The reply wire carries text, process token and reply key only (`broker/routing/http.ts:157`, `:207`, `:254`, `:289`; `relay/index.ts:183` reads only `message`). A no-mirror session's prompt post is dropped unread and its tailer suppressed (`broker/intake.ts:733-746`), so no broker gate keyed on the wake prompt can see it. Confirmed by the consultant and spot-checked by reading.
+- The backfilled turn was not the persona's own. Now confirmed rather than inferred. `.agentic-channel.jsonl` line 692 backfills id `0e2d64f0`, the only line in the log carrying that id, so no `turn_start` ever opened it. The parent turn is `f033b3e8` (line 689).
+- The fix shape, in the plugin's `hooks/index.ts` (the installed cache is byte-identical to `D:\personas\ARCHITECT\repos\agent_persona` at `b9e6e28`, checked with `cmp`). Capture `isOwnTurn = e.turnId === currentGateTurnId` before the reset at :6347, which nulls `currentGateTurnId`. Add it to the backstop condition at :6376. Guard the `currentTurnIsChannelOrigin = false` reset at :6403 with it, or a subagent completion consumes the parent's flag and the parent's own missing reply is no longer backfilled. Test both directions.
+- Section 2 as written is void: its premise, "the flood is the channel's to gate", is false. The consult recommends rewriting it as a handoff spec executed in the plugin's own repo, with the backlog item retiring when the plugin change ships.
+
+- ARCHITECT, the spec author, concurs (reported, its own read of the backstop). It says the backstop has no reason to fire on any turn but the persona's own, and that Section 2 is retired. It names the same null-reset trap and an alternative discriminator: `turnIsOpen()` reading false after the `openTurns.delete`, the true-boundary pattern its boundary-compaction plan uses. It offers to write the plugin fix as an `agent_persona` plan once the operator confirms the cross-repo scope.
+
+Next: the operator's pick between a handoff spec to the plugin repo and extending this plan across repos.
+
+### Chapter 1 - 2026-09-25
+Completed: 1. Reproduce the flood and pin the exact bypass path
+
+The flood is not the broker's. It is the persona plugin's reply backstop, which forwards a background subagent's completion answer through the relay's reply tool when that completion lands inside a Discord-opened persona turn. The trace, the evidence and the fix shape are in Interim boards 1 and 2 above.
+
+Section 2 is retired unexecuted. Its premise, stated in Out of Scope as "the flood is the channel's to gate", is false: the broker receives the report as an ordinary reply-tool call and has no signal that tells it from the persona's own answer. Gating it there would treat the symptom and risk silencing real replies.
+
+Decided 2026-09-25 by the operator: the fix belongs to the persona plugin ("Personas should do the fix"), and this plan is abandoned. ARCHITECT, the spec's author, owns the fix as a plan in `D:\personas\ARCHITECT\repos\agent_persona`, built from the full handoff DEV-DISCORD sent it: the evidence, the two-site guard, the two-direction test and the two inferences left to confirm live.
+
+No code changed in this repo, so no test lane ran. The backlog item stays open, rewritten to name the plugin as the fix's home, and retires when the plugin fix ships.
+
+Commit Model: Branch-and-PR.
+Next: none in this repo. The plan is archived as Superseded.

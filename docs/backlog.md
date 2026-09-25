@@ -14,23 +14,15 @@ promote, retire, or keep call at the next close-out. Every item below this line 
 2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
-- A finishing subagent's full report floods the operator's thread (parked 2026-09-24): when a
-  session dispatches a subagent (a blind read, a review, an Explore), the subagent's entire final
-  report reaches the operator's thread attributed `📣 Claude · answer`, several times a day, making
-  the thread hard to read. Confirmed 2026-09-24: the operator pasted back a verbatim blind read of a
-  spec, framed `📣 Claude · answer`, that no `/relay/reply` call had sent; the blind-reader subagent
-  has no channel tool, so the broker forwarded it on the subagent's behalf. Two guards exist that
-  should bound this and one is not holding. `taskNotifications` (`broker/config.ts:80`, env
-  `CHANNEL_TASK_NOTIFICATION`, default `brief`, gated at `broker/routing/outbound.ts:1215`) compresses
-  an injected task-notification wake prompt to one line, but only for `kind === "prompt"` where
-  `isTaskNotification(text)` matches the `<task-notification` wrapper. The transcript tailer drops
-  sidechain records (`broker/tail.ts:1694`), so a subagent's own transcript text is excluded from the
-  interim mirror. Yet the report reaches the thread on the answer surface, not the prompt surface,
-  past both guards. First step for whoever takes this: confirm the operator's
-  `CHANNEL_TASK_NOTIFICATION`; if it is `full`, setting it to `brief` may be the whole fix. If it is
-  unset or already `brief`, trace which path carries a finishing subagent's report to the answer
-  surface, and gate that path on the same `taskNotifications` and sidechain rules so the report is a
-  one-line notice by default. Filed by the ARCHITECT persona on the operator's request.
+- A finishing subagent's full report floods the operator's thread (parked 2026-09-24): a persona
+  session's background subagent report posts to the thread under `📣 Claude · answer` several times
+  a day. The cause is the persona plugin's reply backstop, not the broker. It forwards a subagent's
+  completion answer through the relay's reply tool when the completion lands inside a
+  Discord-opened persona turn, because it never checks that the completing turn is the persona's
+  own. The broker receives that as an ordinary reply and cannot tell it apart. The trace is in
+  `archive/plans/channels_subagent-thread-flood_spec_v1.md`. The fix is
+  `agent_persona_backstop-turn-guard_spec_v1.md` in the persona plugin's repository
+  (https://github.com/SApplefeld/agent_persona/pull/96), and no broker work remains. This item retires when that fix ships.
 
 - Operator check, inbox clear on rebind (parked 2026-09-22): once the running broker carries
   `rebindHandling`, the next persona restart should leave no item for the ended session on the
