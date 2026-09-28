@@ -20,8 +20,10 @@ promote, retire, or keep call at the next close-out. Every item below this line 
   text, dated 2026-09-28. This repo's own prerequisites: strip `"version"` from
   `plugins/relay/.claude-plugin/plugin.json` (pinned at 0.1.0 today, so plugins can follow commits
   like the other two already do), and run a leak sweep over this repo's plugin folders for
-  `docs/plans`, `kaizen` or `.kit` paths and banned words (J&M, POWERSUITE, TMWSuite at minimum) —
-  not yet checked. Needs a cross-repo spec before implementation; not this repo's alone to design.
+  `docs/plans`, `kaizen` or `.kit` paths and a banned-words list kept outside any public repo —
+  not yet checked. **While this repo is still public, no spec, commit or PR names the banned words
+  or the leak file's path literally**, per the operator's 2026-09-28 correction. Needs a cross-repo
+  spec before implementation; not this repo's alone to design.
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
 - A finishing subagent's full report floods the operator's thread (parked 2026-09-24): a persona
