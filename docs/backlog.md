@@ -12,6 +12,16 @@ closes. This file is for cross-effort next-steps that do not belong to any singl
 An item carries its parked date once it has one, and ages from it: past 90 days it gets a
 promote, retire, or keep call at the next close-out. Every item below this line was parked between
 2026-08-06, when this file was created, and 2026-08-13, so none of them is near that threshold yet
+
+- **Plugins-only public distribution: two prerequisites land here (2026-09-28, operator-decided,
+  routed by the coordinator).** The full initiative (one public marketplace repo for all three of
+  Scott's plugins, each source repo going private, a tag-triggered publish job per repo with an
+  allowlist and a leak gate) is recorded in `claude-kit`'s `docs/backlog.md` under the same heading
+  text, dated 2026-09-28. This repo's own prerequisites: strip `"version"` from
+  `plugins/relay/.claude-plugin/plugin.json` (pinned at 0.1.0 today, so plugins can follow commits
+  like the other two already do), and run a leak sweep over this repo's plugin folders for
+  `docs/plans`, `kaizen` or `.kit` paths and banned words (J&M, POWERSUITE, TMWSuite at minimum) —
+  not yet checked. Needs a cross-repo spec before implementation; not this repo's alone to design.
 and none carries a date of its own. An item added from here on carries `(parked YYYY-MM-DD)`.
 
 - A finishing subagent's full report floods the operator's thread (parked 2026-09-24): a persona
