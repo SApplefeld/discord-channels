@@ -266,7 +266,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * this reads, and an entry the gate held under the old cap is still one the pipe carries. A time
  * after the clock is clamped to it rather than refused, since a clock stepped back across the
  * outage is no reason to lose the host's every held buffer; the clamp keeps the re-armed cap a
- * delay Node's timers take, at most the age cap itself.
+ * delay Node's timers take, at most the larger of the age cap and the relay restart window.
  */
 function heldBufferOf(value: unknown, now: number): HeldBuffer | null {
   if (!isRecord(value)) return null;

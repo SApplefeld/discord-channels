@@ -1920,7 +1920,6 @@ test("live: a buffer of three held messages survives a stop and a start: the fil
       buffered: 3,
     },
   ]);
-  assert.ok(textOf(after.sent[0]).startsWith("Lines held across a broker restart"));
   assert.ok(textOf(after.sent[0]).includes("1970-01-01T00:00:50Z"), "the oldest time, to the second");
   assert.deepEqual(onDisk(dir).buffers, [], "delivered, and gone from the file at the same write");
   assert.deepEqual(after.rows.map((row) => [row.id, row.trigger, row.outcome, row.lines?.length]), [

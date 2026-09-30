@@ -2660,3 +2660,30 @@ test("startBroker refuses to start with the gate on and no key, writing the reas
   t.after(() => broker.stop());
   assert.match(readFileSync(logFile, "utf8"), /inbox judge is off/);
 });
+
+// The response gate's restart restore rides three lines of startBroker's Discord block, which no
+// test reaches without a Discord login: the relay hub's attach routed to the router, the buffers
+// file handed to the router, and the restored age caps armed beside the relay restart windows at
+// the listener bind. The router's own tests pin what each call does, so this pins that startBroker
+// still makes each one, read from the source with its comments dropped and anchored on the call.
+function restoreWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  if (!/onAttach:\s*\(\s*(\w+)\s*\)\s*=>\s*inbound\?\.relayAttached\(\s*\1\s*\)/.test(code)) {
+    gaps.push("attach");
+  }
+  if (!/buffers:\s*\{\s*file:\s*responseGateBuffersFile\b/.test(code)) gaps.push("file");
+  const windows = code.indexOf("relays.openRestartWindows(");
+  const armed = code.indexOf("inbound?.armRestored()");
+  if (windows === -1 || armed < windows) gaps.push("armed");
+  return gaps;
+}
+
+test("startBroker wires the held buffers' restore: the attach, the file and the armed caps", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(restoreWiringGaps(source), []);
+  // Each check speaks when its own call is gone, so a green above is the calls being there.
+  assert.deepEqual(restoreWiringGaps(source.replace("inbound?.relayAttached(", "void (")), ["attach"]);
+  assert.deepEqual(restoreWiringGaps(source.replace(/buffers:\s*\{/, "kept: {")), ["file"]);
+  assert.deepEqual(restoreWiringGaps(source.replace("inbound?.armRestored()", "void 0")), ["armed"]);
+});
