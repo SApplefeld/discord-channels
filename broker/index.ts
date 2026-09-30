@@ -1025,6 +1025,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // would strand a working session as exited with no way back.
     graceMs: config.relayHeartbeatMs,
     log: note,
+    // A pipe attaching is what delivers a buffer the response gate restored across a restart.
+    // Reached through the closure for the reason the mutate seam is: the router is built inside
+    // the Discord block below, and a host with no Discord has no router and no buffer to deliver.
+    onAttach: (processToken) => inbound?.relayAttached(processToken),
   });
   let threadFor: (sessionId: string) => string | null = () => null;
   // The fleet usage card's own message, for the channel's pin list. Mutable for the reason
@@ -1667,6 +1671,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // Beside the registry snapshot and the card bindings, as the inbox snapshot is: one row per
     // gate decision, written only where the mode is `shadow` or `live`.
     const responseGateJournalFile = path.join(path.dirname(config.stateFile), "response-gate.jsonl");
+    // Beside the journal: the buffers the gate holds, written on every change in `live` alone and
+    // read once here, when the router is built, so a stop, restart or crash loses no held line.
+    // The registry, the thread bindings and the relay hub are all up by this line and no relay
+    // can have attached, since the listener binds below.
+    const responseGateBuffersFile = path.join(
+      path.dirname(config.stateFile),
+      "response-gate-buffers.json",
+    );
     const router = createInboundRouter({
       registry,
       relays,
@@ -1700,6 +1712,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           maxBytes: config.logMaxBytes,
           maxFiles: config.logMaxFiles,
         }),
+        // A restored buffer's age cap is floored at the restart window, the time a session that
+        // held a relay before the restart is given to reconnect, so a cap that passed during the
+        // outage still waits for the relay's return.
+        buffers: { file: responseGateBuffersFile, graceMs: RELAY_RESTART_GRACE_MS },
       },
       now: Date.now,
       log: note,
@@ -1711,7 +1727,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           `${String(config.responseGateMaxMessages)} messages for at most ` +
           `${String(config.responseGateMaxWaitMs)}ms, asks the judge after ` +
           `${String(config.responseGateQuietMs)}ms of quiet at threshold ` +
-          `${String(config.responseGateThreshold)}, and journals to ${responseGateJournalFile}`,
+          `${String(config.responseGateThreshold)}, journals to ${responseGateJournalFile}, ` +
+          `and keeps held buffers across a restart at ${responseGateBuffersFile}`,
       );
     } else if (config.responseGate === "shadow") {
       note(
@@ -1911,8 +1928,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     if (refresh !== null) clearInterval(refresh);
     // A held buffer goes down in the same synchronous block, before the first await below: its
     // age-cap timer must not fire into pipes about to be torn down, and a broker asked to stop
-    // does not wait on an age cap. What was held is lost, as it would be to a crash; the operator
-    // reads the thread either way.
+    // does not wait on an age cap. What was held stays in the buffers file, which the close does
+    // not touch, for the next start to restore and deliver.
     inbound?.close();
     // The card's own timer goes down with the rest of them, before the first await below: left
     // running across those seconds it starts a pass that writes to Discord and to the binding file

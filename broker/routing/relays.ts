@@ -124,6 +124,13 @@ export type RelayHubOptions = {
   /** Injected so a test drives the grace window without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
+  /**
+   * Told the process token after each attach that held: the pipe registered and the hello
+   * landed on it, so a listener that writes into the pipe finds it ready. Not told of a refused
+   * attach or a pipe that dropped the hello. A throw out of it is logged and never undoes the
+   * attach. The inbound router listens, to deliver a buffer restored across a broker restart.
+   */
+  onAttach?: (processToken: string) => void;
 };
 
 type Attachment = { connection: RelayConnection; replyKey: string };
@@ -204,6 +211,14 @@ export function createRelayHub(options: RelayHubOptions): RelayHub {
         // holding the token against the relay that is about to retry.
         connections.delete(processToken);
         return { attached: false, reason: "already attached" };
+      }
+      if (options.onAttach !== undefined) {
+        try {
+          options.onAttach(processToken);
+        } catch (error) {
+          // The pipe is up whatever the listener made of it: its failure is its own.
+          log(`relay: the attach listener failed for a pipe: ${String(error)}`);
+        }
       }
       return { attached: true, detach: () => detach(processToken, connection) };
     },

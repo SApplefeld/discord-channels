@@ -23,8 +23,9 @@ import {
   createResponseGate,
   createResponseGateJournal,
   lowestClass,
+  restartLine,
 } from "./response-gate.ts";
-import type { BufferDelivery, BufferedMessage, JournalRow } from "./response-gate.ts";
+import type { BufferDelivery, BufferedMessage, HeldBuffer, JournalRow } from "./response-gate.ts";
 
 const THREAD = "900000000000000001";
 const OTHER_THREAD = "900000000000000002";
@@ -89,6 +90,8 @@ function gate(
     judge?: { quietMs?: number; threshold?: number };
     journal?: (row: JournalRow) => void;
     now?: () => number;
+    /** The persist seam, recording what each call was handed. Absent, nothing is persisted. */
+    persist?: boolean | ((buffers: readonly HeldBuffer[]) => void);
   } = {},
 ) {
   const clock = timers();
@@ -96,6 +99,7 @@ function gate(
   const lines: string[] = [];
   const dropped: Array<{ threadId: string; sessionId: string; count: number }> = [];
   const rows: JournalRow[] = [];
+  const saved: Array<readonly HeldBuffer[]> = [];
   const calls: Call[] = [];
   const pending: Deferred[] = [];
   const fetch: JevFetch = (url, init) => {
@@ -120,6 +124,12 @@ function gate(
     journal: options.journal ?? ((row) => rows.push(row)),
     onRelease: (threadId, sessionId, delivery) => released.push({ threadId, sessionId, delivery }),
     onDrop: (threadId, sessionId, count) => dropped.push({ threadId, sessionId, count }),
+    ...(options.persist === undefined || options.persist === false
+      ? {}
+      : {
+          persist:
+            options.persist === true ? (buffers: readonly HeldBuffer[]) => saved.push(buffers) : options.persist,
+        }),
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
     log: (line) => lines.push(line),
@@ -132,6 +142,7 @@ function gate(
     lines,
     dropped,
     rows,
+    saved,
     calls,
     pending,
     /** The `state` the call at `index` sent. */
@@ -393,22 +404,27 @@ function sentenceWith(anchor: RegExp, concept: RegExp): boolean {
   return INSTRUCTIONS.split(/(?<=\.)\s+/).some((sentence) => anchor.test(sentence) && concept.test(sentence));
 }
 
-test("the rendered line and the event's class are the shape and rule the relay's instructions state", () => {
-  // The cross-component pin. The model reads the shape and the lowest-class rule from the
-  // instructions and the broker renders both here; each side tested against its own literal would
-  // hide a mismatch between them.
+/** The line shape as the relay's instructions state it, as a pattern over one rendered line. */
+function statedLineShape(): RegExp {
   const stated = INSTRUCTIONS.match(/<author> \(<class>\): <text>/)?.[0];
   assert.ok(stated !== undefined, "the instructions state the line shape");
-  const pattern = new RegExp(
+  return new RegExp(
     `^${stated
       .replace(/[()]/g, "\\$&")
       .replace("<author>", "(?<author>.+?)")
       .replace("<class>", "(?<class>operator|participant)")
       .replace("<text>", "(?<text>.*)")}$`,
   );
+}
+
+test("the rendered line and the event's class are the shape and rule the relay's instructions state", () => {
+  // The cross-component pin. The model reads the shape and the lowest-class rule from the
+  // instructions and the broker renders both here; each side tested against its own literal would
+  // hide a mismatch between them.
+  const pattern = statedLineShape();
   for (const message of [operator("run it (now)"), participant("hi: there")]) {
     const match = bufferedLine(message).match(pattern);
-    assert.ok(match?.groups !== undefined, `${bufferedLine(message)} does not read as ${stated}`);
+    assert.ok(match?.groups !== undefined, `${bufferedLine(message)} does not read as ${String(pattern)}`);
     assert.deepEqual({ ...match.groups }, {
       author: message.author,
       class: message.senderClass,
@@ -905,4 +921,235 @@ test("a row's lines are screened on every trigger: a pasted token in a mention-d
 
   // The predicate's control on this path: the same rows with the lines kept would have carried it.
   assert.ok(JSON.stringify(deliveries[0].messages.map(bufferedLine)).includes(token));
+});
+
+// Held buffers across a broker restart: every change to what is held reaches the persist seam,
+// a restore holds the buffers back with the cap re-armed, the relay attaching delivers them on
+// `restored`, and every event carrying a restored message opens with the restart line. The file
+// itself, its reader and the router's restore are driven in inbound.test.ts.
+
+/** A buffer as the persist seam is handed it, for the tests that vary neither thread nor session. */
+function persisted(oldestAt: number, ...messages: BufferedMessage[]): HeldBuffer {
+  return { threadId: THREAD, sessionId: SESSION, oldestAt, messages };
+}
+
+test("every change to what is held reaches the persist seam with the buffers as they then stand, and a close reaches it with nothing", () => {
+  let now = 5_000;
+  const h = gate({ maxWaitMs: 60_000, persist: true, now: () => now });
+  const one = operator("one", false, "1");
+  const two = participant("two", false, "2");
+  admit(h.gate, one);
+  assert.deepEqual(h.saved, [[persisted(5_000, one)]], "an admit that holds writes the buffer");
+  now = 6_000;
+  admit(h.gate, two);
+  assert.deepEqual(h.saved[1], [persisted(5_000, one, two)], "as it stands, from its oldest");
+
+  h.gate.admit(OTHER_THREAD, "session-b", operator("hey", false, "3"), MENTION);
+  assert.equal(h.saved.length, 2, "a lone mention into an empty thread changes nothing held");
+
+  admit(h.gate, operator("now", false, "4"), MENTION);
+  assert.deepEqual(h.saved[2], [], "a delivery leaves the file at the same write");
+
+  admit(h.gate, operator("five", false, "5"));
+  assert.equal(h.saved.length, 4);
+  assert.equal(h.gate.clear(THREAD), 1);
+  assert.deepEqual(h.saved[4], [], "a drop leaves the file at the same write");
+  h.gate.clear(THREAD);
+  assert.equal(h.saved.length, 5, "clearing a thread holding nothing writes nothing");
+
+  admit(h.gate, operator("six", false, "6"));
+  h.gate.admit(THREAD, "session-b", operator("seven", false, "7"), UNADDRESSED);
+  assert.deepEqual(
+    h.saved[h.saved.length - 1].map((buffer) => [buffer.sessionId, buffer.messages.length]),
+    [["session-b", 1]],
+    "a session mismatch drops the old buffer and holds the new one in one write",
+  );
+
+  const timer = h.scheduled.filter((entry) => !entry.cleared).pop();
+  assert.ok(timer !== undefined);
+  timer.fire();
+  assert.deepEqual(h.saved[h.saved.length - 1], [], "the age cap leaves the file at the same write");
+
+  admit(h.gate, operator("eight", false, "8"));
+  const writes = h.saved.length;
+  h.gate.close();
+  assert.equal(h.saved.length, writes, "the close writes nothing");
+  assert.equal(h.saved[writes - 1].length, 1, "so the file stays as the last change left it");
+  assert.deepEqual(h.gate.held(), []);
+});
+
+test("a verdict that delivers leaves the file at the same write, and one that holds writes nothing", async () => {
+  const h = gate({ judge: { threshold: 0.6 }, persist: true });
+  admit(h.gate, operator("one", false, "1"));
+  assert.equal(h.saved.length, 1);
+  newestQuiet(h).fire();
+  h.pending[0].resolve(scored(0.2));
+  await settled();
+  assert.equal(h.saved.length, 1, "held: nothing changed");
+
+  admit(h.gate, operator("two", false, "2"));
+  newestQuiet(h).fire();
+  h.pending[1].resolve(scored(0.9));
+  await settled();
+  assert.equal(h.released.length, 1);
+  assert.deepEqual(h.saved[h.saved.length - 1], []);
+  assert.equal(h.saved.length, 3);
+});
+
+test("a persist seam that throws is logged and costs neither the admission nor the delivery", () => {
+  const h = gate({
+    persist: () => {
+      throw new Error("disk full");
+    },
+  });
+  assert.deepEqual(admit(h.gate, operator("one", false, "1")), []);
+  assert.deepEqual(h.gate.held(), [{ threadId: THREAD, sessionId: SESSION }], "held regardless");
+  assert.equal(h.lines.length, 1);
+  assert.ok(h.lines[0].includes("held buffers") && h.lines[0].includes("disk full"), h.lines[0]);
+  assert.ok(!h.lines[0].includes("one"), "content-free");
+
+  const deliveries = admit(h.gate, participant("now", false, "2"), MENTION);
+  assert.equal(deliveries[0]?.messages.length, 2, "delivered regardless");
+  assert.equal(h.lines.length, 2);
+});
+
+test("a buffer any of whose lines the secret screen matches is left out of the persisted set, named once by thread and count, and held in memory", () => {
+  // The rule that keeps it out is the screen's `sk-` branch, matched on the shape of a value built
+  // here from parts so the predicate's own literal never names it: the same rule `record` applies
+  // to a journal row.
+  const token = ["sk", "abcdefghij0123456789xyz"].join("-");
+  const h = gate({ persist: true });
+  admit(h.gate, operator("one", false, "1"));
+  assert.equal(h.saved[0].length, 1);
+
+  admit(h.gate, participant(`the key is ${token}`, false, "2"));
+  assert.deepEqual(h.saved[1], [], "the whole buffer, not the one line, is kept off disk");
+  assert.equal(h.lines.length, 1, h.lines.join("\n"));
+  assert.ok(h.lines[0].includes(THREAD) && h.lines[0].includes("2 messages"), h.lines[0]);
+  assert.ok(!h.lines[0].includes(token) && !h.lines[0].includes("one"), "content-free");
+
+  admit(h.gate, operator("three", false, "3"));
+  assert.deepEqual(h.saved[2], []);
+  assert.equal(h.lines.length, 1, "named once, not on every change");
+  assert.deepEqual(h.gate.held(), [{ threadId: THREAD, sessionId: SESSION }], "held in memory");
+
+  const deliveries = admit(h.gate, operator("now", false, "4"), MENTION);
+  assert.equal(deliveries[0]?.messages.length, 4, "and delivered whole: the screen guards the disk, not the pipe");
+  assert.deepEqual(h.saved[3], []);
+  assert.ok(!JSON.stringify(h.saved).includes(token));
+});
+
+test("a restore holds each buffer for its thread and session with its cap re-armed from its oldest time and floored at the grace, and the relay attaching delivers it on restored", () => {
+  const now = 100_000;
+  const h = gate({ maxWaitMs: 60_000, persist: true, now: () => now });
+  const inCap = persisted(70_000, operator("one", false, "1"), participant("two", false, "2"));
+  const pastCap: HeldBuffer = {
+    threadId: OTHER_THREAD,
+    sessionId: "session-b",
+    oldestAt: 10_000,
+    messages: [operator("old", false, "3")],
+  };
+  h.gate.restore([inCap, pastCap], 15_000);
+  assert.deepEqual(h.gate.held(), [
+    { threadId: THREAD, sessionId: SESSION },
+    { threadId: OTHER_THREAD, sessionId: "session-b" },
+  ]);
+  assert.deepEqual(
+    h.scheduled.map((timer) => timer.ms),
+    [30_000, 15_000],
+    "the cap runs on from where the outage found it, and never under the grace",
+  );
+  assert.deepEqual(h.saved, [[inCap, pastCap]], "what is held after the restore is written");
+
+  h.gate.deliverRestored(SESSION);
+  assert.deepEqual(h.released, [
+    {
+      threadId: THREAD,
+      sessionId: SESSION,
+      delivery: { messages: inCap.messages, trigger: "restored", restoredAt: 70_000 },
+    },
+  ]);
+  assert.equal(h.scheduled[0].cleared, true, "the re-armed timer went with the delivery");
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome, row.lines?.length]), [
+    ["2", "restored", "delivered", 2],
+  ]);
+  assert.deepEqual(h.saved[1], [pastCap], "and the file at the same write");
+  h.gate.deliverRestored(SESSION);
+  assert.equal(h.released.length, 1, "nothing left for the session delivers nothing");
+
+  // The other's relay never comes back: the floor expires it on the age cap, restored time and all.
+  h.scheduled[1].fire();
+  assert.deepEqual(h.released[1].delivery, {
+    messages: pastCap.messages,
+    trigger: "age-cap",
+    restoredAt: 10_000,
+  });
+  assert.deepEqual(h.saved[2], []);
+});
+
+test("a restored buffer takes new messages, a mention delivers old and new under the restored time, and a buffer opened since the restart is not restored", () => {
+  let now = 100_000;
+  const h = gate({ maxWaitMs: 60_000, persist: true, now: () => now });
+  const one = operator("one", false, "1");
+  h.gate.restore([persisted(70_000, one)], 15_000);
+  now = 101_000;
+  const two = participant("two", false, "2");
+  assert.deepEqual(admit(h.gate, two), [], "held with the restored line");
+  assert.deepEqual(h.saved[1], [persisted(70_000, one, two)], "the file keeps the oldest time");
+  assert.equal(h.scheduled.length, 1, "no second timer: the re-armed one still runs");
+
+  const three = operator("now", false, "3");
+  assert.deepEqual(admit(h.gate, three, MENTION), [
+    { messages: [one, two, three], trigger: "mention", restoredAt: 70_000 },
+  ]);
+  assert.deepEqual(h.saved[2], []);
+
+  const four = operator("four", false, "4");
+  admit(h.gate, four);
+  h.gate.deliverRestored(SESSION);
+  assert.deepEqual(h.released, [], "a buffer opened since the restart is not flushed by an attach");
+  const deliveries = admit(h.gate, operator("five", false, "5"), MENTION);
+  assert.equal(Object.hasOwn(deliveries[0], "restoredAt"), false, "and carries no restored time");
+
+  // A restore for a thread already holding a buffer takes nothing and says so.
+  admit(h.gate, operator("six", false, "6"));
+  h.gate.restore([persisted(50_000, one)], 15_000);
+  assert.equal(h.gate.held().length, 1);
+  assert.equal(h.scheduled.filter((timer) => !timer.cleared).length, 1);
+  assert.ok(h.lines.some((line) => line.includes("already holds") && line.includes(THREAD)), h.lines.join("\n"));
+});
+
+test("a restored delivery opens with the restart line, which names the oldest time to the second, is no buffered line and is not counted, on a buffer of one too", () => {
+  const at = 1_700_000_000_123;
+  const event = bufferedEvent(THREAD, [operator("one"), participant("two")], at);
+  const [line, ...rest] = event.text.split("\n");
+  assert.equal(line, restartLine(at));
+  assert.match(line, /broker restart/);
+  assert.ok(line.includes("2023-11-14T22:13:20Z"), line);
+  assert.ok(!line.includes(".123"), "to the second");
+  assert.equal(line.match(statedLineShape()), null, "never shaped as a buffered line");
+  assert.deepEqual(rest, ["Ann (operator): one", "Bo (participant): two"]);
+  assert.equal(event.buffered, 2, "the line is not counted");
+  assert.equal(event.senderClass, "participant");
+  assert.equal(event.author, "Bo");
+
+  const one = bufferedEvent(THREAD, [operator("one")], at);
+  assert.equal(one.text, `${restartLine(at)}\nAnn (operator): one`);
+  assert.equal(one.buffered, 1);
+  assert.notEqual(JSON.stringify(one), JSON.stringify(bufferedEvent(THREAD, [operator("one")])));
+  assert.equal(restartLine(0).length, restartLine(at).length, "a fixed width, which the budget reserves");
+});
+
+test("the event budget reserves the restart line on every buffer, so a buffer held under the cap restores under it with the line in front", () => {
+  const h = gate();
+  const first = operator("a", false, "1");
+  // A second message sized so the two fit the cap exactly without the line and not with it.
+  const base = JSON.stringify(bufferedEvent(THREAD, [first, operator("", false, "2")])).length + 1;
+  const second = operator("b".repeat(MAX_EVENT_UNITS - base), false, "2");
+  assert.equal(JSON.stringify(bufferedEvent(THREAD, [first, second])).length + 1, MAX_EVENT_UNITS);
+  assert.ok(JSON.stringify(bufferedEvent(THREAD, [first, second], 0)).length + 1 > MAX_EVENT_UNITS);
+
+  admit(h.gate, first);
+  assert.deepEqual(admit(h.gate, second), [{ messages: [first], trigger: "size-cap" }]);
+  assert.deepEqual(h.gate.held(), [{ threadId: THREAD, sessionId: SESSION }], "the second is held alone");
 });

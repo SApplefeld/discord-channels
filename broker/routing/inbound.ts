@@ -18,17 +18,32 @@
 // In shadow the message goes down at once as it always has, and the same buffer runs beside that
 // delivery as a simulation whose every decision is journaled and none of which reaches the pipe.
 //
+// A held buffer survives the broker. In `live` the gate hands every change to what it holds to a
+// file beside the journal, and this router reads that file once when it is built: a buffer whose
+// session record restored is held again and delivered, under a line saying it was held across a
+// restart, when that session's relay attaches; one whose session did not restore is dropped with
+// the counted notice a session's end posts. In `off` and `shadow` the file is neither written nor
+// read.
+//
 // A process token identifies a pipe. It is not evidence about who sent a message, and no check
 // here consults it for that.
-import { withoutInvisible } from "../sanitize.ts";
+import { readFileSync } from "node:fs";
+import { boundedAuthor, clean, withoutInvisible } from "../sanitize.ts";
 import { parseVerdict } from "../security/permission.ts";
 import type { PermissionDesk } from "../security/permission.ts";
 import type { SenderClass, SenderGate } from "../security/senders.ts";
 import type { Registry, SessionRecord } from "../registry.ts";
 import type { RelayEvent, RelayHub } from "./relays.ts";
-import { bufferedEvent, createResponseGate } from "./response-gate.ts";
+import {
+  HELD_BUFFERS_FORMAT_VERSION,
+  bufferedEvent,
+  createResponseGate,
+  saveHeldBuffers,
+} from "./response-gate.ts";
 import type {
   BufferDelivery,
+  BufferedMessage,
+  HeldBuffer,
   JournalRow,
   ResponseGate,
   ResponseGateJudge,
@@ -152,6 +167,13 @@ export type ResponseGateSettings = {
   judge?: ResponseGateJudge;
   /** Takes one row per gate decision, in `shadow` and `live` alike. */
   journal: (row: JournalRow) => void;
+  /**
+   * Where the held buffers are kept across a broker restart, and the floor a restored buffer's
+   * age cap is re-armed to, the window a relay is given to reconnect after a restart. Read and
+   * written in `live` alone: in `off` and `shadow` a file left by an earlier `live` run is
+   * neither read nor touched.
+   */
+  buffers?: { file: string; graceMs: number };
   /** Injected so a test fires the age cap and the quiet window without sleeping. */
   setTimer?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearTimer?: (timer: NodeJS.Timeout) => void;
@@ -205,12 +227,144 @@ export type InboundRouter = {
    */
   reconcile: (sessions: readonly SessionRecord[]) => void;
   /**
-   * Drops every held buffer and its timer, delivering nothing. For the broker stopping: a held
+   * Drops every held buffer and its timer, delivering nothing and writing nothing, so the buffers
+   * file keeps what was held for the next start to restore. For the broker stopping: a held
    * buffer is not a reason to wait, and its timer must not fire into pipes being torn down. A
    * no-op with the gate off. Never throws.
    */
   close: () => void;
+  /**
+   * A relay attached for `processToken`. Delivers the buffer restored across a broker restart for
+   * the session that token holds, if one is still held; a buffer opened since stays held. Called
+   * by the relay hub's attach signal. A no-op with the gate off or in shadow. Never throws.
+   */
+  relayAttached: (processToken: string) => void;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The latest admission time a restored buffer may carry: the last millisecond of the year 9999.
+ * The restart line names the time in the ISO form, whose width is fixed only through four-digit
+ * years, and the gate's event budget reserves that fixed width on every buffer.
+ */
+const MAX_OLDEST_AT = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+
+/**
+ * One entry of the buffers file, parsed and never trusted: the file is an ordinary file anything
+ * running as this user can rewrite. Every string is bounded again by the guard the router or the
+ * gateway applies to a message on the way in, `boundedAuthor` for the name and `bounded` for the
+ * text, so a tampered file re-admits nothing the wire refuses; the ids take the registry file's
+ * own normalization. A shape this broker never writes, a text or a name that bounds to nothing,
+ * a class that is not one of the two words, an empty list or one past the size cap, is null.
+ */
+function heldBufferOf(value: unknown, maxMessages: number): HeldBuffer | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.threadId !== "string" || typeof value.sessionId !== "string") return null;
+  const threadId = clean(value.threadId);
+  const sessionId = clean(value.sessionId);
+  if (threadId === "" || sessionId === "") return null;
+  // Finite, not merely a number: JSON.parse turns 1e999 into Infinity.
+  if (
+    typeof value.oldestAt !== "number" ||
+    !Number.isFinite(value.oldestAt) ||
+    value.oldestAt < 0 ||
+    value.oldestAt > MAX_OLDEST_AT
+  ) {
+    return null;
+  }
+  if (
+    !Array.isArray(value.messages) ||
+    value.messages.length === 0 ||
+    value.messages.length > maxMessages
+  ) {
+    return null;
+  }
+  const messages: BufferedMessage[] = [];
+  for (const entry of value.messages as unknown[]) {
+    if (!isRecord(entry)) return null;
+    if (
+      typeof entry.id !== "string" ||
+      typeof entry.author !== "string" ||
+      typeof entry.text !== "string" ||
+      typeof entry.truncated !== "boolean"
+    ) {
+      return null;
+    }
+    if (entry.senderClass !== "operator" && entry.senderClass !== "participant") return null;
+    const id = clean(entry.id);
+    const author = boundedAuthor(entry.author);
+    const { text, truncated } = bounded(entry.text);
+    if (id === "" || author === "" || text === "") return null;
+    messages.push({
+      id,
+      author,
+      senderClass: entry.senderClass,
+      text,
+      truncated: entry.truncated || truncated,
+    });
+  }
+  return { threadId, sessionId, oldestAt: value.oldestAt, messages };
+}
+
+/**
+ * The held buffers an earlier broker process left in `file`, read on `loadSessions`'s discipline
+ * (`broker/persistence.ts`): a missing file is the normal case and silent; a file that cannot be
+ * read, is not JSON, is not a snapshot, is another format or holds an entry the file cannot vouch
+ * for restores nothing and logs one line naming the file and never its content. The parse error
+ * is deliberately unread, since its message embeds an excerpt of the file, which holds message
+ * text. One bad entry refuses the whole file, as one malformed record empties the registry: a
+ * file this broker did not write is not one to restore from in part.
+ */
+export function loadHeldBuffers(
+  file: string,
+  options: { maxMessages: number; log: (message: string) => void },
+): HeldBuffer[] {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return [];
+    options.log(`routing: cannot read the held buffers at ${file}, restoring none: ${String(error)}`);
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    options.log(`routing: the held buffers at ${file} are not valid JSON, restoring none`);
+    return [];
+  }
+
+  if (!isRecord(parsed) || !Array.isArray(parsed.buffers)) {
+    options.log(`routing: the held buffers at ${file} are not a snapshot, restoring none`);
+    return [];
+  }
+  if (parsed.version !== HELD_BUFFERS_FORMAT_VERSION) {
+    options.log(
+      `routing: the held buffers at ${file} are format ${String(parsed.version)}, not ` +
+        `${String(HELD_BUFFERS_FORMAT_VERSION)}, restoring none`,
+    );
+    return [];
+  }
+
+  const buffers: HeldBuffer[] = [];
+  const threads = new Set<string>();
+  for (const entry of parsed.buffers as unknown[]) {
+    const buffer = heldBufferOf(entry, options.maxMessages);
+    // A thread holds one buffer, so a second entry for it is not something this broker wrote.
+    if (buffer === null || threads.has(buffer.threadId)) {
+      options.log(`routing: the held buffers at ${file} hold a malformed entry, restoring none`);
+      return [];
+    }
+    threads.add(buffer.threadId);
+    buffers.push(buffer);
+  }
+  return buffers;
+}
 
 /**
  * A session whose thread was never reached is not addressed by this message, and a session with no
@@ -425,7 +579,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       delivery,
       written: options.relays.deliver(
         record.processToken,
-        bufferedEvent(threadId, delivery.messages),
+        bufferedEvent(threadId, delivery.messages, delivery.restoredAt),
       ),
     }));
     for (const { delivery, written } of outcomes) {
@@ -518,6 +672,9 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   const mode = options.responseGate?.mode ?? "off";
   const simulated = mode === "shadow";
   const settings = options.responseGate;
+  // The buffers file, in live alone. Shadow's simulated buffer withholds nothing from anyone, so
+  // there is nothing of it to keep across a restart.
+  const buffersFile = settings?.buffers === undefined || simulated ? null : settings.buffers.file;
   const gate: ResponseGate | null =
     settings !== undefined && mode !== "off"
       ? createResponseGate({
@@ -545,12 +702,54 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
               log(`routing: announcing a dropped buffer failed: ${String(error)}`);
             });
           },
+          ...(buffersFile === null
+            ? {}
+            : { persist: (buffers) => saveHeldBuffers(buffersFile, buffers) }),
           ...(settings.setTimer === undefined ? {} : { setTimer: settings.setTimer }),
           ...(settings.clearTimer === undefined ? {} : { clearTimer: settings.clearTimer }),
           log,
           now,
         })
       : null;
+
+  // What an earlier broker process held, read once here and in live alone. A buffer whose session
+  // record restored with a state other than ended is held again for that thread and session; any
+  // other is dropped with the counted notice a session's end posts, since to the thread's readers
+  // that is what happened to it. The restore runs before the first message and before any relay
+  // can attach in production, where the listener binds after this router is built, so a session's
+  // relay attaching is what delivers a restored buffer; a relay already attached, which a second
+  // router over one state directory can meet, takes it at once. The file is read only where it
+  // held something: a missing or unusable file is one log line from the loader and no write, so
+  // an unusable file is left for the operator to read rather than written over.
+  if (gate !== null && buffersFile !== null && settings?.buffers !== undefined) {
+    const records = options.registry.list();
+    const entries = loadHeldBuffers(buffersFile, { maxMessages: settings.maxMessages, log });
+    const kept: Array<{ entry: HeldBuffer; record: SessionRecord }> = [];
+    for (const entry of entries) {
+      const record = records.find((held) => held.sessionId === entry.sessionId);
+      if (record !== undefined && record.state !== "ended") {
+        kept.push({ entry, record });
+        continue;
+      }
+      log(
+        `routing: dropped ${String(entry.messages.length)} buffered messages held for session ` +
+          `${entry.sessionId}, which did not survive the broker restart`,
+      );
+      // Fire and forget, as on every other drop: the announcement never rejects by construction.
+      void announceDrop(entry.threadId, entry.messages.length, "ended").catch((error: unknown) => {
+        log(`routing: announcing a dropped buffer failed: ${String(error)}`);
+      });
+    }
+    if (entries.length > 0) {
+      gate.restore(
+        kept.map(({ entry }) => entry),
+        settings.buffers.graceMs,
+      );
+      for (const { record } of kept) {
+        if (options.relays.attached(record.processToken)) gate.deliverRestored(record.sessionId);
+      }
+    }
+  }
 
   return {
     async deliver(message) {
@@ -752,8 +951,15 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
 
     close() {
       // No notice for these drops: the broker is shutting down, and a post from a process on its
-      // way out is one it may not be there to finish. The operator reads the thread either way.
+      // way out is one it may not be there to finish. What was held is in the file, for the next
+      // start to restore.
       gate?.close();
+    },
+
+    relayAttached(processToken) {
+      if (gate === null || simulated) return;
+      const record = options.registry.current(processToken);
+      if (record !== null) gate.deliverRestored(record.sessionId);
     },
   };
 }
