@@ -185,6 +185,12 @@ export type InboundRouter = {
    * that sees them all. A no-op with the gate off. Never throws.
    */
   reconcile: (sessions: readonly SessionRecord[]) => void;
+  /**
+   * Drops every held buffer and its timer, delivering nothing. For the broker stopping: a held
+   * buffer is not a reason to wait, and its timer must not fire into pipes being torn down. A
+   * no-op with the gate off. Never throws.
+   */
+  close: () => void;
 };
 
 /**
@@ -218,6 +224,19 @@ export const ENDED_NOTICE =
 export const UNREACHABLE_NOTICE =
   "This session has no channel connected, so the message was not delivered. It is still running; " +
   "it was started without the relay, or the relay is reconnecting.";
+
+/**
+ * The unreachable notice for what was dropped: the single-message notice above, byte for byte,
+ * for one message, and a count for a held buffer of more, since a dropped buffer loses every
+ * message in it and a notice about one would understate the loss.
+ */
+export function unreachableNotice(count: number): string {
+  if (count === 1) return UNREACHABLE_NOTICE;
+  return (
+    `This session has no channel connected, so ${String(count)} messages were not delivered. It ` +
+    "is still running; it was started without the relay, or the relay is reconnecting."
+  );
+}
 
 /**
  * Posted after a cut message was delivered, so the loss of the tail is never silent. Only the
@@ -300,17 +319,18 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   }
 
   /**
-   * Writes one event down the session's pipe, or tells the thread the session is unreachable.
-   * True when the pipe took it.
+   * Writes one event down the session's pipe, or tells the thread the session is unreachable and
+   * how many messages that cost. True when the pipe took it.
    */
   async function handOver(
     record: SessionRecord,
     threadId: string,
     event: RelayEvent,
+    count: number,
   ): Promise<boolean> {
     if (options.relays.deliver(record.processToken, event)) return true;
     log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
-    await notice(threadId, UNREACHABLE_NOTICE);
+    await notice(threadId, unreachableNotice(count));
     return false;
   }
 
@@ -324,7 +344,8 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     threadId: string,
     delivery: BufferDelivery,
   ): Promise<void> {
-    if (!(await handOver(record, threadId, bufferedEvent(threadId, delivery.messages)))) return;
+    const event = bufferedEvent(threadId, delivery.messages);
+    if (!(await handOver(record, threadId, event, delivery.messages.length))) return;
     if (delivery.messages.length > 1) {
       log(
         `routing: delivered ${String(delivery.messages.length)} buffered messages to session ` +
@@ -337,17 +358,37 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   }
 
   /**
-   * The age cap fired for a thread. The session is looked up again rather than remembered with the
-   * buffer, because it may have ended or been superseded while the buffer waited: a buffer whose
-   * thread no longer has a live session is dropped, which is what `reconcile` does the moment the
-   * registry says so, and this is the same answer for a router nothing reconciles.
+   * Whether a buffer held for `sessionId` in `threadId` still has that session to go to: one that
+   * is live and is the session the thread resolves to now. A session that ended, left the
+   * registry, or handed its thread to its replacement leaves the buffer with nowhere to go, and
+   * it is dropped rather than delivered to whoever holds the thread next.
    */
-  async function expired(threadId: string, delivery: BufferDelivery): Promise<void> {
-    const record = sessionForThread(options.registry.list(), options.threadFor, threadId);
-    if (record === null || record.state === "ended") {
+  function stillHeldFor(
+    records: readonly SessionRecord[],
+    threadId: string,
+    sessionId: string,
+  ): SessionRecord | null {
+    const record = sessionForThread(records, options.threadFor, threadId);
+    if (record === null || record.state === "ended" || record.sessionId !== sessionId) return null;
+    return record;
+  }
+
+  /**
+   * The age cap fired for a thread. The session is looked up again rather than trusted from the
+   * buffer, because it may have ended or been superseded while the buffer waited: `reconcile`
+   * drops such a buffer the moment the registry says so, and this is the same answer for a
+   * router nothing reconciles.
+   */
+  async function expired(
+    threadId: string,
+    sessionId: string,
+    delivery: BufferDelivery,
+  ): Promise<void> {
+    const record = stillHeldFor(options.registry.list(), threadId, sessionId);
+    if (record === null) {
       log(
-        `routing: dropped ${String(delivery.messages.length)} buffered messages, thread ` +
-          `${threadId} has no live session`,
+        `routing: dropped ${String(delivery.messages.length)} buffered messages held for session ` +
+          `${sessionId}, which no longer holds thread ${threadId}`,
       );
       return;
     }
@@ -363,8 +404,8 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
           maxWaitMs: options.responseGate.maxWaitMs,
           // Fire and forget, on the timer's own tick: the delivery never rejects by construction,
           // and the catch is the same backstop the gateway puts behind `deliver`.
-          onAgeCap: (threadId, delivery) => {
-            void expired(threadId, delivery).catch((error: unknown) => {
+          onAgeCap: (threadId, sessionId, delivery) => {
+            void expired(threadId, sessionId, delivery).catch((error: unknown) => {
               log(`routing: delivering a buffer at the age cap failed: ${String(error)}`);
             });
           },
@@ -502,13 +543,12 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       }
 
       if (gate === null) {
-        const delivered = await handOver(record, message.threadId, {
-          type: "message",
-          chatId: message.threadId,
-          text,
-          author: message.author,
-          senderClass,
-        });
+        const delivered = await handOver(
+          record,
+          message.threadId,
+          { type: "message", chatId: message.threadId, text, author: message.author, senderClass },
+          1,
+        );
         if (!delivered) return;
         const deliveredAt = now();
         if (operator) {
@@ -529,25 +569,32 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         const admittedAt = now();
         toInbox((inbox) => inbox.clear(record.sessionId, admittedAt), record.sessionId);
       }
-      const delivery = gate.admit(
+      const deliveries = gate.admit(
         message.threadId,
+        record.sessionId,
         // The text as bounded above and the name as the gateway bounded it: what a delivered line
         // carries is exactly what a delivered message carries, and nothing is sanitized twice.
         { author: message.author, senderClass, text, truncated },
         { mentionsBot: message.mentionsBot, repliesToBot: message.repliesToBot },
       );
-      // Held. Nothing is announced, a cut included: the announcement belongs to a delivery, and
-      // this one has not happened yet.
-      if (delivery === null) return;
-      await handOverBuffer(record, message.threadId, delivery);
+      // Held, when there are none. Nothing is announced then, a cut included: the announcement
+      // belongs to a delivery, and this one has not happened yet. Two, when this message pushed
+      // the held buffer past the event budget and then delivered on its own: in order, so the
+      // session reads the thread in the order it was written.
+      for (const delivery of deliveries) {
+        await handOverBuffer(record, message.threadId, delivery);
+      }
     },
 
     reconcile(sessions) {
       if (gate === null) return;
-      for (const threadId of gate.threads()) {
-        const record = sessionForThread(sessions, options.threadFor, threadId);
-        if (record === null || record.state === "ended") gate.clear(threadId);
+      for (const { threadId, sessionId } of gate.held()) {
+        if (stillHeldFor(sessions, threadId, sessionId) === null) gate.clear(threadId);
       }
+    },
+
+    close() {
+      gate?.close();
     },
   };
 }

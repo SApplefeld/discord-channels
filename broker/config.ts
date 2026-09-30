@@ -172,9 +172,8 @@ export type BrokerConfig = {
   /**
    * Whether a thread's messages are held and delivered to its session together. `off` delivers
    * each admitted message at once, which is what a host with one account has always had. `shadow`
-   * delivers at once as well, and is where the gate's judgement is journalled before it decides
-   * anything. `live` holds each thread's messages until one mentions the bot, replies to one of
-   * its messages, or the buffer reaches a cap below.
+   * delivers at once as well. `live` holds each thread's messages until one mentions the bot,
+   * replies to one of its messages, or the buffer reaches a cap below.
    */
   responseGate: "off" | "shadow" | "live";
   /** A held buffer delivers on reaching this many messages. */

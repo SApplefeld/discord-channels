@@ -30,7 +30,9 @@ import {
   TRUNCATED_NOTICE,
   UNREACHABLE_NOTICE,
   createInboundRouter,
+  unreachableNotice,
 } from "./inbound.ts";
+import { MAX_EVENT_UNITS } from "./response-gate.ts";
 import type { InboundInbox, InboundMessage, InboundRouter } from "./inbound.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
@@ -79,14 +81,24 @@ function watchedDesk(options: { resolves?: boolean } = {}) {
   return { desk, resolved, unknown, requested };
 }
 
-function announce(registry: Registry, sessionId: string, processToken = TOKEN): void {
+/**
+ * Announces a session. `clear` is how a replacement under a token a live session already holds is
+ * announced, the way a /clear does: a `startup` under a held token is a subprocess and registers
+ * nothing.
+ */
+function announce(
+  registry: Registry,
+  sessionId: string,
+  processToken = TOKEN,
+  source: "startup" | "clear" = "startup",
+): void {
   registry.apply({
     event: "SessionStart",
     processToken,
     sessionName: "neo-warden",
     lineage: null,
     sessionId,
-    source: "startup",
+    source,
     toolName: null,
     toolInput: null,
     transcriptPath: null,
@@ -213,6 +225,9 @@ function harness(
   const permissions = watchedDesk({ resolves: options.verdictResolves });
   const typed: string[] = [];
   const clock = timers();
+  // The thread bindings as the surface holds them, mutable so a test can move a thread to the
+  // session that takes it over.
+  const threads = new Map<string, string>([["session-a", THREAD]]);
   router = createInboundRouter({
     registry,
     relays,
@@ -229,7 +244,7 @@ function harness(
         return false;
       },
     },
-    threadFor: (sessionId) => (sessionId === "session-a" ? THREAD : null),
+    threadFor: (sessionId) => threads.get(sessionId) ?? null,
     writer: createThreadWriter({ messenger, now }),
     ...(options.inbox === undefined ? {} : { inbox: options.inbox }),
     ...(options.log === undefined ? {} : { log: options.log }),
@@ -256,6 +271,7 @@ function harness(
     verdicts: permissions.resolved,
     unknownVerdicts: permissions.unknown,
     scheduled: clock.scheduled,
+    threads,
   };
 }
 
@@ -457,6 +473,43 @@ test("the worst-case inbound line fits under the relay's stream buffer cap", () 
     senderClass: "participant",
   };
   assert.ok(Buffer.byteLength(JSON.stringify(event), "utf8") < MAX_LINE_BYTES);
+});
+
+test("the gate's event budget is the relay's stream line cap", () => {
+  // Two processes, one number. The gate measures its deliveries against a constant of its own
+  // because broker runtime code does not import the relay's; this is what keeps the two the same.
+  assert.equal(MAX_EVENT_UNITS, MAX_LINE_BYTES);
+});
+
+test("the worst-case buffered event fits under the relay's stream line cap, and no message is lost to it", async () => {
+  // The same relation for a buffer the response gate delivers. The relay compares the UTF-16
+  // length of its decoded line against the cap, so the heaviest message in those units is the one
+  // above: a lone surrogate per code point, escaped to six units each, under a name of the same.
+  // A buffer at the size cap of such messages is several times the cap, so the gate has to deliver
+  // early on size; what is pinned is that every event it writes fits, and that the early
+  // deliveries between them carry every message admitted.
+  const loneSurrogate = String.fromCharCode(0xd800);
+  const author = loneSurrogate.repeat(MAX_AUTHOR_NAME_LENGTH);
+  let now = 1_000;
+  const { router, sent, scheduled } = harness({
+    gate: { maxMessages: MAX_INBOUND_PER_WINDOW },
+    now: () => now,
+  });
+  for (let index = 0; index < MAX_INBOUND_PER_WINDOW; index += 1) {
+    now += 10;
+    await router.deliver(message({ author, text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH) }));
+  }
+  // Whatever is still held goes on its timer.
+  for (const timer of scheduled) if (!timer.cleared) timer.fire();
+  await flush();
+
+  assert.ok(sent.length > 0);
+  for (const event of sent) {
+    const units = JSON.stringify(event).length + 1;
+    assert.ok(units <= MAX_LINE_BYTES, `an event of ${String(units)} units would be dropped by the relay`);
+  }
+  const carried = sent.reduce((count, event) => count + ((event as { buffered?: number }).buffered ?? 1), 0);
+  assert.equal(carried, MAX_INBOUND_PER_WINDOW, "every admitted message reached the pipe");
 });
 
 test("a message with no text at all is dropped without a notice", async () => {
@@ -1086,6 +1139,42 @@ test("live: a session's end drops its thread's buffer and its timer, delivering 
   assert.equal(scheduled.length, 1, "no new buffer opened");
 });
 
+test("live: a buffer held for a session is never delivered to the session that takes over its thread", async () => {
+  // The surface rebinds a thread from a session to its replacement of the same lineage. A buffer
+  // is held for the session it was admitted to, so when that session ends the buffer goes with it
+  // even though the thread now resolves to a live session again.
+  const { registry, router, sent, scheduled, threads } = harness({ gate: {} });
+  await router.deliver(message({ text: "for session a" }));
+  assert.equal(scheduled.length, 1);
+
+  // The thread moves to the replacement, and the replacement is announced under the same pipe, which
+  // ends the session the buffer was held for.
+  threads.set("session-b", THREAD);
+  threads.delete("session-a");
+  announce(registry, "session-b", TOKEN, "clear");
+  assert.equal(registry.list().find((record) => record.sessionId === "session-a")?.state, "ended");
+  assert.equal(scheduled[0].cleared, true, "the buffer went with its session");
+
+  scheduled[0].fire();
+  await flush();
+  assert.deepEqual(sent, [], "nothing the ended session's buffer held reaches its replacement");
+});
+
+test("live: closing the router drops every held buffer and timer, and a timer fired after it delivers nothing", async () => {
+  // The broker stopping: a held buffer is not a reason to wait, and its timer must not fire into
+  // pipes being torn down.
+  const { router, sent, notices, scheduled } = harness({ gate: {} });
+  await router.deliver(message({ text: "one" }));
+  await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  router.close();
+  assert.equal(scheduled[0].cleared, true);
+
+  scheduled[0].fire();
+  await flush();
+  assert.deepEqual(sent, []);
+  assert.deepEqual(notices, [], "nothing delivered, nothing posted, the cut included");
+});
+
 test("with the gate off or in shadow, the same messages deliver at once as the plain events they always were", async () => {
   // The no-change pin, in both modes that deliver at once. Shadow's simulated buffer is not this
   // section's, so today shadow is off on the wire.
@@ -1164,7 +1253,11 @@ test("live: a buffer whose delivery finds no relay is dropped with the unreachab
   await router.deliver(message({ text: "one" }));
   await router.deliver(message({ text: "two", mentionsBot: true }));
   assert.equal(sent.length, 0);
-  assert.deepEqual(notices, [{ threadId: THREAD, text: UNREACHABLE_NOTICE }]);
+  // The notice counts what the drop cost, since a buffer of two lost two messages, and the
+  // single-message notice is the one the ungated path has always posted.
+  assert.deepEqual(notices, [{ threadId: THREAD, text: unreachableNotice(2) }]);
+  assert.match(notices[0].text, /\b2 messages were not delivered\b/);
+  assert.equal(unreachableNotice(1), UNREACHABLE_NOTICE);
   assert.equal(scheduled[0].cleared, true);
 
   // The relay comes back. The dropped buffer does not: the next mention delivers itself alone.

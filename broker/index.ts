@@ -1621,9 +1621,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       log: note,
     });
     inbound = router;
-    if (config.responseGate !== "off") {
+    // Live alone holds anything. Shadow delivers every message at once today, so a line saying it
+    // holds a buffer would be a line about a mode that does not exist yet.
+    if (config.responseGate === "live") {
       note(
-        `broker: the response gate is ${config.responseGate}, a thread's buffer holds at most ` +
+        `broker: the response gate is live, a thread's buffer holds at most ` +
           `${String(config.responseGateMaxMessages)} messages for at most ` +
           `${String(config.responseGateMaxWaitMs)}ms`,
       );
@@ -1838,6 +1840,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     if (cardDrain !== null) await cardDrain;
     if (boardDrain !== null) await boardDrain;
     if (inboxDrain !== null) await inboxDrain;
+    // A held buffer goes down before the pipes it would be written to: its timer must not fire
+    // into a pipe being torn down, and a broker asked to stop does not wait on an age cap. What
+    // was held is lost, as it would be to a crash; the operator reads the thread either way.
+    inbound?.close();
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();
