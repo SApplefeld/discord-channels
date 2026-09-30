@@ -39,6 +39,7 @@ Operator decisions:
 
 - **Section 3, mirror-off read bounds.** In a mirror-off transcript, the reader acts only on a `system` line with subtype `api_error` and on the queued-message line named below, uses only their structured fields, and fails closed on any line it cannot parse. No text from any mirror-off line is ever published.
 - **Section 3, mirror-off pickup.** The mirror-off reader also reads the transcript line that records a queued message being injected mid-turn, using only its type and timestamp, and calls Section 1's pickup entry point with that timestamp. Acceptance: a mirror-off session's message delivered mid-turn moves from 📨 to 👀 when that line appears, and none of the line's text reaches Discord.
+- **Section 3, reader coverage.** The status reader runs for every session whose transcript path the broker has learned, whether or not the interim tailer is built on this host. With `CHANNEL_INTERIM_MIRROR` off or the host-wide mirror off, no tailer exists, and the mid-turn pickup of a message injected into a running turn comes only from this reader.
 - **Section 3, added acceptance.** A test feeds a mirror-off session's transcript holding assistant text, a user prompt and an `api_error` line. Only the fixed-wording notice reaches Discord.
 
 ## Sections of Work
@@ -107,4 +108,12 @@ The error notices need the broker to read one harness line type from sessions th
 
 ## Chapters
 
-_None yet._
+### Interim board 1 - 2026-09-30
+
+Header change: `Status:` was set to `In Progress` when this run started (it arrived reading Approved), a deliberate change and not drift.
+
+- **Section 1, Receipt Reactions: fix round 3 in flight.** First green d2cbbb8; fix round 1 bb3c3ec; fix round 2 f0edc64; all pushed to feat/session-activity-signals. Review rounds 1 to 3 ran the full roster (adversarial, blind, security, performance) at opus, high effort, via Workflow, each re-raised by a surviving correctness Critical. Rounds 1 and 2 surfaced Criticals of one class (reaction rate-limit pacing), round 3 one of another (turn attribution of the answered stage), so fix round 3 is escalated to implementer-fable, brief at `.kit/scratch/session-activity/s1-fix3-brief.md`. The review-round backstop fires at the fifth round's adjudication.
+- **Live dispatch:** implementer-fable, asked to key `answered` on the reply's arrival instant and each entry's pickup instant, widen the pacing wait to the whole discord.js offset window, test the Stop-mirror answered path, and clear seven Minors.
+- **Gate baseline:** targeted lane (8 broker test files) 679 tests, 679 pass, 0 fail, exit 0 on f0edc64, main checkout, 2026-09-30, no foreign runner seen. Whole-suite baseline at a5257e2: 2211 tests, 2210 pass, 0 fail, 1 skipped.
+- **Rulings since start:** the message-id format finding was refused by the scope adjudicator (fable), since the threat model already treats a writer of that file as holding the bot token (`docs/security-model.md` T4 lines 57-62, 1294, 1315-1318). The UserPromptSubmit instant, stamped at hook arrival rather than turn open, is an accepted residual of one hook round trip. The channel-origin queued line is written at injection, not enqueue (70 of 129 such lines follow a tool's hook result or tool result, and enqueue has its own `queue-operation` line). A Section 3 amendment on reader coverage was added.
+- **Next per section:** Section 1: verify fix round 3, commit, review round 4. Section 2: dispatch from `.kit/scratch/session-activity/s2-brief.md` after Section 1 closes. Section 3: brief from `.kit/scratch/session-activity/section-3-brief-draft.md` plus the amendments.
