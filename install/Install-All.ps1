@@ -265,7 +265,8 @@ function Resolve-ChannelInstallIdentity {
     $sendersFrom = '-Senders'
     $sendersRemedy = ''
     if (-not $Senders) {
-        $Senders = & $read 'CHANNEL_SENDERS'
+        # Trimmed, so a whitespace-only line reads as unset, as the broker's own loader reads it.
+        $Senders = "$(& $read 'CHANNEL_SENDERS')".Trim()
         $sendersFrom = "CHANNEL_SENDERS in $($EnvFile)"
         $sendersRemedy = ' Fix that line, or pass -Senders to override the file.'
     }

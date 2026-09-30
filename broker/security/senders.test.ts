@@ -127,6 +127,16 @@ test("a senders entry with a malformed id or an unknown class is refused, naming
   }
 });
 
+test("a roster refusal never carries a secret value set beside it", () => {
+  // Built at run time so no token-formatted literal sits in the tree for a secret scanner to flag.
+  const token = ["not", "a", "real", "token"].join("-") + "-".padEnd(48, "x");
+  const env = { CHANNEL_DISCORD_TOKEN: token, CHANNEL_SENDERS: `${OPERATOR}:operator,${PARTICIPANT}:admin` };
+  assert.throws(
+    () => loadSenderGate(env),
+    (error: Error) => !error.message.includes(token) && error.message.includes(`${PARTICIPANT}:admin`),
+  );
+});
+
 test("an id given two classes across the list or across both variables is refused", () => {
   assert.throws(
     () =>

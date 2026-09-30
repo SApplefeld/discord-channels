@@ -1074,7 +1074,7 @@ refused by name rather than guessed at.
 | `CHANNEL_DISCORD_TOKEN_FILE` | state root | The bot token file |
 | `CHANNEL_DISCORD_CHANNEL` | unset | The channel threads are opened in |
 | `CHANNEL_ALLOWED_USER_ID` | unset | One Discord user allowed to steer this host, as an operator |
-| `CHANNEL_SENDERS` | unset | The host's roster, comma-separated `<id>:operator` and `<id>:participant` entries, admitted alongside `CHANNEL_ALLOWED_USER_ID` |
+| `CHANNEL_SENDERS` | unset | The host's roster, comma-separated `<id>:operator` and `<id>:participant` entries, admitted alongside `CHANNEL_ALLOWED_USER_ID`. An install run keeps a key it was not given, so dropping an ID is an edit to `broker.env` and a restart |
 | `CHANNEL_DISCORD_REFRESH_MS` | 5 s | How often the surfaces are reconciled |
 | `CHANNEL_DISCORD_DWELL_MS` | 60 s | How long a state must hold before a rename is spent on it |
 | `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working` |

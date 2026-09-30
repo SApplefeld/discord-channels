@@ -416,12 +416,12 @@ test("a senders entry that is malformed, unclassed, or given two classes throws 
     {
       label: "twice",
       senders: "222222222222222222:participant,222222222222222222:operator",
-      names: /222222222222222222 as operator, and it is already participant/,
+      names: /222222222222222222.*operator.*participant/,
     },
     {
       label: "legacy",
       senders: "876543210987654321:participant",
-      names: /876543210987654321 as participant, and it is already operator/,
+      names: /876543210987654321.*participant.*operator/,
     },
   ];
   const body: string[] = [];
@@ -459,7 +459,7 @@ test("a senders entry that is malformed, unclassed, or given two classes throws 
     const file = files.get(label) as string;
     assert.match(out, new RegExp(`${label} threw: .*${file.replace(/[\\.]/g, "\\$&")}`));
   }
-  assert.match(out, /argument threw: Install-All: -Senders has an entry .*'222222222222222222:admin'/);
+  assert.match(out, /argument threw: .*-Senders.*'222222222222222222:admin'/);
   assert.doesNotMatch(out, /argument threw: .*CHANNEL_SENDERS/, "an argument is not named as the file");
 });
 

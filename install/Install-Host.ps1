@@ -34,7 +34,9 @@ refuses to start without an operator, so this or an operator in -Senders is requ
 The host's roster of Discord users, as a comma-separated list of <snowflake>:operator and
 <snowflake>:participant entries. An operator's word is the host owner's; a participant may talk to a
 session and holds no more than that. Stored as CHANNEL_SENDERS beside CHANNEL_ALLOWED_USER_ID, and
-the broker admits the union of the two. Optional when -AllowedUserId is given.
+the broker admits the union of the two. Optional when -AllowedUserId is given. A run that omits
+either key keeps the value the last install wrote for it, so dropping an ID from the roster, or
+retiring CHANNEL_ALLOWED_USER_ID, is an edit to broker.env followed by a broker restart.
 
 .PARAMETER BotToken
 The bot token, as a SecureString rather than plain text: a plain-text parameter lands in
@@ -119,7 +121,8 @@ param(
 . (Join-Path $PSScriptRoot 'Install-Functions.ps1')
 
 # Before anything is written or prompted for: a config with no operator is one the broker refuses
-# to start on, and this is the last point where that is a message rather than a dead service.
+# to start on. This checks only that an operator is named; an ID given two classes across the two
+# keys is caught by Install-All.ps1's resolver and by the broker's own startup check.
 $senderEntries = if ($Senders) { @($Senders -split ',') } else { @() }
 if (-not $AllowedUserId -and -not ($senderEntries -clike '*:operator')) {
     throw "Install-Host: pass -AllowedUserId, or a -Senders list naming at least one " +
