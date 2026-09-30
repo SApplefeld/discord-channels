@@ -178,6 +178,11 @@ test("a message from a broker that names no author is still delivered, with no a
       `${JSON.stringify({ type: "message", chatId: THREAD, text: "odd shape", author: 7, senderClass: null })}
 `,
     );
+    // A class the roster does not have is absent too, so the envelope never names a third one.
+    response.write(
+      `${JSON.stringify({ type: "message", chatId: THREAD, text: "odd class", author: "Cy", senderClass: "admin" })}
+`,
+    );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => {
@@ -192,10 +197,11 @@ test("a message from a broker that names no author is still delivered, with no a
     onMessage: (text, _chatId, attribution) => received.push({ text, attribution }),
   }));
   client.start();
-  await until(() => received.length > 1);
+  await until(() => received.length > 2);
   assert.deepEqual(received, [
     { text: "old shape", attribution: {} },
     { text: "odd shape", attribution: {} },
+    { text: "odd class", attribution: { author: "Cy" } },
   ]);
 });
 

@@ -289,15 +289,18 @@ const UNSAFE_IN_AUTHOR = /["<>[\]\n\u0085\u2028\u2029]/g;
  * harness's own framing. Still attacker-chosen text: this bounds where it can reach, not what it
  * says.
  *
- * The invisible class goes first, through the line-preserving strip, so a line break survives to
- * be replaced by a space rather than vanishing and joining two words. The replacement runs before
- * the cut so every character counted is one that is carried, and the cut is on code points so it
- * never leaves half an astral character. A result can be blank, which is the caller's to fall back
- * from.
+ * A tab becomes a space first, since the invisible class would otherwise remove it and join two
+ * words. Compatibility folding (NFKC) comes next, so a fullwidth or small-form bracket, quote or
+ * angle becomes the ASCII character it draws as and meets the replacement below. The invisible
+ * class then goes through the line-preserving strip, so a line break survives to be replaced by a
+ * space rather than vanishing. The replacement runs before the cut so every character counted is
+ * one that is carried, the cut is on code points so it never leaves half an astral character, and
+ * the edges are trimmed so a replaced character there is not carried as padding. A result can be
+ * empty, which is the caller's to fall back from.
  */
 export function boundedAuthor(value: string): string {
-  return sliceCodePoints(
-    withoutInvisible(value).replace(UNSAFE_IN_AUTHOR, " "),
-    MAX_AUTHOR_NAME_LENGTH,
-  );
+  const replaced = withoutInvisible(value.replace(/\t/g, " ").normalize("NFKC"))
+    .replace(UNSAFE_IN_AUTHOR, " ")
+    .trim();
+  return sliceCodePoints(replaced, MAX_AUTHOR_NAME_LENGTH).trimEnd();
 }

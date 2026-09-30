@@ -396,5 +396,5 @@ test("a name that bounds to nothing falls to the next, and with none left to the
 test("the name is bounded on its way out of the gateway", () => {
   const nickname = `<b>"${String.fromCharCode(0x0a)}${"n".repeat(40)}`;
   const name = authorName({ id: OPERATOR, nickname, globalName: null, username: "user" });
-  assert.equal(name, ` b   ${"n".repeat(27)}`);
+  assert.equal(name, `b   ${"n".repeat(28)}`);
 });

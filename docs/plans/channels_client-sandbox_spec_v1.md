@@ -36,6 +36,10 @@ The response gate is a new module in front of `relays.deliver`, with a per-host 
 
 The contract sweep for this plan ran over the repository on 2026-09-30 and returned 74 surfaces under eight headings: the gate and its constructor, loader and tests; the delivery event shape from gateway to relay notification; the operator-keyed paths; the mention writes and their transport; the install scripts and their tests; the docs; the test files pinning each; and the inbox judge. Every surface it returned is in a section's Files in scope below or under Out of Scope.
 
+## Standing Brief Amendments
+
+- Section 7: the security model states that a delivered message's `author` attribute is a label, set by the account itself or by any server member holding Manage Nicknames, and that it decides nothing; every consuming path keys on the sender's class, never on the name.
+
 ## Sections of Work
 
 ### 1. The sender roster with classes
@@ -58,7 +62,7 @@ Acceptance:
 - The relay wire event for a delivered message is `{ type: "message", chatId, text, author, senderClass }`, and a client reading an older broker's event without the two fields still delivers.
 - The MCP notification's `meta` carries `chat_id`, `author` and `sender_class`; section 5 adds `buffered` beside them, so the pin here is that those three are present, not that no other key is.
 - A display name of 40 code points carrying a `<`, a `"` and a newline arrives as 32 code points with those characters replaced.
-Files in scope: `broker/routing/gateway.ts` (the message and interaction facts), `broker/routing/inbound.ts` (the `InboundMessage` type and the `deliver` call), `broker/routing/relays.ts` (the wire union), `relay/broker.ts` (the parse and `InboundHandler`), `relay/index.ts` (the `onMessage` wiring that calls `channelNotification`), `relay/protocol.ts` (`channelNotification` and its meta), `broker/sanitize.ts` where the name bound lands, and the test files `broker/routing/inbound.test.ts`, `broker/routing/relays.test.ts`, `broker/routing/http.test.ts`, `broker/tail.test.ts`, `relay/broker.test.ts`, `relay/index.test.ts` wherever they pin the two-field shape.
+Files in scope: `broker/routing/gateway.ts` (the message and interaction facts), `broker/routing/gateway.test.ts`, `broker/sanitize.test.ts` and `relay/protocol.test.ts` (added in Chapter 2), `broker/routing/inbound.ts` (the `InboundMessage` type and the `deliver` call), `broker/routing/relays.ts` (the wire union), `relay/broker.ts` (the parse and `InboundHandler`), `relay/index.ts` (the `onMessage` wiring that calls `channelNotification`), `relay/protocol.ts` (`channelNotification` and its meta), `broker/sanitize.ts` where the name bound lands, and the test files `broker/routing/inbound.test.ts`, `broker/routing/relays.test.ts`, `broker/routing/http.test.ts`, `broker/tail.test.ts`, `relay/broker.test.ts`, `relay/index.test.ts` wherever they pin the two-field shape.
 Tests: the wire event and the notification carry both fields; the name bound holds each replaced character and the cut; an event without the fields still delivers.
 
 ### 3. Operator-only consumption and mentions to every operator
@@ -189,6 +193,41 @@ Gate: targeted lane (`node --test broker/security/senders.test.ts install/Instal
 Next: 2. The author and class on the delivered event
 Commit Model: Branch-and-PR
 Delta: moment 2026-09-30, worktree at a59fd6b plus close-pass edits, SCOTT-CLAUDE, no contention on this read.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-09-30
+Completed: 2. The author and class on the delivered event
+Implemented By: implementer-opus; the review fix round in the main session
+Metrics: review rounds 1, closed major-closed; provenance 3 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 2 findings, 0 fixed in this section, 0 deferred, 0 refused (both carried by sections 3, 4 and 7 of this same delivery, as in Chapter 1); NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises:
+- section open: the gateway reads the author's display name, the broker sanitizes it (invisible characters stripped, 32 code points, quote/angle/square brackets/line breaks to spaces), and the inbound message, relay wire event and MCP notification meta carry author and sender_class; serves Goal sentence 1 ("names its author and that author's class") and section 2's three acceptance bullets; adds no mechanism beyond the sanitizer the section names; size roughly 60-100 lines plus test updates across seven test files; not building it leaves the persona plan with no class to read.
+- fix round: `boundedAuthor` folds compatibility forms (NFKC) and turns a tab into a space before the strip, and trims its result; serves section 2's "can never read as a plugin label"; adds no mechanism, as it strengthens the named sanitizer; 6 lines; without it a fullwidth `［plugin:relay］` rides the envelope as itself.
+- fix round: the relay forwards `sender_class` only when it is `operator` or `participant`; serves Goal sentence 1 (two classes); adds no mechanism; 3 lines; without it a third value could reach the persona plugin's parser.
+- The interaction facts carry no display name: nothing in this section or section 3 reads a presser's name.
+- A name that bounds to nothing falls to the next source and finally to the sender id, so the event always names someone.
+- The name sanitizer does not reuse `bridge/protocol.ts`'s `safeInMeta`, because `broker/sanitize.ts` must import nothing (`import-hygiene.test.ts`). NFKC, a built-in, closes the look-alike gap `safeInMeta` closes with its resolver.
+- Standing Brief Amendment adopted for section 7: the author attribute is a label that any Manage Nicknames holder can set, and it decides nothing.
+Failed approaches: none
+Assumptions:
+- assumed 2026-09-30 (default, section 2): an older broker's event without `author`/`senderClass` delivers and the relay leaves those keys out of the notification meta rather than sending them empty; reversal: send empty strings.
+- assumed 2026-09-30 (default, section 2): sanitize order is strip, replace, cut, as the section text lists; the fix round added a fold and a trim around it; reversal: reorder in `boundedAuthor`.
+- assumed 2026-09-30 (the plan's Assumptions list, first entry, section 2): Claude Code renders meta entries as double-quoted attributes, so an apostrophe and an ampersand in a name are carried as themselves; reversal: add both to the replacement set.
+Review Findings:
+- `review: adversarial + blind + security at fable, Agent tool` (capacity reading: `fable capacity: scoped 6%, 7d 8%, 5h 44% (account 5, fetched 106s ago) -> dispatch`).
+- Adversarial Major (spec-traceable, section 2 "never read as a plugin label"): fullwidth and small-form brackets and quotes passed the name bound. Fixed with NFKC folding and pinned by a new test that saw red first.
+- Blind Major (orchestrator-traced to section 3's acceptance): a participant reaches the verdict and typed-answer paths. Carried by section 3 of this delivery, as in Chapter 1.
+- Blind Major [claim] (orchestrator-traced to section 4's acceptance): the relay INSTRUCTIONS literal speaks of one account. Carried by section 4.
+- Security Majors (advisory): the same two. Disposed as in Chapter 1: sections 3, 4 and 7 land in the same pull request.
+- Minors fixed in the fix round: the untrimmed edges (adversarial and blind), a tab joining two words (blind), and a non-roster `senderClass` forwarded by the relay (blind and security).
+- Minors left with the reason: the relay does not re-bound the author, since the broker is trusted over the token-gated pipe and has already bounded it. The apostrophe stays, since the envelope's attributes are double-quoted per the plan's first Assumption. The id fallback is practically unreachable and ids are not secrets. The nickname set by a Manage Nicknames holder is covered by the section 7 amendment. The `npm audit` advisories are already on `docs/backlog.md`.
+- The fix-round delta adds no outward action and no module, so it owes no round. It had an author re-read: NFKC runs before the replacement and the cut, so it cannot reintroduce an unsafe character.
+Stamps: adjudicated 4 (operator tier, read in the last hour by other sessions), stamped 0; none bore on this section.
+Gate: targeted lane (`node --test broker/routing/inbound.test.ts broker/routing/relays.test.ts broker/routing/http.test.ts broker/tail.test.ts relay/broker.test.ts relay/index.test.ts relay/protocol.test.ts broker/sanitize.test.ts broker/routing/gateway.test.ts broker/routing/interactions.test.ts broker/index.test.ts import-hygiene.test.ts`) 419 tests / 419 pass / 0 fail, exit 0, 13.6 s; lint exit 0. Moment: 2026-09-30, worktree at a1015d4 plus the fix round, SCOTT-CLAUDE. Contention: three foreign `node --test` processes (pids 8668, 8620, 15108) were live at the poll just before the run. Test delta: 12 added, 0 retired, 1 edited. Added: 3 in `broker/sanitize.test.ts` for the bound, 1 for look-alikes, 4 in `broker/routing/gateway.test.ts` for name precedence and bound, 1 in `broker/routing/inbound.test.ts` for class per sender, 1 in `relay/broker.test.ts` for the older-broker event (extended in the fix round with a non-roster class), and 2 in `relay/protocol.test.ts` for meta keys present and absent. Edited: the gateway bound pin, now expecting the trimmed name. Wire-shape literals in four test files were updated to the new required fields, a contract change bullet 1 names. Spawning tests: none added.
+Next: 3. Operator-only consumption and mentions to every operator
+Commit Model: Branch-and-PR
+Delta: moment 2026-09-30, SCOTT-CLAUDE.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```

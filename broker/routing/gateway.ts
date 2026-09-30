@@ -121,7 +121,7 @@ export function authorName(author: {
   for (const name of [author.nickname, author.globalName, author.username]) {
     if (name === null) continue;
     const bounded = boundedAuthor(name);
-    if (bounded.trim() !== "") return bounded;
+    if (bounded !== "") return bounded;
   }
   return author.id;
 }

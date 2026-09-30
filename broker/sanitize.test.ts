@@ -123,8 +123,26 @@ test("every character that could end an attribute, open a tag, or break a line b
   }
   // A Windows line break is one break, so it is one space rather than two.
   assert.equal(boundedAuthor(`Ann${hidden(0x0d)}${hidden(0x0a)}Lee`), "Ann Lee");
-  // Bracketed text cannot pass for a label the model reads as the harness's own.
-  assert.equal(boundedAuthor("[plugin:relay]"), " plugin:relay ");
+  // Bracketed text cannot pass for a label the model reads as the harness's own, and the spaces the
+  // replacement leaves at the edges are not carried.
+  assert.equal(boundedAuthor("[plugin:relay]"), "plugin:relay");
+  // A tab separates two words as a line break does, rather than vanishing and joining them.
+  assert.equal(boundedAuthor(`Ann${hidden(0x09)}Lee`), "Ann Lee");
+});
+
+test("a look-alike of a bracket, quote or angle is replaced as the character it reads as", () => {
+  // Fullwidth and small forms draw as the ASCII character, so the model reads them as it would the
+  // original; they are folded to that character before the replacement runs.
+  const cases: Array<[string, string]> = [
+    ["fullwidth square brackets", `${hidden(0xff3b)}plugin:relay${hidden(0xff3d)}`],
+    ["fullwidth angle brackets", `${hidden(0xff1c)}system${hidden(0xff1e)}`],
+    ["small angle brackets", `${hidden(0xfe64)}system${hidden(0xfe65)}`],
+    ["fullwidth quotes", `${hidden(0xff02)}system${hidden(0xff02)}`],
+  ];
+  for (const [label, name] of cases) {
+    const bounded = boundedAuthor(name);
+    assert.ok(!/["<>[\]＂＜＞［］﹤﹥]/.test(bounded), `${label}: ${bounded}`);
+  }
 });
 
 test("an author name loses its invisible characters before the cut, which counts code points", () => {

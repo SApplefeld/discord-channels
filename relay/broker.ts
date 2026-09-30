@@ -206,10 +206,13 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
     if (fields.type !== "message") return;
     if (typeof fields.text !== "string" || typeof fields.chatId !== "string") return;
     // Carried when present and left out when not, so an older broker's event, which names no
-    // author, is still delivered rather than refused.
+    // author, is still delivered rather than refused. A class the roster does not have is left out
+    // too, so the envelope never names a third one.
     const attribution: Attribution = {};
     if (typeof fields.author === "string") attribution.author = fields.author;
-    if (typeof fields.senderClass === "string") attribution.senderClass = fields.senderClass;
+    if (fields.senderClass === "operator" || fields.senderClass === "participant") {
+      attribution.senderClass = fields.senderClass;
+    }
     options.onMessage(fields.text, fields.chatId, attribution);
   }
 
