@@ -11,7 +11,7 @@
 import { withoutInvisible } from "../sanitize.ts";
 import { parseVerdict } from "../security/permission.ts";
 import type { PermissionDesk } from "../security/permission.ts";
-import type { SenderGate } from "../security/senders.ts";
+import type { SenderClass, SenderGate } from "../security/senders.ts";
 import type { Registry, SessionRecord } from "../registry.ts";
 import type { RelayHub } from "./relays.ts";
 import type { ThreadWriter } from "./writer.ts";
@@ -33,6 +33,12 @@ export type InboundMessage = {
   messageId: string;
   /** The author's Discord user ID. The allowlist over it is the only authority for anything here. */
   senderId: string;
+  /**
+   * The author's display name, already bounded by the gateway's `authorName` for the attribute it
+   * rides on the delivered event. A label for the reader and never an authority: nothing here
+   * decides anything on it.
+   */
+  author: string;
   /** True when this bot wrote it. Its own cards, replies, and notices all come back over the gateway. */
   fromBot: boolean;
   text: string;
@@ -232,7 +238,8 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // Everything below this line is what one Discord account is trusted to do. Gating on the
       // thread instead would make access to the room the credential, and every member of the
       // channel could steer a session and approve its tool calls.
-      if (!options.gate.allows(message.senderId)) {
+      const senderClass: SenderClass | null = options.gate.classOf(message.senderId);
+      if (senderClass === null) {
         log(`routing: refused a message from ${message.senderId}, who is not the allowed sender`);
         return;
       }
@@ -327,6 +334,8 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         type: "message",
         chatId: message.threadId,
         text,
+        author: message.author,
+        senderClass,
       });
       if (delivered) {
         const deliveredAt = now();

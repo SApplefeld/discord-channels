@@ -27,11 +27,23 @@ export type ChannelNotification = {
  * escaping inside it, so anything added here would be double-escaped, and anything said *about* the
  * message would be the relay editorializing data it has no standing to interpret. A message from
  * Discord is data, and the only thing this does with it is carry it.
+ *
+ * The author and their class ride `meta` as `author` and `sender_class`, so they render as
+ * attributes on the envelope beside `chat_id`. The broker has already bounded the name for that
+ * position. Either one the broker did not send is left out rather than sent empty, since an empty
+ * attribute would claim an author the event never named.
  */
-export function channelNotification(text: string, chatId: string): ChannelNotification {
+export function channelNotification(
+  text: string,
+  chatId: string,
+  attribution: { author?: string; senderClass?: string } = {},
+): ChannelNotification {
+  const meta: Record<string, string> = { chat_id: chatId };
+  if (attribution.author !== undefined) meta.author = attribution.author;
+  if (attribution.senderClass !== undefined) meta.sender_class = attribution.senderClass;
   return {
     method: CHANNEL_NOTIFICATION_METHOD,
-    params: { content: text, meta: { chat_id: chatId } },
+    params: { content: text, meta },
   };
 }
 

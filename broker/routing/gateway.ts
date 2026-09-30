@@ -14,6 +14,7 @@
 // the library's own.
 import { Client, Events, GatewayIntentBits, MessageType } from "discord.js";
 import { describe } from "../discord/rest.ts";
+import { boundedAuthor } from "../sanitize.ts";
 import type { CallOutcome } from "../discord/transport.ts";
 import type { InboundMessage } from "./inbound.ts";
 import type { InboundInteraction } from "./interactions.ts";
@@ -103,6 +104,26 @@ export function classifyMessage(facts: MessageFacts, channelId: string): Message
   // is drawn by Discord from the new name, not written by the operator.
   if (facts.type === MessageType.ChannelNameChange) return "drop";
   return "deliver";
+}
+
+/**
+ * The name a delivered message is attributed to: the member nickname, else the global name, else the
+ * username, each bounded by `boundedAuthor` before it is weighed. A name that bounds to nothing a
+ * person could read falls to the next, and with none left the author's ID stands in, so the event
+ * always names someone.
+ */
+export function authorName(author: {
+  id: string;
+  nickname: string | null;
+  globalName: string | null;
+  username: string;
+}): string {
+  for (const name of [author.nickname, author.globalName, author.username]) {
+    if (name === null) continue;
+    const bounded = boundedAuthor(name);
+    if (bounded.trim() !== "") return bounded;
+  }
+  return author.id;
 }
 
 /** Distinct unexpected system message types one connection names before it goes quiet. */
@@ -276,6 +297,12 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
         threadId: message.channelId,
         messageId: message.id,
         senderId: message.author.id,
+        author: authorName({
+          id: message.author.id,
+          nickname: message.member?.nickname ?? null,
+          globalName: message.author.globalName,
+          username: message.author.username,
+        }),
         // Reported rather than filtered here: every message this broker writes comes back over
         // this connection, and dropping it is a routing decision like any other.
         fromBot: message.author.bot,

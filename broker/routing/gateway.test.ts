@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MessageType } from "discord.js";
 import {
+  authorName,
   classifyMessage,
   createSystemNoticeCleaner,
   createUnexpectedSystemReport,
@@ -355,4 +356,45 @@ test("a delete the transport throws on is reported, not propagated", async () =>
 
   assert.equal(lines.length, 1);
   assert.match(lines[0], /socket closed/);
+});
+
+// The name a delivered message is attributed to. Read off the library message beside the author's
+// ID and bounded here, so the precedence is driven on values rather than through a client.
+
+test("a delivered message is attributed to the member nickname first", () => {
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: "Nick", globalName: "Global", username: "user" }),
+    "Nick",
+  );
+});
+
+test("with no nickname the global name is used, and with neither the username", () => {
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: null, globalName: "Global", username: "user" }),
+    "Global",
+  );
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: null, globalName: null, username: "user" }),
+    "user",
+  );
+});
+
+test("a name that bounds to nothing falls to the next, and with none left to the author ID", () => {
+  // A nickname made only of characters that draw as nothing is no name a person can read, so it
+  // does not win over a global name they can.
+  const invisible = String.fromCodePoint(0x200b).repeat(3);
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: invisible, globalName: "Global", username: "user" }),
+    "Global",
+  );
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: invisible, globalName: invisible, username: invisible }),
+    OPERATOR,
+  );
+});
+
+test("the name is bounded on its way out of the gateway", () => {
+  const nickname = `<b>"${String.fromCharCode(0x0a)}${"n".repeat(40)}`;
+  const name = authorName({ id: OPERATOR, nickname, globalName: null, username: "user" });
+  assert.equal(name, ` b   ${"n".repeat(27)}`);
 });

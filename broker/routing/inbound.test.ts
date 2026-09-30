@@ -17,6 +17,8 @@ import type { ThreadMessenger } from "../discord/transport.ts";
 import { createRegistry } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 import { createSenderGate } from "../security/senders.ts";
+import type { SenderClass } from "../security/senders.ts";
+import { MAX_AUTHOR_NAME_LENGTH } from "../sanitize.ts";
 import type { PermissionDesk, Verdict } from "../security/permission.ts";
 import { createRelayHub } from "./relays.ts";
 import type { RelayEvent } from "./relays.ts";
@@ -35,6 +37,14 @@ const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
 const OPERATOR = "700000000000000002";
 const STRANGER = "700000000000000003";
+const PARTICIPANT = "700000000000000004";
+/** The display name every message here arrives under, as the gateway has already bounded it. */
+const AUTHOR = "Ann";
+
+/** The event a delivered message becomes on the relay's pipe. */
+function delivered(text: string, senderClass: SenderClass = "operator"): RelayEvent {
+  return { type: "message", chatId: THREAD, text, author: AUTHOR, senderClass };
+}
 
 /**
  * A desk that records what it was asked, rather than one that decides. The gate's ordering is only
@@ -176,7 +186,10 @@ function harness(
   const router = createInboundRouter({
     registry,
     relays,
-    gate: createSenderGate([{ id: OPERATOR, class: "operator" }]),
+    gate: createSenderGate([
+      { id: OPERATOR, class: "operator" },
+      { id: PARTICIPANT, class: "participant" },
+    ]),
     permissions: permissions.desk,
     // Nothing held, unless a test wires a desk that holds something: the default is a broker whose
     // sessions have no question parked, which is every test above.
@@ -209,6 +222,7 @@ function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
     threadId: THREAD,
     messageId: "910000000000000001",
     senderId: OPERATOR,
+    author: AUTHOR,
     fromBot: false,
     text: "please run the migration",
     ...overrides,
@@ -219,7 +233,19 @@ test("a message in a session's thread reaches that session, carrying the thread 
   const { router, sent } = harness();
   await router.deliver(message());
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: "please run the migration" },
+    delivered("please run the migration"),
+  ]);
+});
+
+test("a delivered message names its author and the class the gate gives them", async () => {
+  // The class is read from the gate at delivery, so the event says what the roster says about this
+  // author now, and the name rides beside it as the gateway bounded it.
+  const { router, sent } = harness();
+  await router.deliver(message({ text: "from the operator" }));
+  await router.deliver(message({ senderId: PARTICIPANT, author: "Bo", text: "from a participant" }));
+  assert.deepEqual(sent, [
+    delivered("from the operator", "operator"),
+    { type: "message", chatId: THREAD, text: "from a participant", author: "Bo", senderClass: "participant" },
   ]);
 });
 
@@ -264,7 +290,7 @@ test("the text is stripped of escape sequences and is otherwise untouched", asyn
     // The escape and the NUL are gone; the markdown, the mention text, and the newline are not.
     // Neutralizing display syntax belongs at the render site, and Claude Code owns the envelope
     // this content lands in.
-    { type: "message", chatId: THREAD, text: "[31mred\nand **markdown** @everyone" },
+    delivered("[31mred\nand **markdown** @everyone"),
   ]);
 });
 
@@ -279,7 +305,7 @@ test("the text is stripped of the characters that would show the operator a diff
   await router.deliver(
     message({ text: `delete${zeroWidth} nothing${rightToLeftOverride}${bom}` }),
   );
-  assert.deepEqual(sent, [{ type: "message", chatId: THREAD, text: "delete nothing" }]);
+  assert.deepEqual(sent, [delivered("delete nothing")]);
 });
 
 test("a message longer than the cap is cut on code points, never mid-character", async () => {
@@ -301,7 +327,7 @@ test("a message of exactly the cap is delivered whole, with no cut and no notice
   const { router, sent, notices } = harness();
   await router.deliver(message({ text: astral.repeat(MAX_INBOUND_TEXT_LENGTH) }));
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: astral.repeat(MAX_INBOUND_TEXT_LENGTH) },
+    delivered(astral.repeat(MAX_INBOUND_TEXT_LENGTH)),
   ]);
   assert.deepEqual(notices, [], "a message delivered whole earns no notice");
 });
@@ -312,7 +338,7 @@ test("a delivered cut is announced in the thread, never suffered in silence", as
   const { router, sent, notices } = harness();
   await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: "a".repeat(MAX_INBOUND_TEXT_LENGTH) },
+    delivered("a".repeat(MAX_INBOUND_TEXT_LENGTH)),
   ]);
   assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
 });
@@ -364,7 +390,7 @@ test("an over-ceiling message whose cut lands on a verdict shape is chat, never 
   const { router, verdicts, sent, notices } = harness();
   await router.deliver(message({ text: `${prefix} and then the tail Discord accepted` }));
   assert.deepEqual(verdicts, [], "a cut resolved a permission request the full message never stated");
-  assert.deepEqual(sent, [{ type: "message", chatId: THREAD, text: prefix }]);
+  assert.deepEqual(sent, [delivered(prefix)]);
   assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
 });
 
@@ -374,14 +400,17 @@ test("the worst-case inbound line fits under the relay's stream buffer cap", () 
   // surrogate: it survives the invisible strip and the code-point cut as one code point, and
   // JSON.stringify escapes it as six bytes. The relay's guard compares the UTF-16 length of its
   // accumulated decoded buffer, and a string's UTF-8 byte length is always at least its UTF-16
-  // unit count, so the byte-length bound here is the conservative one. Both constants are imported
-  // real: neither can move without this relation being re-proven.
+  // unit count, so the byte-length bound here is the conservative one. The author name survives
+  // its own bound the same way, and the longer class word is the one written. The constants are
+  // imported real: none can move without this relation being re-proven.
   const loneSurrogate = String.fromCharCode(0xd800);
   const event = {
     type: "message",
     // Snowflakes reach twenty digits.
     chatId: "90000000000000000001",
     text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH),
+    author: loneSurrogate.repeat(MAX_AUTHOR_NAME_LENGTH),
+    senderClass: "participant",
   };
   assert.ok(Buffer.byteLength(JSON.stringify(event), "utf8") < MAX_LINE_BYTES);
 });
@@ -430,7 +459,7 @@ test("a message from anyone but the allowed sender never reaches the session", a
 
   await router.deliver(message());
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: "please run the migration" },
+    delivered("please run the migration"),
   ]);
 });
 
@@ -460,7 +489,7 @@ test("a message that is not a verdict is chat, and reaches the session unchanged
   await router.deliver(message({ text: "y abcde and then stop" }));
   assert.deepEqual(verdicts, []);
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: "y abcde and then stop" },
+    delivered("y abcde and then stop"),
   ]);
 });
 
@@ -518,7 +547,7 @@ test("with no question held, the same message steers exactly as it does today", 
 
   await router.deliver(message({ text: "whichever one you have already opened" }));
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: "whichever one you have already opened" },
+    delivered("whichever one you have already opened"),
   ]);
   assert.equal(question.answered(), false, "nothing was held, so nothing was answered");
 });
@@ -533,7 +562,7 @@ test("a second message during the same hold steers: one ask takes one answer", a
   await router.deliver(message({ text: "the first one" }));
   await router.deliver(message({ text: "and get on with it" }));
   assert.equal(question.writes.length, 1);
-  assert.deepEqual(sent, [{ type: "message", chatId: THREAD, text: "and get on with it" }]);
+  assert.deepEqual(sent, [delivered("and get on with it")]);
 });
 
 test("a verdict is a verdict even while a question is held, never that question's answer", async () => {
@@ -617,7 +646,7 @@ test("a cut message is never a partial answer, and flows on as the announced cha
   await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
   assert.equal(question.answered(), false, "the question is still held, and still answerable");
   assert.deepEqual(sent, [
-    { type: "message", chatId: THREAD, text: "a".repeat(MAX_INBOUND_TEXT_LENGTH) },
+    delivered("a".repeat(MAX_INBOUND_TEXT_LENGTH)),
   ]);
   assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
 });

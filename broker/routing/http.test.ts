@@ -285,9 +285,16 @@ test("a relay attaches over the stream and receives events as newline-delimited 
   await until(() => context.relays.attached(TOKEN));
   await until(() => lines.length > 0);
 
-  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "run it" });
+  const event = {
+    type: "message",
+    chatId: THREAD,
+    text: "run it",
+    author: "Ann",
+    senderClass: "operator",
+  } as const;
+  context.relays.deliver(TOKEN, event);
   await until(() => lines.length > 1);
-  assert.deepEqual(JSON.parse(lines[1]), { type: "message", chatId: THREAD, text: "run it" });
+  assert.deepEqual(JSON.parse(lines[1]), event);
 
   request.destroy();
 });
@@ -323,7 +330,13 @@ test("a second stream on the same token is refused rather than promoted", async 
   await until(() => second.length > 0);
   assert.deepEqual(JSON.parse(second[0]), { type: "refused", reason: "already attached" });
 
-  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "steer" });
+  context.relays.deliver(TOKEN, {
+    type: "message",
+    chatId: THREAD,
+    text: "steer",
+    author: "Ann",
+    senderClass: "operator",
+  });
   await until(() => first.length > 1);
   assert.equal(second.length, 1, "the impostor is told no and hears nothing else");
 

@@ -6,7 +6,14 @@
 // file as binary, and a test nobody can read a diff of is a test nobody reviews.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundedTitle, isInvisible, isWellFormed, withoutInvisible } from "./sanitize.ts";
+import {
+  MAX_AUTHOR_NAME_LENGTH,
+  boundedAuthor,
+  boundedTitle,
+  isInvisible,
+  isWellFormed,
+  withoutInvisible,
+} from "./sanitize.ts";
 
 const hidden = (code: number): string => String.fromCodePoint(code);
 
@@ -85,4 +92,49 @@ test("boundedTitle's post-fit recheck fires for a limit at or above clean's own 
   // recheck's `return null` branch.
   const input = "A".repeat(255) + hidden(0x1f6f0).repeat(10);
   assert.equal(boundedTitle(input, 256), null);
+});
+
+test("an author name of 40 code points carrying a <, a quote and a newline arrives as 32, those replaced", () => {
+  // The name rides an attribute on the envelope the model reads as trusted framing, so a character
+  // that could end the attribute, open a tag, or start a new line never reaches it as itself.
+  const name = `a<b"c${hidden(0x0a)}d${"e".repeat(33)}`;
+  assert.equal([...name].length, 40);
+  const bounded = boundedAuthor(name);
+  assert.equal(MAX_AUTHOR_NAME_LENGTH, 32);
+  assert.equal([...bounded].length, 32);
+  assert.equal(bounded, `a b c d${"e".repeat(25)}`);
+});
+
+test("every character that could end an attribute, open a tag, or break a line becomes a space", () => {
+  const cases: Array<[string, string]> = [
+    ["double quote", '"'],
+    ["less-than", "<"],
+    ["greater-than", ">"],
+    ["opening square bracket", "["],
+    ["closing square bracket", "]"],
+    ["line feed", hidden(0x0a)],
+    ["carriage return", hidden(0x0d)],
+    ["next line", hidden(0x0085)],
+    ["line separator", hidden(0x2028)],
+    ["paragraph separator", hidden(0x2029)],
+  ];
+  for (const [label, character] of cases) {
+    assert.equal(boundedAuthor(`Ann${character}Lee`), "Ann Lee", `the ${label} survived`);
+  }
+  // A Windows line break is one break, so it is one space rather than two.
+  assert.equal(boundedAuthor(`Ann${hidden(0x0d)}${hidden(0x0a)}Lee`), "Ann Lee");
+  // Bracketed text cannot pass for a label the model reads as the harness's own.
+  assert.equal(boundedAuthor("[plugin:relay]"), " plugin:relay ");
+});
+
+test("an author name loses its invisible characters before the cut, which counts code points", () => {
+  // Stripped first, so a name padded with characters that draw as nothing cannot spend the budget
+  // and push the visible name out of it.
+  const padded = `${hidden(0x200b).repeat(40)}Ann${hidden(0x202e)}${hidden(0xe0041)}`;
+  assert.equal(boundedAuthor(padded), "Ann");
+  // An astral character costs one of the 32, and the cut never leaves half of one.
+  const astral = hidden(0x1f600).repeat(40);
+  assert.equal(boundedAuthor(astral), hidden(0x1f600).repeat(32));
+  // A legible name is carried as it is.
+  assert.equal(boundedAuthor("Ann O'Brien & co"), "Ann O'Brien & co");
 });

@@ -15,14 +15,20 @@ import { MAX_RUN_WAIT_MS, RUN_PACE_MS, createOutboundRouter } from "../broker/ro
 import { createThreadWriter } from "../broker/routing/writer.ts";
 import { createRelayRoutes } from "../broker/routing/http.ts";
 import { createRelayHub } from "../broker/routing/relays.ts";
+import type { RelayEvent } from "../broker/routing/relays.ts";
 import type { PermissionRequest } from "../broker/security/permission.ts";
 import { MCP_TOOL_IDLE_TIMEOUT_MS, createBrokerClient } from "./broker.ts";
-import type { BrokerClient } from "./broker.ts";
+import type { Attribution, BrokerClient } from "./broker.ts";
 import type { PermissionVerdict } from "./permission.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
 const GRACE_MS = 50;
+
+/** One delivered message as the broker writes it, attributed to the operator. */
+function message(text: string): Extract<RelayEvent, { type: "message" }> {
+  return { type: "message", chatId: THREAD, text, author: "Ann", senderClass: "operator" };
+}
 
 // Cleanup is registered with the test rather than written at the end of each one: a failed
 // assertion would otherwise leave a listening server and a held-open socket behind, and the test
@@ -119,7 +125,7 @@ async function broker(t: TestContext, options: { replyHeartbeatMs?: number } = {
 async function readyToWrite(context: Awaited<ReturnType<typeof broker>>, seen: () => number): Promise<void> {
   await until(() => context.relays.attached(TOKEN));
   const before = seen();
-  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "handshake" });
+  context.relays.deliver(TOKEN, message("handshake"));
   await until(() => seen() > before);
 }
 
@@ -137,20 +143,60 @@ async function until(condition: () => boolean): Promise<void> {
   assert.fail("the condition never held");
 }
 
-test("a message written to the broker's stream reaches the relay with its chat id", async (t) => {
+test("a message written to the broker's stream reaches the relay with its chat id, author and class", async (t) => {
   const context = await broker(t);
-  const received: Array<{ text: string; chatId: string }> = [];
+  const received: Array<{ text: string; chatId: string; attribution: Attribution }> = [];
   const client = registered(t, createBrokerClient({
     port: context.port,
     processToken: TOKEN,
-    onMessage: (text, chatId) => received.push({ text, chatId }),
+    onMessage: (text, chatId, attribution) => received.push({ text, chatId, attribution }),
   }));
   client.start();
   await until(() => context.relays.attached(TOKEN));
 
-  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "run it" });
-  await until(() => received.length > 0);
-  assert.deepEqual(received, [{ text: "run it", chatId: THREAD }]);
+  context.relays.deliver(TOKEN, message("run it"));
+  context.relays.deliver(TOKEN, { ...message("and you"), author: "Bo", senderClass: "participant" });
+  await until(() => received.length > 1);
+  assert.deepEqual(received, [
+    { text: "run it", chatId: THREAD, attribution: { author: "Ann", senderClass: "operator" } },
+    { text: "and you", chatId: THREAD, attribution: { author: "Bo", senderClass: "participant" } },
+  ]);
+});
+
+test("a message from a broker that names no author is still delivered, with no attribution", async (t) => {
+  // A relay can outlive the broker it was built against in either direction, and one that dropped
+  // an event for a missing field would leave a session silently deaf to an older broker. A field of
+  // the wrong type is treated as absent rather than as a reason to refuse the message.
+  const server = http.createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "application/x-ndjson" });
+    response.write(`${JSON.stringify({ type: "hello", replyKey: "issued" })}
+`);
+    response.write(`${JSON.stringify({ type: "message", chatId: THREAD, text: "old shape" })}
+`);
+    response.write(
+      `${JSON.stringify({ type: "message", chatId: THREAD, text: "odd shape", author: 7, senderClass: null })}
+`,
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+
+  const received: Array<{ text: string; attribution: Attribution }> = [];
+  const client = registered(t, createBrokerClient({
+    port: (server.address() as AddressInfo).port,
+    processToken: TOKEN,
+    onMessage: (text, _chatId, attribution) => received.push({ text, attribution }),
+  }));
+  client.start();
+  await until(() => received.length > 1);
+  assert.deepEqual(received, [
+    { text: "old shape", attribution: {} },
+    { text: "odd shape", attribution: {} },
+  ]);
 });
 
 test("a heartbeat keeps the pipe without being mistaken for a message", async (t) => {
@@ -165,7 +211,7 @@ test("a heartbeat keeps the pipe without being mistaken for a message", async (t
   await until(() => context.relays.attached(TOKEN));
 
   context.relays.heartbeat();
-  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "after the ping" });
+  context.relays.deliver(TOKEN, message("after the ping"));
   await until(() => received.length > 0);
   assert.deepEqual(received, ["after the ping"], "the ping was not delivered as a message");
 });
@@ -263,7 +309,7 @@ test("a malformed verdict on the stream is ignored rather than answered", async 
     requestId: "abcde",
     behavior: "maybe" as "allow",
   });
-  context.relays.deliver(TOKEN, { type: "message", chatId: THREAD, text: "settle" });
+  context.relays.deliver(TOKEN, message("settle"));
   await until(() => messages > 1);
   assert.deepEqual(verdicts, []);
 });

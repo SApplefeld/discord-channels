@@ -25,11 +25,34 @@ test("an inbound message becomes a channel notification carrying chat_id in meta
   });
 });
 
+test("an attributed message carries its author and class in meta beside chat_id", () => {
+  // Each meta entry renders as an attribute on the envelope, which is where the class is read.
+  // Checked key by key rather than as the whole bag, since meta may carry other keys beside these.
+  const meta = channelNotification("run it", "900000000000000001", {
+    author: "Ann",
+    senderClass: "participant",
+  }).params.meta;
+  assert.equal(meta.chat_id, "900000000000000001");
+  assert.equal(meta.author, "Ann");
+  assert.equal(meta.sender_class, "participant");
+});
+
+test("a message from a broker that names no author leaves both keys out rather than empty", () => {
+  // An empty attribute would claim an author the event never named.
+  const meta = channelNotification("run it", "900000000000000001", {}).params.meta;
+  assert.equal(Object.hasOwn(meta, "author"), false);
+  assert.equal(Object.hasOwn(meta, "sender_class"), false);
+  assert.equal(meta.chat_id, "900000000000000001");
+});
+
 test("every meta key is one Claude Code keeps, and every meta value is a string", () => {
   // Claude Code validates params.meta as Record<string, string> and then drops any key that is not
   // a plain identifier. A number-valued or oddly-named entry is discarded before the model ever
   // sees it, which would cost the event its chat_id with no error anywhere.
-  const notification = channelNotification("hello", "900000000000000001");
+  const notification = channelNotification("hello", "900000000000000001", {
+    author: "Ann",
+    senderClass: "operator",
+  });
   for (const [key, value] of Object.entries(notification.params.meta)) {
     assert.match(key, META_KEY_PATTERN, `meta key ${key} would be dropped`);
     assert.equal(typeof value, "string", `meta value for ${key} must be a string`);

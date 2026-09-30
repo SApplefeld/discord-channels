@@ -27,6 +27,7 @@
 // listener binds rather than when the hub is built, since no relay can reach the broker before then.
 import { randomUUID } from "node:crypto";
 import type { Registry } from "../registry.ts";
+import type { SenderClass } from "../security/senders.ts";
 
 /** What the broker writes down a relay's pipe. */
 export type RelayEvent =
@@ -40,6 +41,10 @@ export type RelayEvent =
        */
       chatId: string;
       text: string;
+      /** The author's display name, bounded for an attribute. Rendered as the event's `author`. */
+      author: string;
+      /** The author's class on the sender roster. Rendered as the event's `sender_class`. */
+      senderClass: SenderClass;
     }
   /**
    * The operator's answer to one tool permission prompt. It travels the pipe rather than any

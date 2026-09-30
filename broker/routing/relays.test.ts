@@ -10,6 +10,13 @@ import type { AttachResult, RelayConnection, RelayEvent } from "./relays.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const GRACE_MS = 10_000;
+const MESSAGE: RelayEvent = {
+  type: "message",
+  chatId: "9",
+  text: "hello",
+  author: "Ann",
+  senderClass: "operator",
+};
 
 // The source matters to the registry: a startup arriving under a token a live session already
 // holds is a subprocess of that session and registers nothing, so a test that means to replace the
@@ -128,7 +135,7 @@ test("a second pipe for a token that already holds one is refused, not promoted"
   assert.deepEqual(result, { attached: false, reason: "already attached" });
   assert.equal(first.closed, false, "the pipe already serving the session is left alone");
 
-  relays.deliver(TOKEN, { type: "message", chatId: "9", text: "steer" });
+  relays.deliver(TOKEN, MESSAGE);
   assert.deepEqual(
     second.sent,
     [],
@@ -182,8 +189,8 @@ test("a message is delivered to the pipe holding the session's process token", (
   const connection = fakeConnection();
   accepted(relays.attach(TOKEN, connection));
 
-  assert.equal(relays.deliver(TOKEN, { type: "message", chatId: "9", text: "hello" }), true);
-  assert.deepEqual(connection.sent.slice(1), [{ type: "message", chatId: "9", text: "hello" }]);
+  assert.equal(relays.deliver(TOKEN, MESSAGE), true);
+  assert.deepEqual(connection.sent.slice(1), [MESSAGE]);
   assert.equal(relays.deliver("some-other-token", { type: "ping" }), false);
 });
 
@@ -280,7 +287,7 @@ test("a clear moves the session under the same pipe", () => {
 
   announce(registry, "session-b", TOKEN, "clear");
   assert.equal(registry.current(TOKEN)?.sessionId, "session-b");
-  assert.equal(relays.deliver(TOKEN, { type: "message", chatId: "9", text: "hi" }), true);
+  assert.equal(relays.deliver(TOKEN, MESSAGE), true);
 
   detach();
   now += GRACE_MS + 1;

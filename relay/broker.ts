@@ -11,7 +11,13 @@ import {
 } from "../broker/config.ts";
 import type { PermissionVerdict } from "./permission.ts";
 
-export type InboundHandler = (text: string, chatId: string) => void;
+/**
+ * Who wrote an inbound message, as the broker names them. Each field is absent when the broker's
+ * event did not carry it as a string, which is how a broker that predates attribution speaks.
+ */
+export type Attribution = { author?: string; senderClass?: string };
+
+export type InboundHandler = (text: string, chatId: string, attribution: Attribution) => void;
 
 /** The operator's answer to one tool prompt, as it arrives down the stream. */
 export type VerdictHandler = (verdict: PermissionVerdict) => void;
@@ -199,7 +205,12 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
     }
     if (fields.type !== "message") return;
     if (typeof fields.text !== "string" || typeof fields.chatId !== "string") return;
-    options.onMessage(fields.text, fields.chatId);
+    // Carried when present and left out when not, so an older broker's event, which names no
+    // author, is still delivered rather than refused.
+    const attribution: Attribution = {};
+    if (typeof fields.author === "string") attribution.author = fields.author;
+    if (typeof fields.senderClass === "string") attribution.senderClass = fields.senderClass;
+    options.onMessage(fields.text, fields.chatId, attribution);
   }
 
   function reconnect(): void {

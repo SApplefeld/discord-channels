@@ -131,10 +131,10 @@ export async function startRelay(env: NodeJS.ProcessEnv = process.env): Promise<
   const broker = createBrokerClient({
     port: port(env),
     processToken: processToken ?? "",
-    onMessage: (text, chatId) => {
+    onMessage: (text, chatId, attribution) => {
       // Fire and forget: an inbound message is not something the broker waits on, and a failed
       // write must not take the pipe down.
-      void server.notification(channelNotification(text, chatId)).catch((error: unknown) => {
+      void server.notification(channelNotification(text, chatId, attribution)).catch((error: unknown) => {
         process.stderr.write(`relay: could not deliver a channel message: ${String(error)}\n`);
       });
     },
