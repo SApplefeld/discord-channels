@@ -2019,6 +2019,7 @@ test("a missing, unreadable or malformed buffers file restores nothing, logs one
     ["another format", snapshot([good], "SENTINEL-TEXT")],
     ["an entry that is not a record", snapshot(["SENTINEL-TEXT"])],
     ["no thread", snapshot([{ ...good, threadId: 7 }])],
+    ["a thread that is not a Discord id", snapshot([{ ...good, threadId: "123/messages" }])],
     ["a blank session", snapshot([{ ...good, sessionId: "  " }])],
     ["an infinite time", snapshot([good]).replace('"oldestAt":1000', '"oldestAt":1e999')],
     ["a negative time", snapshot([{ ...good, oldestAt: -1 }])],
@@ -2172,7 +2173,7 @@ test("live: a restored buffer whose cap passed during the outage is re-armed to 
   assert.deepEqual(inside.scheduled.map((timer) => timer.ms), [40_000]);
 });
 
-test("live: a restored buffer takes new messages for its session, and a mention delivers restored and new lines together on that trigger", async (t) => {
+test("live: a restored buffer takes new messages for its session, a mention included, and the relay attaching delivers restored and new lines together", async (t) => {
   const dir = stateDir(t);
   await heldAcrossRestart(dir, [message({ text: "one", messageId: "1" })], { now: () => 1_000 });
   const after = harness({ gate: { buffers: { dir } }, now: () => 5_000, attachRelay: false });
@@ -2185,13 +2186,24 @@ test("live: a restored buffer takes new messages for its session, and a mention 
   after.router.armRestored();
   assert.equal(after.scheduled.length, 1, "the re-armed timer, and no second");
 
-  // The mention delivers on its own act. No pipe has attached, which is the only state a
-  // restored buffer can still be held in with a message arriving, so the delivery takes the
-  // unreachable path, counting every line, restored and new.
+  // No pipe has attached, which is the only state a restored buffer can still be held in with a
+  // message arriving, so a mention handed over now would drop every line the restart kept. It
+  // joins the buffer instead, and the attach delivers all three on `restored`.
   await after.router.deliver(message({ text: "now", messageId: "3", mentionsBot: true }));
-  assert.deepEqual(after.notices, [{ threadId: THREAD, text: unreachableNotice(3) }]);
+  assert.deepEqual(after.notices, [], "nothing dropped, so nothing to announce");
+  assert.equal(onDisk(dir).buffers[0]?.messages.length, 3, "held, and written as it joined");
+  const late: RelayEvent[] = [];
+  after.relays.attach(TOKEN, {
+    send: (event) => {
+      if (event.type !== "hello") late.push(event);
+      return true;
+    },
+    close: () => {},
+  });
+  assert.equal(late.length, 1);
+  assert.equal(late[0].type === "message" ? late[0].buffered : undefined, 3);
   assert.deepEqual(after.rows.map((row) => [row.id, row.trigger, row.outcome, row.lines?.length]), [
-    ["3", "mention", "delivered", 3],
+    ["3", "restored", "delivered", 3],
   ]);
   assert.deepEqual(onDisk(dir).buffers, []);
   assert.equal(after.scheduled[0].cleared, true);

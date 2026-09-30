@@ -245,12 +245,13 @@ notice asking you to resend the tail as its own message; a cut message that reac
 dropped for the reason its own ceiling names, with no notice about the cut. The cut is a backstop
 for a future Discord cap change, not something a message a client can send today will hit.
 
-A message you type in a thread reaches the session as your own steering, at the same standing as
-the keyboard: the relay's instructions tell the model every delivered message has passed the sender
-gate. The same instructions keep the confirm-first discipline: the model is told to confirm before
-anything irreversible or outward-facing, exactly as at the console. A session reads those
-instructions once, when its channel connects at launch, so an edited instruction text reaches the
-next session to start rather than the ones already running.
+A message you type in a thread reaches the session as your own steering, at the same standing as the
+keyboard: the relay's instructions tell the model every delivered message has passed the sender
+gate. On a host whose response gate is `live`, it arrives when its thread's buffer delivers rather
+than at once (`CHANNEL_RESPONSE_GATE` below). The same instructions keep the confirm-first
+discipline: the model is told to confirm before anything irreversible or outward-facing, exactly as
+at the console. A session reads those instructions once, when its channel connects at launch, so an
+edited instruction text reaches the next session to start rather than the ones already running.
 
 ## When a session asks you a question
 

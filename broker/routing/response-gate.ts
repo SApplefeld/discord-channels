@@ -705,6 +705,26 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
         buffer = undefined;
       }
 
+      // A restored buffer is waiting on its session's relay, which is not back yet: the attach
+      // delivers it, and that is what ends it being restored. Neither a certain trigger nor the
+      // judge hands it over before then, since a pipe that is not there would drop every line the
+      // restart kept. A message joins it and waits with it under the re-armed age cap, which bounds
+      // the wait; one the event budget will not take goes on its own, and the restored lines stay.
+      if (buffer?.restored === true) {
+        if (overBudget(threadId, [...buffer.messages, message])) {
+          let trigger: BufferTrigger = "size-cap";
+          if (addressed.mentionsBot) trigger = "mention";
+          else if (addressed.repliesToBot) trigger = "reply";
+          const delivery: BufferDelivery = { messages: [message], trigger };
+          recordDelivery(threadId, sessionId, delivery);
+          deliveries.push(delivery);
+          return deliveries;
+        }
+        buffer.messages.push(message);
+        save();
+        return deliveries;
+      }
+
       // The second reading of the size cap. A buffer this message would push past the event
       // budget is delivered first, as it stands, so that no event the gate writes is one the relay
       // drops; the message then opens a fresh buffer and is read on its own below, so its own

@@ -1098,7 +1098,7 @@ test("a restore holds each buffer for its thread and session, the arm re-arms it
   assert.deepEqual(h.saved[2], []);
 });
 
-test("a restored buffer takes new messages, a mention delivers old and new under the restored time, and a buffer opened since the restart is not restored", () => {
+test("a restored buffer takes new messages and holds them with its own until the attach, a mention and a reply included, and a buffer opened since the restart is not restored", () => {
   let now = 100_000;
   const h = gate({ maxWaitMs: 60_000, persist: true, now: () => now });
   const one = operator("one", false, "1");
@@ -1111,11 +1111,24 @@ test("a restored buffer takes new messages, a mention delivers old and new under
   h.gate.armRestored(15_000);
   assert.deepEqual(h.scheduled.map((timer) => timer.ms), [29_000], "one cap, from the oldest");
 
+  // The relay is not back, so a certain trigger would hand every line to a pipe that is not
+  // there: the mention and the reply join the buffer and wait for the attach with it.
   const three = operator("now", false, "3");
-  assert.deepEqual(admit(h.gate, three, MENTION), [
-    { messages: [one, two, three], trigger: "mention", restoredAt: 70_000 },
+  assert.deepEqual(admit(h.gate, three, MENTION), [], "a mention holds while the buffer is restored");
+  const replied = participant("reply", false, "r");
+  assert.deepEqual(admit(h.gate, replied, { mentionsBot: false, repliesToBot: true }), []);
+  assert.deepEqual(h.saved[3], [persisted(70_000, one, two, three, replied)], "each written as it joins");
+  assert.equal(h.scheduled.length, 1, "still the one re-armed cap");
+  h.gate.deliverRestored(SESSION);
+  assert.deepEqual(h.released, [
+    {
+      threadId: THREAD,
+      sessionId: SESSION,
+      delivery: { messages: [one, two, three, replied], trigger: "restored", restoredAt: 70_000 },
+    },
   ]);
-  assert.deepEqual(h.saved[2], []);
+  assert.deepEqual(h.saved[4], []);
+  h.released.length = 0;
 
   const four = operator("four", false, "4");
   admit(h.gate, four);
@@ -1182,4 +1195,19 @@ test("the event budget reserves the restart line on every buffer, so a buffer he
   admit(h.gate, first);
   assert.deepEqual(admit(h.gate, second), [{ messages: [first], trigger: "size-cap" }]);
   assert.deepEqual(h.gate.held(), [{ threadId: THREAD, sessionId: SESSION }], "the second is held alone");
+});
+
+test("a message the event budget will not add to a restored buffer goes on its own, and the restored lines stay held for the attach", () => {
+  const h = gate({ persist: true });
+  const one = operator("one", false, "1");
+  h.gate.restore([persisted(70_000, one)]);
+  const heavy = operator("b".repeat(MAX_EVENT_UNITS), false, "2");
+  assert.deepEqual(admit(h.gate, heavy, MENTION), [{ messages: [heavy], trigger: "mention" }]);
+  const plain = operator("c".repeat(MAX_EVENT_UNITS), false, "3");
+  assert.deepEqual(admit(h.gate, plain), [{ messages: [plain], trigger: "size-cap" }]);
+  assert.deepEqual(h.saved.at(-1), [persisted(70_000, one)], "the file still holds the restored line alone");
+  h.gate.deliverRestored(SESSION);
+  assert.deepEqual(h.released.map((entry) => entry.delivery), [
+    { messages: [one], trigger: "restored", restoredAt: 70_000 },
+  ]);
 });

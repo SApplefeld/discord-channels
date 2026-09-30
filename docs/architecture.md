@@ -7,8 +7,8 @@ Remote Control registers a session object in Anthropic's cloud under the account
 and stops accepting input permanently once `claude-swap` rotates the seat out from under it.
 
 One host runs one broker, one bot identity, and one Discord channel. A broker reaches its sessions
-over loopback, so it cannot serve another machine, and the three hosts (NEO, ASR, SCOTT) share
-nothing but the source.
+over loopback, so it cannot serve another machine. The operator's three hosts (NEO, ASR, SCOTT),
+and any client host, share nothing but the source.
 
 ## The load-bearing split
 
@@ -125,10 +125,11 @@ listener.
    session's death signal. `POST /relay/reply` and `POST /relay/permission` carry the other
    direction and must present that key.
 4. **Discord inbound.** A gateway message is gated on the sender's user ID, whose place on the
-   sender roster gives it a class, operator or participant. An operator's message may be resolved as
-   a permission verdict, a held question's answer or the inbox clear. Any admitted message is
-   otherwise handed to the session bound to that thread, directly, or through the thread's buffer
-   while the response gate is live ("The response gate" below).
+   sender roster gives it a class, operator or participant. An operator's message may be consumed as
+   a permission verdict or a held question's answer, and on its way through it clears the session's
+   inbox item. Any admitted message not consumed is handed to the session bound to that thread,
+   directly, or through the thread's buffer while the response gate is live ("The response gate"
+   below).
 5. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
    thread names, the starter-message card, any reply, mirrored message, or notice waiting to be
    written, the archiving of an exited session's thread, and, chained after that pass, the channel's
@@ -884,8 +885,9 @@ admitted message at once; `live` holds them; `shadow` delivers at once and recor
 what `live` would have done. The module is `broker/routing/response-gate.ts`, and the router in
 `broker/routing/inbound.ts` builds it.
 
-In `live`, an admitted message that is not consumed as a verdict, an answer or a clear joins its
-thread's buffer, one buffer per thread. Four triggers deliver the buffer as one event:
+In `live`, an admitted message that is not consumed as a verdict or an answer joins its thread's
+buffer, one buffer per thread, and an operator's message clears the session's inbox item as it
+joins. Four triggers deliver the buffer as one event:
 
 - a message that mentions the bot, or replies to one of the bot's messages, delivers at once
 - the buffer reaching `CHANNEL_RESPONSE_GATE_MAX_MESSAGES` messages delivers at once
@@ -897,16 +899,17 @@ thread's buffer, one buffer per thread. Four triggers deliver the buffer as one 
 One call is in flight per thread at a time, and a message arriving while it is out restarts the
 quiet window for the next one. A buffer the secret screen matches makes no call and delivers.
 
-The delivered event's text is one line per message, `<author> (<class>): <text>`, oldest first.
-Its `author` is the triggering message's, its `buffered` attribute the count, and its
-`sender_class` the lowest class present: `operator` only when every message in it was an
-operator's. Every event the gate composes fits the relay's stream line cap (`MAX_LINE_BYTES` in
-`relay/broker.ts`): the buffer measures each admission against that budget and delivers before a
-message would take it past.
+The delivered event's text is one line per message, `<author> (<class>): <text>`, oldest first. Its
+`author` is the newest message's, which is the triggering one on a mention, a reply or the size cap.
+Its `buffered` attribute is the count, and its `sender_class` the lowest class present: `operator`
+only when every message in it was an operator's. Every event the gate composes fits the relay's
+stream line cap (`MAX_LINE_BYTES` in `relay/broker.ts`): the buffer measures each admission against
+that budget and delivers before a message would take it past.
 
 A buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped
 with one counted notice in the thread naming the cause and asking for a re-post. A buffer whose
-session's relay is not attached when a trigger fires is dropped with the unreachable notice.
+session's relay is not attached when a trigger fires is dropped with the unreachable notice. A
+buffer restored across a broker restart is the exception, below.
 
 In `shadow`, the same buffer runs beside the immediate delivery and asks the judge as `live` would.
 Every gate decision in `shadow` and `live` appends one row to `response-gate.jsonl` beside the
@@ -920,12 +923,15 @@ procedure.
 same atomic temp-file-and-rename write the registry snapshot uses (`writeSnapshot` in
 `broker/persistence.ts`). At startup the router reads the file back and keeps each buffer whose
 session record restored and whose thread is still that session's, classing each line again against
-the roster as it now stands. The rest are dropped with the counted notice. A kept buffer's age cap
-starts again at the listener bind, beside the relay restart windows, from its oldest message's own
-time and never shorter than the restart window. When the session's relay attaches, the relay hub's
-attach listener hands the buffer to the router, which delivers it with the trigger `restored`,
-opening with one line of the broker's own naming the oldest held time. A missing, unreadable or
-malformed file restores nothing and logs one line.
+the roster as it now stands. The rest are dropped, with the counted notice where the session did not
+restore. A kept buffer's age cap starts again at the listener bind, beside the relay restart
+windows, from its oldest message's own time and never shorter than the restart window. When the
+session's relay attaches, the relay hub's attach listener hands the buffer to the router, which
+delivers it with the trigger `restored`, opening with one line of the broker's own naming the oldest
+held time. Until then the buffer takes every new message for its session and waits with it: a
+mention, a reply, the size cap and the judge deliver nothing to a relay that is not back, and the
+age cap bounds the wait. A message too large for the buffer's event budget goes on its own. A
+missing, unreadable or malformed file restores nothing and logs one line.
 
 ## What the cards are made of
 

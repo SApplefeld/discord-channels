@@ -171,7 +171,7 @@ export type BrokerConfig = {
   inboxCardRefreshMs: number;
   /**
    * Whether a thread's messages are held and delivered to its session together. `off` delivers
-   * each admitted message at once, which is what a host with one account has always had. `shadow`
+   * each admitted message at once, which is how a host with one account runs. `shadow`
    * delivers at once as well. `live` holds each thread's messages until one mentions the bot,
    * replies to one of its messages, or the buffer reaches a cap below.
    */

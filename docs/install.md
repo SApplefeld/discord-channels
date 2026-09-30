@@ -3,15 +3,16 @@
 One broker per host, one Discord bot identity per host, one channel per host. A broker reaches its
 sessions over localhost, so it cannot serve another machine.
 
-The three hosts are NEO, ASR, and SCOTT. NEO and ASR are organization-owned; SCOTT is a personal Max
-account with no organization. Steps 1 through 4 are identical on all three. The only thing that
-differs is the channel flag the launch wrapper passes, which is decided by whether that host's
-managed settings allowlist the relay, not by which kind of account pays for the session.
+The operator's own fleet runs on three hosts, NEO, ASR, and SCOTT, and a client host is one more ("A
+client host is its own server, bot and broker" below). NEO and ASR are organization-owned; SCOTT is
+a personal Max account with no organization. Steps 1 through 4 are identical on every host. The only
+thing that differs is the channel flag the launch wrapper passes, which is decided by whether that
+host's managed settings allowlist the relay, not by which kind of account pays for the session.
 
 ## 1. Create the Discord application
 
-Once per host, so three times. Each host gets its own bot so the three fleets never share an
-identity, and so a revoked token takes down one machine rather than all of them.
+Once per host. Each host gets its own bot so no two fleets share an identity, and so a revoked token
+takes down one machine rather than all of them.
 
 1. At <https://discord.com/developers/applications>, create an application and name it for the host.
 2. Under **Bot**, create the bot and copy the token. It is shown once.
@@ -67,10 +68,11 @@ client machine needs its own entry there before step 4.
 would otherwise take a turn on every message. `CHANNEL_RESPONSE_GATE` holds a thread's messages and
 delivers them together when someone mentions or replies to the bot, when a cap is reached, or when
 TypeSafe's classifier, the one described under "The inbox judge's key file" below, judges that the
-conversation expects a response. While it is at `shadow` or
-`live`, a gated thread's messages are sent to TypeSafe, and it needs the key file under "The inbox
-judge's key file" below. [`operations.md`](operations.md) describes running it in `shadow` for a
-week to choose its threshold before going `live`.
+conversation expects a response. At `shadow` it holds nothing: each message is delivered at once,
+and the broker journals what `live` would have done. While it is at `shadow` or `live`, a gated
+thread's buffered lines are sent to TypeSafe once the thread goes quiet, and it needs the key file
+under "The inbox judge's key file" below. [`operations.md`](operations.md) describes running it in
+`shadow` for a week to choose its threshold before going `live`.
 
 **With mirroring on, which is the default, the conversation itself leaves the machine too.** Every
 prompt typed at the console and every turn's final assistant reply reaches that session's thread in

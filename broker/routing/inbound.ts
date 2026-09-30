@@ -15,7 +15,7 @@
 // every reading above has passed joins its thread's buffer instead of going down at once, and the
 // buffer goes down whole when a message addresses the bot, a cap is reached, or the judge says the
 // thread expects an answer. Nothing about who may say what moves; only when the session hears it.
-// In shadow the message goes down at once as it always has, and the same buffer runs beside that
+// In shadow the message goes down at once, and the same buffer runs beside that
 // delivery as a simulation whose every decision is journaled and none of which reaches the pipe.
 //
 // A held buffer survives the broker. In `live` the gate hands every change to what it holds to a
@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs";
 import { boundedAuthor, clean, withoutInvisible } from "../sanitize.ts";
 import { parseVerdict } from "../security/permission.ts";
 import type { PermissionDesk } from "../security/permission.ts";
+import { SNOWFLAKE } from "../security/senders.ts";
 import type { SenderClass, SenderGate } from "../security/senders.ts";
 import type { Registry, SessionRecord } from "../registry.ts";
 import type { RelayEvent, RelayHub } from "./relays.ts";
@@ -208,7 +209,7 @@ export type InboundRouterOptions = {
   inbox?: InboundInbox;
   /**
    * The response gate's mode, caps and judge. Absent, or in any mode but `live`, every admitted
-   * message is delivered at once, which is the path a host with one account has always had; in
+   * message is delivered at once, which is the path a host with one account takes; in
    * `shadow` the gate runs beside that delivery and journals what it would have done.
    */
   responseGate?: ResponseGateSettings;
@@ -273,7 +274,8 @@ function heldBufferOf(value: unknown, now: number): HeldBuffer | null {
   if (typeof value.threadId !== "string" || typeof value.sessionId !== "string") return null;
   const threadId = clean(value.threadId);
   const sessionId = clean(value.sessionId);
-  if (threadId === "" || sessionId === "") return null;
+  // The thread is the channel a dropped buffer's notice is posted to, so it must be a Discord id.
+  if (!SNOWFLAKE.test(threadId) || sessionId === "") return null;
   // Finite, not merely a number: JSON.parse turns 1e999 into Infinity.
   const oldestAt = value.oldestAt;
   if (typeof oldestAt !== "number" || !Number.isFinite(oldestAt) || oldestAt < 0) return null;

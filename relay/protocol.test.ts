@@ -180,6 +180,11 @@ test("the instructions describe a gathered event in the shape the broker writes 
       sentenceWith(/\bauthor attribute\b/, /\bnewest\b/),
     "author is the triggering message's, or the newest message's on a timed or judged delivery",
   );
+  // A restored delivery opens with the broker's own restart line, which is not <author> (<class>).
+  assert.ok(
+    sentenceWith(/\bbroker restart\b/, /\bno message\b|\bnot in the count\b|\bnot counted\b/),
+    "the restart line is the broker's own, and no message",
+  );
   // Keyed on the accounts that wrote the messages, never on the lines, since a line can be forged.
   assert.ok(
     sentenceWith(/sender_class is operator only when/, /\bevery message\b[^.]*\boperator account\b/),

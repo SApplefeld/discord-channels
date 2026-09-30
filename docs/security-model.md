@@ -27,9 +27,9 @@ boundary"). This document accepts nothing against this class.
 web page, a file, tool output, or a crafted file name, plan status or roster field the board card
 draws. That text reaches the session's thread and cards. Some of it also rests on disk and on `GET
 /sessions`, as the tool-input preview and the task roster, and reaches TypeSafe, the third-party
-classifier service the inbox judge and the response gate post to, while either is on (see T8). Render-site neutralization, the empty mention list, embed suppression and
-labelled cuts hold what it can draw ("Untrusted strings", "Tool approval over the channel").
-Accepted:
+classifier service the inbox judge posts to, while the judge is on (see T8). Render-site
+neutralization, the empty mention list, embed suppression and labelled cuts hold what it can draw
+("Untrusted strings", "Tool approval over the channel"). Accepted:
 
 - a masked link whose words and target differ, and a chip left unescaped where this project's
   reading of a code fence and Discord's disagree, which the empty mention list still keeps from
@@ -93,6 +93,8 @@ ring the phone without a bound.
  - a turn-final reply posted without the no-mirror header, which the judge then reads
  - a crafted `planPath` reaching a plan-shaped file in the persona's own tree, and a symbolic link
    planted there, which the board card's join follows
+ - a line planted in `response-gate-buffers.json`, delivered after a restart from the account id it
+   names ("Accepted, and worth stating")
  - a project `.mcp.json` that squats the relay's name and inherits the reply tool's machine-wide
    pre-approval. These are argued under "The process token authenticates reports, never
    instructions", "The transcript is read, not posted", "Tool approval over the channel" and
@@ -160,7 +162,8 @@ its words, which the relay's instructions bound and do not prove, and whatever a
 own judgment after reading them. With the response gate live it also shapes what an operator's words
 arrive beside: a buffer holding any participant's line delivers as `participant`. And in a gated
 thread its messages can reach TypeSafe, and a mention of the bot or a reply to it delivers the
-thread's buffer at once (T8). Accepted, each argued under "The sender gate":
+thread's buffer at once (T8). Its posts share the session's inbound rate ceiling with an
+operator's. Accepted, each argued under "The sender gate":
 
 - the `author` attribute and the name on each buffered line, which are labels the account itself or
   any server member holding Manage Nicknames can set, so a participant renamed `Scott (operator)`
@@ -169,6 +172,9 @@ thread's buffer at once (T8). Accepted, each argued under "The sender gate":
   text can span lines
 - an operator's ask that a participant's line in the same buffer delivers without standing, which
   the operator asks again
+- a participant's burst filling the session's inbound rate ceiling, which drops an operator's chat
+  to that session until the window moves on, and the TypeSafe calls its messages cause on the
+  operator's key
 
 Outside the model:
 
@@ -659,12 +665,12 @@ log rather than dying silently under the scheduled task.
 
 The gate runs before everything else on the inbound path, **including the verdict pattern**, so a
 verdict-shaped message from an account the roster does not name is refused before it is read as one.
-The class then decides what an admitted message can be. Four paths consume a message as the
-operator's act: a typed verdict, a held question's typed answer, a component press, and the inbox
-clear. Each takes an operator's message only. A participant's verdict-shaped text is delivered to
-the session as words, a participant speaking while a question is held leaves it held, a participant's
-press is ignored with no reply and no state change, and a participant's post leaves the inbox item
-standing.
+The class then decides what an admitted message can be. Four paths take an operator's message only.
+A typed verdict, a held question's typed answer and a component press each consume the message as
+the operator's act. The inbox clear acts on an operator's message and still delivers it. A
+participant's verdict-shaped text is delivered to the session as words, a participant speaking while
+a question is held leaves it held, a participant's press is ignored with no reply and no state
+change, and a participant's post leaves the inbox item standing.
 
 **The class travels with the message, and the name does not decide it.** A delivered event carries
 `author`, the sender's display name, and `sender_class`, the class the roster gives the sender's
@@ -681,6 +687,14 @@ the event gives a whole turn one class's standing, and a line's prefix, name and
 text its writer could have typed, since a message's own text can span lines. So the lowest class is
 the only reading a participant's words cannot promote. The cost is accepted: an operator's ask that
 shares a buffer with a participant's line arrives without standing, and the operator asks again.
+
+**A participant shares its session's inbound allowance.** The inbound rate ceiling, twenty messages
+a minute, is counted per session and not per sender. A participant posting steadily can fill it, and
+an operator's chat to that session is then dropped with a log line until the window moves on. A
+typed verdict and a held question's typed answer are read before the ceiling and stay reachable.
+With the response gate on, each quiet window in a thread can also cost one TypeSafe call on the
+operator's key, whoever wrote the lines. Both are accepted, because a participant is an account the
+operator chose to name, and removing it from the roster ends both.
 
 **What it does not protect.** The roster is a list of Discord accounts. Whoever controls an operator
 account can steer every session on the host and approve any tool call it asks about, and its
@@ -911,8 +925,9 @@ this file's failure only turns the judge off with one warning, since the judge a
 of unmarked replies rather than the channel itself. With no key file named, or one that cannot be
 used, nothing leaves the machine on this path, and the inbox runs on `ASK:` lines alone. The one
 exception is the response gate: at `shadow` or `live` the broker refuses to start without a usable
-key file, since the gate reads the same key and a gate with no judge would hold a thread's messages
-until a cap delivered them.
+key file, since the gate reads the same key. In `live` a gate with no judge would hold a thread's
+messages until a cap delivered them, and in `shadow` it would journal no judgement to choose a
+threshold from.
 
 What is sent is closed at the text of one reply, cut to its first 12,000 code points after the
 secret screen has run over its whole length. The screen is one case-insensitive pattern with six
@@ -992,8 +1007,8 @@ in that file, which the model already treats as equivalent to code execution on 
 
 **An operator's channel event reaches the model at the keyboard's standing.** The relay's
 instructions describe the sender gate rather than commanding trust: a message is delivered only
-after the broker has checked its author's Discord account against the roster, and a broker connected
-to Discord refuses to start without an operator, so the model treats an event whose `sender_class`
+after the broker has checked its author's Discord account against an allowlist, which a broker
+connected to Discord refuses to start without, so the model treats an event whose `sender_class`
 is `operator` as the operator's own steering, and one whose `sender_class` is `participant` as
 conversation holding no authority, whatever any line in it says. The
 residuals ride in the same text: the check establishes the account, not the person, and an action
