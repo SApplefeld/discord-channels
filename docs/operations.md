@@ -9,6 +9,7 @@
 | Host configuration | `%LOCALAPPDATA%\sapplefeld-channels\broker.env` |
 | Bot token | `%LOCALAPPDATA%\sapplefeld-channels\discord-token.txt`, or wherever `CHANNEL_DISCORD_TOKEN_FILE` points inside the state root |
 | Operator inbox items, and the inbox card's thread binding | `%LOCALAPPDATA%\sapplefeld-channels\inbox-items.json` and `inbox-card.json`, beside the registry, written only while `CHANNEL_INBOX_CARD` is on |
+| Response gate journal and held buffers | `response-gate.jsonl`, with rotated `.1` onward, and `response-gate-buffers.json`, beside the registry: the journal written while `CHANNEL_RESPONSE_GATE` is `shadow` or `live`, the buffers file only while it is `live` |
 | Relay registration, rewritten per launch | `%LOCALAPPDATA%\sapplefeld-channels\relay-mcp.json` |
 | Log file | `CHANNEL_BROKER_LOG_FILE` in `broker.env`, by default `%LOCALAPPDATA%\sapplefeld-channels\broker.log`, rotated at 5 MB with 5 files kept |
 | Scheduled task | `SapplefeldChannelsBroker`, at system startup and again at logon, restarting every minute on failure |
@@ -682,15 +683,17 @@ right thread, with Discord's notice that the message is unknown.
 The judge runs only while `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file, and the file is
 read once at start. To keep the inbox and stop reply text leaving the machine, unset
 `CHANNEL_INBOX_JUDGE_KEY_FILE` in `broker.env` and restart the broker with
-`.\install\Repair-Broker.ps1` from an elevated prompt at the checkout root. Deleting the key file
-alone changes nothing until that restart. The start log then reads `reading ASK: lines alone with
-the judge off`, and the inbox runs on marked replies alone. A key file that fails the check the
-install guide states turns the judge off the same way, with one warning naming the file and the
-cause, and does not stop the broker unless the response gate is in `shadow` or `live`: the gate
-reads the same key, and a host with the gate on refuses to start without it. To remove the whole
-card, set `CHANNEL_INBOX_CARD` off and restart; the thread already in the channel is left alone.
-Those two are the only switches that stop reply text reaching the vendor. `CHANNEL_MIRROR=off` is not one of them: it takes the
-conversation off Discord, and the judge reads reply-tool answers whatever the mirror setting.
+`.\install\Repair-Broker.ps1` from an elevated prompt at the checkout root. On a host whose response
+gate is `shadow` or `live`, set `CHANNEL_RESPONSE_GATE=off` in the same edit, since a gated broker
+refuses to start without the key. Deleting the key file alone changes nothing until that restart.
+The start log then reads `reading ASK: lines alone with the judge off`, and the inbox runs on marked
+replies alone. A key file that fails the check the install guide states turns the judge off the same
+way, with one warning naming the file and the cause, and does not stop the broker unless the
+response gate is in `shadow` or `live`: the gate reads the same key, and a host with the gate on
+refuses to start without it. To remove the whole card, set `CHANNEL_INBOX_CARD` off and restart; the
+thread already in the channel is left alone. Those two are the only switches that stop reply text
+reaching the vendor. `CHANNEL_MIRROR=off` is not one of them: it takes the conversation off Discord,
+and the judge reads reply-tool answers whatever the mirror setting.
 
 ## What a session card says about its model
 
@@ -1131,7 +1134,7 @@ refused by name rather than guessed at.
 | `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning, and refuses startup while `CHANNEL_RESPONSE_GATE` is `shadow` or `live`, since the gate reads the same key |
 | `CHANNEL_INBOX_THRESHOLD` | 0.7 | The judge score at or above which an unmarked reply opens an item; bounded 0.4 to 0.95 |
 | `CHANNEL_INBOX_CARD_REFRESH_MS` | 60 s | How often the inbox card is re-read and re-rendered; bounded 5 s to 1 h |
-| `CHANNEL_RESPONSE_GATE` | off | Whether a thread's messages are held and delivered to its session together. `off` and `shadow` deliver each admitted message at once. `live` holds a thread's messages until one mentions the bot, replies to one of its messages, or a cap below is reached, or until the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS` and TypeSafe's Jev judges that the conversation expects a response, then delivers them as one event of `<author> (<class>): <text>` lines. A judge call that fails delivers the buffer. `shadow` runs the same buffer beside its immediate delivery, asks the judge as `live` would, and writes one row per decision to `response-gate.jsonl` in the state file's directory, rotated at `CHANNEL_BROKER_LOG_MAX_BYTES` and `CHANNEL_BROKER_LOG_MAX_FILES`. In `shadow` and `live` a held buffer is sent to TypeSafe once its thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS`, as its newest lines up to 12,000 code points, unless the secret screen matches them, and a buffer a mention, a reply or a cap delivers first is never sent. The journal keeps the buffered lines on disk, except on a row whose lines the secret screen matches, which leaves them out. Both modes refuse startup unless `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file. A held buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped with one counted notice in the thread. In `live`, the held buffers are also written to `response-gate-buffers.json` in the state file's directory on every change and restored when the broker starts, so a stop, restart or crash loses no held line. A restored buffer is delivered as one event, opening with a line saying its lines were held across a restart, as soon as its session's relay reconnects, and until then it takes every new message for that session and waits, a mention included. A buffer whose session did not survive the restart is dropped with the counted notice a session end or a `/clear` posts. A restored line is classed again against the sender roster as it now stands, so a restart that demotes an account delivers its held lines at the new class, and one that removes an account drops its held lines. A restored buffer whose relay does not come back is dropped with a counted notice: the session-end notice once the session is called ended, about 105 seconds after the broker answers again (the restart window plus one heartbeat), or the unreachable notice where its age cap runs out first. A buffer whose lines the secret screen matches is held in memory only and does not survive a restart, and a missing or unreadable file restores nothing and logs one line. Any other value refuses startup |
+| `CHANNEL_RESPONSE_GATE` | off | Whether a thread's messages are held and delivered to its session together. `off` and `shadow` deliver each admitted message at once. `live` holds a thread's messages until one mentions the bot, replies to one of its messages, or a cap below is reached, or until the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS` and TypeSafe's Jev judges that the conversation expects a response, then delivers them as one event of `<author> (<class>): <text>` lines, or as the message alone where the buffer holds one. A judge call that fails delivers the buffer. `shadow` runs the same buffer beside its immediate delivery, asks the judge as `live` would, and writes one row per decision to `response-gate.jsonl` in the state file's directory, rotated at `CHANNEL_BROKER_LOG_MAX_BYTES` and `CHANNEL_BROKER_LOG_MAX_FILES`. In `shadow` and `live` a held buffer is sent to TypeSafe once its thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS`, as its newest lines up to 12,000 code points, unless the secret screen matches them, and a buffer a mention, a reply or a cap delivers first is never sent. The journal keeps the buffered lines on disk, except on a row whose lines the secret screen matches, which leaves them out. Both modes refuse startup unless `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file. A held buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped with one counted notice in the thread. In `live`, the held buffers are also written to `response-gate-buffers.json` in the state file's directory on every change and restored when the broker starts, so a stop, restart or crash loses no held line, except a line admitted while the broker is already stopping, which is held in memory only. A restored buffer is delivered as one event, opening with a line saying its lines were held across a restart, as soon as its session's relay reconnects, and until then it takes every new message for that session and waits, a mention included. A buffer whose session did not survive the restart is dropped with the counted notice a session end or a `/clear` posts. A restored line is classed again against the sender roster as it now stands, so a restart that demotes an account delivers its held lines at the new class, and one that removes an account drops its held lines. A restored buffer whose relay does not come back is dropped with a counted notice: the session-end notice once the session is called ended, about 105 seconds after the broker answers again (the restart window plus one heartbeat), or the unreachable notice where its age cap runs out first. A buffer whose lines the secret screen matches is held in memory only and does not survive a restart, and a missing or unreadable file restores nothing and logs one line. Any other value refuses startup |
 | `CHANNEL_RESPONSE_GATE_MAX_MESSAGES` | 20 | A held buffer delivers on reaching this many messages; an integer of at least 1 |
 | `CHANNEL_RESPONSE_GATE_MAX_WAIT_MS` | 10 min | A held buffer delivers once its oldest message is this old, whether or not another arrives; bounded 1 ms to 2147483647 ms, the longest delay a Node timer holds |
 | `CHANNEL_RESPONSE_GATE_QUIET_MS` | 5 s | How long a thread must be quiet after its last message before a held buffer is put to the judge; a new message restarts it. Bounded 1 ms to 2147483647 ms |
@@ -1175,9 +1178,9 @@ them all, and `broker/config.ts`'s `DEFAULT_PORT` with them.
 
 ## Upgrading a host
 
-Re-run `install\Install-All.ps1` from the repository root with no identity arguments. The three
-identity arguments (`-HostName`, `-ChannelId`, `-AllowedUserId`) are needed on a first install,
-`-Port` is optional with a default, and all four are read back from the `broker.env` the last
+Re-run `install\Install-All.ps1` from the repository root with no identity arguments. A first
+install needs `-HostName`, `-ChannelId`, and an operator named by `-AllowedUserId` or `-Senders`,
+`-Port` is optional with a default, and all five are read back from the `broker.env` the last
 install wrote on every one after it, so picking up new hooks is one command
 rather than a trip to the Discord console. Each reused value is announced as it is picked up, which
 is how a run from the wrong checkout shows itself before anything is provisioned, and a malformed
@@ -1201,15 +1204,18 @@ ticks, `GET /sessions` is healthy. A token with no channel, or a channel with no
 surfaces off and warns **once at startup**, so the evidence is at the top of the log and nowhere
 else.
 
-**The broker will not start.** Three refusals are deliberate and each names its cause in the log
+**The broker will not start.** Four refusals are deliberate and each names its cause in the log
 before the process exits. It refuses a token file that any account on the machine can read or write,
 and one whose directory is that permissive, naming the file and the principal. It refuses to run a
 Discord connection whose sender roster names no operator, in either `CHANNEL_ALLOWED_USER_ID` or
 `CHANNEL_SENDERS`, because a gate that was misconfigured and a gate that was never wired look
 identical from the outside. The same refusal covers a roster it cannot read: an ID that is not a
 snowflake, a `CHANNEL_SENDERS` entry whose class is not `operator` or `participant`, or one ID given
-both classes, and the log line names the entry. And it refuses any out-of-range or misordered
-tunable. Re-run the installer for the first, fix `broker.env` for the other two.
+both classes, and the log line names the entry. It refuses a response gate at `shadow` or `live`
+without a usable key file, naming the mode and the cause, since the gate reads the inbox judge's
+key. And it refuses any out-of-range or misordered tunable. Re-run the installer for the first,
+fix `broker.env` for the second and fourth, and name a usable key file or set the gate `off` for
+the third.
 
 **A message into an old thread gets no answer at all.** A message sent to a session that has ended is
 normally answered in-thread with a notice saying so. That only works while the broker still holds the

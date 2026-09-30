@@ -737,8 +737,8 @@ this capability adds nothing to the install's permission list.
 ## Tool approval over the channel
 
 **A permission prompt sends the tool's actual input off this machine.** `input_preview` is the shell
-command, the patch body, the file path and its contents. The inbox judge below is the one surface
-that sends conversation content to a third party. The mirror is the other surface that sends it to
+command, the patch body, the file path and its contents. The inbox judge and the response gate
+below send conversation content to a third party. The mirror is the other surface that sends it to
 Discord: with `CHANNEL_MIRROR` on, every console prompt is posted into the session's thread in full,
 and every turn's final assistant reply is posted unless the thread
 already carries that text: a reply the transcript tailer posted as narration, or a reply-tool
@@ -939,26 +939,26 @@ or `-` (which takes the `sk-proj-` and `sk-ant-` shapes with their infix), a Git
 (`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more letters, digits or `_`, and a
 `password` assignment to a quoted value of one or more characters. The pattern itself is
 `SECRET_SCREEN` in `broker/jev/client.ts`. Length never blocks a send. What is never sent: a reply
-carrying an `ASK:` line, which the inbox reads locally and does not judge; any reply from a
-session the registry no longer holds, which is not a session the operator can answer; prompts,
-narration chunks and peer messages, which the tap never sees; tool input and the status card's
-preview, which ride another path; and any file path, since the judge is handed a string and nothing
-it names. Whether the session mirrors its console decides only which of its replies reach the tap:
-a mirror-off session's turn-final replies are dropped at the intake, and its reply-tool answers are
-judged like any other session's. A marked `ASK:` line is read locally whatever its shape, the
-`ASK: <question>? Recommend: <choice>` form a persona worker asks its supervisor with included.
-That form written lowercase or inside a fence is not a mark, and a reply carrying only such a line
-is judged like any unmarked reply. The card's `supervisor ask` marker says a supervised session's
-marked line has that form. It rests on the record's lineage, which a session declares at
-registration through the `x-channel-lineage` header. So the marker is the session's own report and
-never proof that a supervisor exists or read the line. Its item clears on a later prompt to that
-session like every item, and the broker does not tell the operator's prompt from the supervisor's
-answer the persona plugin submits into the worker, so either may clear it. The response is
-read for two numbers and nothing else, and neither the request body, the response body nor any part
-of the key reaches the broker log: a failure line names the kind of failure and the session, on the
-rule every mirror and transcript path here already holds to. Conversation text is what every other
-control in this document keeps on the machine or inside Discord, and the judge is the one place it
-is sent elsewhere on purpose. The accepted-risk list below carries what that costs.
+carrying an `ASK:` line, which the inbox reads locally and does not judge; any reply from a session
+the registry no longer holds, which is not a session the operator can answer; prompts, narration
+chunks and peer messages, which the tap never sees; tool input and the status card's preview, which
+ride another path; and any file path, since the judge is handed a string and nothing it names.
+Whether the session mirrors its console decides only which of its replies reach the tap: a
+mirror-off session's turn-final replies are dropped at the intake, and its reply-tool answers are
+judged like any other session's. A marked `ASK:` line is read locally whatever its shape, the `ASK:
+<question>? Recommend: <choice>` form a persona worker asks its supervisor with included. That form
+written lowercase or inside a fence is not a mark, and a reply carrying only such a line is judged
+like any unmarked reply. The card's `supervisor ask` marker says a supervised session's marked line
+has that form. It rests on the record's lineage, which a session declares at registration through
+the `x-channel-lineage` header. So the marker is the session's own report and never proof that a
+supervisor exists or read the line. Its item clears on a later prompt to that session like every
+item, and the broker does not tell the operator's prompt from the supervisor's answer the persona
+plugin submits into the worker, so either may clear it. The response is read for two numbers and
+nothing else, and neither the request body, the response body nor any part of the key reaches the
+broker log: a failure line names the kind of failure and the session, on the rule every mirror and
+transcript path here already holds to. Conversation text is what every other control in this
+document keeps on the machine or inside Discord, and the judge and the response gate are the two
+places it is sent elsewhere on purpose. The accepted-risk list below carries what that costs.
 
 **The response gate sends thread messages to the same third party.** With `CHANNEL_RESPONSE_GATE`
 at `shadow` or `live`, the broker holds each gated thread's admitted messages in a buffer and, once
@@ -1067,11 +1067,17 @@ and both apply it:
 - **The log file.** Untrusted fields pass through the same neutralization before they land, so a
   newline cannot forge a second log line and a bidi run cannot misdirect a reader.
 
-The session title read off a `custom-title` line is the one string held to more than that at its
-read, and the reason is that a render site is not its only consumer: it is stored, published, and
-painted onto a Discord object rather than into a message, so it is stripped and bounded where it is
-read as well as escaped where it is drawn. The transcript section above carries that composition. The
-rule is unchanged for every other field, the launch name included.
+Two strings are held to more than that at their read, and in each a render site is not the only
+consumer. The session title read off a `custom-title` line is stored, published, and painted onto
+a Discord object rather than into a message, so it is stripped and bounded where it is read as
+well as escaped where it is drawn. The transcript section above carries that composition. A
+message author's display name rides the `author` attribute on the envelope the model reads, so the
+gateway bounds it with `boundedAuthor` in `broker/sanitize.ts`. A tab becomes a space,
+compatibility forms fold (NFKC), the invisible class is stripped, every double quote, angle
+bracket, square bracket and line break becomes a space, and the result is trimmed and cut to 32
+code points. A name that bounds to nothing falls back to the next of nickname, global name and
+username, and finally to the account ID. The rule is unchanged for every other field, the launch
+name included.
 
 **Conversation text is neutralized on a narrower rule than a name is.** A mirrored prompt, a
 mid-turn typed message, a mirrored reply, a mid-turn narration chunk, a `reply` tool call, and a

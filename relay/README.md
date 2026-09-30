@@ -13,7 +13,8 @@ reach the broker is a prompt nobody is asked.
 The reply tool is not the only way text reaches a thread. The mirror posts every console prompt and
 every turn's final assistant reply through the hooks, without the model choosing to call anything,
 which is why a thread stays a faithful record even when Claude never uses this tool. A reply here is
-the model speaking to the operator on purpose, and it rides its own path: the reply key, delivered
+the model speaking to the thread on purpose, a thread that may hold several readers besides the
+operator, and it rides its own path: the reply key, delivered
 only down this stream, authenticates it, while the mirror authenticates on the process token alone.
 
 A channel server is never told what session it belongs to: the protocol hands it `content` and a

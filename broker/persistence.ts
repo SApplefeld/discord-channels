@@ -7,7 +7,8 @@
 //
 // The file holds every live process token, which is what a hook post is authenticated by, so it is
 // written for the owning user only. That write is `writeSnapshot`, exported: the response gate's
-// held-buffer file rides the same one, so there is one writer for a file a crash must not truncate.
+// held-buffer file rides the same one, so those two files, which a crash must not truncate, share
+// one writer.
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";

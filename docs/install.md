@@ -136,8 +136,8 @@ relay plugin through the `claude` CLI, then raises exactly one UAC prompt for
 file described under "The launch dialog", and installs a block into the machine-wide PowerShell
 profile that dot-sources the launch wrapper and aliases it, so a new shell anywhere on the machine
 launches a watched session with `cchat <session-name>`. Every piece is idempotent; re-run it after
-moving the checkout or rotating a token. The three identity arguments are needed on the first
-install only: a re-run reads `-HostName`, `-ChannelId`, `-AllowedUserId`, `-Senders`, and `-Port`
+moving the checkout or rotating a token. The identity arguments are needed on the first install
+only: a re-run reads `-HostName`, `-ChannelId`, `-AllowedUserId`, `-Senders`, and `-Port`
 back from the `broker.env` the last install wrote, announces each reused value as it picks it up, and refuses a
 malformed ID or port on disk naming the key. An argument you supply always wins, which is how a host is
 rebound to a different channel.
@@ -263,8 +263,10 @@ CHANNEL_INBOX_JUDGE_KEY_FILE=C:\Users\<you>\AppData\Local\sapplefeld-channels\in
 The broker checks the key file at start exactly as it checks the token file: the file and its
 directory must be owned by the broker's account or an administrative identity, must grant nobody
 beyond those three trustees, and must not be a symbolic link or junction. Where that check failing
-on the token file stops the broker, failing on this file only turns the judge off, with one warning
-in the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. A file
+on the token file stops the broker, failing on this file turns the judge off, with one warning in
+the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. With
+`CHANNEL_RESPONSE_GATE` at `shadow` or `live` the broker refuses to start instead, naming the mode
+and the cause, because the gate reads the same key. A file
 that is missing, unreadable or empty, or one whose content, once leading and trailing whitespace is
 dropped, holds anything but visible ASCII with no spaces, is refused the same way. A trailing
 newline is fine. Both keys are on the installer's allowlist, so values set by hand here

@@ -3,11 +3,12 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-- [`channels_client-sandbox_spec_v1.md`](channels_client-sandbox_spec_v1.md) (Ready, seven sections, Branch-and-PR; authored 2026-09-30 by the ARCHITECT persona on the operator's word over its channel) widens the broker's one-account sender gate to a short list of accounts each classed operator or participant, names each delivered message's author and class on the envelope, keys the permission verdict, the held-question answer and the inbox clear on the operator class, and adds a per-host response gate that buffers a thread's messages and delivers them on a mention, a reply, a cap or a TypeSafe Jev judgement, with a shadow journal and a scoring tool that choose the threshold before the gate goes live. First of three companion plans for a client's own sandbox fleet; the persona plugin's and the kit's follow it.
+No plan is open.
 
 The most recently archived plan is
-[`../archive/plans/channels_subagent-thread-flood_spec_v1.md`](../archive/plans/channels_subagent-thread-flood_spec_v1.md),
-superseded after its trace put the subagent-report flood in the persona plugin rather than the broker.
+[`../archive/plans/channels_client-sandbox_spec_v1.md`](../archive/plans/channels_client-sandbox_spec_v1.md),
+delivered: several Discord accounts per host, each an operator or a participant, and a response gate
+that holds a shared thread's messages until a reply is expected.
 
 Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).

@@ -483,11 +483,12 @@ and none carries a date of its own. An item added from here on carries `(parked 
   them with the reading, rather than rebuilding them per tick. The bound today is the 2 MiB store
   file cap times sixteen personas, on the broker's only event loop.
 
-- Run `npm audit fix` for the three pre-existing transitive advisories (parked 2026-09-21, surfaced by
-  the operator inbox plan's section 1 and 2 security reviews). `npm audit` exits 1 on `main` at
-  32939cd with one high and two moderate findings, all transitive (the high is fast-uri, the two
-  moderates hono and qs). Neither section adds a
-  dependency, so the fix is its own change, gated on the whole suite.
+- Run `npm audit fix` for the four pre-existing transitive advisories (parked 2026-09-21, surfaced
+  by the operator inbox plan's section 1 and 2 security reviews, and re-read 2026-09-30 by the
+  client sandbox plan's finishing security review). `npm audit` exits 1 on `plans/client-sandbox` at
+  dfd1b5e with one high and three moderate packages, all transitive: the high is `fast-uri`, the
+  moderates `hono`, `ip-address` and `qs`. Neither plan adds a dependency, so the fix is its own
+  change, gated on the whole suite.
 
 - Walk `sliceCodePoints` in `broker/sanitize.ts` up to its limit instead of spreading the whole
   string (parked 2026-09-21, surfaced by the operator inbox plan's section 2 performance review). It
@@ -582,6 +583,53 @@ and none carries a date of its own. An item added from here on carries `(parked 
   Discord identifier the broker interpolates into bot-token request paths. The comment should say
   that, so an edit loosening the pattern for one caller sees what it weakens. The file sat outside
   that section's scope, which is why it was not fixed there.
+
+- Operator checks for the client sandbox plan (parked 2026-09-30, the handoff of
+  `archive/plans/channels_client-sandbox_spec_v1.md`). Three checks only the operator can run, in
+  order. First, on the operator's own server, add a second account of the operator's to
+  `CHANNEL_SENDERS` as a participant, restart the broker, post from it into a persona's thread, and
+  read that persona's transcript: the prompt's envelope carries `author` and
+  `sender_class="participant"`. Second, set `CHANNEL_RESPONSE_GATE=shadow` on that host for a week,
+  post as both accounts, label a hundred journal rows, run `tools/response-gate-score.ts`, and pick
+  the threshold. Third, flip the mode to `live` with that threshold, hold a short two-person
+  conversation with one deliberate ask, and confirm the ask reached the persona as one attributed
+  event. An envelope without the attributes reopens section 2 and the persona plan's first section;
+  a precision below what the operator will accept at every threshold reopens section 6's question
+  wording as a new plan; an ask that never arrived before the age cap reopens section 6.
+
+- Count the inbound rate ceiling per sender rather than per session (parked 2026-09-30, from the
+  client sandbox plan's finishing security review). `withinRate` in `broker/routing/inbound.ts`
+  keys its twenty-a-minute window on the session, so a participant posting steadily fills it and an
+  operator's chat to that session is dropped with a log line until the window moves on. A typed
+  verdict and a held question's answer are read before the ceiling and stay reachable. The security
+  model states the residual under T9 and "A participant shares its session's inbound allowance".
+  The fix is a per-sender window, or an operator allowance a participant cannot spend, with the
+  security model's lead updated to match. Dormant until a host names a participant.
+
+- Release the response gate's per-thread post clock with its session, and stop sizing the journal
+  on every row (parked 2026-09-30, from the client sandbox plan's finishing performance review).
+  `lastPost` in `broker/routing/response-gate.ts` gains an entry per thread the bot posts in and
+  drops it only on a held buffer's clear or on `close`, so a thread whose session ended with nothing
+  held keeps about 100 bytes for the broker's life. The journal writer runs `statSync` after every
+  append to learn a size it could count. Neither fails a stated requirement.
+
+- Install doc gaps a client-host reader meets (parked 2026-09-30, from the client sandbox plan's
+  section 7 blind readers). `docs/install.md` has no prerequisites step naming the Node and Claude
+  Code versions; it does not say whose TypeSafe key a client host uses or whose vendor relationship
+  that is; its opening says the channel flag differs by host while a later passage says every host
+  carries plain `--channels`; and its manual route does not map the three acts `Install-Elevated`
+  performs. Each is older than the plan and outside its change.
+
+- Security model coherence fixes (parked 2026-09-30, from the client sandbox plan's section 7
+  blind reader and finishing reviews). In `docs/security-model.md`, a "Those" in the T-list preamble
+  and an "either" in the accepted-risk section have no antecedent; one sentence says the user
+  settings register the relay, against the per-launch registration the relay section and
+  `install.md` describe; and the hardened-files list omits `node_modules`, `package.json` and the
+  plugin cache's `launch.mjs`. `docs/operations.md` gives a machine path as an example of the fleet
+  file, which should read as a placeholder. The gate row for `CHANNEL_RESPONSE_GATE` in the
+  operations variable table runs to about 430 words; its restore timing and re-classing belong in a
+  titled runbook section beside the threshold procedure. Each is prose, older than or placed on
+  purpose by the plan.
 
 ## Snapshots
 
