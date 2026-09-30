@@ -962,7 +962,7 @@ function upgradeUnderTest(input: {
       paced.push(ms);
     },
     drawing,
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     log: (line) => logged.push(line),
   });
   return { desk, upgrade, landed, posted, paced, wire, logged, bodies: held.bodies, drawing, write };
@@ -1135,7 +1135,7 @@ test("an ask past one message posts its continuations before the prompt that nam
   // whose posts then fail points at messages that never arrive.
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1175,7 +1175,7 @@ test("an ask past one message posts its continuations before the prompt that nam
 test("a continuation the thread refused releases the hold instead of marking absent text", async () => {
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1221,7 +1221,7 @@ test("a hold that ends while its continuations post stops posting and draws noth
   // "continued from above" under a message that now says the question is closed.
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1272,7 +1272,7 @@ test("a hold that ends inside the last continuation's round trip is never drawn 
   // the close-out has just rewritten to say the question is closed.
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1562,7 +1562,7 @@ test("a redraw for an entry the desk no longer holds is never issued", async () 
       landed.push({ messageId, text, components });
       return OK;
     },
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     log: (line) => logged.push(line),
   });
 
@@ -1591,7 +1591,7 @@ test("a redraw Discord refuses is one bounded line and never the question that f
     desk,
     drawing: createPromptEdits(),
     edit: async () => ({ status: "rate-limited", rate: NO_RATE_INFO }),
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     log: (line) => logged.push(line),
   });
 
@@ -1628,7 +1628,7 @@ test("a refused close-out is one bounded line and never the question that failed
 /** The writer seam the model-change message spends, recording which tier each message took. */
 function tiers() {
   const notices: { threadId: string; text: string }[] = [];
-  const alerts: { threadId: string; text: string; mentionUserId: string | null }[] = [];
+  const alerts: { threadId: string; text: string; mentionUserIds: readonly string[] }[] = [];
   return {
     notices,
     alerts,
@@ -1637,8 +1637,8 @@ function tiers() {
         notices.push({ threadId, text });
         return true;
       },
-      alert: async (threadId: string, text: string, mentionUserId: string | null) => {
-        alerts.push({ threadId, text, mentionUserId });
+      alert: async (threadId: string, text: string, mentionUserIds: readonly string[]) => {
+        alerts.push({ threadId, text, mentionUserIds });
         return { status: "ok" as const, value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
       },
     },
@@ -1658,12 +1658,34 @@ const MODEL_CHANGE = {
   },
 };
 
+test("a model-change alert on a host with two operators mentions both, in text and whitelist", async () => {
+  const { alerts, writer } = tiers();
+  const announce = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer,
+    operatorIds: ["222222222222222222", "333333333333333333"],
+    alertTier: true,
+    volume: () => "ping" as const,
+    log: () => {},
+  });
+
+  announce(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(alerts.length, 1);
+  assert.deepEqual(alerts[0].mentionUserIds, ["222222222222222222", "333333333333333333"]);
+  assert.ok(
+    alerts[0].text.startsWith("<@222222222222222222> <@333333333333333333> "),
+    alerts[0].text,
+  );
+});
+
 test("a model change posts one message on the notice tier by default", async () => {
   const { notices, alerts, writer } = tiers();
   const announce = modelChangeNotice({
     threadFor: () => "thread-1",
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: () => {},
@@ -1684,7 +1706,7 @@ test("the knob moves the same change onto the alert tier, with the mention that 
   const announce = modelChangeNotice({
     threadFor: () => "thread-1",
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: true,
     volume: () => "ping" as const,
     log: () => {},
@@ -1694,7 +1716,7 @@ test("the knob moves the same change onto the alert tier, with the mention that 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(alerts.length, 1);
-  assert.equal(alerts[0].mentionUserId, "222222222222222222");
+  assert.deepEqual(alerts[0].mentionUserIds, ["222222222222222222"]);
   assert.ok(alerts[0].text.startsWith("<@222222222222222222> "), alerts[0].text);
   assert.deepEqual(notices, []);
 });
@@ -1704,7 +1726,7 @@ test("a change in a session with no thread posts nothing at all", async () => {
   const announce = modelChangeNotice({
     threadFor: () => null,
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: () => {},
@@ -1728,7 +1750,7 @@ test("the alert tier rides its own per-thread window", async () => {
   const announce = modelChangeNotice({
     threadFor: () => "thread-1",
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: true,
     volume,
     log: (message) => logs.push(message),
@@ -1740,8 +1762,8 @@ test("the alert tier rides its own per-thread window", async () => {
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(alerts.length, 2, "past the post ceiling nothing is written");
-  assert.equal(alerts[0].mentionUserId, "222222222222222222");
-  assert.equal(alerts[1].mentionUserId, null, "past the ping ceiling the alert goes quiet");
+  assert.deepEqual(alerts[0].mentionUserIds, ["222222222222222222"]);
+  assert.deepEqual(alerts[1].mentionUserIds, [], "past the ping ceiling the alert goes quiet");
   assert.ok(!alerts[1].text.includes("<@"), alerts[1].text);
   assert.deepEqual(notices, []);
   assert.equal(logs.length, 1, logs.join("\n"));
@@ -1761,7 +1783,7 @@ test("a floored or refused model-change write leaves a content-free log line", a
         throw new Error("unused");
       },
     },
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: (message) => logs.push(message),
@@ -1774,7 +1796,7 @@ test("a floored or refused model-change write leaves a content-free log line", a
       },
       alert: async () => ({ status: "failed" as const, error: "over budget", rate: NO_RATE_INFO }),
     },
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: true,
     volume: () => "quiet" as const,
     log: (message) => logs.push(message),
@@ -1800,7 +1822,7 @@ test("a write that throws costs the message and nothing else", async () => {
         throw new Error("unused");
       },
     },
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: (message) => logs.push(message),

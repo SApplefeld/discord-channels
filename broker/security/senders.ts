@@ -25,16 +25,14 @@ export type SenderGate = {
   classOf: (senderId: string) => SenderClass | null;
   /** True for every user the roster names, whatever their class. */
   allows: (senderId: string) => boolean;
-  /** Every operator, in roster order. */
+  /**
+   * Every operator, in roster order. The only IDs any message this broker writes is allowed to
+   * resolve as mentions, which is what keeps a deliberate ping from becoming a mention primitive for
+   * untrusted text. Empty when the roster names no operator, which loadSenderGate never returns.
+   */
   operatorIds: readonly string[];
   /** Every participant, in roster order. */
   participantIds: readonly string[];
-  /**
-   * The first operator. The only ID any message this broker writes is allowed to resolve as a
-   * mention, which is what keeps a deliberate ping from becoming a mention primitive for untrusted
-   * text. Empty when the roster names no operator, which loadSenderGate never returns.
-   */
-  operatorId: string;
 };
 
 /** Discord identifiers are snowflakes. Shared with the channel ID's check in discord/config.ts. */
@@ -73,7 +71,6 @@ export function createSenderGate(entries: readonly SenderEntry[]): SenderGate {
     allows: (senderId) => classOf(senderId) !== null,
     operatorIds,
     participantIds: idsOf("participant"),
-    operatorId: operatorIds[0] ?? "",
   };
 }
 

@@ -30,6 +30,7 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_OPTION_DESCRIPTION_LENGTH,
   MAX_OPTION_LABEL_LENGTH,
+  mentionPrefix,
 } from "./render.ts";
 import type { AskedQuestion } from "./render.ts";
 
@@ -88,9 +89,11 @@ export const MAX_BODY_DESCRIPTION_LENGTH = 1_500;
  * What the head and the footer are allowed to cost, so the questions can be given the rest.
  *
  * Reserved rather than measured, because the budget has to be known before the head is composed:
- * the mention is at most a couple of dozen units and the headline a couple of dozen more, and the
- * footer is a fixed string. Both together sit inside this with room to spare, and the spare is the
- * slack that keeps the assembled message under the ceiling whatever rounding the split leaves.
+ * one operator's mention is at most a couple of dozen units and the headline a couple of dozen
+ * more, and the footer is a fixed string. Both together sit inside this with room to spare, and the
+ * spare is the slack that keeps the assembled message under the ceiling whatever rounding the split
+ * leaves. Every operator mentioned past the first is measured and taken from the questions' budget
+ * on top of this, since the roster decides how long the mention runs.
  */
 const PROMPT_FURNITURE_ROOM = 200;
 
@@ -704,12 +707,14 @@ function button(customId: string, label: string, style: 1 | 2): Button {
  * edit of this message show the operator their own choices back.
  */
 export function renderQuestionPrompt(input: {
-  operatorId: string | null;
+  operatorIds: readonly string[];
   entryId: string;
   questions: readonly AskedQuestion[];
   selections: ReadonlyArray<readonly string[]>;
 }): QuestionMessage {
-  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+  const mention = mentionPrefix(input.operatorIds);
+  // What the mention costs beyond the one operator `PROMPT_FURNITURE_ROOM` already reserves for.
+  const extraMention = mention.length - mentionPrefix(input.operatorIds.slice(0, 1)).length;
   const { entryId } = input;
   // Bounded here rather than trusted from the caller, so both budgets this function holds are
   // arithmetic over a number it knows. The reader slices an ask to four questions and Discord takes
@@ -767,7 +772,7 @@ export function renderQuestionPrompt(input: {
   // What each question would draw unheld, then the shares that fit those wants inside one message.
   // Measured before anything is drawn, because a share cannot be decided from a question in
   // isolation: what one does not want is what another gets.
-  const budget = MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM;
+  const budget = MAX_MESSAGE_LENGTH - PROMPT_FURNITURE_ROOM - extraMention;
   // The unheld blocks serve twice: their costs are the wants the shares are split against, and the
   // ones whose held drawing spilled are the continuation copy, redrawn by the same composer so an
   // option cannot read one way in the body and another way below it. Composed from the questions

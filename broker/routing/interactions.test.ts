@@ -25,6 +25,7 @@ import type { InboundInteraction } from "./interactions.ts";
 
 const OPERATOR = "700000000000000002";
 const INTRUDER = "700000000000000003";
+const PARTICIPANT = "700000000000000004";
 const SESSION = "session-a";
 const THREAD = "thread-1";
 const OTHER_THREAD = "thread-2";
@@ -129,7 +130,10 @@ function harness(asked: AskedQuestion[] = questions(), rate = NO_RATE, now?: () 
   assert.ok(entryId !== null);
 
   const router = createInteractionRouter({
-    gate: createSenderGate([{ id: OPERATOR, class: "operator" }]),
+    gate: createSenderGate([
+      { id: OPERATOR, class: "operator" },
+      { id: PARTICIPANT, class: "participant" },
+    ]),
     desk,
     // The permission desk stands in: what it does with a verdict is its own file's subject, and
     // what this one measures is which thread and which nonce reach it, and what a press that found
@@ -510,6 +514,51 @@ test("a permission press from anyone but the operator never reaches the desk", a
     { threadId: THREAD, verdict: { requestId: REQUEST, behavior: "allow" }, nonce: NONCE },
   ]);
   assert.deepEqual(callbacks, [{ kind: "acknowledge", text: null }]);
+});
+
+test("a participant's permission press is refused as not an operator, and never reaches the desk", async () => {
+  // The gate admits a participant, so the allowlist refusal above does not fire for them; what
+  // stops the press is the class. A button press decides what a session may run, which is the
+  // operator's authority alone.
+  const { router, resolved, callbacks, logged } = harness();
+  const customId = permissionPress("allow");
+
+  for (let index = 0; index < 5; index += 1) {
+    await router.deliver(press({ senderId: PARTICIPANT, customId }));
+  }
+
+  assert.deepEqual(resolved, [], "no verdict was even offered to the desk");
+  assert.deepEqual(callbacks, [], "and nothing was said back");
+  const refusals = logged.filter((line) => line.includes("is not an operator"));
+  assert.deepEqual(
+    refusals,
+    [`routing: ignored an interaction from ${PARTICIPANT}, who is not an operator`],
+    "one line on the router's repeat log, however many times it is pressed",
+  );
+  assert.ok(!logged.some((line) => line.includes("is not the allowed sender")), logged.join("\n"));
+
+  // The same bytes from the operator resolve, so what was measured is the class.
+  await router.deliver(press({ senderId: OPERATOR, customId }));
+  assert.deepEqual(resolved, [
+    { threadId: THREAD, verdict: { requestId: REQUEST, behavior: "allow" }, nonce: NONCE },
+  ]);
+  assert.deepEqual(callbacks, [{ kind: "acknowledge", text: null }]);
+});
+
+test("a participant's press on a held question selects, submits and releases nothing", async () => {
+  const { router, entryId, desk, writes, callbacks } = harness();
+
+  await router.deliver(press({ senderId: PARTICIPANT, customId: `qd:${entryId}:0`, values: ["0"] }));
+  await router.deliver(press({ senderId: PARTICIPANT, customId: `qd:${entryId}:send` }));
+  await router.deliver(press({ senderId: PARTICIPANT, customId: `qd:${entryId}:console` }));
+
+  assert.deepEqual(callbacks, []);
+  assert.deepEqual(writes, [], "the session's hold is untouched");
+  assert.deepEqual(desk.entry(entryId)?.selections, [[], []], "no selection was recorded");
+
+  // The operator's same press records, so the refusal above was the class and not the route.
+  await router.deliver(press({ customId: `qd:${entryId}:0`, values: ["0"] }));
+  assert.deepEqual(desk.entry(entryId)?.selections, [["Commit-and-Push"], []]);
 });
 
 test("a permission press the bucket cannot answer never reaches the desk", async () => {

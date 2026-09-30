@@ -151,8 +151,8 @@ export function questionDelivery(options: {
 export function modelChangeNotice(options: {
   threadFor: (sessionId: string) => string | null;
   writer: Pick<ThreadWriter, "notice" | "alert">;
-  /** The operator the alert tier mentions, and the knob that decides whether that tier is used. */
-  operatorId: string;
+  /** Every operator, whom the alert tier mentions, and the knob that decides whether it is used. */
+  operatorIds: readonly string[];
   alertTier: boolean;
   /**
    * The alert tier's own per-thread volume window, its own instance and never a shared one. The
@@ -170,7 +170,7 @@ export function modelChangeNotice(options: {
   return (change) => {
     const threadId = options.threadFor(change.sessionId);
     if (threadId === null) return;
-    let operatorId: string | null = null;
+    let operatorIds: readonly string[] = [];
     if (options.alertTier) {
       const level = options.volume(threadId);
       if (level === "drop") {
@@ -179,10 +179,10 @@ export function modelChangeNotice(options: {
         );
         return;
       }
-      operatorId = level === "ping" ? options.operatorId : null;
+      operatorIds = level === "ping" ? options.operatorIds : [];
     }
     const text = renderModelChange({
-      operatorId,
+      operatorIds,
       from: change.from,
       to: change.to,
       downgrade: change.downgrade,
@@ -190,7 +190,7 @@ export function modelChangeNotice(options: {
     void (async () => {
       try {
         if (options.alertTier) {
-          const posted = await options.writer.alert(threadId, text, operatorId);
+          const posted = await options.writer.alert(threadId, text, operatorIds);
           if (posted.status !== "ok") {
             options.log(
               `broker: session ${change.sessionId}'s model-change alert was not written; ` +
@@ -413,7 +413,7 @@ export function questionUpgrade(options: {
   /** The pause between continuation posts. Injected the way `now` is, so a test drives the pacing. */
   wait: (ms: number) => Promise<void>;
   drawing: PromptEdits;
-  operatorId: string;
+  operatorIds: readonly string[];
   log: (message: string) => void;
 }): (input: {
   sessionId: string;
@@ -441,7 +441,7 @@ export function questionUpgrade(options: {
     const entryId = options.desk.noteAlert(sessionId, digest, { threadId, messageId });
     if (entryId === null) return;
     const prompt = renderQuestionPrompt({
-      operatorId: options.operatorId,
+      operatorIds: options.operatorIds,
       entryId,
       questions,
       selections: questions.map(() => []),
@@ -550,7 +550,7 @@ export function continuationPosts(options: {
  *
  * A select reports its whole selection back to Discord, but the client rebuilds the menu from the
  * message, so an ask whose message is never rewritten shows the placeholder again after every
- * choice. Rendered with the operator's own ID whatever tier the alert was posted under, because an
+ * choice. Rendered with every operator's ID whatever tier the alert was posted under, because an
  * edit resolves no mention at all: the transport names none, so the pill renders and pings nobody.
  *
  * The view arrives from a read taken before the press was acknowledged, so the entry it describes
@@ -567,7 +567,7 @@ export function questionRefresh(options: {
     components: readonly ActionRow[],
   ) => Promise<CallOutcome<null>>;
   drawing: PromptEdits;
-  operatorId: string;
+  operatorIds: readonly string[];
   log: (message: string) => void;
 }): (entry: QuestionEntryView) => Promise<void> {
   return async (entry) => {
@@ -575,7 +575,7 @@ export function questionRefresh(options: {
       const live = options.desk.entry(entry.id);
       if (live === null || live.alert === null) return null;
       const prompt = renderQuestionPrompt({
-        operatorId: options.operatorId,
+        operatorIds: options.operatorIds,
         entryId: live.id,
         questions: live.questions,
         selections: live.selections,
@@ -1066,8 +1066,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (written) outbound.endNarration(threadId);
       return written;
     },
-    alert: async (threadId, text, mentionUserId) => {
-      const posted = await writer.alert(threadId, text, mentionUserId);
+    alert: async (threadId, text, mentionUserIds) => {
+      const posted = await writer.alert(threadId, text, mentionUserIds);
       if (posted.status === "ok") outbound.endNarration(threadId);
       return posted;
     },
@@ -1476,7 +1476,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       relays,
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
-      operatorId: gate.operatorId,
+      operatorIds: gate.operatorIds,
       now: Date.now,
       log: note,
     });
@@ -1488,8 +1488,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const desk = createBlockedDesk({
       eventsPath: config.boardEventsPath,
       threadFor: (sessionId) => surface.threadFor(sessionId),
-      alert: (threadId, text, mentionUserId) => steeringWriter.alert(threadId, text, mentionUserId),
-      operatorId: gate.operatorId,
+      alert: (threadId, text, mentionUserIds) => steeringWriter.alert(threadId, text, mentionUserIds),
+      operatorIds: gate.operatorIds,
       now: Date.now,
       log: note,
     });
@@ -1532,7 +1532,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           setTimeout(resolve, ms).unref();
         }),
       drawing,
-      operatorId: gate.operatorId,
+      operatorIds: gate.operatorIds,
       log: note,
     });
     deliverQuestion = async (sessionId, questions) => {
@@ -1542,10 +1542,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (volume === "drop") {
         return { status: "failed", error: "question alerts are over their window" };
       }
-      const mention = volume === "ping" ? gate.operatorId : null;
+      const mention = volume === "ping" ? gate.operatorIds : [];
       const posted = await steeringWriter.alert(
         threadId,
-        renderQuestionNotice({ operatorId: mention, questions }),
+        renderQuestionNotice({ operatorIds: mention, questions }),
         mention,
       );
       if (posted.status !== "ok") return { status: "failed", error: "the alert was not written" };
@@ -1555,7 +1555,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     announceModelChange = modelChangeNotice({
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
-      operatorId: gate.operatorId,
+      operatorIds: gate.operatorIds,
       alertTier: config.modelChangeAlert,
       // Its own window instance, never the question alert's or the permission desk's: shared
       // stamps would let one class spend another's slots and push it into drop, the starvation
@@ -1585,7 +1585,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         edit: (threadId, messageId, text, components) =>
           steeringWriter.edit(threadId, messageId, text, components),
         drawing,
-        operatorId: gate.operatorId,
+        operatorIds: gate.operatorIds,
         log: note,
       }),
       now: Date.now,

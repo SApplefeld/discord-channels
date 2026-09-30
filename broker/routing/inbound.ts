@@ -2,9 +2,14 @@
 //
 // The sender gate is the first thing `deliver` does, and it is deliberately in front of everything
 // else: the thread lookup, the verdict pattern, and the relay pipe all sit behind it, so a message
-// from anyone but the operator is refused before this file has read anything but who wrote it. A
-// verdict-shaped message is not a special case there, and it must not become one, because a
+// from anyone the roster does not name is refused before this file has read anything but who wrote
+// it. A verdict-shaped message is not a special case there, and it must not become one, because a
 // verdict approves a tool call in a running session.
+//
+// Behind the gate, the paths that consume a message as the operator's act key on the sender's
+// class and never on the author's name: a verdict, a held question's typed answer, and the inbox
+// clears run only for an operator. A participant's message, whatever its shape, is delivered as
+// the text it is.
 //
 // A process token identifies a pipe. It is not evidence about who sent a message, and no check
 // here consults it for that.
@@ -85,17 +90,17 @@ function bounded(text: string): { text: string; truncated: boolean } {
 }
 
 /**
- * The operator inbox's clearing seam. What reaches it is only what the operator wrote: everything
- * here sits behind the sender gate.
+ * The operator inbox's clearing seam. What reaches it is only what an operator wrote: everything
+ * here sits behind the sender gate, and the router calls it for an operator's message alone.
  */
 export type InboundInbox = {
   /**
-   * A message reached a live or stale session at `at`. A message landing mid-turn may fire no
-   * prompt hook, so the delivery is itself the operator answering that session.
+   * An operator's message reached a live or stale session at `at`. A message landing mid-turn may
+   * fire no prompt hook, so the delivery is itself the operator answering that session.
    */
   clear: (sessionId: string, at: number) => void;
   /**
-   * The operator wrote in an ended session's thread at `at`. Nothing is delivered, and the post is
+   * An operator wrote in an ended session's thread at `at`. Nothing is delivered, and the post is
    * still the operator having seen that session's last word.
    */
   clearEnded: (sessionId: string, at: number) => void;
@@ -160,7 +165,7 @@ function sessionForThread(
   return ended;
 }
 
-/** What the operator sees in the thread when a message had nowhere to go. */
+/** What the thread is told when a message had nowhere to go. */
 export const ENDED_NOTICE =
   "This session has ended, so the message was not delivered. Nothing is queued: start a new " +
   "session and it opens its own thread.";
@@ -235,14 +240,19 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // never the allowlisted one, so the gate below would refuse it a line later either way.
       if (message.fromBot) return;
 
-      // Everything below this line is what one Discord account is trusted to do. Gating on the
-      // thread instead would make access to the room the credential, and every member of the
-      // channel could steer a session and approve its tool calls.
+      // Everything below this line is what a rostered Discord account is trusted to do, and the
+      // class decides how much. Gating on the thread instead would make access to the room the
+      // credential, and every member of the channel could steer a session and approve its tool
+      // calls.
       const senderClass: SenderClass | null = options.gate.classOf(message.senderId);
       if (senderClass === null) {
         log(`routing: refused a message from ${message.senderId}, who is not the allowed sender`);
         return;
       }
+      // Whether this message can be the operator's act: a verdict, a held question's answer, or the
+      // inbox clear. A participant talks to the session and answers nothing on the operator's
+      // behalf, so every one of those paths is skipped for them and their message flows on as text.
+      const operator = senderClass === "operator";
 
       const { text, truncated } = bounded(message.text);
       // An attachment, a sticker, or a message whose whole content was invisible. There is nothing
@@ -264,10 +274,14 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // an exact match, which would approve a tool call on words the full text never said. The cut
       // text flows to the session as chat instead, announced below.
       //
-      // No nonce goes with it: this is a message composed now, in this thread, by the one account
-      // this broker acts for, so the ID it names is the ID the operator is looking at. The nonce is
-      // the button path's control over a tap on a message of any age.
-      const verdict = truncated ? null : parseVerdict(text);
+      // A participant's message is never parsed as a verdict either: a verdict approves a tool
+      // call, which is the operator's authority alone, so a participant's `y abcde` is words for
+      // the session like any other and is neither resolved nor reported as naming nothing.
+      //
+      // No nonce goes with it: this is a message composed now, in this thread, by an account this
+      // broker acts for, so the ID it names is the ID the operator is looking at. The nonce is the
+      // button path's control over a tap on a message of any age.
+      const verdict = truncated || !operator ? null : parseVerdict(text);
       if (verdict !== null && options.permissions.resolve(message.threadId, verdict, null)) return;
 
       const record = sessionForThread(options.registry, options.threadFor, message.threadId);
@@ -290,13 +304,21 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // would answer the session's question with a sentence that stops mid-thought. The cut text
       // flows on as chat instead, announced, and the question stays held and answerable.
       //
+      // Only an operator's message is an answer. A participant speaking while the session is parked
+      // is delivered as chat below and leaves the question held for an operator to answer.
+      //
       // A verdict shape that resolved no request reaches here and is submitted as the answer it
       // reads as. The trade this accepts: a genuine verdict whose request was lost, which a broker
       // restart between the prompt and the answer does, becomes the answer to whatever question the
       // session is holding. Deliberate, because the request that verdict named is already gone and
       // no reading of the message can approve anything, while the operator sees exactly what was
       // submitted in the thread message's own terminal edit.
-      if (record !== null && !truncated && options.questions.answerTyped(record.sessionId, text)) {
+      if (
+        record !== null &&
+        operator &&
+        !truncated &&
+        options.questions.answerTyped(record.sessionId, text)
+      ) {
         return;
       }
 
@@ -315,7 +337,11 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
 
       if (record.state === "ended") {
         const endedAt = now();
-        toInbox((inbox) => inbox.clearEnded(record.sessionId, endedAt), record.sessionId);
+        // The inbox item is the session waiting on an operator, so only an operator's post clears
+        // it, here and on the delivered path below.
+        if (operator) {
+          toInbox((inbox) => inbox.clearEnded(record.sessionId, endedAt), record.sessionId);
+        }
         log(
           `routing: a message reached the ended session ${record.sessionId}, rejecting it in-thread`,
         );
@@ -339,7 +365,9 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       });
       if (delivered) {
         const deliveredAt = now();
-        toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
+        if (operator) {
+          toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
+        }
         // Announced only here, after the truncated text reached a live session: on every
         // undelivered path (no thread, ended session, over the rate ceiling, no relay), a cut is
         // noise about text nobody received.

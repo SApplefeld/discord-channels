@@ -4,8 +4,8 @@
 // a write Discord refuses is a write repeated forever. A reply, a rejection notice, and a
 // permission prompt are a different route and a different bucket, but the same hazard, and a worse
 // one: they are the only writes something outside this machine can provoke. The sender gate means
-// only the operator can provoke them, so the budget and the notice floor are what stand between an
-// accident or a runaway session and the channel this fleet is watched from.
+// only an account on the roster can provoke them, so the budget and the notice floor are what stand
+// between an accident or a runaway session and the channel this fleet is watched from.
 //
 // Nothing is queued, for the same reason nothing is queued in the surfaces: a reply that lands
 // minutes late answers a question the operator has stopped asking, and a notice that lands late
@@ -55,7 +55,8 @@ export type ThreadWriter = {
    */
   notice: (threadId: string, text: string) => Promise<boolean>;
   /**
-   * Posts a message that mentions one user, or nobody when the caller passes null.
+   * Posts a message that mentions exactly the users passed, every operator on the ping tier, or
+   * nobody when the caller passes an empty list.
    *
    * The same bucket as `reply` and `notice`, deliberately: this is the write that reaches a phone,
    * so a flood of them is the loudest failure available here, and it is bounded by the budget
@@ -70,7 +71,7 @@ export type ThreadWriter = {
   alert: (
     threadId: string,
     text: string,
-    mentionUserId: string | null,
+    mentionUserIds: readonly string[],
   ) => Promise<CallOutcome<{ messageId: string | null }>>;
 };
 
@@ -150,17 +151,17 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
   function post(
     threadId: string,
     text: string,
-    mentionUserId?: string,
+    mentionUserIds: readonly string[] = [],
   ): Promise<CallOutcome<{ messageId: string | null }>> {
     return withBudget(postBudget, "a post", threadId, async () => {
       const body = neutralize(text);
       if (body === null) return emptyMessageFailure();
-      // The field is left off entirely rather than sent as undefined, so the only write that
-      // carries a mentionable user is the one that meant to.
+      // The field is left off entirely unless it names someone, so the only write that carries a
+      // mentionable user is the one that meant to.
       return options.messenger.postToThread({
         threadId,
         text: body,
-        ...(mentionUserId === undefined ? {} : { mentionUserId }),
+        ...(mentionUserIds.length === 0 ? {} : { mentionUserIds: [...mentionUserIds] }),
       });
     });
   }
@@ -201,6 +202,6 @@ export function createThreadWriter(options: ThreadWriterOptions): ThreadWriter {
       return true;
     },
 
-    alert: (threadId, text, mentionUserId) => post(threadId, text, mentionUserId ?? undefined),
+    alert: (threadId, text, mentionUserIds) => post(threadId, text, mentionUserIds),
   };
 }

@@ -48,7 +48,6 @@ test("each admitted id carries its own class and a stranger carries none", () =>
   assert.equal(gate.allows(PARTICIPANT), true, "a participant is admitted");
   assert.deepEqual(gate.operatorIds, [OPERATOR]);
   assert.deepEqual(gate.participantIds, [PARTICIPANT]);
-  assert.equal(gate.operatorId, OPERATOR);
 });
 
 test("an id listed twice with one class is one entry, and with two classes is refused", () => {
@@ -157,7 +156,6 @@ test("an id given two classes across the list or across both variables is refuse
 
 test("a configured allowlist yields a gate over exactly that user", () => {
   const gate = loadSenderGate({ CHANNEL_ALLOWED_USER_ID: ` ${OPERATOR} ` });
-  assert.equal(gate.operatorId, OPERATOR);
   assert.equal(gate.classOf(OPERATOR), "operator");
   assert.deepEqual(gate.operatorIds, [OPERATOR]);
   assert.equal(gate.allows(OPERATOR), true);
@@ -172,7 +170,6 @@ test("a classed senders list admits each id under its class", () => {
   assert.equal(gate.classOf("222222222222222222"), "participant");
   assert.equal(gate.allows(STRANGER), false);
   assert.deepEqual(gate.operatorIds, ["111111111111111111"]);
-  assert.equal(gate.operatorId, "111111111111111111");
 });
 
 test("both variables union, with the legacy id an operator listed first", () => {
@@ -187,7 +184,9 @@ test("both variables union, with the legacy id an operator listed first", () => 
   });
   assert.equal(gate.classOf(OPERATOR), "operator");
   assert.equal(gate.classOf(PARTICIPANT), "participant");
-  assert.deepEqual(gate.operatorIds, [OPERATOR, SECOND_OPERATOR]);
+  assert.deepEqual(gate.operatorIds, [OPERATOR, SECOND_OPERATOR], "every operator, in roster order");
   assert.deepEqual(gate.participantIds, [PARTICIPANT]);
-  assert.equal(gate.operatorId, OPERATOR, "the first operator is the one every caller still reads");
+  // No single-operator field stands beside the list: a caller reading one would mention, or trust,
+  // the first operator alone.
+  assert.equal(Object.hasOwn(gate, "operatorId"), false);
 });

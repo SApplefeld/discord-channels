@@ -129,11 +129,12 @@ export type ThreadMessenger = {
     threadId: string;
     text: string;
     /**
-     * The single Discord user this one message may resolve as a mention. Left unset on every
-     * write but the permission prompt and the question alert, the two messages in this system
-     * meant to reach a phone before the operator next looks at it.
+     * The Discord users this one message may resolve as mentions: every operator, or none. Left
+     * unset on every write but the broker's alerts (the permission prompt, the question alert, the
+     * blocked alert and the model-change alert), the messages in this system meant to reach a
+     * phone before an operator next looks at the thread.
      */
-    mentionUserId?: string;
+    mentionUserIds?: readonly string[];
   }) => Promise<CallOutcome<{ messageId: string | null }>>;
   /**
    * Rewrites a message this bot posted into the thread. Never re-posts it.

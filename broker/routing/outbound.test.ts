@@ -337,7 +337,7 @@ test("a rate-limit block earned by mirror volume does not drop an alert", async 
   );
 
   assert.equal(
-    (await writer.alert(THREAD, "permission prompt", null)).status,
+    (await writer.alert(THREAD, "permission prompt", [])).status,
     "ok",
     "the alert path must still post while the mirror bucket is blocked",
   );
@@ -3206,7 +3206,7 @@ test("a peer message leaves a standing blocked state standing, and the operator'
     eventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
     threadFor: () => THREAD,
     alert: async () => ({ status: "ok", value: { messageId: "900000000000000011" }, rate: NO_RATE_INFO }),
-    operatorId: "700000000000000002",
+    operatorIds: ["700000000000000002"],
     now: () => at,
     readEvents: () => ({
       state: {
@@ -3740,7 +3740,7 @@ test("a suppressed turn-opening prompt does not clear a block raised after its h
     eventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
     threadFor: () => THREAD,
     alert: async () => ({ status: "ok", value: { messageId: "900000000000000011" }, rate: NO_RATE_INFO }),
-    operatorId: "700000000000000002",
+    operatorIds: ["700000000000000002"],
     now: () => at,
     readEvents: () => ({
       state: {
@@ -3806,7 +3806,7 @@ test("a recovered prompt is engagement at the instant it was typed, not the inst
     eventsPath: path.join(os.tmpdir(), "channels-absent", "kit-events.jsonl"),
     threadFor: () => THREAD,
     alert: async () => ({ status: "ok", value: { messageId: "900000000000000011" }, rate: NO_RATE_INFO }),
-    operatorId: "700000000000000002",
+    operatorIds: ["700000000000000002"],
     now: () => at,
     readEvents: () => ({
       state: {

@@ -493,6 +493,39 @@ test("a message that is not a verdict is chat, and reaches the session unchanged
   ]);
 });
 
+test("a participant's verdict shape is chat, and only an operator's resolves the request", async () => {
+  // The desk resolves every verdict it is offered here, so a participant's reaching `resolve` at all
+  // would approve the tool call. The desk is the witness, as it is for the stranger above: an empty
+  // record means the pattern never ran for this sender, not merely that it resolved nothing.
+  const { router, verdicts, unknownVerdicts, sent } = harness();
+  await router.deliver(message({ senderId: PARTICIPANT, author: "Bo", text: "y abcde" }));
+  assert.deepEqual(verdicts, [], "a participant's verdict shape never reached the desk");
+  assert.deepEqual(unknownVerdicts, [], "nor was it reported as a verdict naming nothing");
+  assert.deepEqual(sent, [
+    { type: "message", chatId: THREAD, text: "y abcde", author: "Bo", senderClass: "participant" },
+  ]);
+
+  await router.deliver(message({ text: "y abcde" }));
+  assert.deepEqual(verdicts, [
+    { threadId: THREAD, verdict: { behavior: "allow", requestId: "abcde" } },
+  ]);
+  assert.equal(sent.length, 1, "the operator's verdict is consumed, not also delivered");
+});
+
+test("a participant's verdict shape with nothing open is delivered, never reported unknown", async () => {
+  const { router, unknownVerdicts, sent } = harness({ verdictResolves: false });
+  await router.deliver(message({ senderId: PARTICIPANT, author: "Bo", text: "no there" }));
+  assert.deepEqual(unknownVerdicts, []);
+  assert.equal(sent.length, 1);
+
+  // The operator's same words are still a verdict shape, reported as naming nothing.
+  await router.deliver(message({ text: "no there" }));
+  assert.deepEqual(unknownVerdicts, [
+    { threadId: THREAD, verdict: { behavior: "deny", requestId: "there" } },
+  ]);
+  assert.equal(sent.length, 1);
+});
+
 test("a verdict costs a session nothing from its inbound rate ceiling", async () => {
   // A verdict is not text handed to the model, so spending the message allowance on one would let
   // a run of approvals lock the operator out of talking to the session they are approving for.
@@ -539,6 +572,24 @@ test("a typed message answers the session's held question, and is not also steer
     false,
     "a free-form answer carries no answers map: the two spellings are alternatives",
   );
+});
+
+test("a participant's message during a hold is chat, and only an operator's answers the question", async () => {
+  const question = heldQuestion();
+  const { router, sent } = harness({ questions: { answerTyped: question.desk.answerTyped } });
+  question.hold();
+
+  await router.deliver(message({ senderId: PARTICIPANT, author: "Bo", text: "the first one" }));
+  assert.equal(question.answered(), false, "the question is still held");
+  assert.deepEqual(sent, [
+    { type: "message", chatId: THREAD, text: "the first one", author: "Bo", senderClass: "participant" },
+  ]);
+
+  await router.deliver(message({ text: "the second one" }));
+  assert.equal(question.writes.length, 1, "the operator's message answered it");
+  const body = question.writes[0] as { hookSpecificOutput: { updatedInput: { response: string } } };
+  assert.equal(body.hookSpecificOutput.updatedInput.response, "the second one");
+  assert.equal(sent.length, 1, "and was not also delivered");
 });
 
 test("with no question held, the same message steers exactly as it does today", async () => {
@@ -800,6 +851,36 @@ test("a message in an ended session's thread clears its item as ended, and nothi
   await router.deliver(message());
   assert.deepEqual(sent, []);
   assert.deepEqual(notices, [{ threadId: THREAD, text: ENDED_NOTICE }], "still told it was not delivered");
+  assert.deepEqual(ended, [{ sessionId: "session-a", at: 6_000 }]);
+  assert.deepEqual(cleared, []);
+});
+
+test("a participant's delivered message leaves the inbox item in place; an operator's clears it", async () => {
+  // The inbox item is the session waiting on the operator, and a participant speaking in the thread
+  // has not answered it.
+  const { inbox, cleared, ended } = watchedInbox();
+  const { router, sent } = harness({ inbox, now: () => 4_000 });
+
+  await router.deliver(message({ senderId: PARTICIPANT, author: "Bo", text: "any news?" }));
+  assert.equal(sent.length, 1, "the participant's message was delivered");
+  assert.deepEqual(cleared, [], "and cleared nothing");
+
+  await router.deliver(message());
+  assert.equal(sent.length, 2);
+  assert.deepEqual(cleared, [{ sessionId: "session-a", at: 4_000 }]);
+  assert.deepEqual(ended, []);
+});
+
+test("a participant's message in an ended session's thread is refused and clears nothing", async () => {
+  const { inbox, cleared, ended } = watchedInbox();
+  const { registry, router, notices } = harness({ inbox, now: () => 6_000 });
+  registry.relayClosed(TOKEN, "session-a");
+
+  await router.deliver(message({ senderId: PARTICIPANT, author: "Bo" }));
+  assert.deepEqual(notices, [{ threadId: THREAD, text: ENDED_NOTICE }], "still told it was not delivered");
+  assert.deepEqual(ended, [], "the ended item stays for an operator to see");
+
+  await router.deliver(message());
   assert.deepEqual(ended, [{ sessionId: "session-a", at: 6_000 }]);
   assert.deepEqual(cleared, []);
 });
