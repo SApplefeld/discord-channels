@@ -311,3 +311,9 @@ Delta: moment 2026-09-30, SCOTT-CLAUDE.
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+### Interim board 1 - 2026-09-30
+In-flight section: 5, the thread buffer, in fix round 3 after three review rounds. Commits on the branch for it: 9039d0a (first green), e5fe11e (fix round 1: event budget under the relay line cap, session-keyed buffers, close on stop, counted unreachable notice), 762847d (fix round 2: in-order writes, drop logs, the ruled counted drop notice).
+Live dispatch: the section 5 implementer (implementer-fable, fable override), asked to classify a dropped buffer's cause from the session records by lineage and startedAt rather than from the thread binding, so a real `/clear` posts the `/clear` wording, and to rewrap one comment.
+Gate baseline: targeted lane (`node --test` over response-gate, inbound, gateway, relays, config, Install-Functions, relay/broker, relay/protocol, relay/index, import-hygiene, broker/index, broker/intake) 387 tests / 387 pass / 0 fail, exit 0, 14 s; lint exit 0. Moment: 2026-09-30, worktree `D:/discord-channels-wt/client-sandbox` clean at 762847d, SCOTT-CLAUDE, no foreign runner at the poll.
+Rulings adopted since Chapter 4: the ARCHITECT's counted drop notice (Intent, section 5 amendment); Standing Brief Amendments for concept-anchored instruction pins (every section), the relay line cap (sections 5 and 6) and the in-name spoof (section 7).
+Next action: read fix round 3's diff, re-run the lane, commit, dispatch review round 4 (adversarial alone at fable). The review-round backstop fires if round 5's adjudication still leaves owed work.
