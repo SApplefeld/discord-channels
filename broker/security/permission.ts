@@ -280,8 +280,8 @@ export type PermissionDesk = {
    *
    * `nonce` is the one a button press carries, and null for a typed verdict. A typed verdict is a
    * message composed now, in the thread, by an operator, the only class whose verdict the router
-   * parses, so the ID it names is the ID that operator is looking at. A press is a tap on a message that may be any age,
-   * and the nonce is what ties it to the one prompt it was drawn on. Required rather than optional
+   * parses, so the ID it names is the ID that operator is looking at. A press is a tap on a
+   * message that may be any age, and the nonce is what ties it to the one prompt it was drawn on. Required rather than optional
    * so a caller states which of the two it is: a press whose nonce went missing would otherwise
    * lose the only control that stands between a recycled request ID and the wrong approval.
    */

@@ -29,6 +29,10 @@ export type SenderGate = {
    * Every operator, in roster order. The only IDs any message this broker writes is allowed to
    * resolve as mentions, which is what keeps a deliberate ping from becoming a mention primitive for
    * untrusted text. Empty when the roster names no operator, which loadSenderGate never returns.
+   * Nothing caps its length. Every alert mentions each operator, and the two long enough to reach
+   * the message ceiling, the permission prompt and the question prompt, take each further mention's
+   * room out of their own longest field. Each alert stays one message on a roster of up to thirty
+   * operators, the smallest bound any alert's arithmetic states (the question notice's).
    */
   operatorIds: readonly string[];
   /** Every participant, in roster order. */

@@ -3156,6 +3156,23 @@ function prompt(overrides: Partial<Parameters<typeof renderPermissionRequest>[0]
   });
 }
 
+test("a permission prompt with every field full stays one message on a long roster", () => {
+  // Each operator past the first lengthens the head by a mention, and the preview gives that room
+  // back, so the cut is the labelled one and the writer never cuts through the closing fence.
+  const roster = Array.from({ length: 12 }, (_, at) => `7000000000000000${String(10 + at)}`);
+  for (const operatorIds of [roster.slice(0, 1), roster]) {
+    const text = prompt({
+      operatorIds,
+      toolName: "t".repeat(500),
+      description: "d".repeat(2_000),
+      inputPreview: "p".repeat(5_000),
+    });
+    assert.ok(text.length <= MAX_MESSAGE_LENGTH, `${String(operatorIds.length)} composed ${String(text.length)}`);
+    assert.ok(text.includes("\nInput (cut):\n"), "the preview's cut is labelled");
+    assert.ok(text.endsWith("```"), "the closing fence survives");
+  }
+});
+
 test("a permission prompt leads with the mention, the id, and how to answer", () => {
   const text = prompt();
   assert.match(text, /^<@700000000000000002> /, "the mention is the first thing on the first line");

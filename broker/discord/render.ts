@@ -777,12 +777,17 @@ export function renderPermissionRequest(input: {
   inputPreview: string;
 }): string {
   const id = input.requestId;
+  const mention = mentionPrefix(input.operatorIds);
+  // The field caps leave room for one operator's mention. Each further one is taken from the
+  // preview, the longest field, so the prompt stays one message and its cut is the labelled one
+  // rather than the writer's silent cut through the closing fence.
+  const extraMention = mention.length - mentionPrefix(input.operatorIds.slice(0, 1)).length;
   return [
-    `${mentionPrefix(input.operatorIds)}**Permission needed** ${SEPARATOR} \`${id}\``,
+    `${mention}**Permission needed** ${SEPARATOR} \`${id}\``,
     `Reply \`y ${id}\` to allow or \`n ${id}\` to deny.`,
     promptField("Tool", input.toolName, MAX_TOOL_NAME_LENGTH),
     promptField("What", input.description, MAX_DESCRIPTION_LENGTH),
-    promptPreview("Input", input.inputPreview, MAX_PREVIEW_LENGTH),
+    promptPreview("Input", input.inputPreview, Math.max(MAX_PREVIEW_LENGTH - extraMention, 0)),
   ].join("\n");
 }
 
@@ -945,8 +950,8 @@ function moreQuestionsTail(count: number): string {
  * operator adding at most 24, a Q line at most 620 (3 + a 100-unit header + 2 + a 500-unit
  * question + a 15-unit suffix), an Options line at most 418 (9 + four 100-unit labels + three
  * separators), and the tail at most 34, about 1,160 in all against the 1,900 ceiling, so the notice
- * never degenerates to a bare tail on a roster of up to thirty operators. Measured in UTF-16 units, the
- * larger of the two counts a length could mean, so holding it holds the code point count too.
+ * never degenerates to a bare tail on a roster of up to thirty operators. Measured in UTF-16 units,
+ * the larger of the two counts a length could mean, so holding it holds the code point count too.
  *
  * A question with no options renders without an Options line rather than as an error: the console
  * always offers a free-form "Other" answer, so an empty list is a shape this tool really
