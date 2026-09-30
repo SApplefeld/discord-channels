@@ -10,6 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MessageType } from "discord.js";
 import {
+  addressing,
+  authorName,
   classifyMessage,
   createSystemNoticeCleaner,
   createUnexpectedSystemReport,
@@ -355,4 +357,87 @@ test("a delete the transport throws on is reported, not propagated", async () =>
 
   assert.equal(lines.length, 1);
   assert.match(lines[0], /socket closed/);
+});
+
+// The name a delivered message is attributed to. Read off the library message beside the author's
+// ID and bounded here, so the precedence is driven on values rather than through a client.
+
+test("a delivered message is attributed to the member nickname first", () => {
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: "Nick", globalName: "Global", username: "user" }),
+    "Nick",
+  );
+});
+
+test("with no nickname the global name is used, and with neither the username", () => {
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: null, globalName: "Global", username: "user" }),
+    "Global",
+  );
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: null, globalName: null, username: "user" }),
+    "user",
+  );
+});
+
+test("a name that bounds to nothing falls to the next, and with none left to the author ID", () => {
+  // A nickname made only of characters that draw as nothing is no name a person can read, so it
+  // does not win over a global name they can.
+  const invisible = String.fromCodePoint(0x200b).repeat(3);
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: invisible, globalName: "Global", username: "user" }),
+    "Global",
+  );
+  assert.equal(
+    authorName({ id: OPERATOR, nickname: invisible, globalName: invisible, username: invisible }),
+    OPERATOR,
+  );
+});
+
+test("the name is bounded on its way out of the gateway", () => {
+  const nickname = `<b>"${String.fromCharCode(0x0a)}${"n".repeat(40)}`;
+  const name = authorName({ id: OPERATOR, nickname, globalName: null, username: "user" });
+  assert.equal(name, `b   ${"n".repeat(28)}`);
+});
+
+// Whether a message addresses this bot, read off the users it mentions and the author of the
+// message it replies to, so the response gate's two certain triggers are driven on values.
+
+/** The facts of a message the operator wrote, addressing nobody, for the tests that vary one. */
+const UNADDRESSED = { selfId: SELF, authorId: OPERATOR, mentionedUserIds: [], repliedToAuthorId: null };
+const NOBODY = { mentionsBot: false, repliesToBot: false, fromSelf: false };
+
+test("a direct mention of the bot's own user addresses it, and a mention of anyone else does not", () => {
+  assert.deepEqual(
+    addressing({ ...UNADDRESSED, mentionedUserIds: [OPERATOR, SELF] }),
+    { ...NOBODY, mentionsBot: true },
+  );
+  assert.deepEqual(addressing({ ...UNADDRESSED, mentionedUserIds: [OPERATOR] }), NOBODY);
+  // A role mention or an @everyone reaches the library's role and everyone flags, never the user
+  // list, so a message carrying only those mentions no user at all here.
+  assert.deepEqual(addressing(UNADDRESSED), NOBODY);
+});
+
+test("a reply to the bot's own message addresses it; a reply to anyone else's, or to one that is gone, does not", () => {
+  assert.deepEqual(
+    addressing({ ...UNADDRESSED, repliedToAuthorId: SELF }),
+    { ...NOBODY, repliesToBot: true },
+  );
+  assert.deepEqual(addressing({ ...UNADDRESSED, repliedToAuthorId: OPERATOR }), NOBODY);
+  // A reply whose referenced message was deleted reports no author, and is not a reply to the bot.
+  assert.deepEqual(addressing({ ...UNADDRESSED, repliedToAuthorId: null }), NOBODY);
+});
+
+test("a message is the bot's own only when its author is the bot's own user, not when it is any bot", () => {
+  // The last-post clock the response gate keeps reads this, so another bot or a webhook posting
+  // in the thread must not read as the assistant having spoken.
+  assert.deepEqual(addressing({ ...UNADDRESSED, authorId: SELF }), { ...NOBODY, fromSelf: true });
+  assert.deepEqual(addressing({ ...UNADDRESSED, authorId: "800000000000000002" }), NOBODY);
+});
+
+test("before the connection knows its own user, nothing addresses it and nothing is its own", () => {
+  assert.deepEqual(
+    addressing({ selfId: null, authorId: SELF, mentionedUserIds: [SELF], repliedToAuthorId: SELF }),
+    NOBODY,
+  );
 });

@@ -81,7 +81,8 @@ import {
 import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
-import type { InboundInbox } from "./routing/inbound.ts";
+import type { InboundInbox, InboundRouter } from "./routing/inbound.ts";
+import { createResponseGateJournal } from "./routing/response-gate.ts";
 import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { OutboundInbox, ReplyResult } from "./routing/outbound.ts";
@@ -151,8 +152,8 @@ export function questionDelivery(options: {
 export function modelChangeNotice(options: {
   threadFor: (sessionId: string) => string | null;
   writer: Pick<ThreadWriter, "notice" | "alert">;
-  /** The operator the alert tier mentions, and the knob that decides whether that tier is used. */
-  operatorId: string;
+  /** Every operator, whom the alert tier mentions, and the knob that decides whether it is used. */
+  operatorIds: readonly string[];
   alertTier: boolean;
   /**
    * The alert tier's own per-thread volume window, its own instance and never a shared one. The
@@ -170,7 +171,7 @@ export function modelChangeNotice(options: {
   return (change) => {
     const threadId = options.threadFor(change.sessionId);
     if (threadId === null) return;
-    let operatorId: string | null = null;
+    let operatorIds: readonly string[] = [];
     if (options.alertTier) {
       const level = options.volume(threadId);
       if (level === "drop") {
@@ -179,10 +180,10 @@ export function modelChangeNotice(options: {
         );
         return;
       }
-      operatorId = level === "ping" ? options.operatorId : null;
+      operatorIds = level === "ping" ? options.operatorIds : [];
     }
     const text = renderModelChange({
-      operatorId,
+      operatorIds,
       from: change.from,
       to: change.to,
       downgrade: change.downgrade,
@@ -190,7 +191,7 @@ export function modelChangeNotice(options: {
     void (async () => {
       try {
         if (options.alertTier) {
-          const posted = await options.writer.alert(threadId, text, operatorId);
+          const posted = await options.writer.alert(threadId, text, operatorIds);
           if (posted.status !== "ok") {
             options.log(
               `broker: session ${change.sessionId}'s model-change alert was not written; ` +
@@ -413,7 +414,7 @@ export function questionUpgrade(options: {
   /** The pause between continuation posts. Injected the way `now` is, so a test drives the pacing. */
   wait: (ms: number) => Promise<void>;
   drawing: PromptEdits;
-  operatorId: string;
+  operatorIds: readonly string[];
   log: (message: string) => void;
 }): (input: {
   sessionId: string;
@@ -441,7 +442,7 @@ export function questionUpgrade(options: {
     const entryId = options.desk.noteAlert(sessionId, digest, { threadId, messageId });
     if (entryId === null) return;
     const prompt = renderQuestionPrompt({
-      operatorId: options.operatorId,
+      operatorIds: options.operatorIds,
       entryId,
       questions,
       selections: questions.map(() => []),
@@ -550,7 +551,7 @@ export function continuationPosts(options: {
  *
  * A select reports its whole selection back to Discord, but the client rebuilds the menu from the
  * message, so an ask whose message is never rewritten shows the placeholder again after every
- * choice. Rendered with the operator's own ID whatever tier the alert was posted under, because an
+ * choice. Rendered with every operator's ID whatever tier the alert was posted under, because an
  * edit resolves no mention at all: the transport names none, so the pill renders and pings nobody.
  *
  * The view arrives from a read taken before the press was acknowledged, so the entry it describes
@@ -567,7 +568,7 @@ export function questionRefresh(options: {
     components: readonly ActionRow[],
   ) => Promise<CallOutcome<null>>;
   drawing: PromptEdits;
-  operatorId: string;
+  operatorIds: readonly string[];
   log: (message: string) => void;
 }): (entry: QuestionEntryView) => Promise<void> {
   return async (entry) => {
@@ -575,7 +576,7 @@ export function questionRefresh(options: {
       const live = options.desk.entry(entry.id);
       if (live === null || live.alert === null) return null;
       const prompt = renderQuestionPrompt({
-        operatorId: options.operatorId,
+        operatorIds: options.operatorIds,
         entryId: live.id,
         questions: live.questions,
         selections: live.selections,
@@ -746,14 +747,16 @@ export type Inbox = OutboundInbox &
  * opens on a flagged reply and leaves on the operator's answer.
  */
 export function inboxWiring(options: {
-  config: Pick<BrokerConfig, "stateFile" | "inboxCard" | "inboxJudgeKeyFile" | "inboxThreshold">;
+  config: Pick<BrokerConfig, "stateFile" | "inboxCard" | "inboxThreshold">;
   registry: Pick<Registry, "list">;
+  /**
+   * The judge's key as `readJudgeKey` read it, or null where the judge is to stay off. Read once
+   * at startup for this and the response gate, which share the one file.
+   */
+  judgeKey: string | null;
   /** The judge's request, injected so a test drives it without a network. Global fetch otherwise. */
   fetch?: JudgeFetch;
-  /** The key file's protection check, injected so a test reaches it without a spawn. */
-  protectKeyFile?: (file: string) => void;
   log: (message: string) => void;
-  warn: (message: string) => void;
   onError: (message: string) => void;
 }): Inbox | null {
   if (!options.config.inboxCard) return null;
@@ -782,12 +785,11 @@ export function inboxWiring(options: {
     return recordOf(sessionId) !== undefined;
   }
 
-  const key = readInboxJudgeKey(options.config.inboxJudgeKeyFile, options.warn, options.protectKeyFile);
   const judge =
-    key === null
+    options.judgeKey === null
       ? null
       : createJudge({
-          apiKey: key,
+          apiKey: options.judgeKey,
           threshold: options.config.inboxThreshold,
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           log: options.log,
@@ -872,6 +874,48 @@ export function rebindHandling(options: {
   };
 }
 
+/**
+ * The Jev key both the inbox judge and the response gate use, read once from the one file
+ * `CHANNEL_INBOX_JUDGE_KEY_FILE` names, or null where neither needs it or the file is unusable
+ * and only the inbox judge wanted it.
+ *
+ * The two consumers fail differently. The inbox judge is an extra reading of unmarked replies, so
+ * an unusable key turns it off with the one warning `readInboxJudgeKey` writes and the inbox runs
+ * on `ASK:` lines. The gate, in `shadow` or `live`, has asked for every message in a gated thread
+ * to be judged, and a broker that silently could not judge would deliver on the age cap alone in
+ * `live` and journal nothing in `shadow`, a week of shadow rows that never existed: so it refuses
+ * to start. The refusal names the mode, the variable and the cause, never the file's contents.
+ * The inbox judge's own warning is written only where the inbox card is on, since it says that
+ * judge is off, which is no news on a host that never turned it on.
+ */
+export function readJudgeKey(
+  config: Pick<BrokerConfig, "inboxCard" | "responseGate" | "inboxJudgeKeyFile">,
+  warn: (message: string) => void,
+  // Injectable so a test reaches the refusal without a hardened file; the default is the check
+  // the token file is held to.
+  protect?: (file: string) => void,
+): string | null {
+  if (!config.inboxCard && config.responseGate === "off") return null;
+  let problem: string | null = null;
+  const key = readInboxJudgeKey(
+    config.inboxJudgeKeyFile,
+    (line) => {
+      problem = line;
+      if (config.inboxCard) warn(line);
+    },
+    protect,
+  );
+  if (key !== null || config.responseGate === "off") return key;
+  const cause =
+    problem === null
+      ? "CHANNEL_INBOX_JUDGE_KEY_FILE is unset"
+      : "the file CHANNEL_INBOX_JUDGE_KEY_FILE names " +
+        (problem as string).replace(/^broker: the inbox judge is off, its key file /, "");
+  throw new Error(
+    `the response gate is ${config.responseGate} and needs the inbox judge's key, but ${cause}`,
+  );
+}
+
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
   // it. The logger writes the same lines to a rotating file too, when one is configured, because a
@@ -881,12 +925,33 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     maxBytes: config.logMaxBytes,
     maxFiles: config.logMaxFiles,
   });
+  const warn = (message: string): void => {
+    console.warn(message);
+    logger.warn(message);
+  };
+
+  // Read once, for the inbox judge and the response gate alike, and before anything is opened or
+  // bound, so a host whose gate cannot judge fails at once with the reason on disk: under the
+  // scheduled task there is no console for the throw to reach.
+  let judgeKey: string | null;
+  try {
+    judgeKey = readJudgeKey(config, warn);
+  } catch (error) {
+    const message = `broker: refusing to start: ${String(error)}`;
+    console.error(message);
+    logger.error(message);
+    throw error;
+  }
 
   // The operator inbox, mutable for the reason `threadFor` below is: it is built from the sessions
   // the registry restored, so it can only exist once the registry does, and the registry's own
   // seams into it read it through this closure. Null while the card is off, which leaves each of
   // those seams a no-op.
   let inbox: Inbox | null = null;
+  // The inbound router, mutable on the same terms: it exists only once Discord is configured below,
+  // and the registry's mutate seam reaches it through this closure so a session's end drops the
+  // buffer its thread was holding. Null on a host with no Discord, which leaves that seam a no-op.
+  let inbound: InboundRouter | null = null;
   const registry = createRegistry({
     host: config.host,
     staleAfterMs: config.staleAfterMs,
@@ -917,6 +982,17 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.error(message);
         logger.error(message);
       }
+      // The mutate signal is also how a thread's held buffer leaves with its session: a session
+      // ends on several paths, and this is the one that sees them all. Caught for the reason the
+      // inbox's is: a throw here would surface out of the sweep's interval or a hook post.
+      try {
+        inbound?.reconcile(sessions);
+      } catch (error) {
+        const message =
+          `broker: the response gate could not reconcile against the registry: ${String(error)}`;
+        console.error(message);
+        logger.error(message);
+      }
     },
     // An operator prompt answers the session it was typed to, which is what clears its inbox item.
     onPrompt: (sessionId, at) => inbox?.clear(sessionId, at),
@@ -930,11 +1006,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   inbox = inboxWiring({
     config,
     registry,
+    judgeKey,
     log: note,
-    warn: (message) => {
-      console.warn(message);
-      logger.warn(message);
-    },
     onError: (message) => {
       console.error(message);
       logger.error(message);
@@ -952,6 +1025,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // would strand a working session as exited with no way back.
     graceMs: config.relayHeartbeatMs,
     log: note,
+    // A pipe attaching is what delivers a buffer the response gate restored across a restart.
+    // Reached through the closure for the reason the mutate seam is: the router is built inside
+    // the Discord block below, and a host with no Discord has no router and no buffer to deliver.
+    onAttach: (processToken) => inbound?.relayAttached(processToken),
   });
   let threadFor: (sessionId: string) => string | null = () => null;
   // The fleet usage card's own message, for the channel's pin list. Mutable for the reason
@@ -1066,8 +1143,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (written) outbound.endNarration(threadId);
       return written;
     },
-    alert: async (threadId, text, mentionUserId) => {
-      const posted = await writer.alert(threadId, text, mentionUserId);
+    alert: async (threadId, text, mentionUserIds) => {
+      const posted = await writer.alert(threadId, text, mentionUserIds);
       if (posted.status === "ok") outbound.endNarration(threadId);
       return posted;
     },
@@ -1476,7 +1553,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       relays,
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
-      operatorId: gate.operatorId,
+      operatorIds: gate.operatorIds,
       now: Date.now,
       log: note,
     });
@@ -1488,8 +1565,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const desk = createBlockedDesk({
       eventsPath: config.boardEventsPath,
       threadFor: (sessionId) => surface.threadFor(sessionId),
-      alert: (threadId, text, mentionUserId) => steeringWriter.alert(threadId, text, mentionUserId),
-      operatorId: gate.operatorId,
+      alert: (threadId, text, mentionUserIds) => steeringWriter.alert(threadId, text, mentionUserIds),
+      operatorIds: gate.operatorIds,
       now: Date.now,
       log: note,
     });
@@ -1532,7 +1609,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           setTimeout(resolve, ms).unref();
         }),
       drawing,
-      operatorId: gate.operatorId,
+      operatorIds: gate.operatorIds,
       log: note,
     });
     deliverQuestion = async (sessionId, questions) => {
@@ -1542,10 +1619,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (volume === "drop") {
         return { status: "failed", error: "question alerts are over their window" };
       }
-      const mention = volume === "ping" ? gate.operatorId : null;
+      const mention = volume === "ping" ? gate.operatorIds : [];
       const posted = await steeringWriter.alert(
         threadId,
-        renderQuestionNotice({ operatorId: mention, questions }),
+        renderQuestionNotice({ operatorIds: mention, questions }),
         mention,
       );
       if (posted.status !== "ok") return { status: "failed", error: "the alert was not written" };
@@ -1555,7 +1632,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     announceModelChange = modelChangeNotice({
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
-      operatorId: gate.operatorId,
+      operatorIds: gate.operatorIds,
       alertTier: config.modelChangeAlert,
       // Its own window instance, never the question alert's or the permission desk's: shared
       // stamps would let one class spend another's slots and push it into drop, the starvation
@@ -1585,13 +1662,26 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         edit: (threadId, messageId, text, components) =>
           steeringWriter.edit(threadId, messageId, text, components),
         drawing,
-        operatorId: gate.operatorId,
+        operatorIds: gate.operatorIds,
         log: note,
       }),
       now: Date.now,
       log: note,
     });
-    const inbound = createInboundRouter({
+    // Beside the registry snapshot and the card bindings, as the inbox snapshot is: one row per
+    // gate decision, written only where the mode is `shadow` or `live`.
+    const responseGateJournalFile = path.join(path.dirname(config.stateFile), "response-gate.jsonl");
+    // Beside the journal: the buffers the gate holds, written on every change in `live` alone and
+    // read once here, when the router is built, so a stop, restart or crash loses no held line.
+    // The registry, the thread bindings and the relay hub are all up by this line. No relay has
+    // attached, since the listener binds below, so a relay attaching is what delivers a restored
+    // buffer here; the router's already-attached branch serves a second router over one state
+    // directory, which its tests drive.
+    const responseGateBuffersFile = path.join(
+      path.dirname(config.stateFile),
+      "response-gate-buffers.json",
+    );
+    const router = createInboundRouter({
       registry,
       relays,
       gate,
@@ -1603,9 +1693,51 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
       ...(inbox === null ? {} : { inbox }),
+      // The mode, caps, judge and journal. The router builds the gate, whose timers deliver into
+      // the router's own pipe; the real clock and the real fetch are the defaults it takes. The
+      // journal sits beside the state file and rotates as the broker log does.
+      responseGate: {
+        mode: config.responseGate,
+        maxMessages: config.responseGateMaxMessages,
+        maxWaitMs: config.responseGateMaxWaitMs,
+        ...(judgeKey === null || config.responseGate === "off"
+          ? {}
+          : {
+              judge: {
+                quietMs: config.responseGateQuietMs,
+                threshold: config.responseGateThreshold,
+                apiKey: judgeKey,
+              },
+            }),
+        journal: createResponseGateJournal({
+          file: responseGateJournalFile,
+          maxBytes: config.logMaxBytes,
+          maxFiles: config.logMaxFiles,
+        }),
+        // A restored buffer's age cap is floored at the restart window, the time a session that
+        // held a relay before the restart is given to reconnect, so a cap that passed during the
+        // outage still waits for the relay's return.
+        buffers: { file: responseGateBuffersFile, graceMs: RELAY_RESTART_GRACE_MS },
+      },
       now: Date.now,
       log: note,
     });
+    inbound = router;
+    if (config.responseGate === "live") {
+      note(
+        `broker: the response gate is live, a thread's buffer holds at most ` +
+          `${String(config.responseGateMaxMessages)} messages for at most ` +
+          `${String(config.responseGateMaxWaitMs)}ms, asks the judge after ` +
+          `${String(config.responseGateQuietMs)}ms of quiet at threshold ` +
+          `${String(config.responseGateThreshold)}, journals to ${responseGateJournalFile}, ` +
+          `and keeps held buffers across a restart at ${responseGateBuffersFile}`,
+      );
+    } else if (config.responseGate === "shadow") {
+      note(
+        "broker: the response gate is in shadow, every message is delivered at once and each " +
+          `decision it would have made is journaled to ${responseGateJournalFile}`,
+      );
+    }
     // Same reason the REST client is imported here: this module is the only one in the routing
     // layer that loads discord.js, and a broker with no Discord configured never touches it.
     const { createGatewayMessageSource } = await import("./routing/gateway.ts");
@@ -1617,7 +1749,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         // most of what lands below a narration block, and the freshness gate must see exactly
         // those to know the block is no longer the thread's newest message.
         outbound.noteThreadMessage(message.threadId, message.messageId);
-        return inbound.deliver(message);
+        return router.deliver(message);
       },
       onInteraction: (interaction) => interactions.deliver(interaction),
       // The other half of the writes that announce themselves: the keeper reconciles which cards
@@ -1630,9 +1762,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // later as messages that silently never arrive.
     await gateway.start();
 
+    const participants =
+      gate.participantIds.length > 0
+        ? `, joined by participants ${gate.participantIds.join(", ")}`
+        : "";
     note(
       `broker: discord surfaces on, threads open in channel ${discord.channelId}, ` +
-        `steered by user ${gate.operatorId} and nobody else`,
+        `steered by operators ${gate.operatorIds.join(", ")}${participants}, and nobody else`,
     );
   }
 
@@ -1674,6 +1810,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // when the hub was built: a window running down through a slow Discord login would end
       // sessions whose relays had no way to come back.
       relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+      // The restored buffers' age caps start here too, beside the windows they are floored at:
+      // armed when the router was built, they would spend the Discord login awaited between the
+      // two on the window a relay has to come back.
+      inbound?.armRestored();
       resolve();
     });
   });
@@ -1792,6 +1932,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     clearInterval(heartbeat);
     if (tailTimer !== null) clearInterval(tailTimer);
     if (refresh !== null) clearInterval(refresh);
+    // A held buffer goes down in the same synchronous block, before the first await below: its
+    // age-cap timer must not fire into pipes about to be torn down, and a broker asked to stop
+    // does not wait on an age cap. What was held stays in the buffers file, which the close does
+    // not touch, for the next start to restore and deliver.
+    inbound?.close();
     // The card's own timer goes down with the rest of them, before the first await below: left
     // running across those seconds it starts a pass that writes to Discord and to the binding file
     // for a broker that has already dropped its gateway. What it returns is the drain, awaited

@@ -13,7 +13,7 @@ import { createThreadWriter } from "./writer.ts";
 const THREAD = "900000000000000001";
 
 function fakeMessenger(outcomes: Array<CallOutcome<{ messageId: string }>> = []) {
-  const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
+  const posts: Array<{ threadId: string; text: string; mentionUserIds?: readonly string[] }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
@@ -149,26 +149,27 @@ test("an alert carries the one user it may mention and shares the bucket", async
   const writer = createThreadWriter({ messenger, now: () => now });
 
   assert.equal(
-    (await writer.alert(THREAD, "<@700000000000000002> permission needed", "700000000000000002")).status,
+    (await writer.alert(THREAD, "<@700000000000000002> permission needed", ["700000000000000002"]))
+      .status,
     "ok",
   );
   assert.deepEqual(posts, [
     {
       threadId: THREAD,
       text: "<@700000000000000002> permission needed",
-      mentionUserId: "700000000000000002",
+      mentionUserIds: ["700000000000000002"],
     },
   ]);
 
   assert.equal(
-    (await writer.alert(THREAD, "second", "700000000000000002")).status,
+    (await writer.alert(THREAD, "second", ["700000000000000002"])).status,
     "rate-limited",
     "the bucket the replies and notices spend is the bucket this spends",
   );
   assert.equal(posts.length, 1);
 
   now += 5_000;
-  assert.equal((await writer.alert(THREAD, "third", "700000000000000002")).status, "ok");
+  assert.equal((await writer.alert(THREAD, "third", ["700000000000000002"])).status, "ok");
   assert.equal(posts.length, 2, "back to back alerts are allowed once the bucket refills");
 });
 
@@ -264,7 +265,7 @@ test("a rate-limited edit does not block the next post", async () => {
   const { messenger: editMessenger, edits } = fakeEditMessenger([
     { status: "rate-limited", rate: { remaining: 0, resetAfterMs: 5_000, retryAfterMs: 4_000 } },
   ]);
-  const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
+  const posts: Array<{ threadId: string; text: string; mentionUserIds?: readonly string[] }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
       posts.push(input);
@@ -315,11 +316,30 @@ test("a reply and a notice name no user to mention at all", async () => {
   await writer.notice(THREAD, "this session has ended");
   for (const post of posts) {
     assert.equal(
-      (post as { mentionUserId?: string }).mentionUserId,
+      post.mentionUserIds,
       undefined,
-      "only the permission prompt is allowed to ping",
+      "only an alert is allowed to ping",
     );
   }
+});
+
+test("an alert names every user it was given to mention, and an empty list names nobody", async () => {
+  const { messenger, posts } = fakeMessenger();
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+
+  await writer.alert(
+    THREAD,
+    "<@700000000000000002> <@700000000000000005> permission needed",
+    ["700000000000000002", "700000000000000005"],
+  );
+  await writer.alert(THREAD, "permission needed, quietly", []);
+
+  assert.deepEqual(posts[0].mentionUserIds, ["700000000000000002", "700000000000000005"]);
+  assert.equal(
+    Object.hasOwn(posts[1], "mentionUserIds"),
+    false,
+    "the quiet tier leaves the field off entirely rather than sending an empty list",
+  );
 });
 
 test("a refusal the bucket makes itself reports how much of the block is left", async () => {

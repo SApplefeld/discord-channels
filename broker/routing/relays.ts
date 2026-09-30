@@ -27,6 +27,7 @@
 // listener binds rather than when the hub is built, since no relay can reach the broker before then.
 import { randomUUID } from "node:crypto";
 import type { Registry } from "../registry.ts";
+import type { SenderClass } from "../security/senders.ts";
 
 /** What the broker writes down a relay's pipe. */
 export type RelayEvent =
@@ -40,6 +41,16 @@ export type RelayEvent =
        */
       chatId: string;
       text: string;
+      /** The author's display name, bounded for an attribute. Rendered as the event's `author`. */
+      author: string;
+      /** The author's class on the sender roster. Rendered as the event's `sender_class`. */
+      senderClass: SenderClass;
+      /**
+       * How many messages the text gathers, one line each, when the response gate delivered a
+       * buffer of more than one. Absent on a single message, so a host with the gate off writes
+       * the event it always wrote. Rendered as the event's `buffered`.
+       */
+      buffered?: number;
     }
   /**
    * The operator's answer to one tool permission prompt. It travels the pipe rather than any
@@ -113,6 +124,13 @@ export type RelayHubOptions = {
   /** Injected so a test drives the grace window without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
+  /**
+   * Told the process token after each attach that held: the pipe registered and the hello
+   * landed on it, so a listener that writes into the pipe finds it ready. Not told of a refused
+   * attach or a pipe that dropped the hello. A throw out of it is logged and never undoes the
+   * attach. The inbound router listens, to deliver a buffer restored across a broker restart.
+   */
+  onAttach?: (processToken: string) => void;
 };
 
 type Attachment = { connection: RelayConnection; replyKey: string };
@@ -193,6 +211,14 @@ export function createRelayHub(options: RelayHubOptions): RelayHub {
         // holding the token against the relay that is about to retry.
         connections.delete(processToken);
         return { attached: false, reason: "already attached" };
+      }
+      if (options.onAttach !== undefined) {
+        try {
+          options.onAttach(processToken);
+        } catch (error) {
+          // The pipe is up whatever the listener made of it: its failure is its own.
+          log(`relay: the attach listener failed for a pipe: ${String(error)}`);
+        }
       }
       return { attached: true, detach: () => detach(processToken, connection) };
     },

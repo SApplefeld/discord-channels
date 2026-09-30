@@ -10,6 +10,13 @@ import type { AttachResult, RelayConnection, RelayEvent } from "./relays.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const GRACE_MS = 10_000;
+const MESSAGE: RelayEvent = {
+  type: "message",
+  chatId: "9",
+  text: "hello",
+  author: "Ann",
+  senderClass: "operator",
+};
 
 // The source matters to the registry: a startup arriving under a token a live session already
 // holds is a subprocess of that session and registers nothing, so a test that means to replace the
@@ -128,7 +135,7 @@ test("a second pipe for a token that already holds one is refused, not promoted"
   assert.deepEqual(result, { attached: false, reason: "already attached" });
   assert.equal(first.closed, false, "the pipe already serving the session is left alone");
 
-  relays.deliver(TOKEN, { type: "message", chatId: "9", text: "steer" });
+  relays.deliver(TOKEN, MESSAGE);
   assert.deepEqual(
     second.sent,
     [],
@@ -182,8 +189,8 @@ test("a message is delivered to the pipe holding the session's process token", (
   const connection = fakeConnection();
   accepted(relays.attach(TOKEN, connection));
 
-  assert.equal(relays.deliver(TOKEN, { type: "message", chatId: "9", text: "hello" }), true);
-  assert.deepEqual(connection.sent.slice(1), [{ type: "message", chatId: "9", text: "hello" }]);
+  assert.equal(relays.deliver(TOKEN, MESSAGE), true);
+  assert.deepEqual(connection.sent.slice(1), [MESSAGE]);
   assert.equal(relays.deliver("some-other-token", { type: "ping" }), false);
 });
 
@@ -280,7 +287,7 @@ test("a clear moves the session under the same pipe", () => {
 
   announce(registry, "session-b", TOKEN, "clear");
   assert.equal(registry.current(TOKEN)?.sessionId, "session-b");
-  assert.equal(relays.deliver(TOKEN, { type: "message", chatId: "9", text: "hi" }), true);
+  assert.equal(relays.deliver(TOKEN, MESSAGE), true);
 
   detach();
   now += GRACE_MS + 1;
@@ -487,6 +494,66 @@ test("a token already holding a pipe when the windows open gets no window", () =
   now += RELAY_RESTART_GRACE_MS * 10;
   relays.heartbeat();
   assert.equal(registry.list()[0].state, "live");
+});
+
+test("the attach listener is told the token once the hello has landed, never for a refused or dead pipe, and its throw leaves the pipe attached", () => {
+  // The inbound router delivers a buffer restored across a broker restart on this signal, so it
+  // has to mean a pipe that will take a write: registered, with the hello already on it.
+  let now = 1_000;
+  const lines: string[] = [];
+  const told: Array<{ token: string; helloFirst: boolean }> = [];
+  let current: FakeConnection | null = null;
+  let throwing = false;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000, now: () => now });
+  announce(registry, "session-a");
+  const relays = createRelayHub({
+    registry,
+    graceMs: GRACE_MS,
+    now: () => now,
+    log: (line) => lines.push(line),
+    onAttach: (token) => {
+      told.push({ token, helloFirst: current?.sent[0]?.type === "hello" });
+      if (throwing) throw new Error("the listener failed");
+    },
+  });
+
+  const dead = fakeConnection();
+  dead.dead = true;
+  current = dead;
+  assert.equal(relays.attach(TOKEN, dead).attached, false);
+  assert.deepEqual(told, [], "a pipe that dropped the hello was never attached");
+
+  const first = fakeConnection();
+  current = first;
+  accepted(relays.attach(TOKEN, first));
+  assert.deepEqual(told, [{ token: TOKEN, helloFirst: true }]);
+
+  const second = fakeConnection();
+  current = second;
+  assert.equal(relays.attach(TOKEN, second).attached, false);
+  assert.equal(told.length, 1, "a refused second pipe for the token is no attach");
+
+  accepted(relays.attach("22222222-3333-4444-5555-666666666666", fakeConnection()));
+  assert.equal(told.length, 2, "told once per attach that held, whatever the token");
+
+  // The listener failing is its own failure: the pipe is up and takes a write.
+  relays.deliver(TOKEN, { type: "ping" });
+  first.dead = true;
+  relays.deliver(TOKEN, { type: "ping" });
+  assert.equal(relays.attached(TOKEN), false);
+  throwing = true;
+  const third = fakeConnection();
+  current = third;
+  accepted(relays.attach(TOKEN, third));
+  assert.equal(told.length, 3);
+  assert.equal(relays.attached(TOKEN), true, "the throw did not undo the attach");
+  assert.equal(relays.deliver(TOKEN, MESSAGE), true);
+  assert.deepEqual(third.sent.slice(1), [MESSAGE]);
+  assert.ok(lines.some((line) => line.includes("attach listener")), lines.join("\n"));
+
+  now += GRACE_MS * 10;
+  relays.heartbeat();
+  assert.equal(registry.list()[0].state, "live", "and nothing about the session moved");
 });
 
 test("a relay that never returns after a restart is ended inside the two minute bound", () => {

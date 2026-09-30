@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadSessions, saveSessions } from "./persistence.ts";
+import { loadSessions, saveSessions, writeSnapshot } from "./persistence.ts";
 import type { SessionRecord } from "./registry.ts";
 import { createRegistry } from "./registry.ts";
 
@@ -52,6 +52,33 @@ test("a snapshot round-trips, including over an existing file", () => {
 
     const loaded = loadSessions(file, { log: () => {} });
     assert.deepEqual(loaded, [record("session-a"), record("session-b")]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the snapshot write lands the text whole over an existing file, makes the directory, and leaves no temp file behind a failure", () => {
+  // The one writer for every file a crash must not truncate: the registry snapshot and the
+  // response gate's held buffers both ride it.
+  const { file, cleanup } = scratchFile();
+  try {
+    const nested = path.join(path.dirname(file), "made", "snapshot.json");
+    writeSnapshot(nested, "first");
+    writeSnapshot(nested, "second");
+    assert.equal(readFileSync(nested, "utf8"), "second", "renamed over the existing file");
+    assert.deepEqual(readdirSync(path.dirname(nested)), ["snapshot.json"], "no temp file left");
+
+    // A target the rename cannot land on: a directory with a file in it where the file should be.
+    const blocked = path.join(path.dirname(file), "blocked");
+    mkdirSync(blocked);
+    writeFileSync(path.join(blocked, "keep"), "", "utf8");
+    assert.throws(() => writeSnapshot(blocked, "text"));
+    assert.deepEqual(readdirSync(blocked), ["keep"], "the target is untouched");
+    assert.deepEqual(
+      readdirSync(path.dirname(file)).filter((name) => name.endsWith(".tmp")),
+      [],
+      "the failed write took its temp file with it",
+    );
   } finally {
     cleanup();
   }

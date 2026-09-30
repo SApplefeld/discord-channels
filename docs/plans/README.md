@@ -6,8 +6,9 @@ of truth for one effort's intent and state, and a fresh or post-compaction sessi
 No plan is open.
 
 The most recently archived plan is
-[`../archive/plans/channels_subagent-thread-flood_spec_v1.md`](../archive/plans/channels_subagent-thread-flood_spec_v1.md),
-superseded after its trace put the subagent-report flood in the persona plugin rather than the broker.
+[`../archive/plans/channels_client-sandbox_spec_v1.md`](../archive/plans/channels_client-sandbox_spec_v1.md),
+delivered: several Discord accounts per host, each an operator or a participant, and a response gate
+that holds a shared thread's messages until a reply is expected.
 
 Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).

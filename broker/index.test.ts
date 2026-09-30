@@ -26,6 +26,7 @@ import {
   questionUpgrade,
   boardCardWiring,
   inboxWiring,
+  readJudgeKey,
   rebindHandling,
   startBroker,
   usageCardWiring,
@@ -72,6 +73,11 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     logMaxBytes: 5 * 1024 * 1024,
     logMaxFiles: 5,
     mirror: true,
+    responseGate: "off",
+    responseGateMaxMessages: 20,
+    responseGateMaxWaitMs: 600_000,
+    responseGateQuietMs: 5_000,
+    responseGateThreshold: 0.6,
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,
@@ -962,7 +968,7 @@ function upgradeUnderTest(input: {
       paced.push(ms);
     },
     drawing,
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     log: (line) => logged.push(line),
   });
   return { desk, upgrade, landed, posted, paced, wire, logged, bodies: held.bodies, drawing, write };
@@ -1135,7 +1141,7 @@ test("an ask past one message posts its continuations before the prompt that nam
   // whose posts then fail points at messages that never arrive.
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1175,7 +1181,7 @@ test("an ask past one message posts its continuations before the prompt that nam
 test("a continuation the thread refused releases the hold instead of marking absent text", async () => {
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1221,7 +1227,7 @@ test("a hold that ends while its continuations post stops posting and draws noth
   // "continued from above" under a message that now says the question is closed.
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1272,7 +1278,7 @@ test("a hold that ends inside the last continuation's round trip is never drawn 
   // the close-out has just rewritten to say the question is closed.
   const questions = longAsk();
   const composed = renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: "a1b2c3d4e5f6",
     questions,
     selections: questions.map(() => []),
@@ -1562,7 +1568,7 @@ test("a redraw for an entry the desk no longer holds is never issued", async () 
       landed.push({ messageId, text, components });
       return OK;
     },
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     log: (line) => logged.push(line),
   });
 
@@ -1591,7 +1597,7 @@ test("a redraw Discord refuses is one bounded line and never the question that f
     desk,
     drawing: createPromptEdits(),
     edit: async () => ({ status: "rate-limited", rate: NO_RATE_INFO }),
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     log: (line) => logged.push(line),
   });
 
@@ -1628,7 +1634,7 @@ test("a refused close-out is one bounded line and never the question that failed
 /** The writer seam the model-change message spends, recording which tier each message took. */
 function tiers() {
   const notices: { threadId: string; text: string }[] = [];
-  const alerts: { threadId: string; text: string; mentionUserId: string | null }[] = [];
+  const alerts: { threadId: string; text: string; mentionUserIds: readonly string[] }[] = [];
   return {
     notices,
     alerts,
@@ -1637,8 +1643,8 @@ function tiers() {
         notices.push({ threadId, text });
         return true;
       },
-      alert: async (threadId: string, text: string, mentionUserId: string | null) => {
-        alerts.push({ threadId, text, mentionUserId });
+      alert: async (threadId: string, text: string, mentionUserIds: readonly string[]) => {
+        alerts.push({ threadId, text, mentionUserIds });
         return { status: "ok" as const, value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
       },
     },
@@ -1658,12 +1664,34 @@ const MODEL_CHANGE = {
   },
 };
 
+test("a model-change alert on a host with two operators mentions both, in text and whitelist", async () => {
+  const { alerts, writer } = tiers();
+  const announce = modelChangeNotice({
+    threadFor: () => "thread-1",
+    writer,
+    operatorIds: ["222222222222222222", "333333333333333333"],
+    alertTier: true,
+    volume: () => "ping" as const,
+    log: () => {},
+  });
+
+  announce(MODEL_CHANGE);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(alerts.length, 1);
+  assert.deepEqual(alerts[0].mentionUserIds, ["222222222222222222", "333333333333333333"]);
+  assert.ok(
+    alerts[0].text.startsWith("<@222222222222222222> <@333333333333333333> "),
+    alerts[0].text,
+  );
+});
+
 test("a model change posts one message on the notice tier by default", async () => {
   const { notices, alerts, writer } = tiers();
   const announce = modelChangeNotice({
     threadFor: () => "thread-1",
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: () => {},
@@ -1684,7 +1712,7 @@ test("the knob moves the same change onto the alert tier, with the mention that 
   const announce = modelChangeNotice({
     threadFor: () => "thread-1",
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: true,
     volume: () => "ping" as const,
     log: () => {},
@@ -1694,7 +1722,7 @@ test("the knob moves the same change onto the alert tier, with the mention that 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(alerts.length, 1);
-  assert.equal(alerts[0].mentionUserId, "222222222222222222");
+  assert.deepEqual(alerts[0].mentionUserIds, ["222222222222222222"]);
   assert.ok(alerts[0].text.startsWith("<@222222222222222222> "), alerts[0].text);
   assert.deepEqual(notices, []);
 });
@@ -1704,7 +1732,7 @@ test("a change in a session with no thread posts nothing at all", async () => {
   const announce = modelChangeNotice({
     threadFor: () => null,
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: () => {},
@@ -1728,7 +1756,7 @@ test("the alert tier rides its own per-thread window", async () => {
   const announce = modelChangeNotice({
     threadFor: () => "thread-1",
     writer,
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: true,
     volume,
     log: (message) => logs.push(message),
@@ -1740,8 +1768,8 @@ test("the alert tier rides its own per-thread window", async () => {
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(alerts.length, 2, "past the post ceiling nothing is written");
-  assert.equal(alerts[0].mentionUserId, "222222222222222222");
-  assert.equal(alerts[1].mentionUserId, null, "past the ping ceiling the alert goes quiet");
+  assert.deepEqual(alerts[0].mentionUserIds, ["222222222222222222"]);
+  assert.deepEqual(alerts[1].mentionUserIds, [], "past the ping ceiling the alert goes quiet");
   assert.ok(!alerts[1].text.includes("<@"), alerts[1].text);
   assert.deepEqual(notices, []);
   assert.equal(logs.length, 1, logs.join("\n"));
@@ -1761,7 +1789,7 @@ test("a floored or refused model-change write leaves a content-free log line", a
         throw new Error("unused");
       },
     },
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: (message) => logs.push(message),
@@ -1774,7 +1802,7 @@ test("a floored or refused model-change write leaves a content-free log line", a
       },
       alert: async () => ({ status: "failed" as const, error: "over budget", rate: NO_RATE_INFO }),
     },
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: true,
     volume: () => "quiet" as const,
     log: (message) => logs.push(message),
@@ -1800,7 +1828,7 @@ test("a write that throws costs the message and nothing else", async () => {
         throw new Error("unused");
       },
     },
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     alertTier: false,
     volume: () => "ping" as const,
     log: (message) => logs.push(message),
@@ -1883,18 +1911,24 @@ function inboxUnderTest(
   const logs: string[] = [];
   const warnings: string[] = [];
   const errors: string[] = [];
+  // The key as the broker reads it once at startup, with the protection check stood down so a
+  // temp file passes; the inbox is then handed the key and never the file.
+  const card = options.card ?? true;
+  const judgeKey = readJudgeKey(
+    { inboxCard: card, responseGate: "off", inboxJudgeKeyFile: keyFile },
+    (message) => warnings.push(message),
+    () => {},
+  );
   const inbox = inboxWiring({
     config: {
       stateFile: path.join(dir, "broker-state.json"),
-      inboxCard: options.card ?? true,
-      inboxJudgeKeyFile: keyFile,
+      inboxCard: card,
       inboxThreshold: 0.7,
     },
     registry,
+    judgeKey,
     fetch: options.fetch ?? scoring.fetch,
-    protectKeyFile: () => {},
     log: (message) => logs.push(message),
-    warn: (message) => warnings.push(message),
     onError: (message) => errors.push(message),
   });
   return {
@@ -2527,4 +2561,129 @@ test("a late flag for the departed session, carrying its reply's original instan
   inbox.reply("session-a", "ASK: merge it?", 2_000, null);
   assert.deepEqual(inbox.items(), [], "a late flag reopening a cleared ask is the regression");
   assert.equal(posts.length, 1, "the restart notice still posted, independent of the late flag");
+});
+// The Jev key: read once at startup for the inbox judge and the response gate, refused for the
+// gate where the inbox judge alone would warn.
+
+test("the key read refuses shadow and live without a usable key, naming the mode, the variable and the cause, never the key", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-gate-key-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const warnings: string[] = [];
+  const warn = (message: string): void => {
+    warnings.push(message);
+  };
+  const accept = (): void => {};
+  const file = path.join(dir, "jev.key");
+  writeFileSync(file, "SECRET-KEY-0123456789\n", "utf8");
+  const missing = path.join(dir, "absent.key");
+
+  // Neither consumer on: nothing is read, whatever the file says.
+  assert.equal(readJudgeKey({ inboxCard: false, responseGate: "off", inboxJudgeKeyFile: missing }, warn, accept), null);
+  assert.equal(warnings.length, 0, "and warns nothing");
+  // The inbox judge alone: null, one warning, no throw.
+  assert.equal(readJudgeKey({ inboxCard: true, responseGate: "off", inboxJudgeKeyFile: missing }, warn), null);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /inbox judge is off/);
+  assert.equal(
+    readJudgeKey({ inboxCard: true, responseGate: "live", inboxJudgeKeyFile: file }, warn, accept),
+    "SECRET-KEY-0123456789",
+  );
+  assert.equal(warnings.length, 1);
+
+  for (const mode of ["shadow", "live"] as const) {
+    // Unset: the variable alone is named, and nothing is read.
+    assert.throws(
+      () => readJudgeKey({ inboxCard: false, responseGate: mode, inboxJudgeKeyFile: null }, warn, accept),
+      (error: Error) =>
+        error.message.includes(`response gate is ${mode}`) &&
+        error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
+        error.message.includes("unset"),
+      mode,
+    );
+    // Null for any cause: a missing file, and a file the protection check refuses. With the inbox
+    // card off, the cause rides the refusal and the inbox judge's warning is not written, since
+    // that judge was never on; with the card on, the warning is written as well.
+    let before: number = warnings.length;
+    assert.throws(
+      () => readJudgeKey({ inboxCard: false, responseGate: mode, inboxJudgeKeyFile: missing }, warn),
+      (error: Error) =>
+        error.message.includes(`response gate is ${mode}`) &&
+        error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
+        error.message.includes("cannot be used") &&
+        error.message.includes(`names ${missing}`),
+      `${mode}, missing, card off`,
+    );
+    assert.equal(warnings.length, before, "no warning about a judge that was never on");
+    before = warnings.length;
+    assert.throws(
+      () => readJudgeKey({ inboxCard: true, responseGate: mode, inboxJudgeKeyFile: missing }, warn),
+      /cannot be used/,
+      `${mode}, missing, card on`,
+    );
+    assert.equal(warnings.length, before + 1);
+    assert.match(warnings[before], /inbox judge is off/);
+    assert.throws(
+      () =>
+        readJudgeKey({ inboxCard: false, responseGate: mode, inboxJudgeKeyFile: file }, warn, () => {
+          throw new Error("grants access to WD");
+        }),
+      (error: Error) =>
+        !error.message.includes("SECRET-KEY") &&
+        error.message.includes(`response gate is ${mode}`) &&
+        error.message.includes("grants access to WD"),
+      `${mode}, unprotected`,
+    );
+  }
+  assert.ok(warnings.every((line) => !line.includes("SECRET-KEY")), "the key never rides a warning");
+});
+
+test("startBroker refuses to start with the gate on and no key, writing the reason to the log, where the inbox judge alone warns", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-gate-refusal-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const logFile = path.join(dir, "broker.log");
+  const missing = path.join(dir, "absent.key");
+
+  await assert.rejects(
+    () => startBroker(config({ stateFile: path.join(dir, "a.json"), logFile, responseGate: "shadow" })),
+    /CHANNEL_INBOX_JUDGE_KEY_FILE/,
+  );
+  const logged = readFileSync(logFile, "utf8");
+  assert.match(logged, /refusing to start/);
+  assert.match(logged, /response gate is shadow/);
+  assert.match(logged, /CHANNEL_INBOX_JUDGE_KEY_FILE is unset/);
+  assert.doesNotMatch(logged, /inbox judge is off/, "no warning about a judge the host never turned on");
+
+  // The control: the inbox judge alone, its key file missing, starts with a warning.
+  const broker = await startBroker(
+    config({ stateFile: path.join(dir, "b.json"), logFile, inboxCard: true, inboxJudgeKeyFile: missing }),
+  );
+  t.after(() => broker.stop());
+  assert.match(readFileSync(logFile, "utf8"), /inbox judge is off/);
+});
+
+// The response gate's restart restore rides three lines of startBroker's Discord block, which no
+// test reaches without a Discord login: the relay hub's attach routed to the router, the buffers
+// file handed to the router, and the restored age caps armed beside the relay restart windows at
+// the listener bind. The router's own tests pin what each call does, so this pins that startBroker
+// still makes each one, read from the source with its comments dropped and anchored on the call.
+function restoreWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  if (!/onAttach:\s*\(\s*(\w+)\s*\)\s*=>\s*inbound\?\.relayAttached\(\s*\1\s*\)/.test(code)) {
+    gaps.push("attach");
+  }
+  if (!/buffers:\s*\{\s*file:\s*responseGateBuffersFile\b/.test(code)) gaps.push("file");
+  const windows = code.indexOf("relays.openRestartWindows(");
+  const armed = code.indexOf("inbound?.armRestored()");
+  if (windows === -1 || armed < windows) gaps.push("armed");
+  return gaps;
+}
+
+test("startBroker wires the held buffers' restore: the attach, the file and the armed caps", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(restoreWiringGaps(source), []);
+  // Each check speaks when its own call is gone, so a green above is the calls being there.
+  assert.deepEqual(restoreWiringGaps(source.replace("inbound?.relayAttached(", "void (")), ["attach"]);
+  assert.deepEqual(restoreWiringGaps(source.replace(/buffers:\s*\{/, "kept: {")), ["file"]);
+  assert.deepEqual(restoreWiringGaps(source.replace("inbound?.armRestored()", "void 0")), ["armed"]);
 });

@@ -48,7 +48,7 @@ function reader(
   };
 }
 
-type Posted = { threadId: string; text: string; mentionUserId: string | null };
+type Posted = { threadId: string; text: string; mentionUserIds: readonly string[] };
 
 /** The desk under test, its alert wire recorded and every collaborator injectable per test. */
 function wired(overrides: Partial<BlockedDeskOptions> = {}): {
@@ -62,11 +62,11 @@ function wired(overrides: Partial<BlockedDeskOptions> = {}): {
     // Unused whenever a test injects `readEvents`; the default-path test below passes its own.
     eventsPath: path.join(os.tmpdir(), "never-read.jsonl"),
     threadFor: (sessionId) => `thread-${sessionId}`,
-    alert: async (threadId, text, mentionUserId) => {
-      alerts.push({ threadId, text, mentionUserId });
+    alert: async (threadId, text, mentionUserIds) => {
+      alerts.push({ threadId, text, mentionUserIds });
       return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     now: () => NOW,
     log: (message) => logs.push(message),
     ...overrides,
@@ -110,7 +110,7 @@ test("a fresh block pings once, keyed on the instant rather than the stamp's spe
 
   assert.equal(alerts.length, 1, "one episode, one alert, whatever the spelling");
   assert.equal(alerts[0].threadId, "thread-s1");
-  assert.equal(alerts[0].mentionUserId, OPERATOR);
+  assert.deepEqual(alerts[0].mentionUserIds, [OPERATOR]);
   assert.ok(alerts[0].text.startsWith(`<@${OPERATOR}> ⛔ **Blocked**`), alerts[0].text);
   assert.ok(alerts[0].text.includes("widget\\_spec\\_v1.md"), "the plan rides the alert, inert");
 });
@@ -179,12 +179,12 @@ test("a refused post records nothing, spends nothing, and logs its trouble once"
     { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO },
     { status: "ok", value: { messageId: "msg-2" }, rate: NO_RATE_INFO },
   ];
-  const calls: { text: string; mentionUserId: string | null }[] = [];
+  const calls: { text: string; mentionUserIds: readonly string[] }[] = [];
   const logs: string[] = [];
   const { desk, alerts } = wired({
     readEvents: reader(new Map([["s1", blockedAt(NOW - 5_000)]])),
-    alert: async (_threadId, text, mentionUserId) => {
-      calls.push({ text, mentionUserId });
+    alert: async (_threadId, text, mentionUserIds) => {
+      calls.push({ text, mentionUserIds });
       return outcomes[Math.min(calls.length - 1, outcomes.length - 1)];
     },
     log: (message) => logs.push(message),
@@ -205,7 +205,7 @@ test("a refused post records nothing, spends nothing, and logs its trouble once"
   assert.equal(calls.length, 3, "and once landed it is done");
   // The discriminating half of the refund: the ping ceiling is one, so a refusal that kept its
   // slot would arrive quiet here, a mention nobody was ever pinged for having spent.
-  assert.equal(calls[2].mentionUserId, OPERATOR, "the refused attempts left the window unspent");
+  assert.deepEqual(calls[2].mentionUserIds, [OPERATOR], "the refused attempts left the window unspent");
   assert.ok(calls[2].text.startsWith(`<@${OPERATOR}> `), calls[2].text);
 
   await desk.tick();
@@ -229,9 +229,31 @@ test("past the ping ceiling the alert lands without its mention, in text and whi
   await desk.tick();
 
   assert.equal(alerts.length, 2);
-  assert.equal(alerts[0].mentionUserId, OPERATOR);
+  assert.deepEqual(alerts[0].mentionUserIds, [OPERATOR]);
   assert.ok(alerts[0].text.startsWith(`<@${OPERATOR}> `), alerts[0].text);
-  assert.equal(alerts[1].mentionUserId, null, "past the ping ceiling the alert goes quiet");
+  assert.deepEqual(alerts[1].mentionUserIds, [], "past the ping ceiling the alert goes quiet");
+  assert.ok(!alerts[1].text.includes("<@"), alerts[1].text);
+});
+
+test("a host with two operators pings both, in text and whitelist alike, and quiets both", async () => {
+  const second = "700000000000000005";
+  const { desk, alerts } = wired({
+    operatorIds: [OPERATOR, second],
+    readEvents: reader(
+      new Map([
+        ["s1", blockedAt(NOW - 5_000)],
+        ["s2", blockedAt(NOW - 4_000)],
+      ]),
+    ),
+    threadFor: () => "thread-shared",
+  });
+
+  await desk.tick();
+
+  assert.equal(alerts.length, 2);
+  assert.deepEqual(alerts[0].mentionUserIds, [OPERATOR, second]);
+  assert.ok(alerts[0].text.startsWith(`<@${OPERATOR}> <@${second}> ⛔ **Blocked**`), alerts[0].text);
+  assert.deepEqual(alerts[1].mentionUserIds, [], "past the ping ceiling nobody is pinged");
   assert.ok(!alerts[1].text.includes("<@"), alerts[1].text);
 });
 

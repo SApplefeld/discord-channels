@@ -57,7 +57,7 @@ function verbatim(questions: readonly AskedQuestion[]): unknown[] {
 
 function prompt(questions: readonly AskedQuestion[], selections: string[][] = []) {
   return renderQuestionPrompt({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     entryId: ENTRY,
     questions,
     selections: selections.length > 0 ? selections : questions.map(() => []),
@@ -206,6 +206,32 @@ test("no shape of ask composes a prompt past the message ceiling", () => {
   // Reported so a change that quietly spends the remaining slack is visible as a number rather than
   // only as the day the ceiling is finally crossed.
   assert.ok(worst > 0 && worst <= MAX_MESSAGE_LENGTH, `worst observed ${String(worst)}`);
+});
+
+test("a prompt mentions every operator and still composes inside the ceiling on a long roster", () => {
+  // Each operator past the first lengthens the head by a mention, and the questions' share is
+  // what gives that room back, so the widest ask stays one message however many operators ping.
+  const roster = Array.from({ length: 12 }, (_, at) => `7000000000000000${String(10 + at)}`);
+  const wide = "w".repeat(2_000);
+  for (const count of [1, 4]) {
+    const questions = Array.from({ length: count }, (_, at) =>
+      asked({
+        question: `${String(at)} ${wide}`,
+        header: wide,
+        multiSelect: true,
+        options: Array.from({ length: 4 }, (_, n) => ({ label: `${String(n)} ${wide}`, description: wide })),
+      }),
+    );
+    const { content } = renderQuestionPrompt({
+      operatorIds: roster,
+      entryId: ENTRY,
+      questions,
+      selections: questions.map(() => []),
+    });
+    assert.ok(content.startsWith(`${roster.map((id) => `<@${id}>`).join(" ")} ❓ `), content.slice(0, 400));
+    assert.ok(content.length <= MAX_MESSAGE_LENGTH, `${String(count)}q composed ${String(content.length)}`);
+    assert.ok(content.endsWith(TYPED_ANSWER_FOOTER), "the footer survives, so nothing was cut");
+  }
 });
 
 test("a terminal state names every question of a maximal ask, inside one message", () => {

@@ -745,13 +745,24 @@ function promptPreview(label: string, value: string, limit: number): string {
 }
 
 /**
+ * The mention every broker-written ping opens with: each operator's ID as `<@id>`, in roster order,
+ * joined by single spaces and followed by one, or nothing at all for an empty list, which is the
+ * quiet tier. The only place a renderer composes mention syntax, so every mentioning message spells
+ * its mentions the same way.
+ */
+export function mentionPrefix(operatorIds: readonly string[]): string {
+  return operatorIds.length === 0 ? "" : `${operatorIds.map((id) => `<@${id}>`).join(" ")} `;
+}
+
+/**
  * The permission prompt: one of the two messages this broker writes that deliberately mention
  * someone, the question alert below being the other.
  *
- * The mention is composed here from the operator's own ID, and every untrusted field goes through
- * `inertText`, which escapes the angle brackets Discord's mention syntax lives inside. So the only
- * mention this message can contain is the one written on this line, and the transport names that
- * same single ID as the only one it will resolve.
+ * The mentions are composed here from the operators' own IDs, and every untrusted field goes
+ * through `inertText`, which escapes the angle brackets Discord's mention syntax lives inside. So
+ * the only mentions this message can contain are the ones written on this line, and the transport
+ * names those same IDs as the only ones it will resolve. An empty list composes the same prompt
+ * with no mention at all.
  *
  * `description` and `input_preview` come from a tool call, which anything the session has read can
  * steer. They are rendered last and as inert text, because this message pings a phone and asks a
@@ -759,19 +770,24 @@ function promptPreview(label: string, value: string, limit: number): string {
  * attack this ordering and this escaping are against.
  */
 export function renderPermissionRequest(input: {
-  operatorId: string;
+  operatorIds: readonly string[];
   requestId: string;
   toolName: string;
   description: string;
   inputPreview: string;
 }): string {
   const id = input.requestId;
+  const mention = mentionPrefix(input.operatorIds);
+  // The field caps leave room for one operator's mention. Each further one is taken from the
+  // preview, the longest field, so the prompt stays one message and its cut is the labelled one
+  // rather than the writer's silent cut through the closing fence.
+  const extraMention = mention.length - mentionPrefix(input.operatorIds.slice(0, 1)).length;
   return [
-    `<@${input.operatorId}> **Permission needed** ${SEPARATOR} \`${id}\``,
+    `${mention}**Permission needed** ${SEPARATOR} \`${id}\``,
     `Reply \`y ${id}\` to allow or \`n ${id}\` to deny.`,
     promptField("Tool", input.toolName, MAX_TOOL_NAME_LENGTH),
     promptField("What", input.description, MAX_DESCRIPTION_LENGTH),
-    promptPreview("Input", input.inputPreview, MAX_PREVIEW_LENGTH),
+    promptPreview("Input", input.inputPreview, Math.max(MAX_PREVIEW_LENGTH - extraMention, 0)),
   ].join("\n");
 }
 
@@ -907,9 +923,9 @@ function moreQuestionsTail(count: number): string {
 
 /**
  * The open-question alert: the second message this broker writes that deliberately mentions
- * someone, beside the permission prompt, and safe for the same reason: the mention is composed
- * here from the operator's own ID, and every untrusted field goes through `inertText`, which
- * escapes the angle brackets Discord's mention syntax lives inside. A null `operatorId` composes
+ * someone, beside the permission prompt, and safe for the same reason: the mentions are composed
+ * here from the operators' own IDs, and every untrusted field goes through `inertText`, which
+ * escapes the angle brackets Discord's mention syntax lives inside. An empty `operatorIds` composes
  * the same notice with no mention at all: the quiet tier for a thread already pinged past a
  * person's reading pace.
  *
@@ -930,11 +946,12 @@ function moreQuestionsTail(count: number): string {
  * writer's own whole-message cut would eat the tail silently. Questions are appended whole, each
  * with its lines, and the first that would not leave room for the closing tail ends the message
  * with a line naming how many the console still holds. The first question always fits by
- * arithmetic: the alert line is at most about 80 units, a Q line at most 620 (3 + a 100-unit
- * header + 2 + a 500-unit question + a 15-unit suffix), an Options line at most 418 (9 + four
- * 100-unit labels + three separators), and the tail at most 34, about 1,160 in all against the
- * 1,900 ceiling, so the notice never degenerates to a bare tail. Measured in UTF-16 units, the
- * larger of the two counts a length could mean, so holding it holds the code point count too.
+ * arithmetic: the alert line is at most about 80 units with one operator mentioned, each further
+ * operator adding at most 24, a Q line at most 620 (3 + a 100-unit header + 2 + a 500-unit
+ * question + a 15-unit suffix), an Options line at most 418 (9 + four 100-unit labels + three
+ * separators), and the tail at most 34, about 1,160 in all against the 1,900 ceiling, so the notice
+ * never degenerates to a bare tail on a roster of up to thirty operators. Measured in UTF-16 units,
+ * the larger of the two counts a length could mean, so holding it holds the code point count too.
  *
  * A question with no options renders without an Options line rather than as an error: the console
  * always offers a free-form "Other" answer, so an empty list is a shape this tool really
@@ -943,10 +960,10 @@ function moreQuestionsTail(count: number): string {
  * never a throw.
  */
 export function renderQuestionNotice(input: {
-  operatorId: string | null;
+  operatorIds: readonly string[];
   questions: readonly AskedQuestion[];
 }): string {
-  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+  const mention = mentionPrefix(input.operatorIds);
   const lines = [`${mention}${QUESTION_ATTRIBUTION} ${SEPARATOR} a question is open`];
   let used = lines[0].length;
   for (const [index, asked] of input.questions.entries()) {
@@ -2800,11 +2817,11 @@ function modelRows(view: SessionView): BlockRow[] {
 
 /**
  * The message a model change posts into the session's own thread, on the notice tier by default and
- * on the alert tier, with the mention that reaches a phone, when the operator's ID is passed.
+ * on the alert tier, with the mentions that reach a phone, when the operators' IDs are passed.
  *
- * The mention is composed here from the operator's own ID and every untrusted field goes through
+ * The mentions are composed here from the operators' own IDs and every untrusted field goes through
  * `inertField`, which escapes the angle brackets Discord's mention syntax lives inside, so the only
- * mention this message can contain is the one written on this line. `renderQuestionNotice`'s
+ * mentions this message can contain are the ones written on this line. `renderQuestionNotice`'s
  * pattern, and safe for its reason.
  *
  * What it carries is what upstream named and no more: the two models, the refusal category when the
@@ -2815,12 +2832,12 @@ function modelRows(view: SessionView): BlockRow[] {
  * running on the fallback until someone consents at the console.
  */
 export function renderModelChange(input: {
-  operatorId: string | null;
+  operatorIds: readonly string[];
   from: string;
   to: string;
   downgrade: ModelFallback | null;
 }): string {
-  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+  const mention = mentionPrefix(input.operatorIds);
   const from = inertField(input.from, MAX_MODEL_NAME_LENGTH);
   const to = inertField(input.to, MAX_MODEL_NAME_LENGTH);
   const lines = [
@@ -2849,13 +2866,13 @@ export function renderModelChange(input: {
 }
 
 /**
- * The alert a block episode posts into its session's own thread, on the alert tier with the mention
- * that reaches a phone, and without one when the volume window has gone quiet and the caller passes
- * null. `renderQuestionNotice`'s pattern, and safe for its reason: the mention is composed here from
- * the operator's own ID, and the one untrusted field takes the full markdown escape (`inertText`,
- * over the pre-escape bound the next paragraph explains), which escapes the angle brackets Discord's
- * mention syntax lives inside, so the only mention this message can contain is the one written on
- * this line.
+ * The alert a block episode posts into its session's own thread, on the alert tier with the mentions
+ * that reach a phone, and without them when the volume window has gone quiet and the caller passes
+ * an empty list. `renderQuestionNotice`'s pattern, and safe for its reason: the mentions are
+ * composed here from the operators' own IDs, and the one untrusted field takes the full markdown
+ * escape (`inertText`, over the pre-escape bound the next paragraph explains), which escapes the
+ * angle brackets Discord's mention syntax lives inside, so the only mentions this message can
+ * contain are the ones written on this line.
  *
  * `plan` arrives from the kit's event stream, which anything with append access to the operator's
  * home directory can write, so it is escaped and bounded here at the render site. The bound is the
@@ -2866,8 +2883,11 @@ export function renderModelChange(input: {
  * drops its clause rather than drawing an empty slot, and whatever the event carried, the alert
  * composes, never a throw.
  */
-export function renderBlockedAlert(input: { operatorId: string | null; plan: string }): string {
-  const mention = input.operatorId === null ? "" : `<@${input.operatorId}> `;
+export function renderBlockedAlert(input: {
+  operatorIds: readonly string[];
+  plan: string;
+}): string {
+  const mention = mentionPrefix(input.operatorIds);
   // Neutralize, bound, then escape. `visible` runs again inside `inertText` and is idempotent, so
   // the second pass changes nothing; what the order buys is the pre-escape measurement above.
   const plan = inertText(fit(visible(input.plan), MAX_PLAN_CHARS));

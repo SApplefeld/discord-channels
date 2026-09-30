@@ -66,6 +66,8 @@ function harness(
     holdEdits?: { after: number; until: Promise<void> };
     /** Throws out of every edit past the first `after` of them, as a dead socket does. */
     throwEditsAfter?: number;
+    /** The roster's operators, in order. One operator unless a test says otherwise. */
+    operatorIds?: readonly string[];
     now?: () => number;
   } = {},
 ) {
@@ -86,7 +88,7 @@ function harness(
       close: () => {},
     });
   }
-  const posts: Array<{ threadId: string; text: string; mentionUserId?: string }> = [];
+  const posts: Array<{ threadId: string; text: string; mentionUserIds?: readonly string[] }> = [];
   const edits: Array<{
     threadId: string;
     messageId: string;
@@ -121,14 +123,14 @@ function harness(
     threadFor: (sessionId) =>
       sessionId === "session-a" ? THREAD_A : sessionId === "session-b" ? THREAD_B : null,
     writer: createThreadWriter({ messenger, now }),
-    operatorId: OPERATOR,
+    operatorIds: options.operatorIds ?? [OPERATOR],
     now,
     log: (message) => logged.push(message),
   });
   /** Just the prompts, which is what the mention distinguishes from a notice. */
-  const alerts = (): typeof posts => posts.filter((post) => post.mentionUserId !== undefined);
+  const alerts = (): typeof posts => posts.filter((post) => post.mentionUserIds !== undefined);
   /** Just the broker-authored notices, which is where a dropped prompt has to become visible. */
-  const notices = (): typeof posts => posts.filter((post) => post.mentionUserId === undefined);
+  const notices = (): typeof posts => posts.filter((post) => post.mentionUserIds === undefined);
   /**
    * The nonce the desk minted for the prompt it last drew buttons on, read back off the wire the
    * way a press carries it: through the `custom_id` the components were built with.
@@ -184,11 +186,24 @@ test("a request is posted into its session's thread, mentioning the operator", a
 
   assert.equal(posts.length, 1);
   assert.equal(posts[0].threadId, THREAD_A);
-  assert.equal(posts[0].mentionUserId, OPERATOR, "the prompt names the operator as its one mention");
-  assert.match(posts[0].text, /^<@700000000000000002> /, "the mention leads the message");
+  assert.deepEqual(posts[0].mentionUserIds, [OPERATOR], "the prompt names the operator as its one mention");
+  assert.match(posts[0].text, /^<@700000000000000002> \*\*Permission needed\*\* /, "the mention leads the message");
   assert.match(posts[0].text, /`abcde`/, "the request id is what a verdict has to name");
   assert.match(posts[0].text, /Bash/);
   assert.match(posts[0].text, /run the migration/);
+});
+
+test("a prompt on a host with two operators mentions both, and resolves exactly those two", async () => {
+  const second = "700000000000000005";
+  const { desk, posts } = harness({ operatorIds: [OPERATOR, second] });
+  await desk.request(TOKEN_A, request());
+
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].mentionUserIds, [OPERATOR, second], "the whitelist is exactly the operators");
+  assert.ok(
+    posts[0].text.startsWith(`<@${OPERATOR}> <@${second}> **Permission needed** `),
+    posts[0].text,
+  );
 });
 
 test("a verdict reaches the session that asked, as an allow or a deny", async () => {

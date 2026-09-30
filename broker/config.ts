@@ -169,6 +169,27 @@ export type BrokerConfig = {
   inboxThreshold: number;
   /** How often the inbox card is re-rendered. An edit is spent only when it changed. */
   inboxCardRefreshMs: number;
+  /**
+   * Whether a thread's messages are held and delivered to its session together. `off` delivers
+   * each admitted message at once, which is how a host with one account runs. `shadow`
+   * delivers at once as well. `live` holds each thread's messages until one mentions the bot,
+   * replies to one of its messages, or the buffer reaches a cap below.
+   */
+  responseGate: "off" | "shadow" | "live";
+  /** A held buffer delivers on reaching this many messages. */
+  responseGateMaxMessages: number;
+  /** A held buffer delivers once its oldest message is this old, whether or not another arrives. */
+  responseGateMaxWaitMs: number;
+  /**
+   * How long a thread must be quiet since its last message before a held buffer is put to the
+   * judge. A new message restarts it, so a person typing several lines is not cut mid-thought.
+   */
+  responseGateQuietMs: number;
+  /**
+   * The judge's probability at or above which a held buffer delivers, from 0.4 to 0.95. Chosen
+   * from a week of labelled shadow rows through `tools/response-gate-score.ts`.
+   */
+  responseGateThreshold: number;
 };
 
 /**
@@ -303,6 +324,26 @@ const MAX_INBOX_CARD_REFRESH_MS = MAX_BOARD_CARD_REFRESH_MS;
 const DEFAULT_INBOX_THRESHOLD = 0.7;
 const MIN_INBOX_THRESHOLD = 0.4;
 const MAX_INBOX_THRESHOLD = 0.95;
+// The size cap defaults to the inbound rate ceiling, as many messages as one session may be handed
+// in a minute. It counts messages and has no upper bound; what bounds a delivery's size at any
+// value is the gate's event budget, which delivers a buffer early rather than grow it past what
+// the relay's stream carries. The age cap is how late a held ask can be: ten minutes is a long
+// pause in a working conversation and a short wait for someone who stepped away. Both are
+// starting values rather than measured ones.
+const DEFAULT_RESPONSE_GATE_MAX_MESSAGES = 20;
+const DEFAULT_RESPONSE_GATE_MAX_WAIT_MS = 10 * 60 * 1000;
+// The age cap is a setTimeout delay, and Node clamps a delay past 2^31-1 down to 1ms, which would
+// deliver every buffer the moment it opened. The ceiling is that limit, about 24.8 days.
+const MAX_RESPONSE_GATE_MAX_WAIT_MS = 2_147_483_647;
+// The quiet window is a typing pause: five seconds is long enough that a second line of the same
+// thought lands inside it and short enough that an ask is not held for its own sake. It is a
+// setTimeout delay too, so it takes the age cap's ceiling. The threshold takes the inbox
+// threshold's bounds, for the same reasons: the floor keeps a typo from delivering on most
+// verdicts, and the ceiling keeps one from delivering on almost none while still reading as on.
+// Both are starting values rather than measured ones; the shadow journal and the scoring tool
+// are what move them.
+const DEFAULT_RESPONSE_GATE_QUIET_MS = 5 * 1000;
+const DEFAULT_RESPONSE_GATE_THRESHOLD = 0.6;
 // One list, one entry per project root. A semicolon rather than a colon or a comma because a Windows
 // path carries a drive letter and a colon with it, and a comma is a legal character in a directory
 // name.
@@ -426,6 +467,18 @@ const PEER_MESSAGE_MODES: ReadonlyArray<"full" | "brief" | "off"> = ["full", "br
  */
 function peerMessageMode(raw: string | undefined): "full" | "brief" | "off" {
   return strictEnum(raw, PEER_MESSAGE_MODES, "full");
+}
+
+const RESPONSE_GATE_MODES: ReadonlyArray<"off" | "shadow" | "live"> = ["off", "shadow", "live"];
+
+/**
+ * Whether the response gate holds messages, defaulting to off: a typo like
+ * `CHANNEL_RESPONSE_GATE=lvie` is refused by the reading above rather than landing on a mode that
+ * either holds a session's messages back or delivers every one of them, silently, whichever the
+ * parser leaned toward.
+ */
+function responseGateMode(raw: string | undefined): "off" | "shadow" | "live" {
+  return strictEnum(raw, RESPONSE_GATE_MODES, "off");
 }
 
 // A Windows path names the same place from every process only when it leads with a drive letter or a
@@ -664,6 +717,34 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       MIN_INBOX_CARD_REFRESH_MS,
       MAX_INBOX_CARD_REFRESH_MS,
       DEFAULT_INBOX_CARD_REFRESH_MS,
+    ),
+    // Off by default: on, the gate holds messages back from a running session, and that belongs
+    // on a host that asked for it. The caps are read whatever the mode, so a host turning the gate
+    // on later learns of a bad value at the restart that sets it rather than at the one that flips
+    // the mode.
+    responseGate: responseGateMode(env.CHANNEL_RESPONSE_GATE),
+    responseGateMaxMessages: integerAtLeast(
+      env.CHANNEL_RESPONSE_GATE_MAX_MESSAGES,
+      1,
+      DEFAULT_RESPONSE_GATE_MAX_MESSAGES,
+    ),
+    responseGateMaxWaitMs: bounded(
+      env.CHANNEL_RESPONSE_GATE_MAX_WAIT_MS,
+      1,
+      MAX_RESPONSE_GATE_MAX_WAIT_MS,
+      DEFAULT_RESPONSE_GATE_MAX_WAIT_MS,
+    ),
+    responseGateQuietMs: bounded(
+      env.CHANNEL_RESPONSE_GATE_QUIET_MS,
+      1,
+      MAX_RESPONSE_GATE_MAX_WAIT_MS,
+      DEFAULT_RESPONSE_GATE_QUIET_MS,
+    ),
+    responseGateThreshold: boundedFraction(
+      env.CHANNEL_RESPONSE_GATE_THRESHOLD,
+      MIN_INBOX_THRESHOLD,
+      MAX_INBOX_THRESHOLD,
+      DEFAULT_RESPONSE_GATE_THRESHOLD,
     ),
   };
 }

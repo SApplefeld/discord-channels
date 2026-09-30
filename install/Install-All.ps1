@@ -28,6 +28,9 @@ param(
     [ValidatePattern('^(\d{17,20})?$')]
     [string]$AllowedUserId,
 
+    # Validated entry by entry in Resolve-ChannelInstallIdentity, which names the entry it refuses.
+    [string]$Senders,
+
     [System.Security.SecureString]$BotToken,
 
     [string]$BotTokenFile,
@@ -190,7 +193,7 @@ broker.env, throwing when a value is neither supplied nor on disk.
 
 .DESCRIPTION
 A run whose only purpose is to pick up new hooks on a host installed months ago should not have to
-retype the two Discord IDs nobody remembers, and the last install already wrote all four values to
+retype the Discord IDs nobody remembers, and the last install already wrote every value to
 broker.env under keys it owns. So an argument that was not supplied falls back to the file, and an
 argument that was supplied always wins, which keeps rebinding a host to a different channel exactly
 what it is on a first install.
@@ -201,6 +204,12 @@ would otherwise reach Install-Host.ps1 and fail there with a message about the w
 present with an empty value counts as absent, because the pattern the parameters declare admits the
 empty string and a blank reuse would be announced and passed on as if it were an identity.
 
+The sender roster is two keys the broker unions: -AllowedUserId as one operator and -Senders as a
+list of <snowflake>:operator and <snowflake>:participant entries. Either may be absent, and the
+install refuses only when the two together name no operator, since that is a broker that refuses to
+start. -Senders is validated whether it came from the argument or the file, entry by entry, with the
+same rules the broker applies, and is returned with the spacing around each entry trimmed.
+
 -EnvFile exists so a test can drive a real env file without a state root.
 #>
 function Resolve-ChannelInstallIdentity {
@@ -208,6 +217,7 @@ function Resolve-ChannelInstallIdentity {
         [string]$HostName,
         [string]$ChannelId,
         [string]$AllowedUserId,
+        [string]$Senders,
         [Nullable[int]]$Port,
         [string]$EnvFile = (Join-Path (Get-ChannelStateRoot) 'broker.env')
     )
@@ -252,6 +262,41 @@ function Resolve-ChannelInstallIdentity {
             Write-Host "Reusing -AllowedUserId $AllowedUserId from $EnvFile."
         }
     }
+    $sendersFrom = '-Senders'
+    $sendersRemedy = ''
+    if (-not $Senders) {
+        # Trimmed, so a whitespace-only line reads as unset, as the broker's own loader reads it.
+        $Senders = "$(& $read 'CHANNEL_SENDERS')".Trim()
+        $sendersFrom = "CHANNEL_SENDERS in $($EnvFile)"
+        $sendersRemedy = ' Fix that line, or pass -Senders to override the file.'
+    }
+    # Seeded with the -AllowedUserId operator, because the broker unions the two keys and refuses an
+    # id the union gives two classes, wherever each came from.
+    $classes = @{}
+    if ($AllowedUserId) { $classes[$AllowedUserId] = 'operator' }
+    if ($Senders) {
+        $normalized = foreach ($raw in ($Senders -split ',')) {
+            $entry = $raw.Trim()
+            $parts = $entry -split ':', 2
+            $id = $parts[0].Trim()
+            $class = if ($parts.Count -eq 2) { $parts[1].Trim() } else { '' }
+            # -cnotin: the broker's parse is case-sensitive, so 'Operator' is refused here too
+            # rather than installed and refused at the broker's next start.
+            if ($id -notmatch $idPattern -or $class -cnotin @('operator', 'participant')) {
+                throw "Install-All: $sendersFrom has an entry that is not a Discord ID and a " +
+                    "class ('$entry'); each entry is 17 to 20 digits, a colon, and operator or " +
+                    "participant.$sendersRemedy"
+            }
+            if ($classes.ContainsKey($id) -and $classes[$id] -cne $class) {
+                throw "Install-All: $sendersFrom names $id as $class, and it is already " +
+                    "$($classes[$id]); an ID holds one class.$sendersRemedy"
+            }
+            $classes[$id] = $class
+            "$($id):$class"
+        }
+        $Senders = @($normalized) -join ','
+        if ($sendersFrom -ne '-Senders') { Write-Host "Reusing -Senders $Senders from $EnvFile." }
+    }
     if ($null -eq $Port) {
         $reusedPort = & $read 'CHANNEL_BROKER_PORT'
         if ($reusedPort) {
@@ -270,17 +315,21 @@ function Resolve-ChannelInstallIdentity {
     $missing = @()
     if (-not $HostName) { $missing += '-HostName' }
     if (-not $ChannelId) { $missing += '-ChannelId' }
-    if (-not $AllowedUserId) { $missing += '-AllowedUserId' }
+    if ($classes.Values -notcontains 'operator') {
+        $missing += '-AllowedUserId or an operator in -Senders'
+    }
     if ($missing.Count -gt 0) {
-        throw "Install-All: -HostName, -ChannelId, and -AllowedUserId are all required. The two " +
-            "IDs come from Discord with Developer Mode on; docs/install.md step 1 walks through it. " +
-            "Not supplied and not found in $($EnvFile): $($missing -join ', ')."
+        throw "Install-All: -HostName, -ChannelId, and an operator in -AllowedUserId or -Senders " +
+            "are all required. The IDs come from Discord with Developer Mode on; docs/install.md " +
+            "step 1 walks through it. Not supplied and not found in $($EnvFile): " +
+            "$($missing -join ', ')."
     }
 
     return @{
         HostName      = $HostName
         ChannelId     = $ChannelId
         AllowedUserId = $AllowedUserId
+        Senders       = $Senders
         Port          = $Port
     }
 }
@@ -292,15 +341,18 @@ if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
 
     $identity = Resolve-ChannelInstallIdentity -HostName $HostName -ChannelId $ChannelId `
-        -AllowedUserId $AllowedUserId -Port $Port
+        -AllowedUserId $AllowedUserId -Senders $Senders -Port $Port
     Assert-ChannelInstallUnelevated
 
     $hostArgs = @{
-        HostName      = $identity.HostName
-        ChannelId     = $identity.ChannelId
-        AllowedUserId = $identity.AllowedUserId
-        RepoRoot      = $RepoRoot
+        HostName  = $identity.HostName
+        ChannelId = $identity.ChannelId
+        RepoRoot  = $RepoRoot
     }
+    # Passed only when set: either may be absent, and Install-Host.ps1 validates each by pattern,
+    # which an empty value fails.
+    if ($identity.AllowedUserId) { $hostArgs.AllowedUserId = $identity.AllowedUserId }
+    if ($identity.Senders) { $hostArgs.Senders = $identity.Senders }
     if ($BotToken) { $hostArgs.BotToken = $BotToken }
     if ($BotTokenFile) { $hostArgs.BotTokenFile = $BotTokenFile }
     # A verify-run on an already-installed host reuses the hardened token from the last install

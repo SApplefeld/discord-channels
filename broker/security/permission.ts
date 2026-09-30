@@ -279,9 +279,9 @@ export type PermissionDesk = {
    * behind `settled`.
    *
    * `nonce` is the one a button press carries, and null for a typed verdict. A typed verdict is a
-   * message composed now, in the thread, by the one account this broker acts for, so the ID it
-   * names is the ID the operator is looking at. A press is a tap on a message that may be any age,
-   * and the nonce is what ties it to the one prompt it was drawn on. Required rather than optional
+   * message composed now, in the thread, by an operator, the only class whose verdict the router
+   * parses, so the ID it names is the ID that operator is looking at. A press is a tap on a
+   * message that may be any age, and the nonce is what ties it to the one prompt it was drawn on. Required rather than optional
    * so a caller states which of the two it is: a press whose nonce went missing would otherwise
    * lose the only control that stands between a recycled request ID and the wrong approval.
    */
@@ -347,8 +347,11 @@ export type PermissionDeskOptions = {
   /** The thread bound to a session, as the Discord surface currently holds it. */
   threadFor: (sessionId: string) => string | null;
   writer: ThreadWriter;
-  /** The one user this broker may mention, and the one whose verdicts have already been accepted. */
-  operatorId: string;
+  /**
+   * Every operator, in roster order: the users a prompt mentions, and the only senders whose
+   * verdicts reach this desk, since the routers refuse anyone else's before calling it.
+   */
+  operatorIds: readonly string[];
   /** Injected so a test drives the alert ceiling without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
@@ -601,7 +604,7 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
         log(`permission: thread ${threadId} is over its ping ceiling, posting ${request.requestId} quietly`);
       }
 
-      const prompt = renderPermissionRequest({ ...request, operatorId: options.operatorId });
+      const prompt = renderPermissionRequest({ ...request, operatorIds: options.operatorIds });
       // The table is what makes this thread and ID one request, so the entry is held from before
       // the post rather than from after the attach edit: those are two round trips, and a second
       // request for the same ID inside them would find nothing open, post a second prompt, and
@@ -623,7 +626,7 @@ export function createPermissionDesk(options: PermissionDeskOptions): Permission
         prompt,
         // Quiet means the message lands without a mention. It is the same prompt, answerable the
         // same way; the phone just stops ringing for a run nobody could keep up with anyway.
-        volume === "ping" ? options.operatorId : null,
+        volume === "ping" ? options.operatorIds : [],
       );
       if (posted.status !== "ok") {
         // Nothing is left held for a prompt the operator never saw. Holding it would make this

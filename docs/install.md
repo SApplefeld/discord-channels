@@ -3,15 +3,16 @@
 One broker per host, one Discord bot identity per host, one channel per host. A broker reaches its
 sessions over localhost, so it cannot serve another machine.
 
-The three hosts are NEO, ASR, and SCOTT. NEO and ASR are organization-owned; SCOTT is a personal Max
-account with no organization. Steps 1 through 4 are identical on all three. The only thing that
-differs is the channel flag the launch wrapper passes, which is decided by whether that host's
-managed settings allowlist the relay, not by which kind of account pays for the session.
+The operator's own fleet runs on three hosts, NEO, ASR, and SCOTT, and a client host is one more ("A
+client host is its own server, bot and broker" below). NEO and ASR are organization-owned; SCOTT is
+a personal Max account with no organization. Steps 1 through 4 are identical on every host. The only
+thing that differs is the channel flag the launch wrapper passes, which is decided by whether that
+host's managed settings allowlist the relay, not by which kind of account pays for the session.
 
 ## 1. Create the Discord application
 
-Once per host, so three times. Each host gets its own bot so the three fleets never share an
-identity, and so a revoked token takes down one machine rather than all of them.
+Once per host. Each host gets its own bot so no two fleets share an identity, and so a revoked token
+takes down one machine rather than all of them.
 
 1. At <https://discord.com/developers/applications>, create an application and name it for the host.
 2. Under **Bot**, create the bot and copy the token. It is shown once.
@@ -27,11 +28,51 @@ identity, and so a revoked token takes down one machine rather than all of them.
    Messages is the one actually required, so that error points at the wrong grant.
 5. Open the generated URL and invite the bot to your server.
 6. Create a text channel for the host and copy its ID (right-click the channel with Developer Mode
-   on). Copy your own user ID the same way; it is the only account permitted to steer a session.
+   on). Copy your own user ID the same way, and the ID of each other person who will write in the
+   channel. Only the accounts on the sender roster below can write into a session.
 
-**Make that channel private to you and the bot.** The sender allowlist governs who can *write* into
-a session, not who can read. Everyone with access to the channel sees every message, and a tool
+**Make that channel private to the bot and the accounts on the sender roster.** The roster governs
+who can *write* into a session, not who can read. Everyone with access to the channel sees every message, and a tool
 approval prompt carries the tool's actual input: the shell command, the patch body, file contents.
+
+**The sender roster names who may write, and what each account may do.** Each account on it is an
+operator or a participant. An operator holds your authority over the host: it steers every session,
+approves tool calls, answers a session's questions and clears the inbox. A participant can talk to a
+session in its thread, and the session takes its words as conversation and never as instructions;
+its verdicts, button presses and answers count for nothing. Your own ID goes in as an operator,
+through `-AllowedUserId`. Everyone else goes in `-Senders`, one comma-separated entry per account,
+each an ID and its class:
+
+```powershell
+install\Install-All.ps1 -HostName <host> -ChannelId <channel id> -AllowedUserId <your user id> `
+    -Senders "<analyst one id>:participant,<analyst two id>:participant,<second operator id>:operator"
+```
+
+The installer writes the list to `CHANNEL_SENDERS` in `broker.env`, checks each entry the way the
+broker will, and refuses a list that gives one ID two classes or leaves the host with no operator.
+Every operator holds the whole of your authority, so name as operators only the people you would hand
+your own Discord account. A change to the roster takes a broker restart. A display name decides
+nothing: the class comes from the account's ID, and any member with Manage Nicknames can rename an
+account.
+
+**A client host is its own server, bot and broker.** Everyone who can see the channel reads every
+prompt, reply and tool approval in it, a participant included, because the roster governs who
+writes and never who reads. So a client's people must never share a channel, a server or a bot with
+your own fleet, or with another client's. Give each client a Discord server of their own, create a
+bot for it under step 1, and run a broker on a host that serves only that client's sessions. The
+launch wrapper picks each host's channel flag from its host table (`$script:ChannelFlagByHost` in
+`wrapper/Enter-ClaudeSession.ps1`) and refuses to launch on a machine the table does not name, so a
+client machine needs its own entry there before step 4.
+
+**The response gate is off until you turn it on.** With several people in one thread, a session
+would otherwise take a turn on every message. `CHANNEL_RESPONSE_GATE` holds a thread's messages and
+delivers them together when someone mentions or replies to the bot, when a cap is reached, or when
+TypeSafe's classifier, the one described under "The inbox judge's key file" below, judges that the
+conversation expects a response. At `shadow` it holds nothing: each message is delivered at once,
+and the broker journals what `live` would have done. While it is at `shadow` or `live`, a gated
+thread's buffered lines are sent to TypeSafe once the thread goes quiet, and it needs the key file
+under "The inbox judge's key file" below. [`operations.md`](operations.md) describes running it in
+`shadow` for a week to choose its threshold before going `live`.
 
 **With mirroring on, which is the default, the conversation itself leaves the machine too.** Every
 prompt typed at the console and every turn's final assistant reply reaches that session's thread in
@@ -71,8 +112,8 @@ reason a worker wrote on a blocked entry. With
 the last path segment of each root as the project name. So a root at or just under your home
 directory would put your account name there too. The inbox card (`CHANNEL_INBOX_CARD`) lists the
 sessions waiting on you, and with a judge key file named (the optional step under "Provision the
-host") it sends each unmarked session reply to TypeSafe's classifier, which is the one path here
-that reaches a host other than Discord. All three cards are configured in `broker.env` and
+host") it sends each unmarked session reply to TypeSafe's classifier. That classifier is the one host
+other than Discord this broker reaches, and the response gate described above uses it too. All three cards are configured in `broker.env` and
 documented in [`operations.md`](operations.md); a value tuned by hand there survives a re-install.
 
 Create Public Threads and Manage Threads are the two that fail quietly if missed: the broker posts a
@@ -95,9 +136,9 @@ relay plugin through the `claude` CLI, then raises exactly one UAC prompt for
 file described under "The launch dialog", and installs a block into the machine-wide PowerShell
 profile that dot-sources the launch wrapper and aliases it, so a new shell anywhere on the machine
 launches a watched session with `cchat <session-name>`. Every piece is idempotent; re-run it after
-moving the checkout or rotating a token. The three identity arguments are needed on the first
-install only: a re-run reads `-HostName`, `-ChannelId`, `-AllowedUserId`, and `-Port` back from the
-`broker.env` the last install wrote, announces each reused value as it picks it up, and refuses a
+moving the checkout or rotating a token. The identity arguments are needed on the first install
+only: a re-run reads `-HostName`, `-ChannelId`, `-AllowedUserId`, `-Senders`, and `-Port`
+back from the `broker.env` the last install wrote, announces each reused value as it picks it up, and refuses a
 malformed ID or port on disk naming the key. An argument you supply always wins, which is how a host is
 rebound to a different channel.
 
@@ -222,8 +263,10 @@ CHANNEL_INBOX_JUDGE_KEY_FILE=C:\Users\<you>\AppData\Local\sapplefeld-channels\in
 The broker checks the key file at start exactly as it checks the token file: the file and its
 directory must be owned by the broker's account or an administrative identity, must grant nobody
 beyond those three trustees, and must not be a symbolic link or junction. Where that check failing
-on the token file stops the broker, failing on this file only turns the judge off, with one warning
-in the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. A file
+on the token file stops the broker, failing on this file turns the judge off, with one warning in
+the start log naming the file and the cause, and the inbox runs on `ASK:` lines alone. With
+`CHANNEL_RESPONSE_GATE` at `shadow` or `live` the broker refuses to start instead, naming the mode
+and the cause, because the gate reads the same key. A file
 that is missing, unreadable or empty, or one whose content, once leading and trailing whitespace is
 dropped, holds anything but visible ASCII with no spaces, is refused the same way. A trailing
 newline is fine. Both keys are on the installer's allowlist, so values set by hand here

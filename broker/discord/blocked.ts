@@ -74,15 +74,15 @@ export type BlockedDeskOptions = {
   threadFor: (sessionId: string) => string | null;
   /**
    * The steering writer's alert tier: the phone-reaching write, which also ends the thread's
-   * narration block on a successful post. A null mention posts the same text quietly.
+   * narration block on a successful post. An empty mention list posts the same text quietly.
    */
   alert: (
     threadId: string,
     text: string,
-    mentionUserId: string | null,
+    mentionUserIds: readonly string[],
   ) => Promise<CallOutcome<{ messageId: string | null }>>;
-  /** The operator the ping tier mentions. */
-  operatorId: string;
+  /** Every operator, in roster order: who the ping tier mentions. */
+  operatorIds: readonly string[];
   now?: () => number;
   /**
    * The fold's read, one tick's worth. Injected so a test drives the kept state without a real
@@ -181,12 +181,12 @@ export function createBlockedDesk(options: BlockedDeskOptions): BlockedDesk {
       );
       return;
     }
-    const mention = level === "ping" ? options.operatorId : null;
+    const mention = level === "ping" ? options.operatorIds : [];
     remember(posted, key);
     try {
       const outcome = await options.alert(
         threadId,
-        renderBlockedAlert({ operatorId: mention, plan }),
+        renderBlockedAlert({ operatorIds: mention, plan }),
         mention,
       );
       if (outcome.status !== "ok") {

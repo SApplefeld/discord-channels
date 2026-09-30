@@ -6,7 +6,9 @@
 // is recoverable (the next SessionStart re-announces), the broker refusing to come up is not.
 //
 // The file holds every live process token, which is what a hook post is authenticated by, so it is
-// written for the owning user only.
+// written for the owning user only. That write is `writeSnapshot`, exported: the response gate's
+// held-buffer file rides the same one, so those two files, which a crash must not truncate, share
+// one writer.
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -340,17 +342,29 @@ function persisted(record: SessionRecord): PersistedRecord {
   };
 }
 
-export function saveSessions(file: string, sessions: SessionRecord[]): void {
-  const snapshot: Snapshot = { version: FORMAT_VERSION, sessions: sessions.map(persisted) };
+/**
+ * Writes one file whole: to a sibling temp file under a unique name, then renamed over the target,
+ * so a crash mid-write leaves the previous contents intact rather than a truncated file. The
+ * directory is made for the owning user only and the file is written the same way, since what
+ * rides this path is the registry snapshot with its process tokens and the response gate's held
+ * message text. Throws on failure with no temp file left behind; what a lost write costs is the
+ * caller's to decide.
+ */
+export function writeSnapshot(file: string, text: string): void {
   // A unique temp name, so two writers cannot land on each other's half-written file.
   const temp = `${file}.${randomUUID()}.tmp`;
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   try {
-    writeFileSync(temp, JSON.stringify(snapshot, null, 2), { encoding: "utf8", mode: 0o600 });
+    writeFileSync(temp, text, { encoding: "utf8", mode: 0o600 });
     renameSync(temp, file);
   } catch (error) {
     // A temp file left behind would never be cleaned up by anything else.
     rmSync(temp, { force: true });
     throw error;
   }
+}
+
+export function saveSessions(file: string, sessions: SessionRecord[]): void {
+  const snapshot: Snapshot = { version: FORMAT_VERSION, sessions: sessions.map(persisted) };
+  writeSnapshot(file, JSON.stringify(snapshot, null, 2));
 }

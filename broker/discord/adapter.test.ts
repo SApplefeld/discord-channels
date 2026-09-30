@@ -78,19 +78,30 @@ test("every message this bot writes suppresses all mentions and every embed", as
   }
 });
 
-test("a thread message resolves no mention unless one user is named, and then only that one", async () => {
-  // The permission prompt and the question alert are the messages this broker writes that are
-  // meant to reach a phone.
+test("a thread message resolves no mention unless users are named, and then exactly those", async () => {
+  // The broker's alerts are the messages it writes that are meant to reach a phone.
   // The empty parse list still stands, so no mention class is resolved from the content: the users
-  // list is a whitelist of exactly one id, and the renderer has escaped Discord's mention syntax
-  // out of every untrusted field, so the only mention in the message is the one the broker wrote.
+  // list is a whitelist of exactly the operators' ids, and the renderer has escaped Discord's
+  // mention syntax out of every untrusted field, so the only mentions in the message are the ones
+  // the broker wrote.
   const { sent, transport } = transportWith(() => respond(null));
 
   await transport.postToThread({ threadId: "thread-77", text: "@everyone a reply" });
+  // A one-operator host: the write is the one it has always been, one id in the users list.
   await transport.postToThread({
     threadId: "thread-77",
     text: "<@700000000000000002> permission needed",
-    mentionUserId: "700000000000000002",
+    mentionUserIds: ["700000000000000002"],
+  });
+  await transport.postToThread({
+    threadId: "thread-77",
+    text: "<@700000000000000002> <@700000000000000005> permission needed",
+    mentionUserIds: ["700000000000000002", "700000000000000005"],
+  });
+  await transport.postToThread({
+    threadId: "thread-77",
+    text: "permission needed, quietly",
+    mentionUserIds: [],
   });
 
   assert.deepEqual(sent[0].body.allowed_mentions, { parse: [] });
@@ -98,6 +109,11 @@ test("a thread message resolves no mention unless one user is named, and then on
     parse: [],
     users: ["700000000000000002"],
   });
+  assert.deepEqual(sent[2].body.allowed_mentions, {
+    parse: [],
+    users: ["700000000000000002", "700000000000000005"],
+  });
+  assert.deepEqual(sent[3].body.allowed_mentions, { parse: [] }, "an empty list resolves nobody");
   for (const call of sent) assert.equal(call.body.flags, 4);
 });
 

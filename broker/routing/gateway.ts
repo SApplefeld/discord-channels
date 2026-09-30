@@ -14,6 +14,7 @@
 // the library's own.
 import { Client, Events, GatewayIntentBits, MessageType } from "discord.js";
 import { describe } from "../discord/rest.ts";
+import { boundedAuthor } from "../sanitize.ts";
 import type { CallOutcome } from "../discord/transport.ts";
 import type { InboundMessage } from "./inbound.ts";
 import type { InboundInteraction } from "./interactions.ts";
@@ -103,6 +104,53 @@ export function classifyMessage(facts: MessageFacts, channelId: string): Message
   // is drawn by Discord from the new name, not written by the operator.
   if (facts.type === MessageType.ChannelNameChange) return "drop";
   return "deliver";
+}
+
+/**
+ * The name a delivered message is attributed to: the member nickname, else the global name, else the
+ * username, each bounded by `boundedAuthor` before it is weighed. A name that bounds to nothing a
+ * person could read falls to the next, and with none left the author's ID stands in, so the event
+ * always names someone.
+ */
+export function authorName(author: {
+  id: string;
+  nickname: string | null;
+  globalName: string | null;
+  username: string;
+}): string {
+  for (const name of [author.nickname, author.globalName, author.username]) {
+    if (name === null) continue;
+    const bounded = boundedAuthor(name);
+    if (bounded !== "") return bounded;
+  }
+  return author.id;
+}
+
+/**
+ * How a message stands to this bot's own user, from the facts the library reports: who wrote it,
+ * the users it mentions and the author of the message it replies to.
+ *
+ * A mention is a direct user mention of the bot's own id. A role mention or an @everyone names a
+ * group the bot may belong to and is not one, since neither is a person asking the bot. A reply is
+ * to the bot when the message it references was the bot's, which the library reports from the
+ * referenced message's author whether or not the reply pinged them; a reply whose referenced
+ * message is gone reports no author, and is not a reply to the bot. A message is the bot's own when
+ * its author is the bot's own user, which is narrower than the author being any bot: another bot or
+ * a webhook in the thread is neither this bot nor the assistant. Before the connection has
+ * identified itself there is no self to match, so nothing addresses it and nothing is its own.
+ */
+export function addressing(facts: {
+  selfId: string | null;
+  authorId: string;
+  mentionedUserIds: readonly string[];
+  repliedToAuthorId: string | null;
+}): { mentionsBot: boolean; repliesToBot: boolean; fromSelf: boolean } {
+  if (facts.selfId === null) return { mentionsBot: false, repliesToBot: false, fromSelf: false };
+  return {
+    mentionsBot: facts.mentionedUserIds.includes(facts.selfId),
+    repliesToBot: facts.repliedToAuthorId === facts.selfId,
+    fromSelf: facts.authorId === facts.selfId,
+  };
 }
 
 /** Distinct unexpected system message types one connection names before it goes quiet. */
@@ -248,6 +296,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
     // out of here are the ones `classifyMessage` allows and there is no other.
     const channel = message.channel;
     const inThread = channel.isThread();
+    const selfId = client.user?.id ?? null;
     const decision = classifyMessage(
       {
         channelId: message.channelId,
@@ -255,7 +304,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
         inThread,
         type: message.type,
         authorId: message.author.id,
-        selfId: client.user?.id ?? null,
+        selfId,
       },
       options.channelId,
     );
@@ -271,14 +320,33 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
       return;
     }
 
+    const addressed = addressing({
+      selfId,
+      authorId: message.author.id,
+      mentionedUserIds: [...message.mentions.users.keys()],
+      // The library fills this from the referenced message's author, whether or not the reply
+      // pinged them, and leaves it null where that message is gone.
+      repliedToAuthorId: message.mentions.repliedUser?.id ?? null,
+    });
     void options
       .onMessage({
         threadId: message.channelId,
         messageId: message.id,
         senderId: message.author.id,
+        author: authorName({
+          id: message.author.id,
+          nickname: message.member?.nickname ?? null,
+          globalName: message.author.globalName,
+          username: message.author.username,
+        }),
         // Reported rather than filtered here: every message this broker writes comes back over
         // this connection, and dropping it is a routing decision like any other.
         fromBot: message.author.bot,
+        // Reported on the same terms: whether the message addresses the bot, or is the bot's own,
+        // is a fact the routing reads, and what it does with one is decided there.
+        fromSelf: addressed.fromSelf,
+        mentionsBot: addressed.mentionsBot,
+        repliesToBot: addressed.repliesToBot,
         text: message.content,
       })
       .catch((error: unknown) => {

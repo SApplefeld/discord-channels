@@ -1,6 +1,6 @@
 // The shared repeat logger. Two things carry the weight here: the counting core behaves the same
 // for every surface (the first line, the silent repeat, the count line on the window's close, the
-// sweep past a key cap, and a window that a throwing log cannot leave stale), and each of the eight
+// sweep past a key cap, and a window that a throwing log cannot leave stale), and each of the nine
 // surfaces still writes its own text, window and cap, which operators and memory records grep for.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -12,6 +12,7 @@ import { QUESTION_DESK_REPEAT_LOG } from "./question-desk.ts";
 import { createRepeatLog } from "./repeat-log.ts";
 import type { RepeatLogSurface } from "./repeat-log.ts";
 import { ROUTING_REPEAT_LOG } from "./routing/interactions.ts";
+import { GATE_REPEAT_LOG } from "./routing/response-gate.ts";
 import { TAIL_REPEAT_LOG } from "./tail.ts";
 import { USAGE_CARD_REPEAT_LOG } from "./usage/thread.ts";
 
@@ -289,6 +290,18 @@ const PINS: SurfacePin[] = [
     count: "inbox card: cause occurred 2 more time(s) in the last 5 minutes",
     second: "inbox card: cause (second)",
   },
+  {
+    name: "response gate",
+    open: (log, now) => {
+      const repeats = createRepeatLog(GATE_REPEAT_LOG, log, now);
+      return (key, detail) => repeats(key, detail);
+    },
+    windowMs: 60_000,
+    maxKeys: undefined,
+    first: "response gate: cause thread=first",
+    count: "response gate: cause occurred 2 more time(s) in the last 60000ms",
+    second: "response gate: cause thread=second",
+  },
 ];
 
 for (const pin of PINS) {
@@ -321,6 +334,7 @@ test("each surface keeps its own key cap", () => {
     "usage card": USAGE_CARD_REPEAT_LOG.maxKeys,
     "board card": BOARD_CARD_REPEAT_LOG.maxKeys,
     "inbox card": INBOX_CARD_REPEAT_LOG.maxKeys,
+    "response gate": GATE_REPEAT_LOG.maxKeys,
   };
   assert.deepEqual(caps, Object.fromEntries(PINS.map((pin) => [pin.name, pin.maxKeys])));
 });

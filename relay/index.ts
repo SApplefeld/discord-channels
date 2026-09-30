@@ -41,7 +41,7 @@ const REPLY_FAILURES: Record<string, string> = {
  */
 export function replyToolResult(status: ReplyStatus): CallToolResult {
   if (status === "sent") {
-    return { content: [{ type: "text", text: "Sent to the operator's thread." }] };
+    return { content: [{ type: "text", text: "Sent to this session's thread." }] };
   }
   if (status === "still-posting") {
     // The broker was answering right up to the moment the wait ran out, so the messages may be
@@ -53,7 +53,7 @@ export function replyToolResult(status: ReplyStatus): CallToolResult {
           type: "text",
           text:
             "Do not send this message again. The broker is still posting it, so it may already " +
-            "be in the operator's thread in whole or in part.",
+            "be in this session's thread in whole or in part.",
         },
       ],
     };
@@ -131,10 +131,10 @@ export async function startRelay(env: NodeJS.ProcessEnv = process.env): Promise<
   const broker = createBrokerClient({
     port: port(env),
     processToken: processToken ?? "",
-    onMessage: (text, chatId) => {
+    onMessage: (text, chatId, attribution) => {
       // Fire and forget: an inbound message is not something the broker waits on, and a failed
       // write must not take the pipe down.
-      void server.notification(channelNotification(text, chatId)).catch((error: unknown) => {
+      void server.notification(channelNotification(text, chatId, attribution)).catch((error: unknown) => {
         process.stderr.write(`relay: could not deliver a channel message: ${String(error)}\n`);
       });
     },

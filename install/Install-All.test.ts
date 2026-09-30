@@ -329,6 +329,159 @@ test("a malformed id or port in broker.env throws naming the key and the file", 
   assert.match(out, new RegExp(`port threw: .*${badPort.replace(/[\\.]/g, "\\$&")}`));
 });
 
+test("a re-install reuses a senders list from broker.env as the operator when no allowed user is set", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const envPath = writeEnvFile(dir, {
+    CHANNEL_HOST_NAME: "NEO",
+    CHANNEL_DISCORD_CHANNEL: "123456789012345678",
+    // Spaces a hand edit leaves are trimmed off each entry rather than refused or passed on.
+    CHANNEL_SENDERS: "111111111111111111:operator , 222222222222222222:participant",
+  });
+
+  const out = probe(dir, ALL_PATH, [
+    `$resolved = Resolve-ChannelInstallIdentity -EnvFile "${envPath}"`,
+    `"user=[$($resolved.AllowedUserId)]"`,
+    `"senders=[$($resolved.Senders)]"`,
+  ]);
+
+  assert.match(out, /user=\[\]/);
+  assert.match(out, /senders=\[111111111111111111:operator,222222222222222222:participant\]/);
+  assert.match(out, /Reusing -Senders 111111111111111111:operator,222222222222222222:participant/);
+});
+
+test("an explicitly supplied senders list beats broker.env and is not announced as reused", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const envPath = writeEnvFile(dir, {
+    CHANNEL_HOST_NAME: "NEO",
+    CHANNEL_DISCORD_CHANNEL: "123456789012345678",
+    CHANNEL_SENDERS: "111111111111111111:operator",
+  });
+
+  const out = probe(dir, ALL_PATH, [
+    `$resolved = Resolve-ChannelInstallIdentity -EnvFile "${envPath}" ` +
+      `-Senders '333333333333333333:operator,444444444444444444:participant'`,
+    `"senders=[$($resolved.Senders)]"`,
+  ]);
+
+  assert.match(out, /senders=\[333333333333333333:operator,444444444444444444:participant\]/);
+  assert.doesNotMatch(out, /Reusing -Senders/);
+});
+
+test("an operator in either key satisfies the install, and neither holding one refuses it", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // The legacy key alone, with a participants-only list beside it: the union has its operator.
+  const legacyDir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(legacyDir, { recursive: true, force: true }));
+  const legacy = writeEnvFile(legacyDir, {
+    CHANNEL_HOST_NAME: "NEO",
+    CHANNEL_DISCORD_CHANNEL: "123456789012345678",
+    CHANNEL_ALLOWED_USER_ID: "876543210987654321",
+    CHANNEL_SENDERS: "222222222222222222:participant",
+  });
+  const noOperatorDir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(noOperatorDir, { recursive: true, force: true }));
+  const noOperator = writeEnvFile(noOperatorDir, {
+    CHANNEL_HOST_NAME: "NEO",
+    CHANNEL_DISCORD_CHANNEL: "123456789012345678",
+    CHANNEL_SENDERS: "222222222222222222:participant",
+  });
+
+  const out = probe(dir, ALL_PATH, [
+    `$resolved = Resolve-ChannelInstallIdentity -EnvFile "${legacy}"`,
+    `"legacy=[$($resolved.AllowedUserId)|$($resolved.Senders)]"`,
+    `try {`,
+    `    Resolve-ChannelInstallIdentity -EnvFile "${noOperator}" | Out-Null`,
+    `    'none-no-throw'`,
+    `} catch { 'none threw: ' + $_.Exception.Message }`,
+  ]);
+
+  assert.match(out, /legacy=\[876543210987654321\|222222222222222222:participant\]/);
+  assert.match(out, /none threw: .*an operator in -AllowedUserId or -Senders/);
+  assert.doesNotMatch(out, /none-no-throw/);
+});
+
+test("a senders entry that is malformed, unclassed, or given two classes throws naming the entry", (t) => {
+  // Each case carries an operator in the legacy key, so a throw here is the entry's own refusal and
+  // never the missing-operator one.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cases: Array<{ label: string; senders: string; names: RegExp }> = [
+    { label: "id", senders: "sapplefeld:participant", names: /'sapplefeld:participant'/ },
+    { label: "class", senders: "222222222222222222:admin", names: /'222222222222222222:admin'/ },
+    { label: "case", senders: "222222222222222222:Operator", names: /'222222222222222222:Operator'/ },
+    { label: "bare", senders: "222222222222222222", names: /'222222222222222222'/ },
+    {
+      label: "twice",
+      senders: "222222222222222222:participant,222222222222222222:operator",
+      names: /222222222222222222.*operator.*participant/,
+    },
+    {
+      label: "legacy",
+      senders: "876543210987654321:participant",
+      names: /876543210987654321.*participant.*operator/,
+    },
+  ];
+  const body: string[] = [];
+  const files = new Map<string, string>();
+  for (const { label, senders } of cases) {
+    const caseDir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+    t.after(() => rmSync(caseDir, { recursive: true, force: true }));
+    const envPath = writeEnvFile(caseDir, {
+      CHANNEL_HOST_NAME: "NEO",
+      CHANNEL_DISCORD_CHANNEL: "123456789012345678",
+      CHANNEL_ALLOWED_USER_ID: "876543210987654321",
+      CHANNEL_SENDERS: senders,
+    });
+    files.set(label, envPath);
+    body.push(
+      `try {`,
+      `    Resolve-ChannelInstallIdentity -EnvFile "${envPath}" | Out-Null`,
+      `    '${label}-no-throw'`,
+      `} catch { '${label} threw: ' + $_.Exception.Message }`,
+    );
+  }
+  // The same rules hold for the argument, which names itself rather than the file.
+  body.push(
+    `try {`,
+    `    Resolve-ChannelInstallIdentity -EnvFile "${files.get("id")}" -Senders '222222222222222222:admin' | Out-Null`,
+    `    'argument-no-throw'`,
+    `} catch { 'argument threw: ' + $_.Exception.Message }`,
+  );
+
+  const out = probe(dir, ALL_PATH, body);
+
+  for (const { label, names } of cases) {
+    assert.match(out, new RegExp(`${label} threw: .*CHANNEL_SENDERS`), `${label}: ${out}`);
+    assert.match(out, new RegExp(`${label} threw: .*${names.source}`), `${label}: ${out}`);
+    const file = files.get(label) as string;
+    assert.match(out, new RegExp(`${label} threw: .*${file.replace(/[\\.]/g, "\\$&")}`));
+  }
+  assert.match(out, /argument threw: .*-Senders.*'222222222222222222:admin'/);
+  assert.doesNotMatch(out, /argument threw: .*CHANNEL_SENDERS/, "an argument is not named as the file");
+});
+
+test("the senders key reaches the broker's environment through the env allowlist", (t) => {
+  // A key off the allowlist is skipped with a warning at every broker start, so a roster the
+  // installer wrote would never reach the gate and the broker would run on the legacy key alone.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-installall-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const envPath = writeEnvFile(dir, {
+    CHANNEL_SENDERS: "111111111111111111:operator,222222222222222222:participant",
+  });
+
+  const out = probe(dir, ALL_PATH, [
+    `Remove-Item -LiteralPath env:CHANNEL_SENDERS -ErrorAction SilentlyContinue`,
+    `Set-ChannelBrokerEnvironment -Path "${envPath}" 3>&1 | ForEach-Object { "warned: $_" }`,
+    `"applied=[$env:CHANNEL_SENDERS]"`,
+  ]);
+
+  assert.match(out, /applied=\[111111111111111111:operator,222222222222222222:participant\]/);
+  assert.doesNotMatch(out, /warned:/);
+});
+
 test("the runner with no arguments and no broker.env still names all three required arguments", (t) => {
   // The real runner, not the seam: the resolution runs before the elevation guard and before
   // anything is written, so an argument-less invocation fails on the message and provisions

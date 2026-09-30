@@ -267,3 +267,40 @@ export function boundedTitle(value: unknown, limit: number): string | null {
   const fitted = fit(written, limit);
   return isWellFormed(fitted) ? fitted : null;
 }
+
+/**
+ * The most code points a message author's display name contributes to the event a session reads.
+ *
+ * Shorter than `MAX_PEER_NAME_LENGTH` because it rides every delivered message as an attribute, where
+ * a long name costs the session's context on every line a person sends.
+ */
+export const MAX_AUTHOR_NAME_LENGTH = 32;
+
+/**
+ * The characters no author name carries as itself, each replaced by a space: the double quote and
+ * the angle brackets could end the attribute it rides or open a tag, the square brackets could
+ * dress it as a label the harness writes, and a line break could start a line the model reads as
+ * something other than the name. The carriage return is already a line feed by the time this runs.
+ */
+const UNSAFE_IN_AUTHOR = /["<>[\]\n\u0085\u2028\u2029]/g;
+
+/**
+ * A Discord display name made safe to ride an attribute on the envelope the model reads as the
+ * harness's own framing. Still attacker-chosen text: this bounds where it can reach, not what it
+ * says.
+ *
+ * A tab becomes a space first, since the invisible class would otherwise remove it and join two
+ * words. Compatibility folding (NFKC) comes next, so a fullwidth or small-form bracket, quote or
+ * angle becomes the ASCII character it draws as and meets the replacement below. The invisible
+ * class then goes through the line-preserving strip, so a line break survives to be replaced by a
+ * space rather than vanishing. The replacement runs before the cut so every character counted is
+ * one that is carried, the cut is on code points so it never leaves half an astral character, and
+ * the edges are trimmed so a replaced character there is not carried as padding. A result can be
+ * empty, which is the caller's to fall back from.
+ */
+export function boundedAuthor(value: string): string {
+  const replaced = withoutInvisible(value.replace(/\t/g, " ").normalize("NFKC"))
+    .replace(UNSAFE_IN_AUTHOR, " ")
+    .trim();
+  return sliceCodePoints(replaced, MAX_AUTHOR_NAME_LENGTH).trimEnd();
+}

@@ -11,7 +11,15 @@ import {
 } from "../broker/config.ts";
 import type { PermissionVerdict } from "./permission.ts";
 
-export type InboundHandler = (text: string, chatId: string) => void;
+/**
+ * Who wrote an inbound message, as the broker names them, and how many messages the text gathers
+ * when the broker's response gate delivered several as one. Each field is absent when the broker's
+ * event did not carry it in its shape, which is how a broker that predates attribution speaks and
+ * how one delivering a single message does.
+ */
+export type Attribution = { author?: string; senderClass?: string; buffered?: number };
+
+export type InboundHandler = (text: string, chatId: string, attribution: Attribution) => void;
 
 /** The operator's answer to one tool prompt, as it arrives down the stream. */
 export type VerdictHandler = (verdict: PermissionVerdict) => void;
@@ -199,7 +207,21 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
     }
     if (fields.type !== "message") return;
     if (typeof fields.text !== "string" || typeof fields.chatId !== "string") return;
-    options.onMessage(fields.text, fields.chatId);
+    // Carried when present and left out when not, so an older broker's event, which names no
+    // author, is still delivered rather than refused. A class the roster does not have is left out
+    // too, so the envelope never names a third one.
+    const attribution: Attribution = {};
+    if (typeof fields.author === "string") attribution.author = fields.author;
+    if (fields.senderClass === "operator" || fields.senderClass === "participant") {
+      attribution.senderClass = fields.senderClass;
+    }
+    // A count is a whole number of messages, at least one. Anything else is left out the way a
+    // non-string author is: the message is still delivered, and the envelope claims no count.
+    const buffered = fields.buffered;
+    if (typeof buffered === "number" && Number.isInteger(buffered) && buffered >= 1) {
+      attribution.buffered = buffered;
+    }
+    options.onMessage(fields.text, fields.chatId, attribution);
   }
 
   function reconnect(): void {

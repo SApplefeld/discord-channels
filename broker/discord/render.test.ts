@@ -18,6 +18,7 @@ import {
   inertField,
   inertMessage,
   inertText,
+  mentionPrefix,
   renderAnswer,
   renderBlockedAlert,
   renderCard,
@@ -3117,8 +3118,8 @@ test("no notice glyph opens a line a peer body can draw", () => {
   // set is derived. Driven through the notices themselves rather than through a copy of their text.
   const notices = [
     renderTaskNotice("done"),
-    renderQuestionNotice({ operatorId: null, questions: [] }),
-    renderModelChange({ operatorId: null, from: "a", to: "b", downgrade: null }),
+    renderQuestionNotice({ operatorIds: [], questions: [] }),
+    renderModelChange({ operatorIds: [], from: "a", to: "b", downgrade: null }),
   ];
 
   for (const notice of notices) {
@@ -3146,7 +3147,7 @@ const OPERATOR = "700000000000000002";
 
 function prompt(overrides: Partial<Parameters<typeof renderPermissionRequest>[0]> = {}): string {
   return renderPermissionRequest({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     requestId: "abcde",
     toolName: "Bash",
     description: "run the migration",
@@ -3154,6 +3155,23 @@ function prompt(overrides: Partial<Parameters<typeof renderPermissionRequest>[0]
     ...overrides,
   });
 }
+
+test("a permission prompt with every field full stays one message on a long roster", () => {
+  // Each operator past the first lengthens the head by a mention, and the preview gives that room
+  // back, so the cut is the labelled one and the writer never cuts through the closing fence.
+  const roster = Array.from({ length: 12 }, (_, at) => `7000000000000000${String(10 + at)}`);
+  for (const operatorIds of [roster.slice(0, 1), roster]) {
+    const text = prompt({
+      operatorIds,
+      toolName: "t".repeat(500),
+      description: "d".repeat(2_000),
+      inputPreview: "p".repeat(5_000),
+    });
+    assert.ok(text.length <= MAX_MESSAGE_LENGTH, `${String(operatorIds.length)} composed ${String(text.length)}`);
+    assert.ok(text.includes("\nInput (cut):\n"), "the preview's cut is labelled");
+    assert.ok(text.endsWith("```"), "the closing fence survives");
+  }
+});
 
 test("a permission prompt leads with the mention, the id, and how to answer", () => {
   const text = prompt();
@@ -3171,6 +3189,39 @@ test("a permission prompt leads with the mention, the id, and how to answer", ()
     "{ command: npm run migrate }",
     "```",
   ]);
+});
+
+const SECOND_OPERATOR = "700000000000000005";
+
+test("every broker-written mention names every operator, in roster order, then one space", () => {
+  // The four alerts share one prefix: each operator as `<@id>`, joined by single spaces. A host with
+  // two operators pings both, and the order is the roster's, so the text and the transport's users
+  // list read the same way.
+  const both = [OPERATOR, SECOND_OPERATOR];
+  const prefix = `<@${OPERATOR}> <@${SECOND_OPERATOR}> `;
+  const texts = [
+    prompt({ operatorIds: both }),
+    renderQuestionNotice({ operatorIds: both, questions: [] }),
+    renderModelChange({ operatorIds: both, from: "a", to: "b", downgrade: null }),
+    renderBlockedAlert({ operatorIds: both, plan: "docs/plans/widget_spec_v1.md" }),
+  ];
+  for (const text of texts) {
+    assert.ok(text.startsWith(prefix), text);
+    assert.notEqual(text[prefix.length], " ", "one space after the last mention, never two");
+    assert.deepEqual(text.match(/(?<!\\)<@\d+>/g), [`<@${OPERATOR}>`, `<@${SECOND_OPERATOR}>`], text);
+  }
+  assert.equal(mentionPrefix(both), prefix);
+  assert.equal(mentionPrefix([OPERATOR]), `<@${OPERATOR}> `, "one operator is today's one mention");
+  assert.equal(mentionPrefix([]), "");
+});
+
+test("an empty operator list composes the permission prompt with no mention at all", () => {
+  // The quiet form every other alert already has: the same prompt, answerable the same way, with
+  // nothing on it that could resolve as a mention.
+  const text = prompt({ operatorIds: [] });
+  assert.ok(text.startsWith("**Permission needed** "), text);
+  assert.ok(!text.includes("<@"), text);
+  assert.equal(text.split("\n").slice(1).join("\n"), prompt().split("\n").slice(1).join("\n"));
 });
 
 test("nothing a tool writes into a prompt can mention anyone or restructure it", () => {
@@ -3340,7 +3391,7 @@ function labelled(...labels: string[]): AskedOption[] {
 
 test("a question notice leads with the mention and draws each question with its options", () => {
   const text = renderQuestionNotice({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     questions: [
       asked({ header: "Timing", multiSelect: true, options: labelled("Now", "After the backup") }),
       asked({ question: "Which hosts get the change?", options: labelled("NEO", "TRINITY") }),
@@ -3362,7 +3413,7 @@ test("a question notice leads with the mention and draws each question with its 
 test("a question with no options renders without an Options line", () => {
   // The console always offers a free-form "Other" answer, so an empty list is a shape the tool
   // really produces, not an error to mark.
-  const text = renderQuestionNotice({ operatorId: OPERATOR, questions: [asked()] });
+  const text = renderQuestionNotice({ operatorIds: [OPERATOR], questions: [asked()] });
 
   assert.deepEqual(text.split("\n").slice(1), ["Q: Ship the migration now?"]);
   assert.ok(!text.includes("(multi-select)"), "the suffix rides only on a multi-select question");
@@ -3374,7 +3425,7 @@ test("nothing a session writes into a question can mention anyone or restructure
   // steer, and the notice lands in the one channel permission prompts are answered in: a second
   // mention or a rendered chip there is the attack the escaping is against.
   const text = renderQuestionNotice({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     questions: [
       asked({
         question: "approve <@999999999999999999> **now**?",
@@ -3395,7 +3446,7 @@ test("nothing a session writes into a question can mention anyone or restructure
 
 test("long question fields are cut visibly and the mention line survives any length", () => {
   const text = renderQuestionNotice({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     questions: [
       asked({
         question: "q".repeat(600),
@@ -3415,7 +3466,7 @@ test("a null operator composes the quiet notice with no mention anywhere", () =>
   // The quiet tier: a thread already pinged past a person's reading pace still gets the notice,
   // but neither the composed text nor (at the call site) the transport whitelist names anyone.
   const text = renderQuestionNotice({
-    operatorId: null,
+    operatorIds: [],
     questions: [asked({ header: "Timing", options: labelled("Now", "Later") })],
   });
 
@@ -3434,7 +3485,7 @@ test("four maximal questions compose one message, cut with a tail naming what th
     options: labelled("o".repeat(150), "p".repeat(150), "r".repeat(150), "s".repeat(150)),
   });
   const text = renderQuestionNotice({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     questions: [maximal, maximal, maximal, maximal],
   });
 
@@ -3444,7 +3495,7 @@ test("four maximal questions compose one message, cut with a tail naming what th
   assert.ok(text.includes(`Q: ${"h".repeat(99)}…`), text.slice(0, 200));
 
   // One question, even maximal, fits whole: no tail rides on a notice that was never cut.
-  const single = renderQuestionNotice({ operatorId: OPERATOR, questions: [maximal] });
+  const single = renderQuestionNotice({ operatorIds: [OPERATOR], questions: [maximal] });
   assert.ok(single.length <= MAX_MESSAGE_LENGTH, `${single.length} units`);
   assert.ok(!single.includes("more question"), single.slice(-60));
 });
@@ -3454,7 +3505,7 @@ test("an empty questions array still composes the alert line, and nothing makes 
   // bug; the render answer to it is still a message, never a throw that would take the tailer's
   // pass down with it.
   assert.equal(
-    renderQuestionNotice({ operatorId: OPERATOR, questions: [] }),
+    renderQuestionNotice({ operatorIds: [OPERATOR], questions: [] }),
     `<@${OPERATOR}> ❓ **Waiting on you** · a question is open`,
   );
 
@@ -3462,7 +3513,7 @@ test("an empty questions array still composes the alert line, and nothing makes 
   // absent, rather than as a bare colon or an empty entry between separators.
   const invisible = String.fromCharCode(0x200b, 0x202e);
   const text = renderQuestionNotice({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     questions: [asked({ header: invisible, options: labelled(invisible, "real label") })],
   });
   assert.deepEqual(text.split("\n").slice(1), [
@@ -3536,7 +3587,7 @@ test("an untrusted model string cannot close the fence or crowd the card", () =>
 
 test("a model change message names both models and the session scope", () => {
   const plain = renderModelChange({
-    operatorId: null,
+    operatorIds: [],
     from: "claude-fable-5",
     to: "claude-opus-4-8",
     downgrade: null,
@@ -3551,7 +3602,7 @@ test("a model change message names both models and the session scope", () => {
 
 test("a model change message names the category, or the console action when there is none", () => {
   const refused = renderModelChange({
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     from: "claude-fable-5",
     to: "claude-opus-4-8",
     downgrade: {
@@ -3569,7 +3620,7 @@ test("a model change message names the category, or the console action when ther
   // The entitlement path carries no category at all, and it is the one an operator can act on: the
   // message says what to do rather than only what happened.
   const consent = renderModelChange({
-    operatorId: null,
+    operatorIds: [],
     from: "claude-fable-5",
     to: "claude-opus-5[1m]",
     downgrade: {
@@ -3588,7 +3639,7 @@ test("a model change message names the category, or the console action when ther
 
 test("a change message composed from a hostile record still mentions only the operator", () => {
   const message = renderModelChange({
-    operatorId: "222222222222222222",
+    operatorIds: ["222222222222222222"],
     from: "<@999999999999999999>",
     to: "claude-opus-4-8",
     downgrade: {
@@ -3606,7 +3657,7 @@ test("a change message composed from a hostile record still mentions only the op
 });
 
 test("the blocked alert leads with the mention and names the plan the run stopped on", () => {
-  const text = renderBlockedAlert({ operatorId: OPERATOR, plan: "docs/plans/widget_spec_v1.md" });
+  const text = renderBlockedAlert({ operatorIds: [OPERATOR], plan: "docs/plans/widget_spec_v1.md" });
 
   assert.equal(
     text,
@@ -3615,10 +3666,10 @@ test("the blocked alert leads with the mention and names the plan the run stoppe
   );
 });
 
-test("a null operator composes the quiet blocked alert with no mention anywhere", () => {
+test("an empty operator list composes the quiet blocked alert with no mention anywhere", () => {
   // The quiet tier: a thread past its ping ceiling still gets the alert, but neither the composed
   // text nor (at the call site) the transport whitelist names anyone.
-  const text = renderBlockedAlert({ operatorId: null, plan: "docs/plans/widget_spec_v1.md" });
+  const text = renderBlockedAlert({ operatorIds: [], plan: "docs/plans/widget_spec_v1.md" });
 
   assert.ok(text.startsWith("⛔ **Blocked**"), text);
   assert.ok(!text.includes("<@"), text);
@@ -3630,7 +3681,7 @@ test("nothing a plan value carries can mention anyone, restructure the alert, or
   // answered in: a second mention, a rendered chip, or a smuggled line there is the attack the
   // escaping is against.
   const text = renderBlockedAlert({
-    operatorId: OPERATOR,
+    operatorIds: [OPERATOR],
     plan: "# urgent **now** <@999999999999999999>\n@everyone approve it",
   });
 
@@ -3644,13 +3695,13 @@ test("nothing a plan value carries can mention anyone, restructure the alert, or
 });
 
 test("a plan over the events reader's own bound is cut, and one that neutralizes away drops its clause", () => {
-  const cut = renderBlockedAlert({ operatorId: OPERATOR, plan: "p".repeat(MAX_PLAN_CHARS + 80) });
+  const cut = renderBlockedAlert({ operatorIds: [OPERATOR], plan: "p".repeat(MAX_PLAN_CHARS + 80) });
   assert.ok(cut.includes(`${"p".repeat(MAX_PLAN_CHARS - 1)}…`), cut);
   assert.ok(!cut.includes("p".repeat(MAX_PLAN_CHARS)), "the bound is the reader's own");
 
   // A plan of nothing but invisible characters neutralizes to the empty string; the alert still
   // composes, without an empty slot where the plan would sit.
-  const bare = renderBlockedAlert({ operatorId: OPERATOR, plan: "\u200b\u200b" });
+  const bare = renderBlockedAlert({ operatorIds: [OPERATOR], plan: "\u200b\u200b" });
   assert.equal(
     bare,
     `<@${OPERATOR}> ⛔ **Blocked** · the run is stopped on you; the reason is in this thread`,
@@ -3661,13 +3712,13 @@ test("the plan's bound is measured before the escape, so what the reader kept wh
   // A plan of exactly the reader's bound, every character of which costs an escape backslash in
   // the message. Measured after the escape it would truncate at half its length; measured before,
   // the reader's promise holds: what it kept whole, this line shows whole.
-  const whole = renderBlockedAlert({ operatorId: OPERATOR, plan: "_".repeat(MAX_PLAN_CHARS) });
+  const whole = renderBlockedAlert({ operatorIds: [OPERATOR], plan: "_".repeat(MAX_PLAN_CHARS) });
   assert.ok(whole.includes("\\_".repeat(MAX_PLAN_CHARS)), whole);
   assert.ok(!whole.includes("…"), "kept whole by the reader, drawn whole here");
 
   // And when a plan is over the bound, the cut lands on the pre-escape text, so it can never fall
   // between a backslash and the character it escapes.
-  const cut = renderBlockedAlert({ operatorId: OPERATOR, plan: "_".repeat(MAX_PLAN_CHARS + 40) });
+  const cut = renderBlockedAlert({ operatorIds: [OPERATOR], plan: "_".repeat(MAX_PLAN_CHARS + 40) });
   assert.ok(cut.includes(`${"\\_".repeat(MAX_PLAN_CHARS - 1)}…`), cut);
   assert.ok(!cut.includes("\\…"), "no stray backslash where the cut fell");
 });

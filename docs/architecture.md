@@ -7,8 +7,8 @@ Remote Control registers a session object in Anthropic's cloud under the account
 and stops accepting input permanently once `claude-swap` rotates the seat out from under it.
 
 One host runs one broker, one bot identity, and one Discord channel. A broker reaches its sessions
-over loopback, so it cannot serve another machine, and the three hosts (NEO, ASR, SCOTT) share
-nothing but the source.
+over loopback, so it cannot serve another machine. The operator's three hosts (NEO, ASR, SCOTT),
+and any client host, share nothing but the source.
 
 ## The load-bearing split
 
@@ -124,8 +124,12 @@ listener.
    a reply key, later lines carry inbound messages and permission verdicts, and its closing is the
    session's death signal. `POST /relay/reply` and `POST /relay/permission` carry the other
    direction and must present that key.
-4. **Discord inbound.** A gateway message is gated on the sender's user ID, then either resolved as
-   a permission verdict or handed to the session bound to that thread.
+4. **Discord inbound.** A gateway message is gated on the sender's user ID, whose place on the
+   sender roster gives it a class, operator or participant. An operator's message may be consumed as
+   a permission verdict or a held question's answer, and on its way through it clears the session's
+   inbox item. Any admitted message not consumed is handed to the session bound to that thread,
+   directly, or through the thread's buffer while the response gate is live ("The response gate"
+   below).
 5. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
    thread names, the starter-message card, any reply, mirrored message, or notice waiting to be
    written, the archiving of an exited session's thread, and, chained after that pass, the channel's
@@ -213,8 +217,8 @@ because the posts ahead of it are a window several round trips wide in which the
 continuation texts are composed from the questions alone, never from the operator's accumulated
 selections, so a redraw after a tap yields the same texts, which the caller has already posted and
 never edits. A
-press arrives as an `INTERACTION_CREATE` gateway event, passes the same one-account allowlist every
-inbound message passes before it touches any state, and resolves against an opaque
+press arrives as an `INTERACTION_CREATE` gateway event, is checked against the sender roster and
+counts only from an operator before it touches any state, and resolves against an opaque
 server-minted entry reference rather than anything the press itself carries, so what a press can
 submit is only a label the session's own tool call offered. An ask the bounded reader could not
 carry whole is refused the thread path and released to the console instead, because the caps that
@@ -873,6 +877,65 @@ names how many asks it left out. The renderer takes its clock as an argument, so
 composes fixed bytes, and the thread module edits the card only when those bytes change, on
 `CHANNEL_INBOX_CARD_REFRESH_MS`.
 
+## The response gate
+
+The response gate sits between the inbound router and the relay pipe, and decides when a thread's
+messages reach its session. Its mode is `CHANNEL_RESPONSE_GATE`: `off`, the default, delivers each
+admitted message at once; `live` holds them; `shadow` delivers at once and records
+what `live` would have done. The module is `broker/routing/response-gate.ts`, and the router in
+`broker/routing/inbound.ts` builds it.
+
+In `live`, an admitted message that is not consumed as a verdict or an answer joins its thread's
+buffer, one buffer per thread, and an operator's message clears the session's inbox item as it
+joins. Four triggers deliver the buffer as one event:
+
+- a message that mentions the bot, or replies to one of the bot's messages, delivers at once
+- the buffer reaching `CHANNEL_RESPONSE_GATE_MAX_MESSAGES` messages delivers at once
+- the buffer's oldest message reaching `CHANNEL_RESPONSE_GATE_MAX_WAIT_MS` delivers it
+- once the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS`, the buffer is put to Jev,
+  which is asked whether the latest message expects a response; a probability at or above
+  `CHANNEL_RESPONSE_GATE_THRESHOLD` delivers, and a call that fails delivers too
+
+One call is in flight per thread at a time, and a message arriving while it is out restarts the
+quiet window for the next one. A buffer the secret screen matches makes no call and delivers.
+
+A delivered event holding one message is that message's own event, byte for byte what the gate
+off delivers, with no `buffered` attribute. An event holding more, or any restored message, has
+one line per message, `<author> (<class>): <text>`, oldest first. Its `author` is the newest
+message's, which is the triggering one on a mention, a reply or the size cap.
+Its `buffered` attribute is the count, and its `sender_class` the lowest class present: `operator`
+only when every message in it was an operator's. Every event the gate composes fits the relay's
+stream line cap (`MAX_LINE_BYTES` in `relay/broker.ts`): the buffer measures each admission against
+that budget and delivers before a message would take it past.
+
+A buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped
+with one counted notice in the thread naming the cause and asking for a re-post. A buffer whose
+session's relay is not attached when a trigger fires is dropped with the unreachable notice. A
+buffer restored across a broker restart is the exception, below.
+
+In `shadow`, the same buffer runs beside the immediate delivery and asks the judge as `live` would.
+Every gate decision in `shadow` and `live` appends one row to `response-gate.jsonl` beside the
+state file, rotated on the broker log's own size and count settings. `tools/response-gate-score.ts`
+reads that journal beside a hand-labelled file and prints precision and recall at candidate
+thresholds, which is how a threshold is chosen before a host goes `live`. `operations.md` has the
+procedure.
+
+**Held buffers survive a restart.** In `live`, the gate writes every held buffer to
+`response-gate-buffers.json` beside the state file on each admit, delivery and drop, through the
+same atomic temp-file-and-rename write the registry snapshot uses (`writeSnapshot` in
+`broker/persistence.ts`). At startup the router reads the file back and keeps each buffer whose
+session record restored and whose thread is still that session's, classing each line again against
+the roster as it now stands. The rest are dropped, with the counted notice where the session did not
+restore. A kept buffer's age cap starts again at the listener bind, beside the relay restart
+windows, from its oldest message's own time and never shorter than the restart window. When the
+session's relay attaches, the relay hub's attach listener hands the buffer to the router, which
+delivers it with the trigger `restored`, opening with one line of the broker's own naming the oldest
+held time. Until then the buffer takes every new message for its session and waits with it: a
+mention, a reply, the size cap and the judge deliver nothing to a relay that is not back, and the
+age cap bounds the wait. A message too large for the buffer's event budget is handed over alone and,
+the relay being away, dropped with the unreachable notice. A missing, unreadable or malformed file
+restores nothing and logs one line.
+
 ## What the cards are made of
 
 The session and fleet cards draw their bodies inside fenced monospace blocks so the columns line up
@@ -939,7 +1002,7 @@ whatever the session's lifecycle.
 
 ## Helpers with one owner
 
-Six small mechanisms that several broker modules need each live in one module, and every caller
+Eight small mechanisms that several broker modules need each live in one module, and every caller
 imports it. A hand-made second copy is where two surfaces start to drift apart. So a change to one
 of these lands at its owner, and a new caller imports the owner rather than copying it.
 
@@ -957,10 +1020,11 @@ of these lands at its owner, and a new caller imports the owner rather than copy
   key. The first call of a key writes at once, and a repeat inside the window is counted. The count
   is written on the next call the window admits, just before that call's line. No timer runs, so a
   count whose key never recurs stays unwritten. The window is refreshed before either line is
-  written, so a log function that throws cannot leave it stale. Eight surfaces use it, each
+  written, so a log function that throws cannot leave it stale. Nine surfaces use it, each
   exporting a `*_REPEAT_LOG` constant that fixes its window, key cap and exact text. The tailer, the
   question desk and the interaction router run 60 second windows and sweep past 64 keys. The inbox
-  judge runs 60 seconds with no sweep. The pin keeper and the usage, board and inbox cards run 5
+  judge and the response gate run 60 seconds with no sweep, each handing its constant to the shared
+  Jev client, which builds the log. The pin keeper and the usage, board and inbox cards run 5
   minutes with no sweep. `broker/repeat-log.test.ts` pins each surface's two lines verbatim, because
   operators and memory records grep for them. The intake's refusal limiter and the router's drop
   limiter keep local versions of the same counting.
@@ -973,11 +1037,12 @@ of these lands at its owner, and a new caller imports the owner rather than copy
   board card binding`. The save takes none, because it writes no log line. `broker/board/binding.ts`,
   `broker/usage/binding.ts` and `broker/inbox/binding.ts` are thin callers that pass their label and
   keep their own file names and type names. Each card still keeps its own file.
-- **The Discord identifier pattern** (`SNOWFLAKE` in `broker/security/senders.ts`). Five modules
+- **The Discord identifier pattern** (`SNOWFLAKE` in `broker/security/senders.ts`). Six modules
   import it, and no other copy exists under `broker/`: the card binding, the session thread bindings
-  (`broker/discord/bindings.ts`), the channel ID's check (`broker/discord/config.ts`), and the inbox
-  store and card. Each checks an identifier before it reaches a bot-token request path or Discord
-  syntax, so loosening the pattern for one caller loosens it for all five.
+  (`broker/discord/bindings.ts`), the channel ID's check (`broker/discord/config.ts`), the inbox
+  store and card, and the held-buffer loader in `broker/routing/inbound.ts`. Each checks an
+  identifier before it reaches a bot-token request path or Discord syntax, so loosening the
+  pattern for one caller loosens it for all six.
 - **The board's modification-time clamp** (`touchedAt` in `broker/board/events.ts`). It maps a
   non-finite modification time to negative infinity, so a sort comparator never meets `NaN`. The
   card renderer and the status module import it. It lives in the events module because both
@@ -989,6 +1054,16 @@ of these lands at its owner, and a new caller imports the owner rather than copy
   rules as a swept one. The card renderer imports `MARKDOWN_SUFFIX` from the same module.
   `statPlanFile(file, regularFileOnly)` refuses anything but a regular file only when asked. The
   queue reader asks for every file it stats, and the sweep does not.
+- **The size rotation** (`rotate` in `broker/log.ts`). It moves the active file to `.1`, shifts
+  each numbered predecessor one slot older and drops the oldest. The broker log and the response
+  gate's journal (`createResponseGateJournal` in `broker/routing/response-gate.ts`) both call it at
+  the log's own size and file count, so the journal's retention follows
+  `CHANNEL_BROKER_LOG_MAX_BYTES` and `CHANNEL_BROKER_LOG_MAX_FILES`.
+- **The Jev client** (`createJevClient` in `broker/jev/client.ts`). It owns the TypeSafe host, the
+  model, the 5 second timeout, the redirect refusal, the secret screen (`SECRET_SCREEN`), the
+  12,000 code point limit and one call in flight per key. The inbox judge (`broker/inbox/judge.ts`)
+  and the response gate each pass their own questions, state and repeat-log surface, and neither
+  holds a copy of what the client owns.
 
 ## External integrations
 
@@ -1008,14 +1083,17 @@ Four, and each one fails in its own way.
 - **Discord.** The REST API for thread creation, renames, and message writes, and the gateway for
   inbound messages. Renames are the scarce resource, so the broker reads the rate-limit response
   headers and drops a rename it cannot afford rather than queueing it.
-- **TypeSafe's Jev.** The inbox judge, and the broker's one HTTP call to a host other than
-  Discord. Each unmarked reply is posted to
+- **TypeSafe's Jev.** The inbox judge and the response gate, through one client
+  (`broker/jev/client.ts`), and the broker's one HTTP egress to a host other than Discord. The
+  gate's calls are described under "The response gate". Each unmarked reply is posted to
   `https://api.typesafe.ai/v1/systemone` as a JSON body carrying the reply's text, the model name
   `jev-latest` and the two fixed questions, under a bearer key read from the file
   `CHANNEL_INBOX_JUDGE_KEY_FILE` names. The host is a constant that no setting can redirect, and a
   redirect response fails the call rather than being followed. It fails in two layers. A key file
   that fails the install guide's check turns the judge off at start with one warning, and the
   inbox runs on `ASK:` lines alone; no key file named is the ordinary off state and warns nothing.
+  With `CHANNEL_RESPONSE_GATE` at `shadow` or `live`, either case refuses startup instead, naming
+  the mode and the cause (`readJudgeKey` in `broker/index.ts`).
   A call that fails, returns a non-2xx status, answers with a body the reader cannot parse into two probabilities, or takes longer than 5 seconds opens nothing,
   is not retried, and logs one rate-limited line naming the kind of failure and the session. The
   broker never stops for it, and an outage costs the operator the judged reading of the replies

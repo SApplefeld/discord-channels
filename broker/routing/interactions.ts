@@ -3,10 +3,12 @@
 //
 // The sender gate is the first thing `deliver` does, and it is in front of everything else for the
 // reason it is in inbound.ts: a component press answers a question inside a running session, so who
-// pressed it is the only authority for anything here. A press from anyone but the operator is
+// pressed it is the only authority for anything here. A press from anyone but an operator is
 // ignored in silence, with nothing written to the thread and nothing said back to the presser: an
 // interaction from an account this broker does not act for is not owed an error message, and a
-// reply would confirm that the message it named is live.
+// reply would confirm that the message it named is live. A participant is admitted by the gate and
+// still refused here, because every press answers a question or a prompt on the operator's behalf,
+// and a participant holds no authority to do that.
 //
 // A `custom_id` is a reference and never evidence. A question's carries an opaque entry token and
 // positions inside the ask that token names; a permission prompt's carries the request ID, the
@@ -50,7 +52,10 @@ export type InboundInteraction = {
    * the reference ties it to the one thread its message was ever drawn in.
    */
   threadId: string;
-  /** The presser's Discord user ID. The allowlist over it is the only authority for anything here. */
+  /**
+   * The presser's Discord user ID. The class the roster gives it is the only authority for anything
+   * here.
+   */
   senderId: string;
   customId: string;
   /** Every option a select now has chosen; empty for a button. */
@@ -90,9 +95,9 @@ export type InteractionRouter = {
  * How long a run of the same rate-limited log reason is aggregated before its next flush, and how
  * many reasons are held while that happens.
  *
- * The refused-press line is the one line here anyone but the operator can drive: a press is one tap
- * by anybody who can see the thread, and one line per tap would push every other line out of the log
- * through rotation. A reason carries the presser's account id, so the key count is bounded by the
+ * The refused-press lines are the only lines here anyone but an operator can drive: a press is one
+ * tap by anybody who can see the thread, and one line per tap would push every other line out of the
+ * log through rotation. A reason carries the presser's account id, so the key count is bounded by the
  * sweep rather than by who taps.
  */
 const REPEAT_WINDOW_MS = 60_000;
@@ -184,7 +189,7 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
 
   return {
     async deliver(interaction) {
-      // Everything below this line is what one Discord account is trusted to do. Silent, with no
+      // Everything below this line is what an operator's account is trusted to do. Silent, with no
       // callback at all: the presser's client shows the interaction as failed, which is the honest
       // report, and this broker says nothing about a message it will not act on for them.
       //
@@ -193,6 +198,12 @@ export function createInteractionRouter(options: InteractionRouterOptions): Inte
       // cares to, which would push every other line out of the log through rotation.
       if (!options.gate.allows(interaction.senderId)) {
         repeats(`ignored an interaction from ${interaction.senderId}, who is not the allowed sender`);
+        return;
+      }
+      // Admitted is not enough: a press is the operator's act, so a participant's is refused the
+      // same silent way and on the same repeat log, since a participant can tap as often as anyone.
+      if (options.gate.classOf(interaction.senderId) !== "operator") {
+        repeats(`ignored an interaction from ${interaction.senderId}, who is not an operator`);
         return;
       }
 
