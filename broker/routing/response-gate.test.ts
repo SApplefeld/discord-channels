@@ -1,28 +1,40 @@
 // The response gate on its own: when a thread's buffer is held and when it goes, driven with
-// hand-fired timers, and the event a delivered buffer becomes. The router's use of it, with the
-// pipe, the notices and the inbox behind, is in inbound.test.ts.
+// hand-fired timers and a hand-settled judge, the event a delivered buffer becomes, and the row
+// each decision journals. The router's use of it, with the pipe, the notices and the inbox
+// behind, is in inbound.test.ts. The key and every response body here carry a `SECRET-` sentinel,
+// so a journal row or a log line quoting either turns a silent leak into a red test; the control
+// below proves the predicate fires. Message texts carry none, since a row holds them by design.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { INSTRUCTIONS } from "../../relay/protocol.ts";
+import { MAX_JEV_CODE_POINTS } from "../jev/client.ts";
+import type { JevFetch } from "../jev/client.ts";
 import {
+  GATE_QUESTIONS,
   MAX_EVENT_UNITS,
   bufferedEvent,
   bufferedLine,
+  conversationLines,
   createResponseGate,
+  createResponseGateJournal,
   lowestClass,
 } from "./response-gate.ts";
-import type { BufferDelivery, BufferedMessage } from "./response-gate.ts";
+import type { BufferDelivery, BufferedMessage, JournalRow } from "./response-gate.ts";
 
 const THREAD = "900000000000000001";
 const OTHER_THREAD = "900000000000000002";
 const SESSION = "session-a";
+const KEY = "SECRET-KEY-0123456789abcdef";
 
-function operator(text: string, truncated = false): BufferedMessage {
-  return { author: "Ann", senderClass: "operator", text, truncated };
+function operator(text: string, truncated = false, id = "910000000000000001"): BufferedMessage {
+  return { id, author: "Ann", senderClass: "operator", text, truncated };
 }
 
-function participant(text: string, truncated = false): BufferedMessage {
-  return { author: "Bo", senderClass: "participant", text, truncated };
+function participant(text: string, truncated = false, id = "910000000000000002"): BufferedMessage {
+  return { id, author: "Bo", senderClass: "participant", text, truncated };
 }
 
 const UNADDRESSED = { mentionsBot: false, repliesToBot: false };
@@ -45,21 +57,87 @@ function timers() {
   };
 }
 
-function gate(options: { maxMessages?: number; maxWaitMs?: number } = {}) {
+type Response = Awaited<ReturnType<JevFetch>>;
+type Call = { url: string; init: Parameters<JevFetch>[1] };
+type Deferred = { resolve: (response: Response) => void; reject: (error: unknown) => void };
+
+/** A response body carrying the one number, in the vendor's shape, plus a sentinel field. */
+function scored(expectsReply: number): Response {
+  const text = JSON.stringify({ answers: { expects_reply: { noul: expectsReply } }, echo: "SECRET-BODY" });
+  return { ok: true, status: 200, text: async () => text };
+}
+
+/** Lets every promise the client chained on a settled call run, without a timer. */
+function settled(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** The predicate every row and log assertion here runs: no sentinel reached disk or the log. */
+function assertNoContent(texts: readonly string[]): void {
+  for (const text of texts) {
+    assert.ok(!text.includes("SECRET-"), `carries content: ${text}`);
+  }
+}
+
+function gate(
+  options: {
+    maxMessages?: number;
+    maxWaitMs?: number;
+    /** The judge, with every call held until the test settles it. Absent, three triggers alone. */
+    judge?: { quietMs?: number; threshold?: number };
+    journal?: (row: JournalRow) => void;
+    now?: () => number;
+  } = {},
+) {
   const clock = timers();
-  const expired: Array<{ threadId: string; sessionId: string; delivery: BufferDelivery }> = [];
+  const released: Array<{ threadId: string; sessionId: string; delivery: BufferDelivery }> = [];
   const lines: string[] = [];
   const dropped: Array<{ threadId: string; sessionId: string; count: number }> = [];
+  const rows: JournalRow[] = [];
+  const calls: Call[] = [];
+  const pending: Deferred[] = [];
+  const fetch: JevFetch = (url, init) => {
+    calls.push({ url, init });
+    return new Promise<Response>((resolve, reject) => {
+      pending.push({ resolve, reject });
+    });
+  };
   const built = createResponseGate({
     maxMessages: options.maxMessages ?? 20,
     maxWaitMs: options.maxWaitMs ?? 600_000,
-    onAgeCap: (threadId, sessionId, delivery) => expired.push({ threadId, sessionId, delivery }),
+    ...(options.judge === undefined
+      ? {}
+      : {
+          judge: {
+            quietMs: options.judge.quietMs ?? 5_000,
+            threshold: options.judge.threshold ?? 0.6,
+            apiKey: KEY,
+            fetch,
+          },
+        }),
+    journal: options.journal ?? ((row) => rows.push(row)),
+    onRelease: (threadId, sessionId, delivery) => released.push({ threadId, sessionId, delivery }),
     onDrop: (threadId, sessionId, count) => dropped.push({ threadId, sessionId, count }),
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
     log: (line) => lines.push(line),
+    ...(options.now === undefined ? {} : { now: options.now }),
   });
-  return { gate: built, expired, scheduled: clock.scheduled, lines, dropped };
+  return {
+    gate: built,
+    released,
+    scheduled: clock.scheduled,
+    lines,
+    dropped,
+    rows,
+    calls,
+    pending,
+    /** The `state` the call at `index` sent. */
+    state: (index: number): { conversation: string[]; seconds_since_assistant_posted: string } =>
+      (JSON.parse(calls[index].init.body) as { state: { conversation: string[]; seconds_since_assistant_posted: string } }).state,
+    /** The quiet-window timers scheduled so far, which the age-cap timers sit between. */
+    quiet: () => clock.scheduled.filter((timer) => timer.ms === (options.judge?.quietMs ?? 5_000)),
+  };
 }
 
 /** A buffer of one session in one thread, for the tests that vary neither. */
@@ -110,14 +188,14 @@ test("a mention names the message's own act even when it also fills the buffer",
 });
 
 test("the age cap runs from the oldest message, is not restarted by a later one, and delivers", () => {
-  const { gate: held, expired, scheduled } = gate({ maxWaitMs: 5_000 });
+  const { gate: held, released, scheduled } = gate({ maxWaitMs: 5_000 });
   admit(held, operator("one"));
   admit(held, participant("two"));
   assert.equal(scheduled.length, 1, "one timer, set when the buffer opened");
   assert.equal(scheduled[0].ms, 5_000);
 
   scheduled[0].fire();
-  assert.deepEqual(expired, [
+  assert.deepEqual(released, [
     {
       threadId: THREAD,
       sessionId: SESSION,
@@ -132,7 +210,7 @@ test("the age cap runs from the oldest message, is not restarted by a later one,
 });
 
 test("a delivery on a message's own act clears the age-cap timer", () => {
-  const { gate: held, expired, scheduled } = gate();
+  const { gate: held, released, scheduled } = gate();
   admit(held, operator("one"));
   admit(held, operator("two"), MENTION);
   assert.equal(scheduled[0].cleared, true);
@@ -140,7 +218,7 @@ test("a delivery on a message's own act clears the age-cap timer", () => {
   // A timer left pending would fire on an empty buffer. Fired here to prove it delivers nothing
   // even so, since a hand-driven timer does not honor its clear.
   scheduled[0].fire();
-  assert.deepEqual(expired, []);
+  assert.deepEqual(released, []);
 });
 
 test("a lone message that addresses the bot sets no timer at all", () => {
@@ -150,27 +228,27 @@ test("a lone message that addresses the bot sets no timer at all", () => {
 });
 
 test("clearing a thread drops its buffer and its timer, delivering nothing", () => {
-  const { gate: held, expired, scheduled } = gate();
+  const { gate: held, released, scheduled } = gate();
   admit(held, operator("one"));
   held.clear(THREAD);
   assert.deepEqual(held.held(), []);
   assert.equal(scheduled[0].cleared, true);
   scheduled[0].fire();
-  assert.deepEqual(expired, []);
+  assert.deepEqual(released, []);
 
   held.clear("900000000000000099");
   assert.deepEqual(held.held(), [], "clearing a thread holding nothing is a no-op");
 });
 
 test("closing the gate drops every thread's buffer and timer, delivering nothing", () => {
-  const { gate: held, expired, scheduled } = gate();
+  const { gate: held, released, scheduled } = gate();
   admit(held, operator("in one thread"));
   held.admit(OTHER_THREAD, "session-b", operator("in another"), UNADDRESSED);
   held.close();
   assert.deepEqual(held.held(), []);
   assert.deepEqual(scheduled.map((timer) => timer.cleared), [true, true]);
   for (const timer of scheduled) timer.fire();
-  assert.deepEqual(expired, []);
+  assert.deepEqual(released, []);
 });
 
 test("buffers are held per thread", () => {
@@ -187,13 +265,13 @@ test("buffers are held per thread", () => {
 test("a buffer held for one session is dropped, not delivered, when its thread admits for another", () => {
   // The thread moved to the session's replacement between two messages. What the old session
   // was told is not the new session's, so the newcomer's message starts a buffer of its own.
-  const { gate: held, expired, scheduled, lines, dropped } = gate();
+  const { gate: held, released, scheduled, lines, dropped } = gate();
   admit(held, operator("for the old session"));
   const deliveries = held.admit(THREAD, "session-b", operator("for the new one"), MENTION);
   assert.deepEqual(deliveries, [{ messages: [operator("for the new one")], trigger: "mention" }]);
   assert.equal(scheduled[0].cleared, true, "the old session's timer went with its buffer");
   scheduled[0].fire();
-  assert.deepEqual(expired, []);
+  assert.deepEqual(released, []);
   // Reported to the caller, which owns the thread and tells its readers; the gate does not.
   assert.deepEqual(dropped, [{ threadId: THREAD, sessionId: SESSION, count: 1 }]);
 
@@ -352,5 +430,376 @@ test("the rendered line and the event's class are the shape and rule the relay's
           : "participant";
       assert.equal(lowestClass([first, second]), expected);
     }
+  }
+});
+
+// The fourth trigger: the quiet window, the judge's verdict, the single flight per thread, and
+// the row each decision journals.
+
+/** The newest quiet-window timer: the one a held buffer waits on now. */
+function newestQuiet(harness: ReturnType<typeof gate>): { fire: () => void; cleared: boolean } {
+  const quiet = harness.quiet();
+  return quiet[quiet.length - 1];
+}
+
+test("the control: the no-content predicate fires on a key-shaped value where one could leak", () => {
+  // A row whose lines carried the key, or a log line quoting a body, is what the predicate is for.
+  assert.throws(() => assertNoContent([JSON.stringify({ lines: [`Ann (operator): ${KEY}`] })]));
+  assert.throws(() => assertNoContent(["response gate: malformed thread=x SECRET-BODY"]));
+  assert.doesNotThrow(() => assertNoContent(["response gate: malformed thread=x"]));
+});
+
+test("a held buffer asks the judge once the thread has been quiet, and a message inside the window restarts it with no call", () => {
+  const h = gate({ judge: {} });
+  assert.deepEqual(admit(h.gate, operator("one", false, "1")), []);
+  assert.equal(h.quiet().length, 1, "the quiet window opened with the buffer");
+  assert.equal(h.scheduled.length, 2, "beside the age-cap timer");
+
+  admit(h.gate, participant("two", false, "2"));
+  assert.equal(h.quiet()[0].cleared, true, "the window restarted");
+  assert.equal(h.quiet().length, 2);
+  assert.equal(h.calls.length, 0, "no call until the window elapses");
+  h.quiet()[0].fire();
+  assert.equal(h.calls.length, 0, "a restarted window's old timer asks nothing");
+
+  h.quiet()[1].fire();
+  assert.equal(h.calls.length, 1);
+  const { url, init } = h.calls[0];
+  assert.equal(url, "https://api.typesafe.ai/v1/systemone", "the shared client's constant host");
+  assert.equal(init.headers["Authorization"], `Bearer ${KEY}`);
+  assert.equal(init.redirect, "error");
+  assert.deepEqual(JSON.parse(init.body), {
+    state: {
+      conversation: ["Ann (operator): one", "Bo (participant): two"],
+      seconds_since_assistant_posted: "never",
+    },
+    model: "jev-latest",
+    questions: GATE_QUESTIONS,
+  });
+});
+
+test("the question names each state field it is sent, in the backticks the vendor reads them from", () => {
+  // The cross-surface pin: the state keys the gate sends and the names the instructions cite.
+  const h = gate({ judge: {} });
+  admit(h.gate, operator("one"));
+  newestQuiet(h).fire();
+  const sent = Object.keys(h.state(0));
+  assert.deepEqual(sent, ["conversation", "seconds_since_assistant_posted"]);
+  assert.equal(GATE_QUESTIONS.expects_reply.type, "noul");
+  for (const field of sent) {
+    assert.ok(
+      GATE_QUESTIONS.expects_reply.instructions.includes(`\`${field}\``),
+      `the instructions name \`${field}\``,
+    );
+  }
+  assert.match(GATE_QUESTIONS.expects_reply.instructions, /latest message/);
+});
+
+test("below the threshold the buffer stays held with a held row, and the next message's window asks again", async () => {
+  const h = gate({ judge: { threshold: 0.6 } });
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  h.pending[0].resolve(scored(0.59));
+  await settled();
+  assert.equal(h.released.length, 0, "held");
+  assert.deepEqual(h.gate.held(), [{ threadId: THREAD, sessionId: SESSION }]);
+  assert.equal(h.rows.length, 1);
+  assert.equal(h.rows[0].id, "1");
+  assert.equal(h.rows[0].trigger, "judge");
+  assert.equal(h.rows[0].probability, 0.59);
+  assert.equal(h.rows[0].outcome, "held");
+  assert.deepEqual(h.rows[0].lines, ["Ann (operator): one"]);
+  assert.equal(h.calls.length, 1, "nothing asks again until a message restarts the window");
+
+  admit(h.gate, participant("two", false, "2"));
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.state(1).conversation, ["Ann (operator): one", "Bo (participant): two"]);
+  h.pending[1].resolve(scored(0.6));
+  await settled();
+  assert.equal(h.released.length, 1, "at the threshold, delivered");
+  assert.equal(h.released[0].delivery.trigger, "judge");
+  assert.deepEqual(h.rows.map((row) => [row.id, row.outcome, row.probability]), [
+    ["1", "held", 0.59],
+    ["2", "delivered", 0.6],
+  ]);
+});
+
+test("at the threshold the buffer delivers on judge, with a line that arrived during the call, and both timers stop", async () => {
+  const h = gate({ judge: { threshold: 0.6 } });
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 1);
+  admit(h.gate, participant("two", false, "2"));
+  assert.equal(h.calls.length, 1, "the second message restarts the window and waits on the call");
+
+  h.pending[0].resolve(scored(0.6));
+  await settled();
+  assert.deepEqual(h.released, [
+    {
+      threadId: THREAD,
+      sessionId: SESSION,
+      delivery: {
+        messages: [operator("one", false, "1"), participant("two", false, "2")],
+        trigger: "judge",
+      },
+    },
+  ]);
+  assert.deepEqual(h.gate.held(), []);
+  assert.equal(h.scheduled[0].cleared, true, "the age-cap timer went with the buffer");
+  assert.equal(newestQuiet(h).cleared, true, "and so did the pending quiet window");
+  // The row is about what was asked: the one line sent, under its own id.
+  assert.equal(h.rows.length, 1);
+  assert.deepEqual(h.rows[0].lines, ["Ann (operator): one"]);
+  assert.equal(h.rows[0].id, "1");
+  assert.equal(h.rows[0].outcome, "delivered");
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 1, "the cleared window asks nothing");
+});
+
+test("a timed-out, refused, malformed or unreachable call delivers on judge-failed, with one content-free line", async () => {
+  const failures: Array<[string, (d: Deferred) => void, string]> = [
+    ["timeout", (d) => d.reject(new DOMException("timed out", "TimeoutError")), "timeout"],
+    ["non-2xx", (d) => d.resolve({ ok: false, status: 503, text: async () => "SECRET-BODY" }), "http 503"],
+    ["not JSON", (d) => d.resolve({ ok: true, status: 200, text: async () => "SECRET-BODY" }), "malformed"],
+    ["network", (d) => d.reject(new Error("SECRET-BODY socket hang up")), "network"],
+  ];
+  for (const [name, fail, kind] of failures) {
+    const h = gate({ judge: {} });
+    admit(h.gate, operator("one", false, "1"));
+    newestQuiet(h).fire();
+    fail(h.pending[0]);
+    await settled();
+    assert.equal(h.released.length, 1, `${name} delivers`);
+    assert.equal(h.released[0].delivery.trigger, "judge-failed", name);
+    assert.deepEqual(h.gate.held(), [], name);
+    assert.equal(h.rows.length, 1, name);
+    assert.equal(h.rows[0].trigger, "judge-failed", name);
+    assert.equal(h.rows[0].outcome, "delivered", name);
+    assert.equal(Object.hasOwn(h.rows[0], "probability"), false, `${name}: no probability where no verdict`);
+    assert.deepEqual(h.rows[0].lines, ["Ann (operator): one"], name);
+    assert.equal(h.lines.length, 1, `${name}: ${h.lines.join(" | ")}`);
+    assert.ok(h.lines[0].includes(kind) && h.lines[0].includes(`thread=${THREAD}`), h.lines[0]);
+    assertNoContent(h.lines);
+    assertNoContent(h.rows.map((row) => JSON.stringify(row)));
+  }
+});
+
+test("at most one call per thread is in flight: a window elapsing during it asks when it settles, and threads fly apart", async () => {
+  const h = gate({ judge: {} });
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 1);
+
+  admit(h.gate, participant("two", false, "2"));
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 1, "the newer state waits for the call out");
+  // Another thread is not held up by this one's call.
+  h.gate.admit(OTHER_THREAD, "session-b", operator("elsewhere", false, "9"), UNADDRESSED);
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.state(1).conversation, ["Ann (operator): elsewhere"]);
+
+  h.pending[0].resolve(scored(0.1));
+  await settled();
+  assert.equal(h.calls.length, 3, "the waiting state is asked once the call settles");
+  assert.deepEqual(h.state(2).conversation, ["Ann (operator): one", "Bo (participant): two"]);
+  assert.deepEqual(h.rows.map((row) => [row.id, row.outcome]), [["1", "held"]]);
+});
+
+test("a certain trigger during a call delivers at once, and the verdict returning after is journaled stale and delivers nothing", async () => {
+  const h = gate({ judge: {} });
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  const deliveries = admit(h.gate, participant("now", false, "2"), MENTION);
+  assert.equal(deliveries[0].trigger, "mention");
+  assert.deepEqual(h.gate.held(), []);
+
+  // A fresh buffer opens and its window elapses while the old call is still out.
+  admit(h.gate, operator("three", false, "3"));
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 1, "one call per thread, whatever buffer it was about");
+
+  h.pending[0].resolve(scored(0.9));
+  await settled();
+  assert.deepEqual(h.released, [], "a verdict for a buffer already gone delivers nothing");
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome, row.probability]), [
+    ["2", "mention", "delivered", undefined],
+    ["1", "judge", "stale", 0.9],
+  ]);
+  assert.equal(h.calls.length, 2, "the fresh buffer's owed ask goes out on the settle");
+  assert.deepEqual(h.state(1).conversation, ["Ann (operator): three"]);
+});
+
+test("a verdict for a cleared buffer is stale, and closing stops every quiet window too", async () => {
+  const h = gate({ judge: {} });
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  assert.equal(h.gate.clear(THREAD), 1);
+  h.pending[0].resolve(scored(0.9));
+  await settled();
+  assert.deepEqual(h.released, []);
+  assert.deepEqual(h.rows.map((row) => [row.id, row.outcome]), [["1", "stale"]]);
+
+  admit(h.gate, operator("two", false, "2"));
+  h.gate.admit(OTHER_THREAD, "session-b", operator("elsewhere", false, "3"), UNADDRESSED);
+  h.gate.close();
+  assert.deepEqual(h.quiet().slice(1).map((timer) => timer.cleared), [true, true]);
+  for (const timer of h.quiet()) timer.fire();
+  assert.equal(h.calls.length, 1, "a fired-anyway quiet timer asks nothing after close");
+});
+
+test("a buffer carrying a secret makes no call, delivers on judge-failed, and its row holds no lines and no probability", async () => {
+  const h = gate({ judge: {} });
+  admit(h.gate, operator("one", false, "1"));
+  admit(h.gate, participant("the key is sk-abcdefghij0123456789xyz", false, "2"));
+  newestQuiet(h).fire();
+  await settled();
+  assert.equal(h.calls.length, 0, "the screen refused the send");
+  assert.equal(h.released.length, 1, "and the buffer fails open to the session");
+  assert.equal(h.released[0].delivery.trigger, "judge-failed");
+  assert.equal(h.released[0].delivery.messages.length, 2);
+  assert.deepEqual(Object.keys(h.rows[0]), ["id", "time", "threadId", "sessionId", "trigger", "outcome"]);
+  assert.equal(h.rows[0].id, "2");
+  assert.equal(h.rows[0].trigger, "judge-failed");
+  assert.equal(h.rows[0].outcome, "delivered");
+  assert.ok(h.lines[0].includes("screened") && h.lines[0].includes(`thread=${THREAD}`), h.lines[0]);
+  assert.ok(!h.lines[0].includes("sk-abcdefghij"), "the secret rides no log line");
+});
+
+test("the judge is sent the newest lines that fit the shared cut, and the latest line always", () => {
+  const wide = (id: string): BufferedMessage => operator("x".repeat(5_000), false, id);
+  const lines = conversationLines([wide("1"), wide("2"), wide("3")]);
+  assert.equal(lines.length, 2, "two lines of five thousand fit under the cut, three do not");
+  assert.deepEqual(lines, [bufferedLine(wide("2")), bufferedLine(wide("3"))], "oldest first, newest last");
+
+  const alone = conversationLines([wide("1"), operator("\u{1F600}".repeat(MAX_JEV_CODE_POINTS + 5), false, "2")]);
+  assert.equal(alone.length, 1, "a latest line past the cut on its own is sent alone");
+  assert.equal([...alone[0]].length, MAX_JEV_CODE_POINTS, "cut to the limit, never splitting a pair");
+});
+
+test("the judge is told the seconds since the bot last posted in the thread, and never before it has", async () => {
+  let now = 10_000;
+  const h = gate({ judge: {}, now: () => now });
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  assert.equal(h.state(0).seconds_since_assistant_posted, "never");
+  h.pending[0].resolve(scored(0.9));
+  await settled();
+
+  h.gate.notePost(THREAD);
+  now += 7_900;
+  admit(h.gate, operator("two", false, "2"));
+  newestQuiet(h).fire();
+  assert.equal(h.state(1).seconds_since_assistant_posted, "7", "whole seconds, rounded down");
+  h.gate.admit(OTHER_THREAD, "session-b", operator("elsewhere", false, "3"), UNADDRESSED);
+  newestQuiet(h).fire();
+  assert.equal(h.state(2).seconds_since_assistant_posted, "never", "per thread");
+});
+
+test("every decision journals one row with the closed field set, and no row carries the key or a body", async () => {
+  const now = 1_700_000_000_000;
+  const h = gate({ judge: {}, maxWaitMs: 60_000, now: () => now });
+  // A mention, the age cap, a held verdict, a delivered verdict, in that order.
+  admit(h.gate, operator("one", false, "1"));
+  admit(h.gate, participant("two", false, "2"), MENTION);
+  admit(h.gate, operator("three", false, "3"));
+  h.scheduled.filter((timer) => timer.ms === 60_000)[1].fire();
+  admit(h.gate, operator("four", false, "4"));
+  newestQuiet(h).fire();
+  h.pending[0].resolve(scored(0.2));
+  await settled();
+  admit(h.gate, operator("five", false, "5"));
+  newestQuiet(h).fire();
+  h.pending[1].resolve(scored(0.8));
+  await settled();
+
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome]), [
+    ["2", "mention", "delivered"],
+    ["3", "age-cap", "delivered"],
+    ["4", "judge", "held"],
+    ["5", "judge", "delivered"],
+  ]);
+  for (const row of h.rows) {
+    const expected = ["id", "time", "threadId", "sessionId", "trigger"];
+    if (row.trigger === "judge") expected.push("probability");
+    expected.push("outcome", "lines");
+    assert.deepEqual(Object.keys(row), expected, JSON.stringify(row));
+    assert.equal(row.time, new Date(now).toISOString());
+    assert.equal(row.threadId, THREAD);
+    assert.equal(row.sessionId, SESSION);
+  }
+  assert.deepEqual(h.rows[3].lines, ["Ann (operator): four", "Ann (operator): five"]);
+  // The predicate: no key, no response body, in any row. The key was sent on every call and a
+  // body came back on two, so a row quoting either would fire the control above.
+  assertNoContent(h.rows.map((row) => JSON.stringify(row)));
+  assertNoContent(h.lines);
+});
+
+test("a journal that throws loses the row, logs it, and never stops a delivery", async () => {
+  const h = gate({
+    judge: {},
+    journal: () => {
+      throw new Error("disk full");
+    },
+  });
+  admit(h.gate, operator("one", false, "1"));
+  const deliveries = admit(h.gate, participant("now", false, "2"), MENTION);
+  assert.equal(deliveries.length, 1, "delivered on the mention");
+  assert.equal(h.lines.length, 1);
+  assert.ok(h.lines[0].includes("journal") && h.lines[0].includes(THREAD) && h.lines[0].includes("disk full"), h.lines[0]);
+
+  admit(h.gate, operator("three", false, "3"));
+  newestQuiet(h).fire();
+  h.pending[0].resolve(scored(0.9));
+  await settled();
+  assert.equal(h.released.length, 1, "delivered on the verdict");
+  assert.equal(h.lines.length, 2);
+});
+
+test("the journal on disk is one JSON row per line, made under the state directory, rotated at the log's size and count", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-gate-journal-"));
+  try {
+    const file = path.join(dir, "state", "response-gate.jsonl");
+    const journal = createResponseGateJournal({ file, maxBytes: 400, maxFiles: 2 });
+    const row = (id: number): JournalRow => ({
+      id: String(id),
+      time: "2026-09-30T00:00:00.000Z",
+      threadId: THREAD,
+      sessionId: SESSION,
+      trigger: "mention",
+      outcome: "delivered",
+      lines: ["Ann (operator): padded out to cross the size cap in a few rows"],
+    });
+    journal(row(1));
+    assert.ok(existsSync(file), "the directory was made for the first row");
+    assert.equal(readFileSync(file, "utf8"), `${JSON.stringify(row(1))}\n`, "one JSON row, one line");
+
+    for (let id = 2; id <= 12; id += 1) journal(row(id));
+    // A write that crosses the cap rotates the active file away until the next write recreates
+    // it, as the broker log's does; one more row settles that before the files are read.
+    journal(row(13));
+    assert.ok(existsSync(`${file}.1`), "rotated at the cap");
+    assert.ok(!existsSync(`${file}.2`), "to the file count, the active file included");
+    const ids = (text: string): number[] =>
+      text
+        .trim()
+        .split("\n")
+        .map((line) => Number((JSON.parse(line) as JournalRow).id));
+    const active = ids(readFileSync(file, "utf8"));
+    const rotated = ids(readFileSync(`${file}.1`, "utf8"));
+    assert.ok(active.length > 0 && rotated.length > 0);
+    assert.ok(Math.min(...active) > Math.max(...rotated), "the active file holds the newer rows");
+
+    // A write that cannot land throws, which the gate catches and logs; nothing here swallows it.
+    writeFileSync(path.join(dir, "blocker"), "", "utf8");
+    const blocked = createResponseGateJournal({
+      file: path.join(dir, "blocker", "x.jsonl"),
+      maxBytes: 400,
+      maxFiles: 2,
+    });
+    assert.throws(() => blocked(row(1)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createLogger } from "./log.ts";
+import { createLogger, rotate } from "./log.ts";
 import { createHandler } from "./intake.ts";
 import { createRegistry } from "./registry.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -120,6 +120,29 @@ test("rotation retires the oldest file rather than growing without bound, oldest
       `expected every active line (min ${Math.min(...activeLines)}) to be newer than every ` +
         `file.1 line (max ${Math.max(...rotatedLines)})`,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the rotation on its own shifts each file one slot older, drops the oldest, and retires the active file", () => {
+  // Exported for the response gate's journal, which rotates by this rule beside the log. Pinned
+  // directly, since two callers now share it.
+  const { dir, file } = tmpFile();
+  try {
+    writeFileSync(file, "active", "utf8");
+    writeFileSync(`${file}.1`, "one back", "utf8");
+    writeFileSync(`${file}.2`, "two back", "utf8");
+    rotate(file, 3);
+    assert.ok(!existsSync(file), "the active file moved to .1; the next write recreates it");
+    assert.equal(readFileSync(`${file}.1`, "utf8"), "active");
+    assert.equal(readFileSync(`${file}.2`, "utf8"), "one back");
+    assert.ok(!existsSync(`${file}.3`), "the oldest slot is dropped, never grown");
+
+    writeFileSync(file, "again", "utf8");
+    rotate(file, 1);
+    assert.ok(!existsSync(file), "with one file allowed, the active file is cleared");
+    assert.equal(readFileSync(`${file}.1`, "utf8"), "active", "and nothing else moves");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

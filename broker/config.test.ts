@@ -235,6 +235,33 @@ test("the response gate's size cap defaults to the rate ceiling, and both caps r
   );
 });
 
+test("the quiet window takes the age cap's bounds, and the gate threshold the inbox threshold's", () => {
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_QUIET_MS: "3000" }).responseGateQuietMs, 3_000);
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_QUIET_MS: "2147483647" }).responseGateQuietMs, 2_147_483_647);
+  for (const raw of ["0", "-1", "2.5", "soon", "2147483648"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_RESPONSE_GATE_QUIET_MS: raw }),
+      /expected an integer between 1 and 2147483647/,
+      raw,
+    );
+  }
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_THRESHOLD: "0.4" }).responseGateThreshold, 0.4);
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_THRESHOLD: "0.95" }).responseGateThreshold, 0.95);
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_THRESHOLD: " .75 " }).responseGateThreshold, 0.75);
+  for (const raw of ["0.39", "0.951", "1", "0", "NaN", "high"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_RESPONSE_GATE_THRESHOLD: raw }),
+      /expected a number between 0.4 and 0.95/,
+      raw,
+    );
+  }
+  // Read whatever the mode, as the caps are.
+  assert.throws(
+    () => loadConfig({ CHANNEL_RESPONSE_GATE: "off", CHANNEL_RESPONSE_GATE_THRESHOLD: "2" }),
+    /expected a number between 0.4 and 0.95/,
+  );
+});
+
 test("the usage card is off unless it is asked for, and a typo is refused rather than read", () => {
   // Off by default: the card reads another program's files and opens a thread of its own in the
   // operator's channel, and neither belongs on a host that never asked for it.

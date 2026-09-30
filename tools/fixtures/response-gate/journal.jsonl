@@ -1,0 +1,12 @@
+{"id":"1","time":"2026-09-30T10:00:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.95,"outcome":"delivered","lines":["Ann (operator): can you check the ledger export?"]}
+{"id":"2","time":"2026-09-30T10:01:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.8,"outcome":"delivered","lines":["Bo (participant): and the totals for March"]}
+{"id":"3","time":"2026-09-30T10:02:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.65,"outcome":"delivered","lines":["Ann (operator): Bo, did you send the file?"]}
+{"id":"4","time":"2026-09-30T10:03:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.6,"outcome":"delivered","lines":["Bo (participant): yes, what does it show?"]}
+{"id":"5","time":"2026-09-30T10:04:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.45,"outcome":"held","lines":["Ann (operator): thanks Bo"]}
+{"id":"6","time":"2026-09-30T10:05:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.4,"outcome":"held","lines":["Bo (participant): so the March figure then"]}
+{"id":"7","time":"2026-09-30T10:06:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.2,"outcome":"held","lines":["Ann (operator): lunch?"]}
+{"id":"8","time":"2026-09-30T10:07:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.9,"outcome":"held","lines":["Bo (participant): sure"]}
+{"id":"9","time":"2026-09-30T10:08:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"mention","outcome":"delivered","lines":["Ann (operator): @bot status?"]}
+{"id":"10","time":"2026-09-30T10:09:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.7,"outcome":"delivered","lines":["Bo (participant): unlabelled"]}
+{"id":"12","time":"2026-09-30T10:10:00.000Z","threadId":"9000000000
+{"id":"8","time":"2026-09-30T10:11:00.000Z","threadId":"900000000000000001","sessionId":"session-a","trigger":"judge","probability":0.3,"outcome":"held","lines":["Bo (participant): sure","Bo (participant): see you at one"]}

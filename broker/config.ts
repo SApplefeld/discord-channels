@@ -180,6 +180,16 @@ export type BrokerConfig = {
   responseGateMaxMessages: number;
   /** A held buffer delivers once its oldest message is this old, whether or not another arrives. */
   responseGateMaxWaitMs: number;
+  /**
+   * How long a thread must be quiet since its last message before a held buffer is put to the
+   * judge. A new message restarts it, so a person typing several lines is not cut mid-thought.
+   */
+  responseGateQuietMs: number;
+  /**
+   * The judge's probability at or above which a held buffer delivers, from 0.4 to 0.95. Chosen
+   * from a week of labelled shadow rows through `tools/response-gate-score.ts`.
+   */
+  responseGateThreshold: number;
 };
 
 /**
@@ -325,6 +335,15 @@ const DEFAULT_RESPONSE_GATE_MAX_WAIT_MS = 10 * 60 * 1000;
 // The age cap is a setTimeout delay, and Node clamps a delay past 2^31-1 down to 1ms, which would
 // deliver every buffer the moment it opened. The ceiling is that limit, about 24.8 days.
 const MAX_RESPONSE_GATE_MAX_WAIT_MS = 2_147_483_647;
+// The quiet window is a typing pause: five seconds is long enough that a second line of the same
+// thought lands inside it and short enough that an ask is not held for its own sake. It is a
+// setTimeout delay too, so it takes the age cap's ceiling. The threshold takes the inbox
+// threshold's bounds, for the same reasons: the floor keeps a typo from delivering on most
+// verdicts, and the ceiling keeps one from delivering on almost none while still reading as on.
+// Both are starting values rather than measured ones; the shadow journal and the scoring tool
+// are what move them.
+const DEFAULT_RESPONSE_GATE_QUIET_MS = 5 * 1000;
+const DEFAULT_RESPONSE_GATE_THRESHOLD = 0.6;
 // One list, one entry per project root. A semicolon rather than a colon or a comma because a Windows
 // path carries a drive letter and a colon with it, and a comma is a legal character in a directory
 // name.
@@ -714,6 +733,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       1,
       MAX_RESPONSE_GATE_MAX_WAIT_MS,
       DEFAULT_RESPONSE_GATE_MAX_WAIT_MS,
+    ),
+    responseGateQuietMs: bounded(
+      env.CHANNEL_RESPONSE_GATE_QUIET_MS,
+      1,
+      MAX_RESPONSE_GATE_MAX_WAIT_MS,
+      DEFAULT_RESPONSE_GATE_QUIET_MS,
+    ),
+    responseGateThreshold: boundedFraction(
+      env.CHANNEL_RESPONSE_GATE_THRESHOLD,
+      MIN_INBOX_THRESHOLD,
+      MAX_INBOX_THRESHOLD,
+      DEFAULT_RESPONSE_GATE_THRESHOLD,
     ),
   };
 }

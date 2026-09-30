@@ -1,10 +1,23 @@
 // The response gate: a per-thread buffer that holds admitted messages until one of them addresses
-// the bot, or the buffer ages or fills past a cap, and then hands them over as one delivery.
+// the bot, the buffer ages or fills past a cap, or TypeSafe's Jev judges that the conversation now
+// expects a response, and then hands them over as one delivery.
 //
 // It sits behind everything the inbound router decides. A message reaches `admit` only after the
 // sender gate admitted it, the operator-only readings declined it, its session was found live, and
 // the rate ceiling took it, so nothing here is a check on standing: the buffer holds what the
 // router would otherwise have delivered at once, and the only question it answers is when.
+//
+// The fourth trigger is a judgement. A held buffer waits for a quiet window since the thread's last
+// message, and then one question goes to Jev with the buffered lines and the seconds since the bot
+// last posted in the thread: does the latest message expect a response from the assistant? At or
+// above the threshold the buffer delivers; below it the buffer stays held and the next message's
+// quiet window asks again. A call that fails delivers, since a missed ask costs more than a chatty
+// reply. The certain triggers and the age cap never wait on the window or the call. A thread has
+// at most one call in flight, and a window that elapses during it asks when the call settles.
+//
+// Every decision is journaled, one row each, so a week of rows can be labelled and scored before
+// a threshold decides anything live. A row carries ids, a trigger, an outcome, a probability where
+// a call ran and the lines that were held. No reply text, no key and no token ever enters one.
 //
 // The delivered event's class is the lowest class present, `operator` only when every buffered
 // message was written from an operator account. A line's prefix is text: a message's own text can
@@ -17,6 +30,13 @@
 // a session's replacement of the same lineage, and what was said to the old session is not said
 // to the new one: a buffer whose session has gone is dropped, never handed to whoever holds the
 // thread next.
+import { appendFileSync, mkdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { MAX_JEV_CODE_POINTS, createJevClient } from "../jev/client.ts";
+import type { JevFetch } from "../jev/client.ts";
+import { rotate } from "../log.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
+import { sliceCodePoints } from "../sanitize.ts";
 import type { SenderClass } from "../security/senders.ts";
 import type { RelayEvent } from "./relays.ts";
 
@@ -39,6 +59,8 @@ export const MAX_EVENT_UNITS = 64 * 1024;
 
 /** One admitted message as the buffer holds it: what its delivered line and the event read. */
 export type BufferedMessage = {
+  /** The message's own Discord id: the key a journal row carries and a label is written against. */
+  id: string;
   /** The display name, bounded by the gateway for the attribute it rides. A label, never a key. */
   author: string;
   /** The class the sender roster gives the account that wrote it. */
@@ -49,13 +71,46 @@ export type BufferedMessage = {
   truncated: boolean;
 };
 
-/** What delivered a buffer. The first three are a message's own act; the last is the timer's. */
-export type BufferTrigger = "mention" | "reply" | "size-cap" | "age-cap";
+/**
+ * What delivered a buffer. The first three are a message's own act, the fourth is the timer's, and
+ * the last two are the judge's: a verdict at or above the threshold, or a call that failed.
+ */
+export type BufferTrigger = "mention" | "reply" | "size-cap" | "age-cap" | "judge" | "judge-failed";
 
 export type BufferDelivery = {
   /** Oldest first, and never empty. */
   messages: readonly BufferedMessage[];
   trigger: BufferTrigger;
+};
+
+/**
+ * One gate decision as the journal records it. The fields are closed at these: the id is the
+ * newest buffered message's, the key a label names; `probability` is present only where a call
+ * ran; `lines` is absent only where the screen refused the send, since a row is on disk. The
+ * outcome is `delivered` or `held`, or `stale` for a verdict that returned after its buffer had
+ * already gone, which delivers nothing.
+ */
+export type JournalRow = {
+  id: string;
+  time: string;
+  threadId: string;
+  sessionId: string;
+  trigger: BufferTrigger;
+  probability?: number;
+  outcome: "delivered" | "held" | "stale";
+  lines?: readonly string[];
+};
+
+/** The judge's settings, present on a host whose gate asks Jev. */
+export type ResponseGateJudge = {
+  /** A held buffer asks once the thread has been quiet this long since its last message. */
+  quietMs: number;
+  /** A probability at or above this delivers the buffer. */
+  threshold: number;
+  /** The inbox judge's key, read from the same file. Never logged, in whole or in part. */
+  apiKey: string;
+  /** Injected so a test drives the call without a network. */
+  fetch?: JevFetch;
 };
 
 export type ResponseGateOptions = {
@@ -64,11 +119,18 @@ export type ResponseGateOptions = {
   /** A buffer whose oldest message is this old delivers on a timer, with or without another. */
   maxWaitMs: number;
   /**
-   * Handed a buffer the age cap delivered, with no message of its own to answer on, and the
-   * session it was held for. The caller owns the pipe and the thread, so it delivers and
-   * announces; this only says the wait is over.
+   * The fourth trigger. Absent, the gate has its three certain triggers and the age cap alone,
+   * which is the shape the router's own tests drive; a host with the gate on always supplies it.
    */
-  onAgeCap: (threadId: string, sessionId: string, delivery: BufferDelivery) => void;
+  judge?: ResponseGateJudge;
+  /** Takes one row per decision. A throw out of it is logged and never reaches a delivery. */
+  journal: (row: JournalRow) => void;
+  /**
+   * Handed a buffer released with no message of its own to answer on, by the age cap or the
+   * judge, and the session it was held for. The caller owns the pipe and the thread, so it
+   * delivers and announces; this only says the wait is over.
+   */
+  onRelease: (threadId: string, sessionId: string, delivery: BufferDelivery) => void;
   /**
    * Told of a buffer `admit` dropped because its thread admitted a message for another session:
    * the thread, the session the buffer was held for, and how many messages it held. The caller
@@ -77,13 +139,16 @@ export type ResponseGateOptions = {
    */
   onDrop?: (threadId: string, sessionId: string, count: number) => void;
   /**
-   * Injected so a test drives the age cap without sleeping. The default is a real timer that does
-   * not hold the process open: a held buffer is not a reason for a broker asked to stop to wait.
+   * Injected so a test drives the age cap and the quiet window without sleeping. The default is a
+   * real timer that does not hold the process open: a held buffer is not a reason for a broker
+   * asked to stop to wait.
    */
   setTimer?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearTimer?: (timer: NodeJS.Timeout) => void;
-  /** Where a buffer dropped here is named: its count, thread and session, never its text. */
+  /** Where a drop, a failed call or a lost journal row is named: never a message's text. */
   log?: (message: string) => void;
+  /** The clock a row's time and the seconds since the bot's last post are read from. */
+  now?: () => number;
 };
 
 export type ResponseGate = {
@@ -93,7 +158,7 @@ export type ResponseGate = {
    * with this message last when the message mentions the bot, replies to one of its messages or
    * fills the buffer to the cap, and two deliveries when the message would also have pushed the
    * held buffer past the event budget: the held buffer first, without this message, and then
-   * whatever this message delivers on its own.
+   * whatever this message delivers on its own. A held message restarts its thread's quiet window.
    */
   admit: (
     threadId: string,
@@ -102,11 +167,17 @@ export type ResponseGate = {
     addressed: { mentionsBot: boolean; repliesToBot: boolean },
   ) => readonly BufferDelivery[];
   /**
-   * Drops a thread's buffer and its timer, delivering nothing, and returns how many messages that
-   * dropped so the caller can say so. For a session that has ended.
+   * The bot posted in the thread now. Memory only: the judge is told the seconds since this, and
+   * `never` for a thread the bot has not posted in since the broker started.
+   */
+  notePost: (threadId: string) => void;
+  /**
+   * Drops a thread's buffer and its timers, delivering nothing, and returns how many messages that
+   * dropped so the caller can say so. For a session that has ended. A call in flight for the
+   * buffer is not aborted; its verdict is journaled as stale and delivers nothing.
    */
   clear: (threadId: string) => number;
-  /** Drops every thread's buffer and timer, delivering nothing. For the broker stopping. */
+  /** Drops every thread's buffer and timers, delivering nothing. For the broker stopping. */
   close: () => void;
   /** Every buffer held now, with the session each is held for, so the caller can drop the stale. */
   held: () => Array<{ threadId: string; sessionId: string }>;
@@ -139,7 +210,8 @@ export function lowestClass(messages: readonly BufferedMessage[]): SenderClass {
  * A buffer of one message is the ungated event: that message's own text, author and class, and no
  * `buffered` count, so a lone mention on a host with the gate on is byte-identical on the wire to
  * one on a host with it off. A buffer of more is one line per message, oldest first, its author
- * the newest message's, which is the one that triggered it or, on the timer, the last to arrive.
+ * the newest message's, which is the one that triggered it or, on the timer or the judge, the last
+ * to arrive.
  */
 export function bufferedEvent(chatId: string, messages: readonly BufferedMessage[]): MessageEvent {
   const newest = messages[messages.length - 1];
@@ -171,8 +243,99 @@ function overBudget(chatId: string, messages: readonly BufferedMessage[]): boole
   return JSON.stringify(bufferedEvent(chatId, messages)).length + 1 > MAX_EVENT_UNITS;
 }
 
-/** A thread's held messages, the session they are held for, and the timer that delivers them. */
-type Held = { sessionId: string; messages: BufferedMessage[]; timer: NodeJS.Timeout };
+/**
+ * The lines the judge is sent: the newest buffered lines that fit the shared code point cut,
+ * oldest first. The latest message is always sent, and is cut alone where it alone exceeds the
+ * limit, which no line the router bounds can reach, since a name and a text are each capped
+ * well under it.
+ */
+export function conversationLines(messages: readonly BufferedMessage[]): string[] {
+  const lines: string[] = [];
+  let remaining = MAX_JEV_CODE_POINTS;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const line = bufferedLine(messages[index]);
+    const length = [...line].length;
+    if (length > remaining) {
+      if (lines.length === 0) lines.push(sliceCodePoints(line, remaining));
+      break;
+    }
+    lines.push(line);
+    remaining -= length;
+  }
+  return lines.reverse();
+}
+
+const PREAMBLE =
+  "The `conversation` is the newest part of a group chat between a few people and an AI " +
+  "assistant, one message per line, oldest first, each line written as `<name> (<class>): " +
+  "<text>`. `seconds_since_assistant_posted` is how long ago the assistant last wrote in this " +
+  "chat, or `never`. The assistant answers when it is wanted and stays out of the people's own " +
+  "exchanges with each other.";
+
+/**
+ * The one question, yes-or-no (`noul`), keyed by the name its answer comes back under. The text
+ * is a first wording rather than a tuned one: the journal and the scoring tool measure it.
+ */
+export const GATE_QUESTIONS = {
+  expects_reply: {
+    type: "noul",
+    instructions:
+      `${PREAMBLE} Does the latest message in the conversation expect a response from the ` +
+      "assistant? Count a question or a request put to the assistant or to the room, and a " +
+      "message that continues something the assistant was asked, whether or not it names the " +
+      "assistant. A message addressed to another person, an aside, or an acknowledgement that " +
+      "closes an exchange does not count.",
+    criteria: {
+      true: "Yes, the latest message expects the assistant to respond.",
+      false: "No, the latest message expects nothing from the assistant.",
+    },
+  },
+} as const;
+
+/**
+ * The gate's repeat log, keyed by the failure kind; the thread rides beside it. The kinds are the
+ * client's closed set plus a handler throw, so the map is bounded without a sweep.
+ */
+export const GATE_REPEAT_LOG: RepeatLogSurface<[threadId: string]> = {
+  windowMs: 60_000,
+  firstLine: (kind, threadId) => `response gate: ${kind} thread=${threadId}`,
+  countLine: (kind, suppressed) =>
+    `response gate: ${kind} occurred ${String(suppressed)} more time(s) in the last 60000ms`,
+};
+
+/**
+ * The journal on disk: one JSON row per line, appended to `file` and rotated at the broker log's
+ * size and file count through the log's own rotation. Written for the owning user only, since a
+ * row holds message text, and the directory is the state file's, made the way the state file's
+ * writer makes it. Throws on a failed write; the gate logs that and delivers regardless.
+ */
+export function createResponseGateJournal(options: {
+  file: string;
+  maxBytes: number;
+  maxFiles: number;
+}): (row: JournalRow) => void {
+  return (row) => {
+    mkdirSync(path.dirname(options.file), { recursive: true, mode: 0o700 });
+    appendFileSync(options.file, `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600 });
+    if (statSync(options.file).size >= options.maxBytes) rotate(options.file, options.maxFiles);
+  };
+}
+
+/**
+ * A thread's held messages, the session they are held for, the age-cap timer that delivers them,
+ * the quiet-window timer that asks about them, and whether that window has elapsed with the ask
+ * still owed because a call was in flight.
+ */
+type Held = {
+  sessionId: string;
+  messages: BufferedMessage[];
+  timer: NodeJS.Timeout;
+  quiet: NodeJS.Timeout | null;
+  quietElapsed: boolean;
+};
+
+/** What one call was asked about, carried back with its verdict: the buffer, its newest id, the lines sent. */
+type Asked = { buffer: Held; id: string; lines: string[] };
 
 export function createResponseGate(options: ResponseGateOptions): ResponseGate {
   const setTimer =
@@ -180,14 +343,54 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     ((callback: () => void, ms: number): NodeJS.Timeout => setTimeout(callback, ms).unref());
   const clearTimer = options.clearTimer ?? clearTimeout;
   const log = options.log ?? ((): void => {});
+  const now = options.now ?? Date.now;
   const held = new Map<string, Held>();
+  /** When the bot last posted in each thread, by the gate's clock. */
+  const lastPost = new Map<string, number>();
+  /** The threads with a call out. A window elapsing on one of these asks when the call settles. */
+  const inFlight = new Set<string>();
 
-  /** Takes a thread's buffer out of the map with its timer stopped, or nothing if none is held. */
+  /** One row. The journal's failure is logged and stops nothing: a delivery never waits on disk. */
+  function record(
+    threadId: string,
+    sessionId: string,
+    id: string,
+    trigger: BufferTrigger,
+    outcome: JournalRow["outcome"],
+    detail: { probability?: number; lines?: readonly string[] },
+  ): void {
+    const row: JournalRow = {
+      id,
+      time: new Date(now()).toISOString(),
+      threadId,
+      sessionId,
+      trigger,
+      ...(detail.probability === undefined ? {} : { probability: detail.probability }),
+      outcome,
+      ...(detail.lines === undefined ? {} : { lines: detail.lines }),
+    };
+    try {
+      options.journal(row);
+    } catch (error) {
+      log(`routing: the response gate journal lost a row for thread ${threadId}: ${String(error)}`);
+    }
+  }
+
+  /** A delivered buffer's row: its newest id and every line it held. */
+  function recordDelivery(threadId: string, sessionId: string, delivery: BufferDelivery): void {
+    const newest = delivery.messages[delivery.messages.length - 1];
+    record(threadId, sessionId, newest.id, delivery.trigger, "delivered", {
+      lines: delivery.messages.map(bufferedLine),
+    });
+  }
+
+  /** Takes a thread's buffer out of the map with both timers stopped, or nothing if none is held. */
   function release(threadId: string): Held | undefined {
     const buffer = held.get(threadId);
     if (buffer === undefined) return undefined;
     held.delete(threadId);
     clearTimer(buffer.timer);
+    if (buffer.quiet !== null) clearTimer(buffer.quiet);
     return buffer;
   }
 
@@ -196,7 +399,85 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     const buffer = held.get(threadId);
     if (buffer === undefined) return;
     held.delete(threadId);
-    options.onAgeCap(threadId, buffer.sessionId, { messages: buffer.messages, trigger: "age-cap" });
+    if (buffer.quiet !== null) clearTimer(buffer.quiet);
+    const delivery: BufferDelivery = { messages: buffer.messages, trigger: "age-cap" };
+    recordDelivery(threadId, buffer.sessionId, delivery);
+    options.onRelease(threadId, buffer.sessionId, delivery);
+  }
+
+  // The judge, built only where the host asks Jev. Its verdicts arrive through `onResult`, which
+  // reads the thread's buffer again rather than trusting the one the call was made about: a
+  // certain trigger, the age cap or a drop may have emptied it while the call was out.
+  const threshold = options.judge?.threshold ?? 1;
+  const judge =
+    options.judge === undefined
+      ? null
+      : createJevClient<"expects_reply", Asked>({
+          apiKey: options.judge.apiKey,
+          questions: GATE_QUESTIONS,
+          repeatLog: GATE_REPEAT_LOG,
+          ...(options.judge.fetch === undefined ? {} : { fetch: options.judge.fetch }),
+          log,
+          now,
+          onResult: (threadId, asked, result) => {
+            inFlight.delete(threadId);
+            const trigger: BufferTrigger = result.ok ? "judge" : "judge-failed";
+            const detail = {
+              ...(result.ok ? { probability: result.answers.expects_reply } : {}),
+              // A screened buffer's lines are what the screen refused to send, and they stay off
+              // disk as they stayed off the wire.
+              ...(!result.ok && result.kind === "screened" ? {} : { lines: asked.lines }),
+            };
+            const current = held.get(threadId);
+            if (current !== asked.buffer) {
+              record(threadId, asked.buffer.sessionId, asked.id, trigger, "stale", detail);
+            } else if (result.ok && result.answers.expects_reply < threshold) {
+              record(threadId, current.sessionId, asked.id, trigger, "held", detail);
+            } else {
+              // At or above the threshold, or a call that failed: the buffer goes as it stands,
+              // with whatever arrived while the call was out, since those lines continue the ask
+              // the verdict answered.
+              release(threadId);
+              record(threadId, current.sessionId, asked.id, trigger, "delivered", detail);
+              options.onRelease(threadId, current.sessionId, { messages: current.messages, trigger });
+            }
+            // A window that elapsed while this call was out, on this buffer or on one that opened
+            // since, owes its ask now.
+            if (held.get(threadId)?.quietElapsed === true) ask(threadId);
+          },
+        });
+
+  /** Asks Jev about the thread's buffer as it stands now. Only ever called with no call out. */
+  function ask(threadId: string): void {
+    const buffer = held.get(threadId);
+    if (buffer === undefined || judge === null) return;
+    buffer.quietElapsed = false;
+    inFlight.add(threadId);
+    const lines = conversationLines(buffer.messages);
+    const posted = lastPost.get(threadId);
+    const seconds =
+      posted === undefined ? "never" : String(Math.max(0, Math.floor((now() - posted) / 1000)));
+    judge.submit(
+      threadId,
+      { conversation: lines, seconds_since_assistant_posted: seconds },
+      { buffer, id: buffer.messages[buffer.messages.length - 1].id, lines },
+    );
+  }
+
+  /**
+   * The quiet window elapsed: ask now, or note that the ask is owed once the call out settles.
+   * Only the buffer's current window counts, so a timer a later message retired asks nothing
+   * even where it fires regardless.
+   */
+  function quietElapsed(threadId: string, timer: NodeJS.Timeout): void {
+    const buffer = held.get(threadId);
+    if (buffer === undefined || buffer.quiet !== timer) return;
+    buffer.quiet = null;
+    if (inFlight.has(threadId)) {
+      buffer.quietElapsed = true;
+      return;
+    }
+    ask(threadId);
   }
 
   return {
@@ -223,7 +504,9 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
       // mention, reply or count still delivers it.
       if (buffer !== undefined && overBudget(threadId, [...buffer.messages, message])) {
         release(threadId);
-        deliveries.push({ messages: buffer.messages, trigger: "size-cap" });
+        const delivery: BufferDelivery = { messages: buffer.messages, trigger: "size-cap" };
+        recordDelivery(threadId, sessionId, delivery);
+        deliveries.push(delivery);
         buffer = undefined;
       }
 
@@ -232,7 +515,7 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
 
       // A mention outranks a reply and both outrank the cap, so the trigger names the message's
       // own act where it made one. Either address is certain, which is why neither waits on the
-      // cap or the timer: the person asked the bot, and the buffer goes with the ask.
+      // cap, the timer or the judge: the person asked the bot, and the buffer goes with the ask.
       let trigger: BufferTrigger | null = null;
       if (addressed.mentionsBot) trigger = "mention";
       else if (addressed.repliesToBot) trigger = "reply";
@@ -240,19 +523,37 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
 
       if (trigger !== null) {
         if (buffer !== undefined) release(threadId);
-        deliveries.push({ messages, trigger });
+        const delivery: BufferDelivery = { messages, trigger };
+        recordDelivery(threadId, sessionId, delivery);
+        deliveries.push(delivery);
         return deliveries;
       }
       // The timer runs from the oldest message and is never restarted by a later one, so a held
       // ask is late by at most the cap however steadily the thread keeps talking.
       if (buffer === undefined) {
-        held.set(threadId, {
+        buffer = {
           sessionId,
           messages,
           timer: setTimer(() => expire(threadId), options.maxWaitMs),
-        });
+          quiet: null,
+          quietElapsed: false,
+        };
+        held.set(threadId, buffer);
+      }
+      // The quiet window runs from the newest message and restarts on each, so a person typing
+      // several lines is not cut mid-thought. A restart also retracts an ask the window had
+      // already earned but not made, since the thread was not quiet after all.
+      if (options.judge !== undefined) {
+        if (buffer.quiet !== null) clearTimer(buffer.quiet);
+        const quiet: NodeJS.Timeout = setTimer(() => quietElapsed(threadId, quiet), options.judge.quietMs);
+        buffer.quiet = quiet;
+        buffer.quietElapsed = false;
       }
       return deliveries;
+    },
+
+    notePost(threadId) {
+      lastPost.set(threadId, now());
     },
 
     clear(threadId) {

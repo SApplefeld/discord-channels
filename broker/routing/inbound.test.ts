@@ -34,6 +34,8 @@ import {
   unreachableNotice,
 } from "./inbound.ts";
 import { MAX_EVENT_UNITS } from "./response-gate.ts";
+import type { JournalRow } from "./response-gate.ts";
+import type { JevFetch } from "../jev/client.ts";
 import type { InboundInbox, InboundMessage, InboundRouter } from "./inbound.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
@@ -188,9 +190,17 @@ function harness(
     log?: (message: string) => void;
     /**
      * The response gate, live unless a mode is named, with hand-driven timers. Absent, the router
-     * is built as every test above builds it, with no gate at all.
+     * is built as every test above builds it, with no gate at all. With `judge`, the gate asks a
+     * fetch whose every call is held until the test settles it; without, its certain triggers
+     * alone.
      */
-    gate?: { mode?: "off" | "shadow" | "live"; maxMessages?: number; maxWaitMs?: number };
+    gate?: {
+      mode?: "off" | "shadow" | "live";
+      maxMessages?: number;
+      maxWaitMs?: number;
+      judge?: { quietMs?: number; threshold?: number };
+      journal?: (row: JournalRow) => void;
+    };
     /** Awaited before any post lands, so a test can hold a Discord round trip open. */
     beforePost?: () => Promise<void>;
     /** The lineage `session-a` is announced under, for a test that replaces it by lineage. */
@@ -232,6 +242,18 @@ function harness(
   const permissions = watchedDesk({ resolves: options.verdictResolves });
   const typed: string[] = [];
   const clock = timers();
+  const rows: JournalRow[] = [];
+  const calls: Array<{ url: string; init: Parameters<JevFetch>[1] }> = [];
+  const pending: Array<{
+    resolve: (response: Awaited<ReturnType<JevFetch>>) => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  const fetch: JevFetch = (url, init) => {
+    calls.push({ url, init });
+    return new Promise((resolve, reject) => {
+      pending.push({ resolve, reject });
+    });
+  };
   // The thread bindings as the surface holds them, mutable so a test can move a thread to the
   // session that takes it over.
   const threads = new Map<string, string>([["session-a", THREAD]]);
@@ -262,6 +284,17 @@ function harness(
             mode: options.gate.mode ?? "live",
             maxMessages: options.gate.maxMessages ?? MAX_INBOUND_PER_WINDOW,
             maxWaitMs: options.gate.maxWaitMs ?? 600_000,
+            ...(options.gate.judge === undefined
+              ? {}
+              : {
+                  judge: {
+                    quietMs: options.gate.judge.quietMs ?? 5_000,
+                    threshold: options.gate.judge.threshold ?? 0.6,
+                    apiKey: "test-key",
+                    fetch,
+                  },
+                }),
+            journal: options.gate.journal ?? ((row) => rows.push(row)),
             setTimer: clock.setTimer,
             clearTimer: clock.clearTimer,
           },
@@ -279,6 +312,14 @@ function harness(
     unknownVerdicts: permissions.unknown,
     scheduled: clock.scheduled,
     threads,
+    rows,
+    calls,
+    pending,
+    /** The `state` the call at `index` sent. */
+    state: (index: number): { conversation: string[]; seconds_since_assistant_posted: string } =>
+      (JSON.parse(calls[index].init.body) as { state: { conversation: string[]; seconds_since_assistant_posted: string } }).state,
+    /** The quiet-window timers scheduled so far. */
+    quiet: () => clock.scheduled.filter((timer) => timer.ms === (options.gate?.judge?.quietMs ?? 5_000)),
   };
 }
 
@@ -1343,14 +1384,14 @@ test("live: closing the router drops every held buffer and timer, and a timer fi
 });
 
 test("with the gate off or in shadow, the same messages deliver at once as the plain events they always were", async () => {
-  // The no-change pin, in both modes that deliver at once. Shadow's simulated buffer is not this
-  // section's, so today shadow is off on the wire.
+  // The no-change pin, in both modes that deliver at once. Shadow runs its simulated buffer
+  // beside the delivery and journals what it decided, and nothing of that reaches the wire.
   for (const mode of ["off", "shadow"] as const) {
-    const { router, sent, scheduled } = harness({ gate: { mode } });
+    const { router, sent, scheduled, rows } = harness({ gate: { mode } });
     await router.deliver(message({ text: "one" }));
     await router.deliver(fromBo({ text: "two" }));
     await router.deliver(message({ text: "three" }));
-    await router.deliver(fromBo({ text: "@bot four", mentionsBot: true }));
+    await router.deliver(fromBo({ text: "@bot four", mentionsBot: true, messageId: "4" }));
     assert.deepEqual(
       sent,
       [
@@ -1362,7 +1403,15 @@ test("with the gate off or in shadow, the same messages deliver at once as the p
       mode,
     );
     for (const event of sent) assert.equal(Object.hasOwn(event, "buffered"), false, mode);
-    assert.deepEqual(scheduled, [], `${mode} sets no timer`);
+    if (mode === "off") {
+      assert.deepEqual(scheduled, [], "off sets no timer");
+      assert.deepEqual(rows, [], "and journals nothing");
+      continue;
+    }
+    assert.deepEqual(rows.map((row) => [row.id, row.trigger, row.outcome, row.lines?.length]), [
+      ["4", "mention", "delivered", 4],
+    ]);
+    assert.equal(scheduled[0].cleared, true, "the simulated buffer's timer went with its delivery");
   }
 });
 
@@ -1456,4 +1505,172 @@ test("live: one participant line and one operator mention deliver as a participa
       buffered: 2,
     },
   ]);
+});
+
+// The fourth trigger in the pipeline: the judge's deliveries take the budgeted path the age cap
+// takes, shadow runs the same gate beside the ungated delivery, and the bot's own posts stamp the
+// clock the judge is told. The gate's own window, flight and rows are driven in
+// response-gate.test.ts; these lock the router's use of them.
+
+/** A response body carrying the one number, in the vendor's shape. */
+function verdict(expectsReply: number): Awaited<ReturnType<JevFetch>> {
+  const text = JSON.stringify({ answers: { expects_reply: { noul: expectsReply } } });
+  return { ok: true, status: 200, text: async () => text };
+}
+
+/** Fires the newest quiet-window timer, the one a held buffer waits on now. */
+function elapse(h: ReturnType<typeof harness>): void {
+  const quiet = h.quiet();
+  quiet[quiet.length - 1].fire();
+}
+
+test("live: a verdict at the threshold delivers the buffer as one attributed event on the budgeted path, logged on judge", async () => {
+  const lines: string[] = [];
+  const h = harness({ gate: { judge: { threshold: 0.6 } }, log: (line) => lines.push(line) });
+  await h.router.deliver(message({ text: "one", messageId: "1" }));
+  await h.router.deliver(fromBo({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1), messageId: "2" }));
+  assert.deepEqual(h.sent, [], "held");
+  assert.equal(h.calls.length, 0, "no call inside the window");
+
+  elapse(h);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].init.headers["Authorization"], "Bearer test-key");
+  h.pending[0].resolve(verdict(0.6));
+  await flush();
+  assert.deepEqual(h.sent, [
+    gathered(["Ann (operator): one", `Bo (participant): ${"a".repeat(MAX_INBOUND_TEXT_LENGTH)}`], "Bo", "participant"),
+  ]);
+  assert.ok(lines.some((line) => line.includes("delivered 2 buffered messages") && line.includes("on judge")), lines.join("\n"));
+  // The same path the age cap takes: the cut is announced once the buffer delivered.
+  assert.deepEqual(h.notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome, row.probability]), [
+    ["2", "judge", "delivered", 0.6],
+  ]);
+});
+
+test("live: below the threshold the buffer is held until a mention, and a timeout delivers on judge-failed", async () => {
+  const h = harness({ gate: { judge: { threshold: 0.6 } } });
+  await h.router.deliver(message({ text: "one", messageId: "1" }));
+  elapse(h);
+  h.pending[0].resolve(verdict(0.59));
+  await flush();
+  assert.deepEqual(h.sent, [], "held below the threshold");
+  await h.router.deliver(fromBo({ text: "@bot two", mentionsBot: true, messageId: "2" }));
+  assert.deepEqual(h.sent, [gathered(["Ann (operator): one", "Bo (participant): @bot two"], "Bo", "participant")]);
+
+  await h.router.deliver(message({ text: "three", messageId: "3" }));
+  elapse(h);
+  h.pending[1].reject(new DOMException("timed out", "TimeoutError"));
+  await flush();
+  assert.deepEqual(h.sent[1], delivered("three"), "a lone message fails open as the ungated event");
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome]), [
+    ["1", "judge", "held"],
+    ["2", "mention", "delivered"],
+    ["3", "judge-failed", "delivered"],
+  ]);
+});
+
+test("shadow: delivery is immediate, and the journal records the probability and held or delivered as live would decide", async () => {
+  const h = harness({ gate: { mode: "shadow", judge: { threshold: 0.6 } } });
+  await h.router.deliver(message({ text: "one", messageId: "1" }));
+  await h.router.deliver(fromBo({ text: "two", messageId: "2" }));
+  assert.deepEqual(h.sent, [
+    delivered("one"),
+    { type: "message", chatId: THREAD, text: "two", author: "Bo", senderClass: "participant" },
+  ]);
+  elapse(h);
+  assert.equal(h.calls.length, 1, "shadow makes the real call");
+  h.pending[0].resolve(verdict(0.3));
+  await flush();
+  assert.equal(h.sent.length, 2, "nothing more reaches the wire on a verdict");
+  await h.router.deliver(message({ text: "three", messageId: "3" }));
+  elapse(h);
+  h.pending[1].resolve(verdict(0.9));
+  await flush();
+  assert.equal(h.sent.length, 3, "delivered at once, as always, and never again on the verdict");
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome, row.probability, row.lines?.length]), [
+    ["2", "judge", "held", 0.3, 2],
+    ["3", "judge", "delivered", 0.9, 3],
+  ]);
+  assert.deepEqual(h.notices, []);
+});
+
+test("shadow and live make the same decisions, row for row, on the same sequence", async () => {
+  async function run(mode: "shadow" | "live"): Promise<ReturnType<typeof harness>["rows"]> {
+    const h = harness({ gate: { mode, judge: { threshold: 0.6 } } });
+    await h.router.deliver(message({ text: "one", messageId: "1" }));
+    elapse(h);
+    h.pending[0].resolve(verdict(0.2));
+    await flush();
+    await h.router.deliver(fromBo({ text: "two", messageId: "2" }));
+    elapse(h);
+    h.pending[1].resolve(verdict(0.7));
+    await flush();
+    await h.router.deliver(message({ text: "three", messageId: "3" }));
+    await h.router.deliver(fromBo({ text: "@bot four", mentionsBot: true, messageId: "4" }));
+    return h.rows;
+  }
+  const shadow = await run("shadow");
+  const live = await run("live");
+  assert.deepEqual(shadow, live);
+  assert.deepEqual(shadow.map((row) => [row.id, row.outcome]), [
+    ["1", "held"],
+    ["2", "delivered"],
+    ["4", "delivered"],
+  ]);
+});
+
+test("the bot's own post stamps the thread's last-post clock before it is dropped, and the judge is told the seconds since", async () => {
+  let now = 10_000;
+  const h = harness({ gate: { judge: {} }, now: () => now });
+  await h.router.deliver(message({ text: "one", messageId: "1" }));
+  elapse(h);
+  assert.equal(h.state(0).seconds_since_assistant_posted, "never");
+  h.pending[0].resolve(verdict(0.9));
+  await flush();
+
+  await h.router.deliver(message({ fromBot: true, senderId: "800000000000000001", text: "the reply" }));
+  assert.equal(h.sent.length, 1, "the bot's post is dropped, not routed");
+  now += 12_500;
+  await h.router.deliver(fromBo({ text: "two", messageId: "2" }));
+  elapse(h);
+  assert.equal(h.state(1).seconds_since_assistant_posted, "12");
+  assert.ok(!h.calls[1].init.body.includes("the reply"), "the bot's text never rides the request");
+});
+
+test("live: a journal that cannot take a row loses the row, logs it, and the buffer still delivers", async () => {
+  const lines: string[] = [];
+  const h = harness({
+    gate: {
+      judge: {},
+      journal: () => {
+        throw new Error("disk full");
+      },
+    },
+    log: (line) => lines.push(line),
+  });
+  await h.router.deliver(message({ text: "one", messageId: "1" }));
+  elapse(h);
+  h.pending[0].resolve(verdict(0.9));
+  await flush();
+  assert.deepEqual(h.sent, [delivered("one")]);
+  assert.ok(lines.some((line) => line.includes("journal") && line.includes("disk full")), lines.join("\n"));
+});
+
+test("live: closing the router stops the quiet window, and a session's end in shadow clears the simulated buffer in silence", async () => {
+  const closed = harness({ gate: { judge: {} } });
+  await closed.router.deliver(message({ text: "one" }));
+  closed.router.close();
+  assert.equal(closed.quiet()[0].cleared, true);
+  elapse(closed);
+  assert.equal(closed.calls.length, 0);
+
+  const lines: string[] = [];
+  const shadow = harness({ gate: { mode: "shadow", judge: {} }, log: (line) => lines.push(line) });
+  await shadow.router.deliver(message({ text: "one" }));
+  shadow.registry.relayClosed(TOKEN, "session-a");
+  await flush();
+  assert.equal(shadow.quiet()[0].cleared, true, "the simulated buffer cleared with its session");
+  assert.deepEqual(shadow.notices, [], "nothing was withheld, so nothing is announced");
+  assert.deepEqual(lines.filter((line) => line.includes("dropped")), [], "and nothing is logged as lost");
 });

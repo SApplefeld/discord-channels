@@ -82,6 +82,7 @@ import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
 import type { InboundInbox, InboundRouter } from "./routing/inbound.ts";
+import { createResponseGateJournal } from "./routing/response-gate.ts";
 import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { OutboundInbox, ReplyResult } from "./routing/outbound.ts";
@@ -872,6 +873,37 @@ export function rebindHandling(options: {
   };
 }
 
+/**
+ * The response gate's judge key, or null on a host with the gate off. The same file and the same
+ * reading the inbox judge uses, `readInboxJudgeKey`, so one key serves both callers of the Jev
+ * client and a host names it once.
+ *
+ * Where the inbox judge alone would warn and run on `ASK:` lines, the gate refuses to start: a
+ * host whose gate is `shadow` or `live` has asked for every message in a gated thread to be judged,
+ * and a broker that silently could not judge would deliver on the age cap alone in `live` and
+ * journal nothing in `shadow`, which is a week of shadow rows that never existed. The refusal
+ * names the mode and the variable, never the file's contents; the warning `readInboxJudgeKey`
+ * wrote names the file and the cause.
+ */
+export function responseGateJudgeKey(
+  config: Pick<BrokerConfig, "responseGate" | "inboxJudgeKeyFile">,
+  warn: (message: string) => void,
+  // Injectable so a test reaches the refusal without a hardened file; the default is the check
+  // the token file is held to.
+  protect?: (file: string) => void,
+): string | null {
+  if (config.responseGate === "off") return null;
+  const key = readInboxJudgeKey(config.inboxJudgeKeyFile, warn, protect);
+  if (key !== null) return key;
+  const cause =
+    config.inboxJudgeKeyFile === null
+      ? "CHANNEL_INBOX_JUDGE_KEY_FILE is unset"
+      : "the file CHANNEL_INBOX_JUDGE_KEY_FILE names cannot be used";
+  throw new Error(
+    `the response gate is ${config.responseGate} and needs the inbox judge's key, but ${cause}`,
+  );
+}
+
 export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // Console output stays as it was: a broker run at a terminal, or under `npm test`, keeps seeing
   // it. The logger writes the same lines to a rotating file too, when one is configured, because a
@@ -881,6 +913,22 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     maxBytes: config.logMaxBytes,
     maxFiles: config.logMaxFiles,
   });
+  const warn = (message: string): void => {
+    console.warn(message);
+    logger.warn(message);
+  };
+
+  // Read before anything is opened or bound, so a host whose gate cannot judge fails at once
+  // with the reason on disk: under the scheduled task there is no console for the throw to reach.
+  let responseGateKey: string | null;
+  try {
+    responseGateKey = responseGateJudgeKey(config, warn);
+  } catch (error) {
+    const message = `broker: refusing to start: ${String(error)}`;
+    console.error(message);
+    logger.error(message);
+    throw error;
+  }
 
   // The operator inbox, mutable for the reason `threadFor` below is: it is built from the sessions
   // the registry restored, so it can only exist once the registry does, and the registry's own
@@ -946,10 +994,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     config,
     registry,
     log: note,
-    warn: (message) => {
-      console.warn(message);
-      logger.warn(message);
-    },
+    warn,
     onError: (message) => {
       console.error(message);
       logger.error(message);
@@ -1606,6 +1651,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
+    // Beside the registry snapshot and the card bindings, as the inbox snapshot is: one row per
+    // gate decision, written only where the mode is `shadow` or `live`.
+    const responseGateJournalFile = path.join(path.dirname(config.stateFile), "response-gate.jsonl");
     const router = createInboundRouter({
       registry,
       relays,
@@ -1618,24 +1666,44 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
       ...(inbox === null ? {} : { inbox }),
-      // The mode and caps alone. The router builds the gate, whose timer delivers into the
-      // router's own pipe; the real clock is the default it takes.
+      // The mode, caps, judge and journal. The router builds the gate, whose timers deliver into
+      // the router's own pipe; the real clock and the real fetch are the defaults it takes. The
+      // journal sits beside the state file and rotates as the broker log does.
       responseGate: {
         mode: config.responseGate,
         maxMessages: config.responseGateMaxMessages,
         maxWaitMs: config.responseGateMaxWaitMs,
+        ...(responseGateKey === null
+          ? {}
+          : {
+              judge: {
+                quietMs: config.responseGateQuietMs,
+                threshold: config.responseGateThreshold,
+                apiKey: responseGateKey,
+              },
+            }),
+        journal: createResponseGateJournal({
+          file: responseGateJournalFile,
+          maxBytes: config.logMaxBytes,
+          maxFiles: config.logMaxFiles,
+        }),
       },
       now: Date.now,
       log: note,
     });
     inbound = router;
-    // Live alone holds anything. Shadow delivers every message at once today, so a line saying it
-    // holds a buffer would be a line about a mode that does not exist yet.
     if (config.responseGate === "live") {
       note(
         `broker: the response gate is live, a thread's buffer holds at most ` +
           `${String(config.responseGateMaxMessages)} messages for at most ` +
-          `${String(config.responseGateMaxWaitMs)}ms`,
+          `${String(config.responseGateMaxWaitMs)}ms, asks the judge after ` +
+          `${String(config.responseGateQuietMs)}ms of quiet at threshold ` +
+          `${String(config.responseGateThreshold)}, and journals to ${responseGateJournalFile}`,
+      );
+    } else if (config.responseGate === "shadow") {
+      note(
+        "broker: the response gate is in shadow, every message is delivered at once and each " +
+          `decision it would have made is journaled to ${responseGateJournalFile}`,
       );
     }
     // Same reason the REST client is imported here: this module is the only one in the routing

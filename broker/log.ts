@@ -50,8 +50,11 @@ export type Logger = {
  *
  * With maxFiles at 1 there is no room for a rotated copy at all, so the active file is simply
  * cleared and logging starts over.
+ *
+ * Exported because the response gate's journal rotates by this same rule, at the log's own size
+ * and file count: one rotation for every size-capped file the broker appends to.
  */
-function rotate(file: string, maxFiles: number): void {
+export function rotate(file: string, maxFiles: number): void {
   if (maxFiles <= 1) {
     if (existsSync(file)) unlinkSync(file);
     return;

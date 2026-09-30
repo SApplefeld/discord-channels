@@ -27,6 +27,7 @@ import {
   boardCardWiring,
   inboxWiring,
   rebindHandling,
+  responseGateJudgeKey,
   startBroker,
   usageCardWiring,
 } from "./index.ts";
@@ -36,6 +37,7 @@ import { saveInboxSnapshot } from "./inbox/store.ts";
 import type { InboxItem } from "./inbox/store.ts";
 import { saveSessions } from "./persistence.ts";
 import { createRegistry } from "./registry.ts";
+import { readInboxJudgeKey } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import type { SessionRecord } from "./registry.ts";
@@ -75,6 +77,8 @@ function config(overrides: Partial<BrokerConfig> & { stateFile: string; logFile:
     responseGate: "off",
     responseGateMaxMessages: 20,
     responseGateMaxWaitMs: 600_000,
+    responseGateQuietMs: 5_000,
+    responseGateThreshold: 0.6,
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,
@@ -2552,4 +2556,84 @@ test("a late flag for the departed session, carrying its reply's original instan
   inbox.reply("session-a", "ASK: merge it?", 2_000, null);
   assert.deepEqual(inbox.items(), [], "a late flag reopening a cleared ask is the regression");
   assert.equal(posts.length, 1, "the restart notice still posted, independent of the late flag");
+});
+
+// The response gate's key: the same file the inbox judge reads, refused rather than warned about
+// once the gate is on.
+
+test("the gate's key read refuses shadow and live without a usable key, naming the mode and the variable and never the key", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-gate-key-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const warnings: string[] = [];
+  const warn = (message: string): void => {
+    warnings.push(message);
+  };
+  const accept = (): void => {};
+  const file = path.join(dir, "jev.key");
+  writeFileSync(file, "SECRET-KEY-0123456789\n", "utf8");
+  const missing = path.join(dir, "absent.key");
+
+  assert.equal(responseGateJudgeKey({ responseGate: "off", inboxJudgeKeyFile: null }, warn, accept), null);
+  assert.equal(responseGateJudgeKey({ responseGate: "off", inboxJudgeKeyFile: missing }, warn, accept), null, "off reads nothing");
+  assert.equal(warnings.length, 0, "and warns nothing");
+  assert.equal(responseGateJudgeKey({ responseGate: "live", inboxJudgeKeyFile: file }, warn, accept), "SECRET-KEY-0123456789");
+
+  for (const mode of ["shadow", "live"] as const) {
+    // Unset: the variable alone is named.
+    assert.throws(
+      () => responseGateJudgeKey({ responseGate: mode, inboxJudgeKeyFile: null }, warn, accept),
+      (error: Error) =>
+        error.message.includes(`response gate is ${mode}`) &&
+        error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
+        error.message.includes("unset"),
+      mode,
+    );
+    // Null for any cause: a missing file, and a file the protection check refuses. The warning
+    // `readInboxJudgeKey` writes names the cause, which is what the inbox judge alone stops at.
+    const before: number = warnings.length;
+    assert.throws(
+      () => responseGateJudgeKey({ responseGate: mode, inboxJudgeKeyFile: missing }, warn),
+      (error: Error) =>
+        error.message.includes(`response gate is ${mode}`) &&
+        error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
+        error.message.includes("cannot be used"),
+      `${mode}, missing`,
+    );
+    assert.equal(warnings.length, before + 1);
+    assert.match(warnings[before], /inbox judge is off/);
+    assert.throws(
+      () =>
+        responseGateJudgeKey({ responseGate: mode, inboxJudgeKeyFile: file }, warn, () => {
+          throw new Error("grants access to WD");
+        }),
+      (error: Error) => !error.message.includes("SECRET-KEY") && error.message.includes(`response gate is ${mode}`),
+      `${mode}, unprotected`,
+    );
+  }
+  assert.ok(warnings.every((line) => !line.includes("SECRET-KEY")), "the key never rides a warning");
+  // The inbox judge alone: the same null, one warning, no throw.
+  assert.equal(readInboxJudgeKey(missing, warn), null);
+});
+
+test("startBroker refuses to start with the gate on and no key, writing the reason to the log, where the inbox judge alone warns", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-gate-refusal-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const logFile = path.join(dir, "broker.log");
+  const missing = path.join(dir, "absent.key");
+
+  await assert.rejects(
+    () => startBroker(config({ stateFile: path.join(dir, "a.json"), logFile, responseGate: "shadow" })),
+    /CHANNEL_INBOX_JUDGE_KEY_FILE/,
+  );
+  const logged = readFileSync(logFile, "utf8");
+  assert.match(logged, /refusing to start/);
+  assert.match(logged, /response gate is shadow/);
+  assert.match(logged, /CHANNEL_INBOX_JUDGE_KEY_FILE is unset/);
+
+  // The control: the inbox judge alone, its key file missing, starts with a warning.
+  const broker = await startBroker(
+    config({ stateFile: path.join(dir, "b.json"), logFile, inboxCard: true, inboxJudgeKeyFile: missing }),
+  );
+  t.after(() => broker.stop());
+  assert.match(readFileSync(logFile, "utf8"), /inbox judge is off/);
 });

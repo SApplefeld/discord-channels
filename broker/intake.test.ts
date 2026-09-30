@@ -137,6 +137,8 @@ function brokerConfig(overrides: Partial<BrokerConfig> & { stateFile: string }):
     responseGate: "off",
     responseGateMaxMessages: 20,
     responseGateMaxWaitMs: 600_000,
+    responseGateQuietMs: 5_000,
+    responseGateThreshold: 0.6,
     mirrorMaxBytes: 256 * 1024,
     interimMirror: true,
     interimPollMs: 20_000,

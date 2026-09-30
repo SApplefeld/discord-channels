@@ -13,8 +13,10 @@
 //
 // The response gate, where a host turns it on, is the last thing before the pipe: a message that
 // every reading above has passed joins its thread's buffer instead of going down at once, and the
-// buffer goes down whole when a message addresses the bot or a cap is reached. Nothing about who
-// may say what moves; only when the session hears it.
+// buffer goes down whole when a message addresses the bot, a cap is reached, or the judge says the
+// thread expects an answer. Nothing about who may say what moves; only when the session hears it.
+// In shadow the message goes down at once as it always has, and the same buffer runs beside that
+// delivery as a simulation whose every decision is journaled and none of which reaches the pipe.
 //
 // A process token identifies a pipe. It is not evidence about who sent a message, and no check
 // here consults it for that.
@@ -25,7 +27,13 @@ import type { SenderClass, SenderGate } from "../security/senders.ts";
 import type { Registry, SessionRecord } from "../registry.ts";
 import type { RelayEvent, RelayHub } from "./relays.ts";
 import { bufferedEvent, createResponseGate } from "./response-gate.ts";
-import type { BufferDelivery, ResponseGate, ResponseGateMode } from "./response-gate.ts";
+import type {
+  BufferDelivery,
+  JournalRow,
+  ResponseGate,
+  ResponseGateJudge,
+  ResponseGateMode,
+} from "./response-gate.ts";
 import type { ThreadWriter } from "./writer.ts";
 
 /**
@@ -134,7 +142,11 @@ export type ResponseGateSettings = {
   maxMessages: number;
   /** A held buffer delivers once its oldest message is this old. */
   maxWaitMs: number;
-  /** Injected so a test fires the age cap without sleeping. */
+  /** The judge's window, threshold and key. Absent, the gate has its certain triggers alone. */
+  judge?: ResponseGateJudge;
+  /** Takes one row per gate decision, in `shadow` and `live` alike. */
+  journal: (row: JournalRow) => void;
+  /** Injected so a test fires the age cap and the quiet window without sleeping. */
   setTimer?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearTimer?: (timer: NodeJS.Timeout) => void;
 };
@@ -166,8 +178,9 @@ export type InboundRouterOptions = {
    */
   inbox?: InboundInbox;
   /**
-   * The response gate's mode and caps. Absent, or in any mode but `live`, every admitted message is
-   * delivered at once, which is the path a host with one account has always had.
+   * The response gate's mode, caps and judge. Absent, or in any mode but `live`, every admitted
+   * message is delivered at once, which is the path a host with one account has always had; in
+   * `shadow` the gate runs beside that delivery and journals what it would have done.
    */
   responseGate?: ResponseGateSettings;
   /** Injected so a test drives the rate ceiling without sleeping. */
@@ -470,12 +483,12 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   }
 
   /**
-   * The age cap fired for a thread. The session is looked up again rather than trusted from the
-   * buffer, because it may have ended or been superseded while the buffer waited: `reconcile`
-   * drops such a buffer the moment the registry says so, and this is the same answer for a
-   * router nothing reconciles.
+   * The age cap or the judge released a thread's buffer. The session is looked up again rather
+   * than trusted from the buffer, because it may have ended or been superseded while the buffer
+   * waited: `reconcile` drops such a buffer the moment the registry says so, and this is the same
+   * answer for a router nothing reconciles.
    */
-  async function expired(
+  async function released(
     threadId: string,
     sessionId: string,
     delivery: BufferDelivery,
@@ -492,36 +505,43 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     await handOverBuffers(hold.record, threadId, [delivery]);
   }
 
-  // Built only for `live`. `off` and `shadow` deliver at once below, and the absence of a gate is
-  // what keeps that path the one it always was rather than a gate with a pass-through mode.
+  // Built for `live` and `shadow`, and absent for `off`: the absence of a gate is what keeps the
+  // off path the one it always was rather than a gate with a pass-through mode. In shadow the gate
+  // is a simulation. Every message still goes down at once through the ungated path below, and
+  // what the gate releases or drops reaches no pipe and no thread; the journal is its only output.
+  const mode = options.responseGate?.mode ?? "off";
+  const simulated = mode === "shadow";
+  const settings = options.responseGate;
   const gate: ResponseGate | null =
-    options.responseGate?.mode === "live"
+    settings !== undefined && mode !== "off"
       ? createResponseGate({
-          maxMessages: options.responseGate.maxMessages,
-          maxWaitMs: options.responseGate.maxWaitMs,
-          // Fire and forget, on the timer's own tick: the delivery never rejects by construction,
-          // and the catch is the same backstop the gateway puts behind `deliver`.
-          onAgeCap: (threadId, sessionId, delivery) => {
-            void expired(threadId, sessionId, delivery).catch((error: unknown) => {
-              log(`routing: delivering a buffer at the age cap failed: ${String(error)}`);
+          maxMessages: settings.maxMessages,
+          maxWaitMs: settings.maxWaitMs,
+          ...(settings.judge === undefined ? {} : { judge: settings.judge }),
+          journal: settings.journal,
+          // Fire and forget, on the timer's or the verdict's own tick: the delivery never rejects
+          // by construction, and the catch is the same backstop the gateway puts behind `deliver`.
+          onRelease: (threadId, sessionId, delivery) => {
+            if (simulated) return;
+            void released(threadId, sessionId, delivery).catch((error: unknown) => {
+              log(`routing: delivering a released buffer failed: ${String(error)}`);
             });
           },
           // The gate dropped a buffer because its thread admitted a message for a different
           // session. The gate logged it; the thread's readers are told here, since the writer is
-          // this router's, with the cause read off the records as on every other drop.
+          // this router's, with the cause read off the records as on every other drop. Not in
+          // shadow, where nothing was withheld from the thread.
           onDrop: (threadId, sessionId, count) => {
+            if (simulated) return;
             const cause = dropCause(options.registry.list(), sessionId);
             void announceDrop(threadId, count, cause).catch((error: unknown) => {
               log(`routing: announcing a dropped buffer failed: ${String(error)}`);
             });
           },
-          ...(options.responseGate.setTimer === undefined
-            ? {}
-            : { setTimer: options.responseGate.setTimer }),
-          ...(options.responseGate.clearTimer === undefined
-            ? {}
-            : { clearTimer: options.responseGate.clearTimer }),
+          ...(settings.setTimer === undefined ? {} : { setTimer: settings.setTimer }),
+          ...(settings.clearTimer === undefined ? {} : { clearTimer: settings.clearTimer }),
           log,
+          now,
         })
       : null;
 
@@ -531,7 +551,12 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // this, the first reply would be routed straight back into the session that prompted it.
       // It stands in front of the gate because it is a drop and not a pass: a bot's own ID is
       // never the allowlisted one, so the gate below would refuse it a line later either way.
-      if (message.fromBot) return;
+      // Before the drop, the post stamps the thread's last-post clock, which the judge is told
+      // the seconds since: the writer's replies and the mirror's posts alike arrive here.
+      if (message.fromBot) {
+        gate?.notePost(message.threadId);
+        return;
+      }
 
       // Everything below this line is what a rostered Discord account is trusted to do, and the
       // class decides how much. Gating on the thread instead would make access to the room the
@@ -649,20 +674,31 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         return;
       }
 
-      if (gate === null) {
+      // The message as the gate holds it: the text as bounded above and the name as the gateway
+      // bounded it, so what a delivered line carries is exactly what a delivered message carries,
+      // and nothing is sanitized twice.
+      const buffered = { id: message.messageId, author: message.author, senderClass, text, truncated };
+      const addressed = { mentionsBot: message.mentionsBot, repliesToBot: message.repliesToBot };
+
+      if (gate === null || simulated) {
         const delivered = await handOver(
           record,
           message.threadId,
           { type: "message", chatId: message.threadId, text, author: message.author, senderClass },
           1,
         );
-        if (!delivered) return;
-        const deliveredAt = now();
-        if (operator) {
-          toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
+        if (delivered) {
+          const deliveredAt = now();
+          if (operator) {
+            toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
+          }
+          // Announced only here, after the truncated text reached a live session.
+          if (truncated) await announceCut(message.threadId);
         }
-        // Announced only here, after the truncated text reached a live session.
-        if (truncated) await announceCut(message.threadId);
+        // Shadow: the same message joins the simulated buffer after its own delivery, whether or
+        // not the pipe took it, as it would join the live buffer, whose admission never reads the
+        // pipe. What the gate decides is journaled by the gate and reaches nothing else.
+        gate?.admit(message.threadId, record.sessionId, buffered, addressed);
         return;
       }
 
@@ -676,14 +712,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         const admittedAt = now();
         toInbox((inbox) => inbox.clear(record.sessionId, admittedAt), record.sessionId);
       }
-      const deliveries = gate.admit(
-        message.threadId,
-        record.sessionId,
-        // The text as bounded above and the name as the gateway bounded it: what a delivered line
-        // carries is exactly what a delivered message carries, and nothing is sanitized twice.
-        { author: message.author, senderClass, text, truncated },
-        { mentionsBot: message.mentionsBot, repliesToBot: message.repliesToBot },
-      );
+      const deliveries = gate.admit(message.threadId, record.sessionId, buffered, addressed);
       // Held, when there are none. Nothing is announced then, a cut included: the announcement
       // belongs to a delivery, and this one has not happened yet. Two, when this message pushed
       // the held buffer past the event budget and then delivered on its own: written in order, so
@@ -697,6 +726,9 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         const hold = holdFor(sessions, threadId, sessionId);
         if (hold.record !== null) continue;
         const dropped = gate.clear(threadId);
+        // The simulated buffer clears as the live one would, and that is all: nothing was
+        // withheld from the thread, so there is no loss to log or to tell its readers of.
+        if (simulated) continue;
         log(
           `routing: dropped ${String(dropped)} buffered messages held for session ${sessionId}, ` +
             `which no longer holds thread ${threadId}`,
