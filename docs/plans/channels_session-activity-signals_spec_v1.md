@@ -24,6 +24,10 @@ Operator decisions:
 - **Decided 2026-09-30: the plan is approved to run here.** The operator answered on the Discord relay thread: "Yes. Please proceed." Rationale: the plan arrived from ASSISTANT through the Steward with an approval stated only in its own header, so the worker asked before starting.
 - **Decided 2026-09-30: the broker may read `api_error` lines from mirror-off sessions.** Same message: "And yes, reading error lines is approved." This settles the Open Question below as recommended: a status-only read of `system` lines with subtype `api_error`, using only their structured fields in fixed wording.
 
+Open, asked 2026-09-30 on the relay thread, not blocking:
+
+- **May the broker read queue-dequeue lines (type and timestamp only) from mirror-off transcripts, so 👀 marks a message injected mid-turn?** Recommended yes. Without it, a message sent to a busy mirror-off session stays at 📨 until that session's next turn opens. Section 1 builds pickup from the prompt hook (every session) and the tailer's queued-message sighting (mirror-on only), behind one pickup entry point the answer plugs into. Unanswered by finishing, the gap ships and the pull request names it.
+
 ## What Is Known
 
 - **Confirmed:** Discord's `POST /channels/{channel.id}/typing` shows the indicator for 10 seconds, per Discord's channel resource docs. The broker's discord.js 14 client exposes it as `sendTyping()`.
