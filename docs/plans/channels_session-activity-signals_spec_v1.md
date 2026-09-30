@@ -24,9 +24,7 @@ Operator decisions:
 - **Decided 2026-09-30: the plan is approved to run here.** The operator answered on the Discord relay thread: "Yes. Please proceed." Rationale: the plan arrived from ASSISTANT through the Steward with an approval stated only in its own header, so the worker asked before starting.
 - **Decided 2026-09-30: the broker may read `api_error` lines from mirror-off sessions.** Same message: "And yes, reading error lines is approved." This settles the Open Question below as recommended: a status-only read of `system` lines with subtype `api_error`, using only their structured fields in fixed wording.
 
-Open, asked 2026-09-30 on the relay thread, not blocking:
-
-- **May the broker read queue-dequeue lines (type and timestamp only) from mirror-off transcripts, so 👀 marks a message injected mid-turn?** Recommended yes. Without it, a message sent to a busy mirror-off session stays at 📨 until that session's next turn opens. Section 1 builds pickup from the prompt hook (every session) and the tailer's queued-message sighting (mirror-on only), behind one pickup entry point the answer plugs into. Unanswered by finishing, the gap ships and the pull request names it.
+- **Decided 2026-09-30: the broker may read queued-message lines from mirror-off transcripts, so 👀 marks a message injected mid-turn.** The operator answered on the relay thread: "Absolutely that's allowed. ... the prohibition against reading with mirroring turned off was to keep the text shown to the user minimized. It wasn't meant to prevent you from reading things programmatically for insight or processing." Rationale: the mirror-off gate governs what is published to the thread, not what the broker may read to derive a status. Section 1 exposes one pickup entry point, and Section 3's mirror-off reader feeds it, per the Standing Brief Amendments.
 
 ## What Is Known
 
@@ -39,7 +37,8 @@ Open, asked 2026-09-30 on the relay thread, not blocking:
 
 ## Standing Brief Amendments
 
-- **Section 3, mirror-off read bounds.** In a mirror-off transcript, every line other than a `system` line with subtype `api_error` stays unread, and the read fails closed on any line it cannot parse.
+- **Section 3, mirror-off read bounds.** In a mirror-off transcript, the reader acts only on a `system` line with subtype `api_error` and on the queued-message line named below, uses only their structured fields, and fails closed on any line it cannot parse. No text from any mirror-off line is ever published.
+- **Section 3, mirror-off pickup.** The mirror-off reader also reads the transcript line that records a queued message being injected mid-turn, using only its type and timestamp, and calls Section 1's pickup entry point with that timestamp. Acceptance: a mirror-off session's message delivered mid-turn moves from 📨 to 👀 when that line appears, and none of the line's text reaches Discord.
 - **Section 3, added acceptance.** A test feeds a mirror-off session's transcript holding assistant text, a user prompt and an `api_error` line. Only the fixed-wording notice reaches Discord.
 
 ## Sections of Work
