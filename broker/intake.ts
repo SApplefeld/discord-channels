@@ -494,6 +494,29 @@ async function readCappedBody(
   return { body: Buffer.concat(chunks).toString("utf8") };
 }
 
+/**
+ * Reads a mirror-route body far enough to learn the `session_id` it names, for pickup credit
+ * alone: nothing else in the payload is read here. Used on the two mirror paths that would
+ * otherwise credit a stage reaction on the process token alone, which every process a wrapped
+ * session spawns inherits: a subprocess of an older turn could then advance a message the current
+ * turn never picked up. Null on anything that is not a usable session id: an over-cap or
+ * drain-cut body, a parse failure, a non-object payload, or a payload naming none, all fail
+ * closed the same way this route's own body reader does. Nothing here is logged; a parse failure
+ * embeds source text the way JSON.parse's own message does elsewhere on this route.
+ */
+async function creditedSessionId(request: IncomingMessage, maxBytes: number): Promise<string | null> {
+  const read = await readCappedBody(request, maxBytes);
+  if (!("body" in read)) return null;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(read.body);
+  } catch {
+    return null;
+  }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
+  return payloadString(payload as Record<string, unknown>, "session_id");
+}
+
 export type HandlerOptions = {
   registry: Registry;
   maxBodyBytes: number;
@@ -688,8 +711,28 @@ export function createHandler(
     // Off means accepted, drained, and dropped: the hooks are installed machine-wide and keep
     // posting whether or not the operator wants content mirrored, so the off switch has to be
     // quiet at the socket rather than refusing anything.
+    //
+    // A broker-wide-off host still owes pickup: with the mirror off, this route never reaches the
+    // /hook UserPromptSubmit-firing logic either (there is none; pickup lives here), so without
+    // this a message on such a host never advances past 📨 at all. Read only when a receipts seam
+    // is wired and this is the turn-opening event, and credit only when the payload names the very
+    // session the token holds, the same evidence bar the mirror-on path below uses. No log lines
+    // on this path: it is deliberately quiet at the socket, on or off.
     if (!options.mirror.enabled) {
-      request.resume();
+      if (mapping.kind === "prompt" && options.receipts !== undefined) {
+        const processToken = header(request, "x-channel-process-token");
+        const holder = processToken !== null ? options.registry.current(processToken) : null;
+        if (holder !== null) {
+          const sessionId = await creditedSessionId(request, options.mirror.maxBytes);
+          if (sessionId !== null && sessionId === holder.sessionId) {
+            options.receipts.pickedUp(holder.sessionId, now());
+          }
+        } else {
+          request.resume();
+        }
+      } else {
+        request.resume();
+      }
       send(response, 202, { ignored: true });
       return;
     }
@@ -739,20 +782,30 @@ export function createHandler(
     // only a value in FLAG_FALSE turns this one post off.
     const sessionMirror = header(request, "x-channel-mirror");
     if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
-      request.resume();
       // The same switch covers the transcript tailer: a session that opted out of having its
       // content mirrored must not have its mid-turn transcript text published either, and the
       // header only ever arrives on this route. UserPromptSubmit fires at the start of every
       // turn, so the suppression is recorded before that turn can produce any interim text.
       options.tail?.suppress(holder.sessionId);
-      // The one pickup signal a mirror-off session ever produces: this hook fires at the start of
-      // every turn regardless of mirroring, and nothing here has read the body yet, so the stage
-      // reaction advances without this route ever seeing this session's content.
-      if (mapping.kind === "prompt") options.receipts?.pickedUp(holder.sessionId, now());
       // Static and session-identifying only, never content and never the token: without this line,
       // a session the operator suppressed and a mirror that is silently broken both read as total
       // silence in the log, with no way to tell which is happening.
       refusals.warn("mirror post suppressed by session switch", `session=${holder.sessionId}`);
+      // The one pickup signal a mirror-off session ever produces: this hook fires at the start of
+      // every turn regardless of mirroring. Every process a wrapped session spawns inherits its
+      // process token, so the token alone is not evidence this post is the current turn speaking;
+      // the body is read, past the point above where every other branch of it drains unread,
+      // and pickup is credited only when the payload names the very session the token holds, the
+      // same bar the mirror-on path below uses. A body that fails to parse, or names no session,
+      // credits nothing and logs nothing: a parse failure embeds source text.
+      if (mapping.kind === "prompt" && options.receipts !== undefined) {
+        const sessionId = await creditedSessionId(request, options.mirror.maxBytes);
+        if (sessionId !== null && sessionId === holder.sessionId) {
+          options.receipts.pickedUp(holder.sessionId, now());
+        }
+      } else {
+        request.resume();
+      }
       send(response, 202, { ignored: true });
       return;
     }
@@ -819,8 +872,13 @@ export function createHandler(
 
     // The same pickup signal as the suppressed branch above, for a mirror-on session: this post is
     // still the `UserPromptSubmit` hook firing at the start of a turn, told once per post so a
-    // turn opening while other messages sit queued behind it advances all of them together.
-    if (mapping.kind === "prompt") options.receipts?.pickedUp(holder.sessionId, now());
+    // turn opening while other messages sit queued behind it advances all of them together. Gated
+    // on the same evidence bar as the allow call just above, and for the same reason: every process
+    // a wrapped session spawns inherits the token, so a straggler naming another session, or none,
+    // must not advance a message this turn never picked up.
+    if (mapping.kind === "prompt" && sessionId !== null && sessionId === holder.sessionId) {
+      options.receipts?.pickedUp(holder.sessionId, now());
+    }
 
     // Extracted raw rather than through payloadString: clean() caps at MAX_FIELD_LENGTH, and a
     // mirrored reply is exactly the string that must survive whole. Rendering safety belongs to

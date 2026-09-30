@@ -440,6 +440,41 @@ test("a failing reaction transport never stops the message it is painting from b
   assert.equal(log.length, 1, "the refusal is logged once, never propagated");
 });
 
+test("every message a released buffer hands over is registered delivered before the batch's first awaited post", async () => {
+  // A pickup racing a buffered delivery must see every message that batch just wrote as delivered,
+  // not just the ones a still-running loop over the batch has reached so far. Two over-length
+  // messages both go into one delivery when the second one's mention releases the held buffer, and
+  // each earns its own awaited cut announcement; the first such post is where the old code would
+  // have registered only the first message.
+  const marked: Array<{ threadId: string; messageId: string; at: number }> = [];
+  const markedAtFirstPost: number[] = [];
+  let now = 1_000;
+  const { router } = harness({
+    gate: { maxMessages: 50 },
+    now: () => now,
+    receipts: { delivered: (threadId, messageId, at) => marked.push({ threadId, messageId, at }) },
+    beforePost: async () => {
+      if (markedAtFirstPost.length === 0) markedAtFirstPost.push(marked.length);
+    },
+  });
+
+  const long = "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1);
+  now += 10;
+  await router.deliver(message({ text: long, messageId: "1" }));
+  now += 10;
+  await router.deliver(message({ text: long, messageId: "2", mentionsBot: true }));
+
+  assert.deepEqual(
+    marked.map((entry) => entry.messageId),
+    ["1", "2"],
+  );
+  assert.equal(
+    markedAtFirstPost[0],
+    2,
+    "both messages must already be registered delivered by the time the first cut is announced",
+  );
+});
+
 test("a delivered message names its author and the class the gate gives them", async () => {
   // The class is read from the gate at delivery, so the event says what the roster says about this
   // author now, and the name rides beside it as the gateway bounded it.

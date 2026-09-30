@@ -931,6 +931,29 @@ test("a message Discord says is gone takes its binding with it and is rebuilt", 
   assert.equal(calls.posts.length, 2, "and the rebuild happens once, not once per pass");
 });
 
+test("a message Discord says is gone retires the old thread id before a new one opens", async () => {
+  // The receipt tracker's forget seam hangs off onRetired, keyed by thread id. Without this call
+  // here, a dead thread's stage tracking would never be told to stop: the old id is gone for good
+  // once a fresh thread opens under a new one, and nothing else ever names it again.
+  const time = clock();
+  const calls = recorder();
+  const retired: string[] = [];
+  const surface = surfaceWith(time, calls, { onRetired: (threadId) => retired.push(threadId) });
+
+  await surface.tick([view()]);
+  assert.equal(surface.threadFor("session-a"), "thread-1");
+  calls.nextEdit = {
+    status: "failed",
+    error: "HTTP 404",
+    rate: { remaining: 5, resetAfterMs: 1_000, retryAfterMs: null },
+    permanent: true,
+    missing: true,
+  };
+  await surface.tick([view({ lastTool: "Read" })]);
+
+  assert.deepEqual(retired, ["thread-1"]);
+});
+
 const GONE: CallOutcome<never> = {
   status: "failed",
   error: "HTTP 404",

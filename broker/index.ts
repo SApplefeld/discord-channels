@@ -1456,7 +1456,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // The receipt tracker, built once the transport it paints reactions through exists. Every seam
     // wired above this point reaches it through the mutable `receipts` closure, which starts
     // answering as soon as this assignment runs.
-    receipts = createReceiptTracker({ reactions: transport, log: note, now: Date.now });
+    receipts = createReceiptTracker({ reactions: transport, log: note, now: Date.now, describe });
     const surface = createSurface({
       transport,
       now: Date.now,

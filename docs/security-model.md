@@ -380,9 +380,16 @@ credited by token alone would otherwise put a predecessor session's question int
 whatever session holds the token now. A process that holds the token can still supply the naming,
 which is what keeps this advisory rather than enforced.
 
+The receipt reactions' picked-up stage takes the permission half's evidence on every path, because
+a spawned `claude -p` fires its own `UserPromptSubmit` with the inherited token. A turn-opening post
+advances a thread's messages only when its payload names the session the token holds. On a
+`-NoMirror` session, and on a host with mirroring off, that means the prompt post's body is read
+after suppression is recorded, for its `session_id` field alone. Nothing else in it is read, and
+nothing read there reaches a log line or a post.
+
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
-matching one of ten named shapes whole: an assistant line's `text` content block; an attachment
+matching one of eleven named shapes whole: an assistant line's `text` content block; an attachment
 whose type is `queued_command`, whose mode is `prompt`, whose origin kind is `human`, and whose
 prompt is a non-empty string; an attachment of that same type whose structured origin kind is
 instead `peer`, which yields the message another session sent this one, read from the origin's own
@@ -398,7 +405,9 @@ model-fallback record, whose subtype is read through an own-property check so a 
 no cause; a `user` line whose console-command markup names exactly `/goal`, whose argument becomes
 the goal line; a `custom-title` line, whose `customTitle` field is refused outright if it is
 ill-formed and otherwise stripped, cleaned and cut into the session's own title, and which yields
-no item at all rather than a null when nothing readable survives that; and a `user` line whose
+no item at all rather than a null when nothing readable survives that; a `queued_command`
+attachment whose mode is `prompt` and whose origin kind is `channel`, which yields only the line's
+`timestamp` as the relay message's picked-up instant and reads no text at all; and a `user` line whose
 `promptSource` is `typed` and whose root `origin` kind is `human`, carrying no `isMeta` stamped
 `true`, no closed `<command-name>`/`</command-name>` pair anywhere in its text, and text that is
 not blank once invisibles are stripped, which becomes the turn-opening prompt. That last shape

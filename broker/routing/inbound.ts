@@ -601,6 +601,16 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     // same back-to-back pass above, so they are delivered at the same instant as far as a stage
     // reaction is concerned.
     const deliveredAt = now();
+    // Every written message is registered delivered here, ahead of this function's first await:
+    // a pickup racing this call in the gap an awaited notice or cut announcement opens must see
+    // every message this batch wrote as already delivered, not the ones a still-running loop
+    // below has merely reached so far.
+    for (const { delivery, written } of outcomes) {
+      if (!written) continue;
+      for (const message of delivery.messages) {
+        options.receipts?.delivered(threadId, message.id, deliveredAt);
+      }
+    }
     for (const { delivery, written } of outcomes) {
       if (!written) {
         log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
@@ -614,7 +624,6 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         );
       }
       for (const message of delivery.messages) {
-        options.receipts?.delivered(threadId, message.id, deliveredAt);
         if (message.truncated) await announceCut(threadId);
       }
     }

@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import {
   CONTINUATION_POST_PACE_MS,
@@ -42,7 +43,15 @@ import type { AskedQuestion } from "./discord/render.ts";
 import type { SessionRecord } from "./registry.ts";
 import { createQuestionDesk } from "./question-desk.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
-import type { CallOutcome, DiscordTransport } from "./discord/transport.ts";
+import type { CallOutcome, DiscordTransport, MessageReactions, ThreadMessenger } from "./discord/transport.ts";
+import { createHandler as createIntakeHandler } from "./intake.ts";
+import { createInboundRouter } from "./routing/inbound.ts";
+import { createOutboundRouter } from "./routing/outbound.ts";
+import { createReceiptTracker, STAGE_EMOJI } from "./routing/receipts.ts";
+import { createRelayHub } from "./routing/relays.ts";
+import { createThreadWriter } from "./routing/writer.ts";
+import { createSenderGate } from "./security/senders.ts";
+import type { PermissionDesk } from "./security/permission.ts";
 import {
   MAX_CONTINUATION_MESSAGES,
   renderQuestionPrompt,
@@ -2686,4 +2695,147 @@ test("startBroker wires the held buffers' restore: the attach, the file and the 
   assert.deepEqual(restoreWiringGaps(source.replace("inbound?.relayAttached(", "void (")), ["attach"]);
   assert.deepEqual(restoreWiringGaps(source.replace(/buffers:\s*\{/, "kept: {")), ["file"]);
   assert.deepEqual(restoreWiringGaps(source.replace("inbound?.armRestored()", "void 0")), ["armed"]);
+});
+
+test("one message rides delivered, picked up and answered across the inbound router, the intake handler and the outbound router, all wired to one real receipt tracker", async () => {
+  // Only a broker actually configured to reach Discord builds this wiring inside startBroker
+  // (threadFor's own closure, the mutable receipts binding, onRetired's forget), and reaching that
+  // means a real Discord login. This drives the same three seams startBroker wires, at the level
+  // each one is already tested at: the routers and the intake handler, built directly and pointed
+  // at one shared tracker, on a fake reaction transport.
+  const THREAD_ID = "900000000000000009";
+  const SESSION_TOKEN = "5f0c2e4a-0000-4000-8000-0000000000aa";
+  const OPERATOR_ID = "700000000000000009";
+
+  const calls: Array<{ kind: "add" | "remove"; messageId: string; emoji: string }> = [];
+  const reactions: MessageReactions = {
+    addReaction: async (input) => {
+      calls.push({ kind: "add", messageId: input.messageId, emoji: input.emoji });
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+    removeReaction: async (input) => {
+      calls.push({ kind: "remove", messageId: input.messageId, emoji: input.emoji });
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+  };
+  const tracker = createReceiptTracker({ reactions, log: () => {}, now: () => 1_000 });
+
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  registry.apply({
+    event: "SessionStart",
+    processToken: SESSION_TOKEN,
+    sessionName: "neo-warden",
+    lineage: null,
+    sessionId: "session-wired",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+
+  const relays = createRelayHub({ registry, graceMs: 10_000, now: () => 1_000 });
+  relays.attach(SESSION_TOKEN, { send: () => true, close: () => {} });
+
+  const messenger: ThreadMessenger = {
+    postToThread: async () => ({ status: "ok", value: { messageId: null }, rate: NO_RATE_INFO }),
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+  const permissions: PermissionDesk = {
+    request: async () => true,
+    resolve: () => true,
+    reportUnknownVerdict: async () => {},
+    turnEnded: () => {},
+    sweepEnded: () => {},
+    settled: () => Promise.resolve(),
+    waiting: () => new Set<string>(),
+  };
+  const threadFor = (sessionId: string): string | null => (sessionId === "session-wired" ? THREAD_ID : null);
+
+  const inbound = createInboundRouter({
+    registry,
+    relays,
+    gate: createSenderGate([{ id: OPERATOR_ID, class: "operator" }]),
+    permissions,
+    questions: { answerTyped: () => false },
+    threadFor,
+    writer,
+    receipts: { delivered: (threadId, messageId, at) => tracker.delivered(threadId, messageId, at) },
+    now: () => 1_000,
+  });
+  const outbound = createOutboundRouter({
+    registry,
+    threadFor,
+    mirrorWriter: writer,
+    receipts: {
+      pickedUp: (threadId, at) => tracker.pickedUp(threadId, at),
+      answered: (threadId) => tracker.answered(threadId),
+    },
+    now: () => 1_000,
+    sleep: async () => {},
+  });
+  await inbound.deliver({
+    threadId: THREAD_ID,
+    messageId: "910000000000000009",
+    senderId: OPERATOR_ID,
+    author: "Ann",
+    fromBot: false,
+    fromSelf: false,
+    mentionsBot: false,
+    repliesToBot: false,
+    text: "please run the migration",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [["add", STAGE_EMOJI.delivered]],
+  );
+
+  const server = createServer(
+    createIntakeHandler({
+      registry,
+      maxBodyBytes: 4_096,
+      mirror: { enabled: true, maxBytes: 4_096, deliver: async () => null },
+      now: () => 1_000,
+      receipts: { pickedUp: (sessionId, at) => tracker.pickedUp(threadFor(sessionId) ?? "", at) },
+    }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    await fetch(`http://127.0.0.1:${port}/mirror`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-channel-hook-event": "UserPromptSubmit",
+        "x-channel-process-token": SESSION_TOKEN,
+      },
+      body: JSON.stringify({ prompt: "go", session_id: "session-wired" }),
+    });
+  } finally {
+    server.close();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.pickedUp],
+      ["remove", STAGE_EMOJI.delivered],
+    ],
+  );
+
+  await outbound.reply(SESSION_TOKEN, "the migration is done");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.pickedUp],
+      ["remove", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.answered],
+      ["remove", STAGE_EMOJI.pickedUp],
+    ],
+  );
 });

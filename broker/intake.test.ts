@@ -819,10 +819,11 @@ test("a per-session suppression is logged with the session id, never content", a
   assert.deepEqual(deliveries, []);
 });
 
-test("a suppressed UserPromptSubmit still fires pickup, without the body ever being read", async () => {
-  // The one pickup signal a mirror-off session ever produces. It has to fire before the body is
-  // read at all, since the suppressed branch's whole point is that this session's content never
-  // reaches broker memory.
+test("a suppressed UserPromptSubmit fires pickup once its body confirms the current session", async () => {
+  // Every process a wrapped session spawns inherits its process token, so the token alone cannot
+  // be trusted to credit pickup: a subprocess of an older turn could advance a message this turn
+  // never picked up. The body is read for `session_id` alone, and pickup is credited only when it
+  // names the very session the token holds.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   const { mirror } = fakeMirror();
   const picked: Array<{ sessionId: string; at: number }> = [];
@@ -850,13 +851,56 @@ test("a suppressed UserPromptSubmit still fires pickup, without the body ever be
   const request = fakeRequest("127.0.0.1", {
     url: "/mirror",
     headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
-    body: JSON.stringify({ prompt: secret }),
+    body: JSON.stringify({ prompt: secret, session_id: "session-suppressed" }),
   });
   const result = await call(handle, request);
 
   assert.equal(result.status, 202);
-  assert.equal(request.bodyConsumed, false, "pickup must not require reading the body");
+  assert.equal(request.bodyConsumed, true, "the body is read to confirm the session, unlike every other suppressed field");
   assert.deepEqual(picked, [{ sessionId: "session-suppressed", at: 42_000 }]);
+});
+
+test("a suppressed UserPromptSubmit whose body names no session, or a different one, credits no pickup", async () => {
+  // A straggler subprocess of an older turn holds the same process token but is not the session
+  // speaking now; its post must not advance a message the current turn never picked up.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror } = fakeMirror();
+  const picked: Array<{ sessionId: string; at: number }> = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    now: () => 42_000,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    lineage: null,
+    sessionId: "session-suppressed",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+
+  for (const body of [
+    JSON.stringify({ prompt: "no session id at all" }),
+    JSON.stringify({ prompt: "a straggler's own turn", session_id: "session-older" }),
+    "not json at all",
+  ]) {
+    const request = fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+      body,
+    });
+    const result = await call(handle, request);
+    assert.equal(result.status, 202, body);
+  }
+
+  assert.deepEqual(picked, []);
 });
 
 test("a suppressed Stop never fires pickup", async () => {
@@ -916,6 +960,117 @@ test("a mirror-on UserPromptSubmit fires pickup exactly once per post", async ()
   await settled();
 
   assert.deepEqual(picked, [{ sessionId: "session-a", at: 7_000 }]);
+});
+
+test("a mirror-on UserPromptSubmit naming no session, or a different one, fires no pickup", async () => {
+  // The same straggler gate as the suppressed branch, and for the same reason: every process a
+  // wrapped session spawns inherits the token, so a post naming another session, or none, is not
+  // this session speaking and must not advance one of its messages.
+  const { mirror } = fakeMirror();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const picked: Array<{ sessionId: string; at: number }> = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    now: () => 7_000,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  announce(registry);
+
+  for (const body of [
+    JSON.stringify({ prompt: "no session id at all" }),
+    JSON.stringify({ prompt: "a straggler's own turn", session_id: "session-older" }),
+  ]) {
+    const request = fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body,
+    });
+    await call(handle, request);
+    await settled();
+  }
+
+  assert.deepEqual(picked, []);
+});
+
+test("with the broker-wide mirror off, a matching UserPromptSubmit still fires pickup", async () => {
+  // On a host with the mirror switched off entirely, this route is the only signal a message was
+  // ever picked up: no /hook UserPromptSubmit exists, so without this every message on such a host
+  // would stay at 📨 forever. Reads the body for session_id alone, like the suppressed branch, and
+  // credits on the same evidence bar.
+  const { mirror } = fakeMirror({ enabled: false });
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const picked: Array<{ sessionId: string; at: number }> = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    now: () => 9_000,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  announce(registry);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit"),
+    body: JSON.stringify({ prompt: "sensitive work", session_id: "session-a" }),
+  });
+  const result = await call(handle, request);
+
+  assert.equal(result.status, 202);
+  assert.equal(request.bodyConsumed, true, "the body is read to confirm the session even with the mirror off");
+  assert.deepEqual(picked, [{ sessionId: "session-a", at: 9_000 }]);
+});
+
+test("with the broker-wide mirror off, a straggler or unnamed session fires no pickup, and nothing is logged", async () => {
+  const { mirror } = fakeMirror({ enabled: false });
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const picked: unknown[] = [];
+  const lines: string[] = [];
+  const logger = { info: () => {}, warn: (message: string) => lines.push(message), error: () => {} };
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    log: logger,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  announce(registry);
+
+  for (const body of [
+    JSON.stringify({ prompt: "no session id at all" }),
+    JSON.stringify({ prompt: "a straggler's own turn", session_id: "session-older" }),
+    "not json at all",
+  ]) {
+    const request = fakeRequest("127.0.0.1", {
+      url: "/mirror",
+      headers: hookHeaders("UserPromptSubmit"),
+      body,
+    });
+    const result = await call(handle, request);
+    assert.equal(result.status, 202, body);
+  }
+
+  assert.deepEqual(picked, []);
+  assert.deepEqual(lines, [], "the mirror-off socket stays quiet, on or off a session's pickup");
+});
+
+test("with the broker-wide mirror off and no receipts seam wired, the body is never read", async () => {
+  const { mirror } = fakeMirror({ enabled: false });
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({ registry, maxBodyBytes: 1024, mirror });
+  announce(registry);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit"),
+    body: JSON.stringify({ prompt: "sensitive work", session_id: "session-a" }),
+  });
+  const result = await call(handle, request);
+
+  assert.equal(result.status, 202);
+  assert.equal(request.bodyConsumed, false, "with no receipts seam, off means unread as it always has");
 });
 
 test("an off header on a forged or unrecognized token still produces the unknown-token refusal", async () => {

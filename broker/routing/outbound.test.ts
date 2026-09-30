@@ -1776,6 +1776,30 @@ test("a mirrored reply records its digest whether it posts or is skipped", async
   assert.equal(echo.isEcho("session-a", "narrated first"), true, "a skipped reply is still recorded");
 });
 
+test("a mirrored reply the tailer already narrated still tells the receipt tracker the thread is answered", async () => {
+  // The tailer's narration already carries this reply on the thread, so the mirror is dropped
+  // rather than posted again, but every message waiting on this turn is still owed its ✅: without
+  // this, a turn whose final reply the tailer narrated first would leave those messages at 👀
+  // forever, since this branch returns before the ordinary answered() call below it ever runs.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const echo = createEchoMemory();
+  const answered: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    receipts: { pickedUp: () => {}, answered: (threadId) => answered.push(threadId) },
+  });
+
+  echo.noteInterim("session-a", "narrated first");
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "narrated first", "session-a"), { status: "sent" });
+
+  assert.deepEqual(answered, [THREAD]);
+});
+
 test("an invisible character cannot hide a reply from the interim dedup", async () => {
   // The memory compares on withoutInvisible(text).trim(), exactly as the envelope check does: the
   // transcript's copy and the hook payload's copy of one reply can differ by characters nobody

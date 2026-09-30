@@ -310,6 +310,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       // The object is gone: an operator deleted the message or the thread. The identifier is
       // dropped so the next pass builds a new one rather than calling a dead one forever. A
       // missing message takes its thread with it, since the thread hangs off that message.
+      const retiredThreadId = entry.threadId;
       if (named === "message") {
         entry.messageId = null;
         entry.renderedCard = null;
@@ -317,6 +318,10 @@ export function createSurface(options: SurfaceOptions): Surface {
       entry.threadId = null;
       entry.renderedName = null;
       entry.refusals = 0;
+      // The old thread id is gone for good, a fresh one is opened on the next pass, and nothing
+      // else tells the receipt tracker to stop tracking the dead thread's messages: without this,
+      // its stage tracking outlives the thread it was tracking reactions in.
+      if (retiredThreadId !== null) options.onRetired?.(retiredThreadId);
       bound();
       return;
     }

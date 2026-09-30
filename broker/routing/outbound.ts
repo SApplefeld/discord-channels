@@ -1186,6 +1186,11 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
           // reply the tailer narrated first would reach the thread and never the inbox. No message
           // ID rides it, since the narration message is the tailer's and not this post's.
           tapReply(located.sessionId, text, now(), null);
+          // The tailer's narration already carries this reply on the thread, but nothing told the
+          // receipt tracker so: without this, every message waiting on this turn stays at 👀
+          // forever, since the ordinary answered() call below is the one path this branch returns
+          // ahead of.
+          options.receipts?.answered(located.threadId);
           return { status: "sent" };
         }
         // The dedup against the reply tool, which posts mid-turn: by the time this mirror

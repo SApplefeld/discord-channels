@@ -20,7 +20,9 @@ takes down one machine rather than all of them.
    empty content, which reads as a silent delivery failure rather than a permission error.
 4. Under **OAuth2 > URL Generator**, select the `bot` scope and these permissions: View Channels,
    Send Messages, Send Messages in Threads, Create Public Threads, Manage Threads, Read Message
-   History. **Pin Messages** is optional and buys one thing: the channel's pin list becomes the
+   History, Add Reactions. Add Reactions carries the stage marks on each person's message: without
+   it every mark is refused, logged once per five minutes and dropped, and delivery is unaffected.
+   **Pin Messages** is optional and buys one thing: the channel's pin list becomes the
    sessions that are running. Grant it as a channel-level override on the broker's own channel
    rather than server-wide, since it also permits deleting other people's messages. Without it the
    pin list simply does not populate and one log line says so; nothing else changes. Note that

@@ -628,10 +628,12 @@ export type TranscriptTailerOptions = {
   deliverQuestion: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
   /**
    * Told of a `pickup` item: a Discord message injected mid-turn, with the transcript line's own
-   * instant. Nothing here posts anything; this is the one signal a mirror-off session cannot give
-   * (it fires no `/mirror` post carrying `origin.kind`), so it exists only to advance a message's
-   * receipt reaction, never to draw content. Optional so a caller not wiring receipts, and every
-   * existing test, keep working unchanged.
+   * instant. Nothing here posts anything; it exists only to advance a message's receipt reaction,
+   * never to draw content. This reader only ever runs against a mirror-on session's transcript,
+   * since the tailer reads no other kind, so it is the mirror-on half of pickup credit alone. A
+   * mirror-off session's pickup reaches the tracker a separate way entirely, through the intake
+   * handler's own credit on the `UserPromptSubmit` mirror post, never through this seam. Optional
+   * so a caller not wiring receipts, and every existing test, keep working unchanged.
    */
   notePickup?: (sessionId: string, at: number) => void;
   /**
@@ -1608,6 +1610,13 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * `origin.kind` `channel` is the harness's injection of a message the operator posted in the
  * thread itself, and a `prompt` that is an object rather than a string carries pasted image
  * references rather than prose.
+ *
+ * A line yields a pickup item when it is that same `queued_command` attachment shape and its
+ * `origin.kind` is `channel`: a message posted straight into the thread, injected mid-turn, that
+ * was already drawn once on delivery. What this yields is not narration, since posting it again
+ * would put the same message on the thread twice, but the transcript line's own instant, which is
+ * what lets the message's receipt reaction advance past 📨 the same way a console-typed line's
+ * does.
  *
  * A `user` line yields a goal when its content carries the console-command markup and the command
  * named in it is `/goal`. One command by allowlist, never a sweep: a command's arguments are
