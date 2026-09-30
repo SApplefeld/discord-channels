@@ -1673,8 +1673,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const responseGateJournalFile = path.join(path.dirname(config.stateFile), "response-gate.jsonl");
     // Beside the journal: the buffers the gate holds, written on every change in `live` alone and
     // read once here, when the router is built, so a stop, restart or crash loses no held line.
-    // The registry, the thread bindings and the relay hub are all up by this line and no relay
-    // can have attached, since the listener binds below.
+    // The registry, the thread bindings and the relay hub are all up by this line. No relay has
+    // attached, since the listener binds below, so a relay attaching is what delivers a restored
+    // buffer here; the router's already-attached branch serves a second router over one state
+    // directory, which its tests drive.
     const responseGateBuffersFile = path.join(
       path.dirname(config.stateFile),
       "response-gate-buffers.json",
@@ -1808,6 +1810,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // when the hub was built: a window running down through a slow Discord login would end
       // sessions whose relays had no way to come back.
       relays.openRestartWindows(RELAY_RESTART_GRACE_MS);
+      // The restored buffers' age caps start here too, beside the windows they are floored at:
+      // armed when the router was built, they would spend the Discord login awaited between the
+      // two on the window a relay has to come back.
+      inbound?.armRestored();
       resolve();
     });
   });

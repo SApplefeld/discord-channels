@@ -239,6 +239,14 @@ export type InboundRouter = {
    * by the relay hub's attach signal. A no-op with the gate off or in shadow. Never throws.
    */
   relayAttached: (processToken: string) => void;
+  /**
+   * Starts the age cap of every buffer restored across a broker restart, re-armed from its oldest
+   * message as of now and floored at the relay restart window. For the moment the listener binds,
+   * beside the relay hub's restart windows: the restore itself runs when the router is built,
+   * before the Discord login is awaited, and a cap measured then would spend the login on the
+   * window a relay has to come back. A no-op with the gate off or in shadow. Never throws.
+   */
+  armRestored: () => void;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -246,21 +254,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The latest admission time a restored buffer may carry: the last millisecond of the year 9999.
- * The restart line names the time in the ISO form, whose width is fixed only through four-digit
- * years, and the gate's event budget reserves that fixed width on every buffer.
- */
-const MAX_OLDEST_AT = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
-
-/**
  * One entry of the buffers file, parsed and never trusted: the file is an ordinary file anything
  * running as this user can rewrite. Every string is bounded again by the guard the router or the
  * gateway applies to a message on the way in, `boundedAuthor` for the name and `bounded` for the
  * text, so a tampered file re-admits nothing the wire refuses; the ids take the registry file's
  * own normalization. A shape this broker never writes, a text or a name that bounds to nothing,
- * a class that is not one of the two words, an empty list or one past the size cap, is null.
+ * a class that is not one of the two words, an empty list or one past the size cap, is null. So
+ * is a time after the clock: the re-armed cap is a timer, and Node clamps a delay past its bound
+ * to one millisecond, which would expire the buffer at once.
  */
-function heldBufferOf(value: unknown, maxMessages: number): HeldBuffer | null {
+function heldBufferOf(value: unknown, maxMessages: number, now: number): HeldBuffer | null {
   if (!isRecord(value)) return null;
   if (typeof value.threadId !== "string" || typeof value.sessionId !== "string") return null;
   const threadId = clean(value.threadId);
@@ -271,7 +274,7 @@ function heldBufferOf(value: unknown, maxMessages: number): HeldBuffer | null {
     typeof value.oldestAt !== "number" ||
     !Number.isFinite(value.oldestAt) ||
     value.oldestAt < 0 ||
-    value.oldestAt > MAX_OLDEST_AT
+    value.oldestAt > now
   ) {
     return null;
   }
@@ -287,6 +290,7 @@ function heldBufferOf(value: unknown, maxMessages: number): HeldBuffer | null {
     if (!isRecord(entry)) return null;
     if (
       typeof entry.id !== "string" ||
+      typeof entry.senderId !== "string" ||
       typeof entry.author !== "string" ||
       typeof entry.text !== "string" ||
       typeof entry.truncated !== "boolean"
@@ -295,11 +299,13 @@ function heldBufferOf(value: unknown, maxMessages: number): HeldBuffer | null {
     }
     if (entry.senderClass !== "operator" && entry.senderClass !== "participant") return null;
     const id = clean(entry.id);
+    const senderId = clean(entry.senderId);
     const author = boundedAuthor(entry.author);
     const { text, truncated } = bounded(entry.text);
-    if (id === "" || author === "" || text === "") return null;
+    if (id === "" || senderId === "" || author === "" || text === "") return null;
     messages.push({
       id,
+      senderId,
       author,
       senderClass: entry.senderClass,
       text,
@@ -311,22 +317,26 @@ function heldBufferOf(value: unknown, maxMessages: number): HeldBuffer | null {
 
 /**
  * The held buffers an earlier broker process left in `file`, read on `loadSessions`'s discipline
- * (`broker/persistence.ts`): a missing file is the normal case and silent; a file that cannot be
- * read, is not JSON, is not a snapshot, is another format or holds an entry the file cannot vouch
- * for restores nothing and logs one line naming the file and never its content. The parse error
- * is deliberately unread, since its message embeds an excerpt of the file, which holds message
- * text. One bad entry refuses the whole file, as one malformed record empties the registry: a
- * file this broker did not write is not one to restore from in part.
+ * (`broker/persistence.ts`): a file that is missing, cannot be read, is not JSON, is not a
+ * snapshot, is another format or holds an entry the file cannot vouch for restores nothing and
+ * logs one line naming the file and never its content. The parse error is deliberately unread,
+ * since its message embeds an excerpt of the file, which holds message text, and the format a
+ * mismatched file claims is not repeated, since it is the file's own text. One bad entry refuses
+ * the whole file, as one malformed record empties the registry: a file this broker did not write
+ * is not one to restore from in part.
  */
 export function loadHeldBuffers(
   file: string,
-  options: { maxMessages: number; log: (message: string) => void },
+  options: { maxMessages: number; now: () => number; log: (message: string) => void },
 ): HeldBuffer[] {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
   } catch (error) {
-    if (isRecord(error) && error.code === "ENOENT") return [];
+    if (isRecord(error) && error.code === "ENOENT") {
+      options.log(`routing: no held buffers at ${file}, restoring none`);
+      return [];
+    }
     options.log(`routing: cannot read the held buffers at ${file}, restoring none: ${String(error)}`);
     return [];
   }
@@ -345,7 +355,7 @@ export function loadHeldBuffers(
   }
   if (parsed.version !== HELD_BUFFERS_FORMAT_VERSION) {
     options.log(
-      `routing: the held buffers at ${file} are format ${String(parsed.version)}, not ` +
+      `routing: the held buffers at ${file} are not format ` +
         `${String(HELD_BUFFERS_FORMAT_VERSION)}, restoring none`,
     );
     return [];
@@ -353,8 +363,9 @@ export function loadHeldBuffers(
 
   const buffers: HeldBuffer[] = [];
   const threads = new Set<string>();
+  const now = options.now();
   for (const entry of parsed.buffers as unknown[]) {
-    const buffer = heldBufferOf(entry, options.maxMessages);
+    const buffer = heldBufferOf(entry, options.maxMessages, now);
     // A thread holds one buffer, so a second entry for it is not something this broker wrote.
     if (buffer === null || threads.has(buffer.threadId)) {
       options.log(`routing: the held buffers at ${file} hold a malformed entry, restoring none`);
@@ -712,39 +723,70 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         })
       : null;
 
-  // What an earlier broker process held, read once here and in live alone. A buffer whose session
-  // record restored with a state other than ended is held again for that thread and session; any
-  // other is dropped with the counted notice a session's end posts, since to the thread's readers
-  // that is what happened to it. The restore runs before the first message and before any relay
-  // can attach in production, where the listener binds after this router is built, so a session's
-  // relay attaching is what delivers a restored buffer; a relay already attached, which a second
-  // router over one state directory can meet, takes it at once. The file is read only where it
-  // held something: a missing or unusable file is one log line from the loader and no write, so
-  // an unusable file is left for the operator to read rather than written over.
+  /**
+   * A restored line classed again through the roster as it stands now, or null for an account
+   * the roster no longer admits. The class in the file is the roster's answer at admission, and a
+   * roster change takes effect at a restart, so a line held across one is delivered under the
+   * class its account holds today and never under one it has lost: the same guard the inbound
+   * path applies, on the same id.
+   */
+  function reclassed(message: BufferedMessage): BufferedMessage | null {
+    const senderClass = options.gate.classOf(message.senderId);
+    return senderClass === null ? null : { ...message, senderClass };
+  }
+
+  // What an earlier broker process held, read once here and in live alone. An entry is held again
+  // for its thread and session where its session record restored with a state other than ended
+  // and the thread is that session's bound thread, with each line classed again through the
+  // roster and a line from an account no longer admitted dropped. An entry whose session did not
+  // restore is dropped with the counted notice the same drop posts mid-run, its cause read off the
+  // records; one whose thread is not its session's is dropped with a log line alone, since the
+  // thread's readers are not that session's. The restore runs before the first message; the age
+  // caps are armed later, by `armRestored`, at the bind. In production the listener binds after
+  // this router is built, so a session's relay attaching is what delivers a restored buffer; the
+  // already-attached branch serves a second router over one state directory, which the tests
+  // drive. The file is read only where it held something: a missing or unusable file is one log
+  // line from the loader and no write, so an unusable file is left for the operator to read until
+  // the first admit, delivery or drop writes the file over.
   if (gate !== null && buffersFile !== null && settings?.buffers !== undefined) {
     const records = options.registry.list();
-    const entries = loadHeldBuffers(buffersFile, { maxMessages: settings.maxMessages, log });
+    const entries = loadHeldBuffers(buffersFile, { maxMessages: settings.maxMessages, now, log });
     const kept: Array<{ entry: HeldBuffer; record: SessionRecord }> = [];
     for (const entry of entries) {
+      const count = String(entry.messages.length);
       const record = records.find((held) => held.sessionId === entry.sessionId);
-      if (record !== undefined && record.state !== "ended") {
-        kept.push({ entry, record });
+      if (record === undefined || record.state === "ended") {
+        log(
+          `routing: dropped ${count} buffered messages held for session ${entry.sessionId}, ` +
+            "which did not survive the broker restart",
+        );
+        // Fire and forget, as on every other drop: the announcement never rejects by construction.
+        void announceDrop(entry.threadId, entry.messages.length, dropCause(records, entry.sessionId)).catch(
+          (error: unknown) => {
+            log(`routing: announcing a dropped buffer failed: ${String(error)}`);
+          },
+        );
         continue;
       }
-      log(
-        `routing: dropped ${String(entry.messages.length)} buffered messages held for session ` +
-          `${entry.sessionId}, which did not survive the broker restart`,
-      );
-      // Fire and forget, as on every other drop: the announcement never rejects by construction.
-      void announceDrop(entry.threadId, entry.messages.length, "ended").catch((error: unknown) => {
-        log(`routing: announcing a dropped buffer failed: ${String(error)}`);
-      });
+      if (options.threadFor(entry.sessionId) !== entry.threadId) {
+        log(
+          `routing: dropped ${count} buffered messages held for session ${entry.sessionId}, ` +
+            `whose thread is not ${entry.threadId}`,
+        );
+        continue;
+      }
+      const messages = entry.messages.map(reclassed).filter((message) => message !== null);
+      if (messages.length < entry.messages.length) {
+        log(
+          `routing: dropped ${String(entry.messages.length - messages.length)} of ${count} buffered ` +
+            `messages held for session ${entry.sessionId}, written from accounts the roster no ` +
+            "longer admits",
+        );
+      }
+      if (messages.length > 0) kept.push({ entry: { ...entry, messages }, record });
     }
     if (entries.length > 0) {
-      gate.restore(
-        kept.map(({ entry }) => entry),
-        settings.buffers.graceMs,
-      );
+      gate.restore(kept.map(({ entry }) => entry));
       for (const { record } of kept) {
         if (options.relays.attached(record.processToken)) gate.deliverRestored(record.sessionId);
       }
@@ -884,7 +926,14 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // The message as the gate holds it: the text as bounded above and the name as the gateway
       // bounded it, so what a delivered line carries is exactly what a delivered message carries,
       // and nothing is sanitized twice.
-      const buffered = { id: message.messageId, author: message.author, senderClass, text, truncated };
+      const buffered = {
+        id: message.messageId,
+        senderId: message.senderId,
+        author: message.author,
+        senderClass,
+        text,
+        truncated,
+      };
       const addressed = { mentionsBot: message.mentionsBot, repliesToBot: message.repliesToBot };
 
       if (gate === null || simulated) {
@@ -960,6 +1009,11 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       if (gate === null || simulated) return;
       const record = options.registry.current(processToken);
       if (record !== null) gate.deliverRestored(record.sessionId);
+    },
+
+    armRestored() {
+      if (gate === null || buffersFile === null || settings?.buffers === undefined) return;
+      gate.armRestored(settings.buffers.graceMs);
     },
   };
 }

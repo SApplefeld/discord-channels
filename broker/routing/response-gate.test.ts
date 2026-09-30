@@ -32,12 +32,15 @@ const OTHER_THREAD = "900000000000000002";
 const SESSION = "session-a";
 const KEY = "SECRET-KEY-0123456789abcdef";
 
+const OPERATOR_ID = "700000000000000002";
+const PARTICIPANT_ID = "700000000000000004";
+
 function operator(text: string, truncated = false, id = "910000000000000001"): BufferedMessage {
-  return { id, author: "Ann", senderClass: "operator", text, truncated };
+  return { id, senderId: OPERATOR_ID, author: "Ann", senderClass: "operator", text, truncated };
 }
 
 function participant(text: string, truncated = false, id = "910000000000000002"): BufferedMessage {
-  return { id, author: "Bo", senderClass: "participant", text, truncated };
+  return { id, senderId: PARTICIPANT_ID, author: "Bo", senderClass: "participant", text, truncated };
 }
 
 const UNADDRESSED = { mentionsBot: false, repliesToBot: false };
@@ -699,6 +702,7 @@ test("the judge is sent the newest lines that fit the shared cut, and the latest
   // the gateway's bound and a text at the router's ceiling, fits under the cut.
   const longest = bufferedLine({
     id: "3",
+    senderId: PARTICIPANT_ID,
     author: "a".repeat(MAX_AUTHOR_NAME_LENGTH),
     senderClass: "participant",
     text: "t".repeat(MAX_INBOUND_TEXT_LENGTH),
@@ -1039,8 +1043,8 @@ test("a buffer any of whose lines the secret screen matches is left out of the p
   assert.ok(!JSON.stringify(h.saved).includes(token));
 });
 
-test("a restore holds each buffer for its thread and session with its cap re-armed from its oldest time and floored at the grace, and the relay attaching delivers it on restored", () => {
-  const now = 100_000;
+test("a restore holds each buffer for its thread and session, the arm re-arms its cap from its oldest time as of that moment and floored at the grace, and the relay attaching delivers it on restored", () => {
+  let now = 100_000;
   const h = gate({ maxWaitMs: 60_000, persist: true, now: () => now });
   const inCap = persisted(70_000, operator("one", false, "1"), participant("two", false, "2"));
   const pastCap: HeldBuffer = {
@@ -1049,17 +1053,24 @@ test("a restore holds each buffer for its thread and session with its cap re-arm
     oldestAt: 10_000,
     messages: [operator("old", false, "3")],
   };
-  h.gate.restore([inCap, pastCap], 15_000);
+  h.gate.restore([inCap, pastCap]);
   assert.deepEqual(h.gate.held(), [
     { threadId: THREAD, sessionId: SESSION },
     { threadId: OTHER_THREAD, sessionId: "session-b" },
   ]);
+  assert.equal(h.scheduled.length, 0, "held with no cap until the arm");
+  assert.deepEqual(h.saved, [[inCap, pastCap]], "what is held after the restore is written");
+
+  // Armed later than restored, and measured then: the time between the two is not on the cap.
+  now = 110_000;
+  h.gate.armRestored(15_000);
   assert.deepEqual(
     h.scheduled.map((timer) => timer.ms),
-    [30_000, 15_000],
-    "the cap runs on from where the outage found it, and never under the grace",
+    [20_000, 15_000],
+    "the cap runs on from where the outage found it, as of the arm, and never under the grace",
   );
-  assert.deepEqual(h.saved, [[inCap, pastCap]], "what is held after the restore is written");
+  h.gate.armRestored(15_000);
+  assert.equal(h.scheduled.length, 2, "a second arm arms nothing more");
 
   h.gate.deliverRestored(SESSION);
   assert.deepEqual(h.released, [
@@ -1091,12 +1102,14 @@ test("a restored buffer takes new messages, a mention delivers old and new under
   let now = 100_000;
   const h = gate({ maxWaitMs: 60_000, persist: true, now: () => now });
   const one = operator("one", false, "1");
-  h.gate.restore([persisted(70_000, one)], 15_000);
+  h.gate.restore([persisted(70_000, one)]);
   now = 101_000;
   const two = participant("two", false, "2");
-  assert.deepEqual(admit(h.gate, two), [], "held with the restored line");
+  assert.deepEqual(admit(h.gate, two), [], "held with the restored line, before the arm too");
   assert.deepEqual(h.saved[1], [persisted(70_000, one, two)], "the file keeps the oldest time");
-  assert.equal(h.scheduled.length, 1, "no second timer: the re-armed one still runs");
+  assert.equal(h.scheduled.length, 0, "a message joining a restored buffer starts no cap of its own");
+  h.gate.armRestored(15_000);
+  assert.deepEqual(h.scheduled.map((timer) => timer.ms), [29_000], "one cap, from the oldest");
 
   const three = operator("now", false, "3");
   assert.deepEqual(admit(h.gate, three, MENTION), [
@@ -1113,10 +1126,27 @@ test("a restored buffer takes new messages, a mention delivers old and new under
 
   // A restore for a thread already holding a buffer takes nothing and says so.
   admit(h.gate, operator("six", false, "6"));
-  h.gate.restore([persisted(50_000, one)], 15_000);
+  h.gate.restore([persisted(50_000, one)]);
+  h.gate.armRestored(15_000);
   assert.equal(h.gate.held().length, 1);
   assert.equal(h.scheduled.filter((timer) => !timer.cleared).length, 1);
   assert.ok(h.lines.some((line) => line.includes("already holds") && line.includes(THREAD)), h.lines.join("\n"));
+});
+
+test("nothing admitted after the close reaches the persist seam, so the file keeps what the stop left", () => {
+  // The gateway can still hand a message over while the broker drains. Written, that one buffer
+  // would replace every buffer the file keeps for the next start.
+  const h = gate({ persist: true });
+  admit(h.gate, operator("one", false, "1"));
+  admit(h.gate, operator("two", false, "2"));
+  h.gate.close();
+  const writes = h.saved.length;
+  assert.deepEqual(admit(h.gate, operator("late", false, "3")), [], "taken, as before");
+  assert.deepEqual(admit(h.gate, operator("later", false, "4"), MENTION)[0]?.messages.map((m) => m.id), ["3", "4"]);
+  h.gate.clear(THREAD);
+  assert.equal(h.saved.length, writes, "and none of it written");
+  assert.equal(h.saved[writes - 1].length, 1, "the file still holds the buffer the stop left");
+  assert.equal(h.saved[writes - 1][0].messages.length, 2);
 });
 
 test("a restored delivery opens with the restart line, which names the oldest time to the second, is no buffered line and is not counted, on a buffer of one too", () => {

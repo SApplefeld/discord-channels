@@ -35,8 +35,8 @@
 // a drop, is handed to the persist seam, which the router points at a file beside the journal; the
 // broker stopping writes nothing, so the file stays as the last change left it. A restore at the
 // next start hands the buffers back, each with its age cap re-armed from its oldest message's own
-// time, and a restored buffer delivers on the trigger `restored` as soon as its session's relay
-// attaches. Every event carrying a restored message opens with one line of the broker's own saying
+// time once a relay can reach the broker, and a restored buffer delivers on the trigger `restored`
+// as soon as its session's relay attaches. Every event carrying a restored message opens with one line of the broker's own saying
 // so, which is why the event budget below reserves that line on every buffer.
 import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -70,6 +70,13 @@ export const MAX_EVENT_UNITS = 64 * 1024;
 export type BufferedMessage = {
   /** The message's own Discord id: the key a journal row carries and a label is written against. */
   id: string;
+  /**
+   * The account that wrote it. Never rendered and never in a journal row: it is kept so a buffer
+   * restored across a broker restart can class each line again through the roster as it then
+   * stands, since the class below is the roster's answer at admission and a restart is how a
+   * roster change takes effect.
+   */
+  senderId: string;
   /** The display name, bounded by the gateway for the attribute it rides. A label, never a key. */
   author: string;
   /** The class the sender roster gives the account that wrote it. */
@@ -232,19 +239,28 @@ export type ResponseGate = {
   clear: (threadId: string) => number;
   /**
    * Drops every thread's buffer, timers and clock, delivering nothing and persisting nothing, so
-   * the file stays as the last change left it. For the broker stopping.
+   * the file stays as the last change left it. For the broker stopping. Nothing admitted after
+   * it is persisted either: the gateway can still hand a message over while the broker drains,
+   * and a write then would replace every buffer the file keeps with that one.
    */
   close: () => void;
   /** Every buffer held now, with the session each is held for, so the caller can drop the stale. */
   held: () => Array<{ threadId: string; sessionId: string }>;
   /**
-   * Holds the buffers an earlier broker process left, each for its thread and session, with its
-   * age cap re-armed from its oldest message's own time and floored at `graceMs`, so a buffer
-   * whose cap passed while the broker was down still gets one window for its relay to come back.
-   * Persists what is then held, so an entry the caller dropped leaves the file. For startup,
-   * before the first admit: a thread already holding a buffer keeps it and is logged.
+   * Holds the buffers an earlier broker process left, each for its thread and session, with no
+   * age-cap timer yet: `armRestored` starts those. Persists what is then held, so an entry the
+   * caller dropped leaves the file. For startup, before the first admit: a thread already holding
+   * a buffer keeps it and is logged.
    */
-  restore: (buffers: readonly HeldBuffer[], graceMs: number) => void;
+  restore: (buffers: readonly HeldBuffer[]) => void;
+  /**
+   * Starts the age cap of every restored buffer not yet armed, re-armed from its oldest message's
+   * own time as of now and floored at `graceMs`, so a buffer whose cap passed while the broker
+   * was down still gets one window for its relay to come back. For the moment a relay can first
+   * reach the broker, which is later than the restore: measured then, so the time between the
+   * two is not taken from the relay's window. A second call arms nothing more.
+   */
+  armRestored: (graceMs: number) => void;
   /**
    * Releases every restored buffer held for `sessionId` through `onRelease`, on the trigger
    * `restored`. For the session's relay attaching. A buffer opened since the restart is not one
@@ -283,7 +299,7 @@ export function lowestClass(messages: readonly BufferedMessage[]): SenderClass {
  */
 export function restartLine(oldestAt: number): string {
   const since = new Date(oldestAt).toISOString().replace(/\.\d{3}Z$/, "Z");
-  return `The lines below were held across a broker restart, the oldest since ${since}.`;
+  return `Lines held across a broker restart follow, the oldest held since ${since}.`;
 }
 
 /**
@@ -440,17 +456,18 @@ export function saveHeldBuffers(file: string, buffers: readonly HeldBuffer[]): v
 
 /**
  * A thread's held messages, the session they are held for, when the oldest was admitted, whether
- * the buffer was restored across a broker restart, the age-cap timer that delivers them, the
- * quiet-window timer that asks about them, whether that window has elapsed with the ask still
- * owed because a call was in flight, and whether the buffer's omission from the file has been
- * logged, so a buffer holding a secret is named once rather than on every change.
+ * the buffer was restored across a broker restart, the age-cap timer that delivers them, null on
+ * a restored buffer until `armRestored` starts it, the quiet-window timer that asks about them,
+ * whether that window has elapsed with the ask still owed because a call was in flight, and
+ * whether the buffer's omission from the file has been logged, so a buffer holding a secret is
+ * named once rather than on every change.
  */
 type Held = {
   sessionId: string;
   messages: BufferedMessage[];
   oldestAt: number;
   restored: boolean;
-  timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout | null;
   quiet: NodeJS.Timeout | null;
   quietElapsed: boolean;
   screenedLogged: boolean;
@@ -471,6 +488,8 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
   const lastPost = new Map<string, number>();
   /** The threads with a call out. A window elapsing on one of these asks when the call settles. */
   const inFlight = new Set<string>();
+  /** Set by `close`: from then on nothing reaches the persist seam, whatever is admitted. */
+  let closed = false;
 
   /**
    * One row. The lines are screened here, on every trigger, so a pasted secret is kept off disk
@@ -518,10 +537,12 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
    * What is held, to the persist seam, after each change to it. The lines are screened here as
    * `record` screens a row's, so a pasted secret is kept off disk: a buffer any of whose lines
    * matches is left out, held in memory alone, and named once by thread and count, never by text.
-   * The seam's failure is logged and stops nothing: a delivery never waits on disk.
+   * The seam's failure is logged and stops nothing: a delivery never waits on disk. Nothing after
+   * `close`, so a message the gateway hands over while the broker drains cannot write its one
+   * buffer over the file the stop left for the next start.
    */
   function save(): void {
-    if (options.persist === undefined) return;
+    if (options.persist === undefined || closed) return;
     const buffers: HeldBuffer[] = [];
     for (const [threadId, buffer] of held) {
       if (buffer.messages.some((message) => SECRET_SCREEN.test(bufferedLine(message)))) {
@@ -563,7 +584,7 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     const buffer = held.get(threadId);
     if (buffer === undefined) return undefined;
     held.delete(threadId);
-    clearTimer(buffer.timer);
+    if (buffer.timer !== null) clearTimer(buffer.timer);
     if (buffer.quiet !== null) clearTimer(buffer.quiet);
     return buffer;
   }
@@ -762,15 +783,16 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     },
 
     close() {
-      // Released without a save: what was held stays in the file for the next start to restore.
+      // Released without a save, and with the seam shut behind it: what was held stays in the
+      // file for the next start to restore, whatever the gateway still hands over.
+      closed = true;
       for (const threadId of [...held.keys()]) release(threadId);
       lastPost.clear();
     },
 
     held: () => [...held].map(([threadId, buffer]) => ({ threadId, sessionId: buffer.sessionId })),
 
-    restore(buffers, graceMs) {
-      const at = now();
+    restore(buffers) {
       for (const entry of buffers) {
         if (held.has(entry.threadId)) {
           log(
@@ -780,23 +802,30 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
           );
           continue;
         }
-        // The cap runs on from where the outage found it, and never under the grace: a buffer
-        // whose cap passed while the broker was down expires one window after the start, which is
-        // the window its relay has to come back and take it.
-        const remaining = Math.max(graceMs, entry.oldestAt + options.maxWaitMs - at);
-        const threadId = entry.threadId;
-        held.set(threadId, {
+        held.set(entry.threadId, {
           sessionId: entry.sessionId,
           messages: [...entry.messages],
           oldestAt: entry.oldestAt,
           restored: true,
-          timer: setTimer(() => expire(threadId), remaining),
+          timer: null,
           quiet: null,
           quietElapsed: false,
           screenedLogged: false,
         });
       }
       save();
+    },
+
+    armRestored(graceMs) {
+      const at = now();
+      for (const [threadId, buffer] of held) {
+        if (!buffer.restored || buffer.timer !== null) continue;
+        // The cap runs on from where the outage found it, and never under the grace: a buffer
+        // whose cap passed while the broker was down expires one window after this moment, which
+        // is the window its relay has to come back and take it.
+        const remaining = Math.max(graceMs, buffer.oldestAt + options.maxWaitMs - at);
+        buffer.timer = setTimer(() => expire(threadId), remaining);
+      }
     },
 
     deliverRestored(sessionId) {

@@ -217,26 +217,43 @@ function harness(
     lineage?: string;
     /**
      * What the registry holds for `session-a` when the router is built: announced live, as every
-     * test above has it; announced and ended; or never announced. The last two are what a broker
-     * restarting over a buffers file meets when the session did not restore.
+     * test above has it; announced and ended; replaced by `session-b` under the same lineage and
+     * pipe, as a /clear does; or never announced. The last three are what a broker restarting
+     * over a buffers file meets when the session did not restore.
      */
-    session?: "live" | "ended" | "absent";
+    session?: "live" | "ended" | "replaced" | "absent";
+    /** The sender roster, where a test varies it from the operator Ann and the participant Bo. */
+    roster?: Array<{ id: string; class: SenderClass }>;
   } = {},
 ) {
   const now = options.now ?? ((): number => 1_000);
   let router: InboundRouter | null = null;
+  // A replacement takes a lineage over only where it started after its predecessor, so the one a
+  // `replaced` session announces below is stamped a millisecond on from the test's clock.
+  let skewMs = 0;
   const registry = createRegistry({
     host: "NEO",
     staleAfterMs: 60_000,
-    now,
+    now: () => now() + skewMs,
     // The seam the broker wires: every mutation, a session's end among them, reconciles the
     // router's held buffers against the record set.
     onMutate: (sessions) => router?.reconcile(sessions),
   });
   if (options.session !== "absent") {
-    announce(registry, "session-a", TOKEN, "startup", options.lineage ?? null);
+    announce(
+      registry,
+      "session-a",
+      TOKEN,
+      "startup",
+      options.lineage ?? (options.session === "replaced" ? "persona-neo" : null),
+    );
   }
   if (options.session === "ended") registry.relayClosed(TOKEN, "session-a");
+  if (options.session === "replaced") {
+    skewMs = 1;
+    announce(registry, "session-b", TOKEN, "clear", "persona-neo");
+    skewMs = 0;
+  }
   const relays = createRelayHub({
     registry,
     graceMs: 10_000,
@@ -285,10 +302,12 @@ function harness(
   router = createInboundRouter({
     registry,
     relays,
-    gate: createSenderGate([
-      { id: OPERATOR, class: "operator" },
-      { id: PARTICIPANT, class: "participant" },
-    ]),
+    gate: createSenderGate(
+      options.roster ?? [
+        { id: OPERATOR, class: "operator" },
+        { id: PARTICIPANT, class: "participant" },
+      ],
+    ),
     permissions: permissions.desk,
     // Nothing held, unless a test wires a desk that holds something: the default is a broker whose
     // sessions have no question parked, which is every test above.
@@ -1794,6 +1813,7 @@ function onDisk(dir: string): { version: number; buffers: HeldBuffer[] } {
 function stored(id: string, text: string, from: "Ann" | "Bo" = "Ann"): BufferedMessage {
   return {
     id,
+    senderId: from === "Ann" ? OPERATOR : PARTICIPANT,
     author: from,
     senderClass: from === "Ann" ? "operator" : "participant",
     text,
@@ -1880,8 +1900,12 @@ test("live: a buffer of three held messages survives a stop and a start: the fil
   });
   assert.deepEqual(after.sent, [], "held until the relay attaches");
   assert.deepEqual(after.notices, []);
-  assert.equal(after.scheduled.length, 1, "re-armed");
+  assert.equal(after.scheduled.length, 0, "no cap until the listener binds");
   assert.equal(lines.length, 0, `nothing to report: ${lines.join(" | ")}`);
+  // The bind, later than the build: the cap is measured then, so the login is not on it.
+  now = 230_000;
+  after.router.armRestored();
+  assert.deepEqual(after.scheduled.map((timer) => timer.ms), [420_000], "re-armed as of the bind");
 
   const detach = attachPipe(after);
   assert.deepEqual(after.sent, [
@@ -1896,7 +1920,7 @@ test("live: a buffer of three held messages survives a stop and a start: the fil
       buffered: 3,
     },
   ]);
-  assert.ok(textOf(after.sent[0]).startsWith("The lines below were held across a broker restart"));
+  assert.ok(textOf(after.sent[0]).startsWith("Lines held across a broker restart"));
   assert.ok(textOf(after.sent[0]).includes("1970-01-01T00:00:50Z"), "the oldest time, to the second");
   assert.deepEqual(onDisk(dir).buffers, [], "delivered, and gone from the file at the same write");
   assert.deepEqual(after.rows.map((row) => [row.id, row.trigger, row.outcome, row.lines?.length]), [
@@ -1935,8 +1959,8 @@ test("live: a relay already attached when the restore runs takes the restored bu
   assert.deepEqual(after.rows.map((row) => row.trigger), ["restored"]);
 });
 
-test("live: a restored buffer whose session did not restore delivers nothing, posts the counted session-end notice, and leaves the file", async (t) => {
-  for (const session of ["absent", "ended"] as const) {
+test("live: a restored buffer whose session did not restore delivers nothing, posts the counted notice with the cause the records give, and leaves the file", async (t) => {
+  for (const [session, cause] of [["absent", "ended"], ["ended", "ended"], ["replaced", "moved"]] as const) {
     const dir = stateDir(t);
     await heldAcrossRestart(dir, [
       message({ text: "migrate the ledger", messageId: "1" }),
@@ -1946,11 +1970,12 @@ test("live: a restored buffer whose session did not restore delivers nothing, po
     const after = harness({ gate: { buffers: { dir } }, session, log: (line) => lines.push(line) });
     await flush();
     assert.deepEqual(after.sent, [], session);
-    assert.deepEqual(after.notices, [{ threadId: THREAD, text: droppedBufferNotice(2, "ended") }], session);
+    assert.deepEqual(after.notices, [{ threadId: THREAD, text: droppedBufferNotice(2, cause) }], session);
     assert.match(after.notices[0].text, /\b2 messages\b/);
-    assert.match(after.notices[0].text, /session has ended/);
+    assert.match(after.notices[0].text, cause === "ended" ? /session has ended/ : /\/clear/);
     assert.ok(!after.notices[0].text.includes("migrate the ledger") && !after.notices[0].text.includes("Ann"));
     assert.deepEqual(onDisk(dir).buffers, [], `${session}: dropped, and gone from the file at the same write`);
+    after.router.armRestored();
     assert.deepEqual(after.scheduled, [], `${session}: no timer for what is not held`);
     const dropped = lines.filter((line) => line.includes("dropped"));
     assert.equal(dropped.length, 1, lines.join("\n"));
@@ -1972,11 +1997,18 @@ test("a missing, unreadable or malformed buffers file restores nothing, logs one
   const file = buffersFile(dir);
   const read = (): { restored: HeldBuffer[]; logged: string[] } => {
     const logged: string[] = [];
-    const restored = loadHeldBuffers(file, { maxMessages: 20, log: (line) => logged.push(line) });
+    const restored = loadHeldBuffers(file, {
+      maxMessages: 20,
+      now: () => 1_000_000,
+      log: (line) => logged.push(line),
+    });
     return { restored, logged };
   };
 
-  assert.deepEqual(read(), { restored: [], logged: [] }, "a missing file is the normal case and silent");
+  const missing = read();
+  assert.deepEqual(missing.restored, []);
+  assert.equal(missing.logged.length, 1, "a missing file is one line");
+  assert.ok(missing.logged[0].includes(file), missing.logged[0]);
 
   const good = { threadId: THREAD, sessionId: "session-a", oldestAt: 1_000, messages: [stored("1", "SENTINEL-TEXT")] };
   const snapshot = (buffers: unknown[], version: unknown = 1): string => JSON.stringify({ version, buffers });
@@ -1985,13 +2017,15 @@ test("a missing, unreadable or malformed buffers file restores nothing, logs one
     ["null", "null"],
     ["a list", "[]"],
     ["no buffers list", JSON.stringify({ version: 1, buffers: "SENTINEL-TEXT" })],
-    ["another format", snapshot([good], 2)],
+    ["another format", snapshot([good], "SENTINEL-TEXT")],
     ["an entry that is not a record", snapshot(["SENTINEL-TEXT"])],
     ["no thread", snapshot([{ ...good, threadId: 7 }])],
     ["a blank session", snapshot([{ ...good, sessionId: "  " }])],
     ["an infinite time", snapshot([good]).replace('"oldestAt":1000', '"oldestAt":1e999')],
     ["a negative time", snapshot([{ ...good, oldestAt: -1 }])],
-    ["a five-digit year", snapshot([{ ...good, oldestAt: Date.UTC(10_000, 0, 1) }])],
+    ["a time after the clock", snapshot([{ ...good, oldestAt: 1_000_001 }])],
+    ["no sender id, the shape without one", snapshot([{ ...good, messages: [(({ senderId: _, ...rest }) => rest)(stored("1", "x"))] }])],
+    ["a blank sender id", snapshot([{ ...good, messages: [{ ...stored("1", "x"), senderId: " " }] }])],
     ["no messages", snapshot([{ ...good, messages: [] }])],
     ["messages past the size cap", snapshot([{ ...good, messages: Array.from({ length: 21 }, (_, i) => stored(String(i), "x")) }])],
     ["a third class", snapshot([{ ...good, messages: [{ ...stored("1", "x"), senderClass: "admin" }] }])],
@@ -2068,6 +2102,7 @@ test("with the gate off or in shadow no file is written, and a file left by a li
     await h.router.deliver(message({ text: "one" }));
     await h.router.deliver(fromBo({ text: "two" }));
     await h.router.deliver(message({ text: "now", mentionsBot: true }));
+    h.router.armRestored();
     h.registry.relayClosed(TOKEN, "session-a");
     h.router.close();
     assert.equal(h.sent.length, 3, mode);
@@ -2093,6 +2128,7 @@ test("live: a restored buffer whose cap passed during the outage is re-armed to 
       now: () => 1_000_000,
       attachRelay: false,
     });
+    after.router.armRestored();
     assert.deepEqual(after.scheduled.map((timer) => timer.ms), [15_000], "the floor, the cap having passed");
     assert.deepEqual(after.sent, []);
     if (attaches) {
@@ -2120,6 +2156,7 @@ test("live: a restored buffer whose cap passed during the outage is re-armed to 
     now: () => 21_000,
     attachRelay: false,
   });
+  inside.router.armRestored();
   assert.deepEqual(inside.scheduled.map((timer) => timer.ms), [40_000]);
 });
 
@@ -2132,6 +2169,8 @@ test("live: a restored buffer takes new messages for its session, and a mention 
   assert.deepEqual(onDisk(dir).buffers, [
     { threadId: THREAD, sessionId: "session-a", oldestAt: 1_000, messages: [stored("1", "one"), stored("2", "two", "Bo")] },
   ]);
+  assert.equal(after.scheduled.length, 0, "a message joining the restored buffer before the bind starts no cap of its own");
+  after.router.armRestored();
   assert.equal(after.scheduled.length, 1, "the re-armed timer, and no second");
 
   // The mention delivers on its own act. No pipe has attached, which is the only state a
@@ -2239,6 +2278,89 @@ test("the buffers file round-trips through the shared writer and the reader", (t
   saveHeldBuffers(buffersFile(dir), buffers);
   assert.deepEqual(onDisk(dir), { version: 1, buffers });
   const logged: string[] = [];
-  assert.deepEqual(loadHeldBuffers(buffersFile(dir), { maxMessages: 20, log: (line) => logged.push(line) }), buffers);
+  assert.deepEqual(
+    loadHeldBuffers(buffersFile(dir), { maxMessages: 20, now: () => 3_000, log: (line) => logged.push(line) }),
+    buffers,
+  );
   assert.deepEqual(logged, []);
+});
+
+test("live: a message the gateway hands over after the close writes nothing, so the file keeps what the stop left", async (t) => {
+  const dir = stateDir(t);
+  const before = await heldAcrossRestart(dir, [
+    message({ text: "one", messageId: "1" }),
+    fromBo({ text: "two", messageId: "2" }),
+  ]);
+  await before.router.deliver(message({ text: "late", messageId: "3" }));
+  await before.router.deliver(message({ text: "later", messageId: "4", mentionsBot: true }));
+  assert.deepEqual(onDisk(dir).buffers[0].messages.map((held) => held.id), ["1", "2"], "unchanged");
+});
+
+test("live: a restored line is classed again through the roster: a demoted operator's line restores as a participant's, and a removed account's line is not delivered", async (t) => {
+  const held = [
+    message({ text: "one", messageId: "1" }),
+    fromBo({ text: "two", messageId: "2" }),
+    message({ text: "three", messageId: "3" }),
+  ];
+  // Ann demoted to participant and Bo removed across the restart, by a broker.env edit.
+  const dir = stateDir(t);
+  await heldAcrossRestart(dir, held);
+  const lines: string[] = [];
+  const after = harness({
+    gate: { buffers: { dir } },
+    roster: [{ id: OPERATOR, class: "participant" }, { id: STRANGER, class: "operator" }],
+    log: (line) => lines.push(line),
+  });
+  assert.deepEqual(after.sent, [
+    {
+      type: "message",
+      chatId: THREAD,
+      text: `${restartLine(1_000)}\nAnn (participant): one\nAnn (participant): three`,
+      author: "Ann",
+      senderClass: "participant",
+      buffered: 2,
+    },
+  ]);
+  assert.deepEqual(after.notices, []);
+  const dropped = lines.filter((line) => line.includes("roster no longer admits"));
+  assert.equal(dropped.length, 1, lines.join("\n"));
+  assert.ok(dropped[0].includes("1 of 3") && dropped[0].includes("session-a"), dropped[0]);
+  assert.ok(!dropped[0].includes("two"), "content-free");
+
+  // Every account removed: the entry is dropped whole, with no notice, and nothing is delivered.
+  const empty = stateDir(t);
+  await heldAcrossRestart(empty, held);
+  const gone: string[] = [];
+  const none = harness({
+    gate: { buffers: { dir: empty } },
+    roster: [{ id: STRANGER, class: "operator" }],
+    log: (line) => gone.push(line),
+  });
+  assert.deepEqual(none.sent, []);
+  assert.deepEqual(none.notices, []);
+  assert.deepEqual(onDisk(empty).buffers, [], "and it left the file");
+  assert.ok(gone.some((line) => line.includes("3 of 3") && line.includes("roster no longer admits")), gone.join("\n"));
+});
+
+test("live: a restored entry whose thread is not its session's bound thread is dropped with a log line and no notice, and the file's other entries restore", async (t) => {
+  const dir = stateDir(t);
+  const other = "900000000000000002";
+  saveHeldBuffers(buffersFile(dir), [
+    { threadId: THREAD, sessionId: "session-a", oldestAt: 500, messages: [stored("1", "bound")] },
+    { threadId: other, sessionId: "session-a", oldestAt: 600, messages: [stored("2", "unbound")] },
+  ]);
+  const lines: string[] = [];
+  const after = harness({ gate: { buffers: { dir } }, attachRelay: false, log: (line) => lines.push(line) });
+  await flush();
+  assert.deepEqual(after.notices, []);
+  assert.deepEqual(after.sent, []);
+  assert.deepEqual(onDisk(dir).buffers.map((buffer) => buffer.threadId), [THREAD], "the unbound entry left the file");
+  const dropped = lines.filter((line) => line.includes("dropped"));
+  assert.equal(dropped.length, 1, lines.join("\n"));
+  assert.ok(dropped[0].includes(other) && dropped[0].includes("session-a"), dropped[0]);
+  assert.ok(!dropped[0].includes("unbound"), "content-free");
+
+  attachPipe(after);
+  assert.equal(after.sent.length, 1);
+  assert.equal(textOf(after.sent[0]), `${restartLine(500)}\nAnn (operator): bound`);
 });
