@@ -74,6 +74,7 @@ test("the labels reader takes <id><tab><yes|no> lines, skips blank ones, and ref
   assert.equal(labels.get("1"), true);
   assert.equal(labels.get("8"), false);
   assert.equal(readLabels("42\tYES\n").get("42"), true, "case does not matter");
+  assert.deepEqual([...readLabels("1\tyes\r\n2\tno\r\n")], [["1", true], ["2", false]], "a CRLF file reads the same");
   assert.throws(() => readLabels("1\tyes\n2 no\n"), /labels line 2/);
   assert.throws(() => readLabels("1\tmaybe\n"), /labels line 1/);
 });
@@ -99,14 +100,37 @@ test("a threshold predicting no positives prints n/a for precision, and labels w
   assert.match(render(low, new Map([["1", false]])), /0\.40\s+n\/a\s+n\/a/);
 });
 
-test("run directly under the type stripping, the tool prints the table for the fixture", () => {
-  const result = spawnSync(process.execPath, [path.join(TOOLS, "response-gate-score.ts"), JOURNAL, LABELS], {
+/** One run of the tool as an operator runs it. */
+function run(...args: string[]) {
+  const result = spawnSync(process.execPath, [path.join(TOOLS, "response-gate-score.ts"), ...args], {
     encoding: "utf8",
+    timeout: 30_000,
   });
+  assert.equal(result.signal, null, "the run ended on its own, not on the timeout");
+  return result;
+}
+
+test("run directly under the type stripping, the tool prints the table for the fixture", () => {
+  const result = run(JOURNAL, LABELS);
   assert.equal(result.status, 0, result.stderr);
   const expected = render(readJournal(readFileSync(JOURNAL, "utf8")), readLabels(readFileSync(LABELS, "utf8")));
   assert.equal(result.stdout, expected);
   assert.match(result.stdout, /^labelled judged rows: 8 \(yes 4, no 4\)\n/);
   assert.match(result.stdout, /\n0\.40\s+0\.667\s+1\.000\n/);
   assert.match(result.stdout, /\n0\.95\s+1\.000\s+0\.250\n$/);
+});
+
+test("a missing journal or labels file, or a malformed labels line, is one line on stderr and a non-zero exit, never a stack", () => {
+  const missing = path.join(FIXTURES, "absent.jsonl");
+  const result = run(missing, LABELS);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr.trim().split("\n").length, 1, result.stderr);
+  assert.ok(result.stderr.includes("cannot read") && result.stderr.includes("absent.jsonl"), result.stderr);
+  assert.doesNotMatch(result.stderr, /^\s+at /m, "no stack frame");
+
+  const bad = run(JOURNAL, path.join(TOOLS, "response-gate-score.ts"));
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stderr.trim().split("\n").length, 1, bad.stderr);
+  assert.match(bad.stderr, /labels line 1/);
 });

@@ -685,9 +685,10 @@ read once at start. To keep the inbox and stop reply text leaving the machine, u
 alone changes nothing until that restart. The start log then reads `reading ASK: lines alone with
 the judge off`, and the inbox runs on marked replies alone. A key file that fails the check the
 install guide states turns the judge off the same way, with one warning naming the file and the
-cause, and never stops the broker. To remove the whole card, set `CHANNEL_INBOX_CARD` off and
-restart; the thread already in the channel is left alone. Those two are the only switches that
-stop reply text reaching the vendor. `CHANNEL_MIRROR=off` is not one of them: it takes the
+cause, and does not stop the broker unless the response gate is in `shadow` or `live`: the gate
+reads the same key, and a host with the gate on refuses to start without it. To remove the whole
+card, set `CHANNEL_INBOX_CARD` off and restart; the thread already in the channel is left alone.
+Those two are the only switches that stop reply text reaching the vendor. `CHANNEL_MIRROR=off` is not one of them: it takes the
 conversation off Discord, and the judge reads reply-tool answers whatever the mirror setting.
 
 ## What a session card says about its model
@@ -1042,6 +1043,36 @@ produces, the retry notice and `reached the thread by neither path`, are written
 reply and prompt paths share, and it says `from session <id>` where every line above says `for
 session <id>`. Both spellings name the same session.
 
+## Choosing the response gate's threshold
+
+The threshold is chosen from a week of the host's own labelled shadow rows, never guessed. Run the
+host with `CHANNEL_RESPONSE_GATE=shadow` for a week of ordinary use. Every message still reaches its
+session at once, and the journal records what `live` would have done with it.
+
+The journal is `response-gate.jsonl` beside the broker's state file, with its rotated predecessors
+`.1`, `.2` and onward if the week filled it. Its retention follows `CHANNEL_BROKER_LOG_MAX_BYTES`
+and `CHANNEL_BROKER_LOG_MAX_FILES`, so a host that lowered those keeps less of the week. Each line
+is one gate decision. Only rows carrying a `probability` are the judge's, and only those need a
+label. For each, read its `lines`, the buffered conversation with each author's name and class,
+and decide whether the last line expected a response from the assistant.
+
+Write one line per judged row to a labels file, `<id>` then a tab then `yes` or `no`, where
+`<id>` is the row's `id`. Blank lines are skipped, and any other malformed line refuses with its
+line number. Where one `id` was judged more than once, its last row is the one scored. Then run,
+from the checkout root:
+
+```
+node tools/response-gate-score.ts <journal> <labels>
+```
+
+It prints the count of labelled judged rows and, for each threshold from 0.40 to 0.95 in steps of
+0.05, the precision and the recall. Precision is the share of the buffers it would have delivered
+that expected a reply. Recall is the share of the buffers that expected a reply that it would have
+delivered. A threshold that would deliver nothing, or a label set with no `yes`, prints `n/a`.
+Set `CHANNEL_RESPONSE_GATE_THRESHOLD` to the lowest threshold whose precision is acceptable, then
+set the mode to `live` and restart the broker. A missed ask still reaches the session at the age
+cap, so the threshold trades chattiness against latency rather than against loss.
+
 ## Tunables
 
 Everything below lives in `broker.env` and takes effect when the broker restarts. Only these keys are
@@ -1098,9 +1129,11 @@ refused by name rather than guessed at.
 | `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning |
 | `CHANNEL_INBOX_THRESHOLD` | 0.7 | The judge score at or above which an unmarked reply opens an item; bounded 0.4 to 0.95 |
 | `CHANNEL_INBOX_CARD_REFRESH_MS` | 60 s | How often the inbox card is re-read and re-rendered; bounded 5 s to 1 h |
-| `CHANNEL_RESPONSE_GATE` | off | Whether a thread's messages are held and delivered to its session together. `off` and `shadow` deliver each admitted message at once. `live` holds a thread's messages until one mentions the bot, replies to one of its messages, or a cap below is reached, then delivers them as one event of `<author> (<class>): <text>` lines. A held buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped with one counted notice in the thread. A broker stop or restart drops every held line with a log line only, since the buffer is held in memory: re-post what was held once the broker is back. Any other value refuses startup |
+| `CHANNEL_RESPONSE_GATE` | off | Whether a thread's messages are held and delivered to its session together. `off` and `shadow` deliver each admitted message at once. `live` holds a thread's messages until one mentions the bot, replies to one of its messages, or a cap below is reached, or until the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS` and TypeSafe's Jev judges that the conversation expects a response, then delivers them as one event of `<author> (<class>): <text>` lines. A judge call that fails delivers the buffer. `shadow` runs the same buffer beside its immediate delivery, asks the judge as `live` would, and writes one row per decision to `response-gate.jsonl` in the state file's directory, rotated at `CHANNEL_BROKER_LOG_MAX_BYTES` and `CHANNEL_BROKER_LOG_MAX_FILES`. In `shadow` and `live` every admitted message in a gated thread is sent to TypeSafe, and the journal keeps the buffered lines on disk, except on a row whose lines the secret screen matches, which leaves them out. Both modes refuse startup unless `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file. A held buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped with one counted notice in the thread. A broker stop or restart drops every held line with a log line only, since the buffer is held in memory: re-post what was held once the broker is back. Any other value refuses startup |
 | `CHANNEL_RESPONSE_GATE_MAX_MESSAGES` | 20 | A held buffer delivers on reaching this many messages; an integer of at least 1 |
 | `CHANNEL_RESPONSE_GATE_MAX_WAIT_MS` | 10 min | A held buffer delivers once its oldest message is this old, whether or not another arrives; bounded 1 ms to 2147483647 ms, the longest delay a Node timer holds |
+| `CHANNEL_RESPONSE_GATE_QUIET_MS` | 5 s | How long a thread must be quiet after its last message before a held buffer is put to the judge; a new message restarts it. Bounded 1 ms to 2147483647 ms |
+| `CHANNEL_RESPONSE_GATE_THRESHOLD` | 0.6 | The judge's probability at or above which a held buffer delivers; bounded 0.4 to 0.95. Choose it from labelled shadow rows, as the section on choosing the threshold describes, before setting the mode to `live` |
 | `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to

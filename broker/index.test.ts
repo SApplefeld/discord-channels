@@ -26,8 +26,8 @@ import {
   questionUpgrade,
   boardCardWiring,
   inboxWiring,
+  readJudgeKey,
   rebindHandling,
-  responseGateJudgeKey,
   startBroker,
   usageCardWiring,
 } from "./index.ts";
@@ -37,7 +37,6 @@ import { saveInboxSnapshot } from "./inbox/store.ts";
 import type { InboxItem } from "./inbox/store.ts";
 import { saveSessions } from "./persistence.ts";
 import { createRegistry } from "./registry.ts";
-import { readInboxJudgeKey } from "./config.ts";
 import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import type { SessionRecord } from "./registry.ts";
@@ -1912,18 +1911,24 @@ function inboxUnderTest(
   const logs: string[] = [];
   const warnings: string[] = [];
   const errors: string[] = [];
+  // The key as the broker reads it once at startup, with the protection check stood down so a
+  // temp file passes; the inbox is then handed the key and never the file.
+  const card = options.card ?? true;
+  const judgeKey = readJudgeKey(
+    { inboxCard: card, responseGate: "off", inboxJudgeKeyFile: keyFile },
+    (message) => warnings.push(message),
+    () => {},
+  );
   const inbox = inboxWiring({
     config: {
       stateFile: path.join(dir, "broker-state.json"),
-      inboxCard: options.card ?? true,
-      inboxJudgeKeyFile: keyFile,
+      inboxCard: card,
       inboxThreshold: 0.7,
     },
     registry,
+    judgeKey,
     fetch: options.fetch ?? scoring.fetch,
-    protectKeyFile: () => {},
     log: (message) => logs.push(message),
-    warn: (message) => warnings.push(message),
     onError: (message) => errors.push(message),
   });
   return {
@@ -2557,11 +2562,10 @@ test("a late flag for the departed session, carrying its reply's original instan
   assert.deepEqual(inbox.items(), [], "a late flag reopening a cleared ask is the regression");
   assert.equal(posts.length, 1, "the restart notice still posted, independent of the late flag");
 });
+// The Jev key: read once at startup for the inbox judge and the response gate, refused for the
+// gate where the inbox judge alone would warn.
 
-// The response gate's key: the same file the inbox judge reads, refused rather than warned about
-// once the gate is on.
-
-test("the gate's key read refuses shadow and live without a usable key, naming the mode and the variable and never the key", (t) => {
+test("the key read refuses shadow and live without a usable key, naming the mode, the variable and the cause, never the key", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-gate-key-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const warnings: string[] = [];
@@ -2573,46 +2577,64 @@ test("the gate's key read refuses shadow and live without a usable key, naming t
   writeFileSync(file, "SECRET-KEY-0123456789\n", "utf8");
   const missing = path.join(dir, "absent.key");
 
-  assert.equal(responseGateJudgeKey({ responseGate: "off", inboxJudgeKeyFile: null }, warn, accept), null);
-  assert.equal(responseGateJudgeKey({ responseGate: "off", inboxJudgeKeyFile: missing }, warn, accept), null, "off reads nothing");
+  // Neither consumer on: nothing is read, whatever the file says.
+  assert.equal(readJudgeKey({ inboxCard: false, responseGate: "off", inboxJudgeKeyFile: missing }, warn, accept), null);
   assert.equal(warnings.length, 0, "and warns nothing");
-  assert.equal(responseGateJudgeKey({ responseGate: "live", inboxJudgeKeyFile: file }, warn, accept), "SECRET-KEY-0123456789");
+  // The inbox judge alone: null, one warning, no throw.
+  assert.equal(readJudgeKey({ inboxCard: true, responseGate: "off", inboxJudgeKeyFile: missing }, warn), null);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /inbox judge is off/);
+  assert.equal(
+    readJudgeKey({ inboxCard: true, responseGate: "live", inboxJudgeKeyFile: file }, warn, accept),
+    "SECRET-KEY-0123456789",
+  );
+  assert.equal(warnings.length, 1);
 
   for (const mode of ["shadow", "live"] as const) {
-    // Unset: the variable alone is named.
+    // Unset: the variable alone is named, and nothing is read.
     assert.throws(
-      () => responseGateJudgeKey({ responseGate: mode, inboxJudgeKeyFile: null }, warn, accept),
+      () => readJudgeKey({ inboxCard: false, responseGate: mode, inboxJudgeKeyFile: null }, warn, accept),
       (error: Error) =>
         error.message.includes(`response gate is ${mode}`) &&
         error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
         error.message.includes("unset"),
       mode,
     );
-    // Null for any cause: a missing file, and a file the protection check refuses. The warning
-    // `readInboxJudgeKey` writes names the cause, which is what the inbox judge alone stops at.
-    const before: number = warnings.length;
+    // Null for any cause: a missing file, and a file the protection check refuses. With the inbox
+    // card off, the cause rides the refusal and the inbox judge's warning is not written, since
+    // that judge was never on; with the card on, the warning is written as well.
+    let before: number = warnings.length;
     assert.throws(
-      () => responseGateJudgeKey({ responseGate: mode, inboxJudgeKeyFile: missing }, warn),
+      () => readJudgeKey({ inboxCard: false, responseGate: mode, inboxJudgeKeyFile: missing }, warn),
       (error: Error) =>
         error.message.includes(`response gate is ${mode}`) &&
         error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
-        error.message.includes("cannot be used"),
-      `${mode}, missing`,
+        error.message.includes("cannot be used") &&
+        error.message.includes(`key file ${missing}`),
+      `${mode}, missing, card off`,
+    );
+    assert.equal(warnings.length, before, "no warning about a judge that was never on");
+    before = warnings.length;
+    assert.throws(
+      () => readJudgeKey({ inboxCard: true, responseGate: mode, inboxJudgeKeyFile: missing }, warn),
+      /cannot be used/,
+      `${mode}, missing, card on`,
     );
     assert.equal(warnings.length, before + 1);
     assert.match(warnings[before], /inbox judge is off/);
     assert.throws(
       () =>
-        responseGateJudgeKey({ responseGate: mode, inboxJudgeKeyFile: file }, warn, () => {
+        readJudgeKey({ inboxCard: false, responseGate: mode, inboxJudgeKeyFile: file }, warn, () => {
           throw new Error("grants access to WD");
         }),
-      (error: Error) => !error.message.includes("SECRET-KEY") && error.message.includes(`response gate is ${mode}`),
+      (error: Error) =>
+        !error.message.includes("SECRET-KEY") &&
+        error.message.includes(`response gate is ${mode}`) &&
+        error.message.includes("grants access to WD"),
       `${mode}, unprotected`,
     );
   }
   assert.ok(warnings.every((line) => !line.includes("SECRET-KEY")), "the key never rides a warning");
-  // The inbox judge alone: the same null, one warning, no throw.
-  assert.equal(readInboxJudgeKey(missing, warn), null);
 });
 
 test("startBroker refuses to start with the gate on and no key, writing the reason to the log, where the inbox judge alone warns", async (t) => {
@@ -2629,6 +2651,7 @@ test("startBroker refuses to start with the gate on and no key, writing the reas
   assert.match(logged, /refusing to start/);
   assert.match(logged, /response gate is shadow/);
   assert.match(logged, /CHANNEL_INBOX_JUDGE_KEY_FILE is unset/);
+  assert.doesNotMatch(logged, /inbox judge is off/, "no warning about a judge the host never turned on");
 
   // The control: the inbox judge alone, its key file missing, starts with a warning.
   const broker = await startBroker(

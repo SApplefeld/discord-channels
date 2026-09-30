@@ -127,25 +127,29 @@ export function authorName(author: {
 }
 
 /**
- * Whether a message addresses this bot, from the facts the library reports: the users it mentions
- * and the author of the message it replies to.
+ * How a message stands to this bot's own user, from the facts the library reports: who wrote it,
+ * the users it mentions and the author of the message it replies to.
  *
  * A mention is a direct user mention of the bot's own id. A role mention or an @everyone names a
  * group the bot may belong to and is not one, since neither is a person asking the bot. A reply is
  * to the bot when the message it references was the bot's, which the library reports from the
  * referenced message's author whether or not the reply pinged them; a reply whose referenced
- * message is gone reports no author, and is not a reply to the bot. Before the connection has
- * identified itself there is no self to match, so nothing addresses it.
+ * message is gone reports no author, and is not a reply to the bot. A message is the bot's own when
+ * its author is the bot's own user, which is narrower than the author being any bot: another bot or
+ * a webhook in the thread is neither this bot nor the assistant. Before the connection has
+ * identified itself there is no self to match, so nothing addresses it and nothing is its own.
  */
 export function addressing(facts: {
   selfId: string | null;
+  authorId: string;
   mentionedUserIds: readonly string[];
   repliedToAuthorId: string | null;
-}): { mentionsBot: boolean; repliesToBot: boolean } {
-  if (facts.selfId === null) return { mentionsBot: false, repliesToBot: false };
+}): { mentionsBot: boolean; repliesToBot: boolean; fromSelf: boolean } {
+  if (facts.selfId === null) return { mentionsBot: false, repliesToBot: false, fromSelf: false };
   return {
     mentionsBot: facts.mentionedUserIds.includes(facts.selfId),
     repliesToBot: facts.repliedToAuthorId === facts.selfId,
+    fromSelf: facts.authorId === facts.selfId,
   };
 }
 
@@ -318,6 +322,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
 
     const addressed = addressing({
       selfId,
+      authorId: message.author.id,
       mentionedUserIds: [...message.mentions.users.keys()],
       // The library fills this from the referenced message's author, whether or not the reply
       // pinged them, and leaves it null where that message is gone.
@@ -337,8 +342,9 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
         // Reported rather than filtered here: every message this broker writes comes back over
         // this connection, and dropping it is a routing decision like any other.
         fromBot: message.author.bot,
-        // Reported on the same terms: whether the message addresses the bot is a fact the routing
-        // reads, and what it does with one is decided there.
+        // Reported on the same terms: whether the message addresses the bot, or is the bot's own,
+        // is a fact the routing reads, and what it does with one is decided there.
+        fromSelf: addressed.fromSelf,
         mentionsBot: addressed.mentionsBot,
         repliesToBot: addressed.repliesToBot,
         text: message.content,

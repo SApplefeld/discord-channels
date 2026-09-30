@@ -32,7 +32,7 @@
 // thread next.
 import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { MAX_JEV_CODE_POINTS, createJevClient } from "../jev/client.ts";
+import { MAX_JEV_CODE_POINTS, SECRET_SCREEN, createJevClient } from "../jev/client.ts";
 import type { JevFetch } from "../jev/client.ts";
 import { rotate } from "../log.ts";
 import type { RepeatLogSurface } from "../repeat-log.ts";
@@ -86,9 +86,12 @@ export type BufferDelivery = {
 /**
  * One gate decision as the journal records it. The fields are closed at these: the id is the
  * newest buffered message's, the key a label names; `probability` is present only where a call
- * ran; `lines` is absent only where the screen refused the send, since a row is on disk. The
- * outcome is `delivered` or `held`, or `stale` for a verdict that returned after its buffer had
- * already gone, which delivers nothing.
+ * ran; `lines` is absent where the secret screen matches any of them, on every trigger, since a
+ * row is on disk. The outcome is `delivered` or `held`, or `stale` for a verdict that returned
+ * after its buffer had already gone, which delivers nothing. A judge row records what the call
+ * was asked: the id and lines at the time of the ask. The event a verdict delivers carries the
+ * buffer as it then stands, lines that arrived during the call included, so a label reads the
+ * row's lines and the session may have read one or two more.
  */
 export type JournalRow = {
   id: string;
@@ -125,6 +128,11 @@ export type ResponseGateOptions = {
   judge?: ResponseGateJudge;
   /** Takes one row per decision. A throw out of it is logged and never reaches a delivery. */
   journal: (row: JournalRow) => void;
+  /**
+   * True where the gate runs beside an ungated delivery, as it does in `shadow`: nothing it holds
+   * is withheld from anyone, so a buffer it drops is not a loss and is not logged as one.
+   */
+  simulated?: boolean;
   /**
    * Handed a buffer released with no message of its own to answer on, by the age cap or the
    * judge, and the session it was held for. The caller owns the pipe and the thread, so it
@@ -172,12 +180,13 @@ export type ResponseGate = {
    */
   notePost: (threadId: string) => void;
   /**
-   * Drops a thread's buffer and its timers, delivering nothing, and returns how many messages that
-   * dropped so the caller can say so. For a session that has ended. A call in flight for the
-   * buffer is not aborted; its verdict is journaled as stale and delivers nothing.
+   * Drops a thread's buffer, its timers and its last-post clock, delivering nothing, and returns
+   * how many messages that dropped so the caller can say so. For a session that has ended. A
+   * call in flight for the buffer is not aborted; its verdict is journaled as stale and delivers
+   * nothing.
    */
   clear: (threadId: string) => number;
-  /** Drops every thread's buffer and timers, delivering nothing. For the broker stopping. */
+  /** Drops every thread's buffer, timers and clock, delivering nothing. For the broker stopping. */
   close: () => void;
   /** Every buffer held now, with the session each is held for, so the caller can drop the stale. */
   held: () => Array<{ threadId: string; sessionId: string }>;
@@ -246,8 +255,9 @@ function overBudget(chatId: string, messages: readonly BufferedMessage[]): boole
 /**
  * The lines the judge is sent: the newest buffered lines that fit the shared code point cut,
  * oldest first. The latest message is always sent, and is cut alone where it alone exceeds the
- * limit, which no line the router bounds can reach, since a name and a text are each capped
- * well under it.
+ * limit. A line the router builds cannot reach it: its name is bounded by the gateway's
+ * `MAX_AUTHOR_NAME_LENGTH` and its text by the router's `MAX_INBOUND_TEXT_LENGTH`, whose sum with
+ * the line's own prefix sits under `MAX_JEV_CODE_POINTS`, which the gate's test pins.
  */
 export function conversationLines(messages: readonly BufferedMessage[]): string[] {
   const lines: string[] = [];
@@ -307,16 +317,32 @@ export const GATE_REPEAT_LOG: RepeatLogSurface<[threadId: string]> = {
  * The journal on disk: one JSON row per line, appended to `file` and rotated at the broker log's
  * size and file count through the log's own rotation. Written for the owning user only, since a
  * row holds message text, and the directory is the state file's, made the way the state file's
- * writer makes it. Throws on a failed write; the gate logs that and delivers regardless.
+ * writer makes it: once, before the first row, and again only where an append finds it gone.
+ * Throws on a failed write; the gate logs that and delivers regardless.
  */
 export function createResponseGateJournal(options: {
   file: string;
   maxBytes: number;
   maxFiles: number;
 }): (row: JournalRow) => void {
+  let directoryMade = false;
+  const append = (line: string): void => {
+    if (!directoryMade) {
+      mkdirSync(path.dirname(options.file), { recursive: true, mode: 0o700 });
+      directoryMade = true;
+    }
+    appendFileSync(options.file, line, { encoding: "utf8", mode: 0o600 });
+  };
   return (row) => {
-    mkdirSync(path.dirname(options.file), { recursive: true, mode: 0o700 });
-    appendFileSync(options.file, `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600 });
+    const line = `${JSON.stringify(row)}\n`;
+    try {
+      append(line);
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "ENOENT") throw error;
+      // The directory was removed under the running broker: made again, once, for this row.
+      directoryMade = false;
+      append(line);
+    }
     if (statSync(options.file).size >= options.maxBytes) rotate(options.file, options.maxFiles);
   };
 }
@@ -350,7 +376,11 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
   /** The threads with a call out. A window elapsing on one of these asks when the call settles. */
   const inFlight = new Set<string>();
 
-  /** One row. The journal's failure is logged and stops nothing: a delivery never waits on disk. */
+  /**
+   * One row. The lines are screened here, on every trigger, so a pasted secret is kept off disk
+   * as the client keeps it off the wire; a row that would have carried one carries no lines. The
+   * journal's failure is logged and stops nothing: a delivery never waits on disk.
+   */
   function record(
     threadId: string,
     sessionId: string,
@@ -359,6 +389,10 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     outcome: JournalRow["outcome"],
     detail: { probability?: number; lines?: readonly string[] },
   ): void {
+    const lines =
+      detail.lines === undefined || detail.lines.some((line) => SECRET_SCREEN.test(line))
+        ? undefined
+        : detail.lines;
     const row: JournalRow = {
       id,
       time: new Date(now()).toISOString(),
@@ -367,7 +401,7 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
       trigger,
       ...(detail.probability === undefined ? {} : { probability: detail.probability }),
       outcome,
-      ...(detail.lines === undefined ? {} : { lines: detail.lines }),
+      ...(lines === undefined ? {} : { lines }),
     };
     try {
       options.journal(row);
@@ -424,26 +458,28 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
             const trigger: BufferTrigger = result.ok ? "judge" : "judge-failed";
             const detail = {
               ...(result.ok ? { probability: result.answers.expects_reply } : {}),
-              // A screened buffer's lines are what the screen refused to send, and they stay off
-              // disk as they stayed off the wire.
-              ...(!result.ok && result.kind === "screened" ? {} : { lines: asked.lines }),
+              lines: asked.lines,
             };
-            const current = held.get(threadId);
-            if (current !== asked.buffer) {
-              record(threadId, asked.buffer.sessionId, asked.id, trigger, "stale", detail);
-            } else if (result.ok && result.answers.expects_reply < threshold) {
-              record(threadId, current.sessionId, asked.id, trigger, "held", detail);
-            } else {
-              // At or above the threshold, or a call that failed: the buffer goes as it stands,
-              // with whatever arrived while the call was out, since those lines continue the ask
-              // the verdict answered.
-              release(threadId);
-              record(threadId, current.sessionId, asked.id, trigger, "delivered", detail);
-              options.onRelease(threadId, current.sessionId, { messages: current.messages, trigger });
+            try {
+              const current = held.get(threadId);
+              if (current !== asked.buffer) {
+                record(threadId, asked.buffer.sessionId, asked.id, trigger, "stale", detail);
+              } else if (result.ok && result.answers.expects_reply < threshold) {
+                record(threadId, current.sessionId, asked.id, trigger, "held", detail);
+              } else {
+                // At or above the threshold, or a call that failed: the buffer goes as it stands,
+                // with whatever arrived while the call was out, since those lines continue the
+                // ask the verdict answered.
+                release(threadId);
+                record(threadId, current.sessionId, asked.id, trigger, "delivered", detail);
+                options.onRelease(threadId, current.sessionId, { messages: current.messages, trigger });
+              }
+            } finally {
+              // A window that elapsed while this call was out, on this buffer or on one that
+              // opened since, owes its ask now, whatever the release above did. A throw out of
+              // `onRelease` is the client's to log, and must not strand a buffer waiting on it.
+              if (held.get(threadId)?.quietElapsed === true) ask(threadId);
             }
-            // A window that elapsed while this call was out, on this buffer or on one that opened
-            // since, owes its ask now.
-            if (held.get(threadId)?.quietElapsed === true) ask(threadId);
           },
         });
 
@@ -490,10 +526,12 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
       // answer for a router nothing reconciles.
       if (buffer !== undefined && buffer.sessionId !== sessionId) {
         release(threadId);
-        log(
-          `routing: dropped ${String(buffer.messages.length)} buffered messages held for session ` +
-            `${buffer.sessionId}, thread ${threadId} now admits for session ${sessionId}`,
-        );
+        if (options.simulated !== true) {
+          log(
+            `routing: dropped ${String(buffer.messages.length)} buffered messages held for session ` +
+              `${buffer.sessionId}, thread ${threadId} now admits for session ${sessionId}`,
+          );
+        }
         options.onDrop?.(threadId, buffer.sessionId, buffer.messages.length);
         buffer = undefined;
       }
@@ -557,11 +595,15 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     },
 
     clear(threadId) {
+      // The clock goes with the buffer: the session the thread held is over, and the map does not
+      // grow by one thread for the life of the broker.
+      lastPost.delete(threadId);
       return release(threadId)?.messages.length ?? 0;
     },
 
     close() {
       for (const threadId of [...held.keys()]) release(threadId);
+      lastPost.clear();
     },
 
     held: () => [...held].map(([threadId, buffer]) => ({ threadId, sessionId: buffer.sessionId })),

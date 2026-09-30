@@ -59,8 +59,14 @@ export type InboundMessage = {
    * decides anything on it.
    */
   author: string;
-  /** True when this bot wrote it. Its own cards, replies, and notices all come back over the gateway. */
+  /** True when a bot wrote it. This bot's own cards, replies and notices all come back over the gateway. */
   fromBot: boolean;
+  /**
+   * True when this bot's own user wrote it, which is narrower than `fromBot`: another bot or a
+   * webhook in the thread is a bot and not the assistant. Read by the response gate's last-post
+   * clock alone. False before the connection knows its own user.
+   */
+  fromSelf: boolean;
   /**
    * True when the message mentions this bot's own user directly. A role mention or an @everyone is
    * not one. Read by the response gate alone, which delivers a held buffer on it.
@@ -519,6 +525,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
           maxWaitMs: settings.maxWaitMs,
           ...(settings.judge === undefined ? {} : { judge: settings.judge }),
           journal: settings.journal,
+          simulated,
           // Fire and forget, on the timer's or the verdict's own tick: the delivery never rejects
           // by construction, and the catch is the same backstop the gateway puts behind `deliver`.
           onRelease: (threadId, sessionId, delivery) => {
@@ -551,10 +558,11 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       // this, the first reply would be routed straight back into the session that prompted it.
       // It stands in front of the gate because it is a drop and not a pass: a bot's own ID is
       // never the allowlisted one, so the gate below would refuse it a line later either way.
-      // Before the drop, the post stamps the thread's last-post clock, which the judge is told
-      // the seconds since: the writer's replies and the mirror's posts alike arrive here.
+      // Before the drop, this bot's own post stamps the thread's last-post clock, which the judge
+      // is told the seconds since: the writer's replies and the mirror's posts alike arrive here
+      // under the bot's own user. Another bot's post is dropped the same way and stamps nothing.
       if (message.fromBot) {
-        gate?.notePost(message.threadId);
+        if (message.fromSelf) gate?.notePost(message.threadId);
         return;
       }
 
@@ -681,24 +689,25 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       const addressed = { mentionsBot: message.mentionsBot, repliesToBot: message.repliesToBot };
 
       if (gate === null || simulated) {
+        // Shadow: the message joins the simulated buffer here, before the delivery below awaits
+        // anything, as it would join the live buffer. The gateway does not await one delivery
+        // before firing the next, so an admission after the pipe write and its notices could
+        // take a later message first. The pipe's outcome is never read: live admission does not
+        // read it either. What the gate decides is journaled by the gate and reaches nothing else.
+        gate?.admit(message.threadId, record.sessionId, buffered, addressed);
         const delivered = await handOver(
           record,
           message.threadId,
           { type: "message", chatId: message.threadId, text, author: message.author, senderClass },
           1,
         );
-        if (delivered) {
-          const deliveredAt = now();
-          if (operator) {
-            toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
-          }
-          // Announced only here, after the truncated text reached a live session.
-          if (truncated) await announceCut(message.threadId);
+        if (!delivered) return;
+        const deliveredAt = now();
+        if (operator) {
+          toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
         }
-        // Shadow: the same message joins the simulated buffer after its own delivery, whether or
-        // not the pipe took it, as it would join the live buffer, whose admission never reads the
-        // pipe. What the gate decides is journaled by the gate and reaches nothing else.
-        gate?.admit(message.threadId, record.sessionId, buffered, addressed);
+        // Announced only here, after the truncated text reached a live session.
+        if (truncated) await announceCut(message.threadId);
         return;
       }
 

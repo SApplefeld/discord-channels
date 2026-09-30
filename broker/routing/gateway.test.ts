@@ -403,42 +403,41 @@ test("the name is bounded on its way out of the gateway", () => {
 // Whether a message addresses this bot, read off the users it mentions and the author of the
 // message it replies to, so the response gate's two certain triggers are driven on values.
 
+/** The facts of a message the operator wrote, addressing nobody, for the tests that vary one. */
+const UNADDRESSED = { selfId: SELF, authorId: OPERATOR, mentionedUserIds: [], repliedToAuthorId: null };
+const NOBODY = { mentionsBot: false, repliesToBot: false, fromSelf: false };
+
 test("a direct mention of the bot's own user addresses it, and a mention of anyone else does not", () => {
   assert.deepEqual(
-    addressing({ selfId: SELF, mentionedUserIds: [OPERATOR, SELF], repliedToAuthorId: null }),
-    { mentionsBot: true, repliesToBot: false },
+    addressing({ ...UNADDRESSED, mentionedUserIds: [OPERATOR, SELF] }),
+    { ...NOBODY, mentionsBot: true },
   );
-  assert.deepEqual(
-    addressing({ selfId: SELF, mentionedUserIds: [OPERATOR], repliedToAuthorId: null }),
-    { mentionsBot: false, repliesToBot: false },
-  );
+  assert.deepEqual(addressing({ ...UNADDRESSED, mentionedUserIds: [OPERATOR] }), NOBODY);
   // A role mention or an @everyone reaches the library's role and everyone flags, never the user
   // list, so a message carrying only those mentions no user at all here.
-  assert.deepEqual(
-    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: null }),
-    { mentionsBot: false, repliesToBot: false },
-  );
+  assert.deepEqual(addressing(UNADDRESSED), NOBODY);
 });
 
 test("a reply to the bot's own message addresses it; a reply to anyone else's, or to one that is gone, does not", () => {
   assert.deepEqual(
-    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: SELF }),
-    { mentionsBot: false, repliesToBot: true },
+    addressing({ ...UNADDRESSED, repliedToAuthorId: SELF }),
+    { ...NOBODY, repliesToBot: true },
   );
-  assert.deepEqual(
-    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: OPERATOR }),
-    { mentionsBot: false, repliesToBot: false },
-  );
+  assert.deepEqual(addressing({ ...UNADDRESSED, repliedToAuthorId: OPERATOR }), NOBODY);
   // A reply whose referenced message was deleted reports no author, and is not a reply to the bot.
-  assert.deepEqual(
-    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: null }),
-    { mentionsBot: false, repliesToBot: false },
-  );
+  assert.deepEqual(addressing({ ...UNADDRESSED, repliedToAuthorId: null }), NOBODY);
 });
 
-test("before the connection knows its own user, nothing addresses it", () => {
+test("a message is the bot's own only when its author is the bot's own user, not when it is any bot", () => {
+  // The last-post clock the response gate keeps reads this, so another bot or a webhook posting
+  // in the thread must not read as the assistant having spoken.
+  assert.deepEqual(addressing({ ...UNADDRESSED, authorId: SELF }), { ...NOBODY, fromSelf: true });
+  assert.deepEqual(addressing({ ...UNADDRESSED, authorId: "800000000000000002" }), NOBODY);
+});
+
+test("before the connection knows its own user, nothing addresses it and nothing is its own", () => {
   assert.deepEqual(
-    addressing({ selfId: null, mentionedUserIds: [SELF], repliedToAuthorId: SELF }),
-    { mentionsBot: false, repliesToBot: false },
+    addressing({ selfId: null, authorId: SELF, mentionedUserIds: [SELF], repliedToAuthorId: SELF }),
+    NOBODY,
   );
 });

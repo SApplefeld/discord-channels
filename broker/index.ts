@@ -747,14 +747,16 @@ export type Inbox = OutboundInbox &
  * opens on a flagged reply and leaves on the operator's answer.
  */
 export function inboxWiring(options: {
-  config: Pick<BrokerConfig, "stateFile" | "inboxCard" | "inboxJudgeKeyFile" | "inboxThreshold">;
+  config: Pick<BrokerConfig, "stateFile" | "inboxCard" | "inboxThreshold">;
   registry: Pick<Registry, "list">;
+  /**
+   * The judge's key as `readJudgeKey` read it, or null where the judge is to stay off. Read once
+   * at startup for this and the response gate, which share the one file.
+   */
+  judgeKey: string | null;
   /** The judge's request, injected so a test drives it without a network. Global fetch otherwise. */
   fetch?: JudgeFetch;
-  /** The key file's protection check, injected so a test reaches it without a spawn. */
-  protectKeyFile?: (file: string) => void;
   log: (message: string) => void;
-  warn: (message: string) => void;
   onError: (message: string) => void;
 }): Inbox | null {
   if (!options.config.inboxCard) return null;
@@ -783,12 +785,11 @@ export function inboxWiring(options: {
     return recordOf(sessionId) !== undefined;
   }
 
-  const key = readInboxJudgeKey(options.config.inboxJudgeKeyFile, options.warn, options.protectKeyFile);
   const judge =
-    key === null
+    options.judgeKey === null
       ? null
       : createJudge({
-          apiKey: key,
+          apiKey: options.judgeKey,
           threshold: options.config.inboxThreshold,
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           log: options.log,
@@ -874,31 +875,42 @@ export function rebindHandling(options: {
 }
 
 /**
- * The response gate's judge key, or null on a host with the gate off. The same file and the same
- * reading the inbox judge uses, `readInboxJudgeKey`, so one key serves both callers of the Jev
- * client and a host names it once.
+ * The Jev key both the inbox judge and the response gate use, read once from the one file
+ * `CHANNEL_INBOX_JUDGE_KEY_FILE` names, or null where neither needs it or the file is unusable
+ * and only the inbox judge wanted it.
  *
- * Where the inbox judge alone would warn and run on `ASK:` lines, the gate refuses to start: a
- * host whose gate is `shadow` or `live` has asked for every message in a gated thread to be judged,
- * and a broker that silently could not judge would deliver on the age cap alone in `live` and
- * journal nothing in `shadow`, which is a week of shadow rows that never existed. The refusal
- * names the mode and the variable, never the file's contents; the warning `readInboxJudgeKey`
- * wrote names the file and the cause.
+ * The two consumers fail differently. The inbox judge is an extra reading of unmarked replies, so
+ * an unusable key turns it off with the one warning `readInboxJudgeKey` writes and the inbox runs
+ * on `ASK:` lines. The gate, in `shadow` or `live`, has asked for every message in a gated thread
+ * to be judged, and a broker that silently could not judge would deliver on the age cap alone in
+ * `live` and journal nothing in `shadow`, a week of shadow rows that never existed: so it refuses
+ * to start. The refusal names the mode, the variable and the cause, never the file's contents.
+ * The inbox judge's own warning is written only where the inbox card is on, since it says that
+ * judge is off, which is no news on a host that never turned it on.
  */
-export function responseGateJudgeKey(
-  config: Pick<BrokerConfig, "responseGate" | "inboxJudgeKeyFile">,
+export function readJudgeKey(
+  config: Pick<BrokerConfig, "inboxCard" | "responseGate" | "inboxJudgeKeyFile">,
   warn: (message: string) => void,
   // Injectable so a test reaches the refusal without a hardened file; the default is the check
   // the token file is held to.
   protect?: (file: string) => void,
 ): string | null {
-  if (config.responseGate === "off") return null;
-  const key = readInboxJudgeKey(config.inboxJudgeKeyFile, warn, protect);
-  if (key !== null) return key;
+  if (!config.inboxCard && config.responseGate === "off") return null;
+  let problem: string | null = null;
+  const key = readInboxJudgeKey(
+    config.inboxJudgeKeyFile,
+    (line) => {
+      problem = line;
+      if (config.inboxCard) warn(line);
+    },
+    protect,
+  );
+  if (key !== null || config.responseGate === "off") return key;
   const cause =
-    config.inboxJudgeKeyFile === null
+    problem === null
       ? "CHANNEL_INBOX_JUDGE_KEY_FILE is unset"
-      : "the file CHANNEL_INBOX_JUDGE_KEY_FILE names cannot be used";
+      : "the file CHANNEL_INBOX_JUDGE_KEY_FILE names cannot be used: " +
+        (problem as string).replace(/^broker: the inbox judge is off, its /, "");
   throw new Error(
     `the response gate is ${config.responseGate} and needs the inbox judge's key, but ${cause}`,
   );
@@ -918,11 +930,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     logger.warn(message);
   };
 
-  // Read before anything is opened or bound, so a host whose gate cannot judge fails at once
-  // with the reason on disk: under the scheduled task there is no console for the throw to reach.
-  let responseGateKey: string | null;
+  // Read once, for the inbox judge and the response gate alike, and before anything is opened or
+  // bound, so a host whose gate cannot judge fails at once with the reason on disk: under the
+  // scheduled task there is no console for the throw to reach.
+  let judgeKey: string | null;
   try {
-    responseGateKey = responseGateJudgeKey(config, warn);
+    judgeKey = readJudgeKey(config, warn);
   } catch (error) {
     const message = `broker: refusing to start: ${String(error)}`;
     console.error(message);
@@ -993,8 +1006,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   inbox = inboxWiring({
     config,
     registry,
+    judgeKey,
     log: note,
-    warn,
     onError: (message) => {
       console.error(message);
       logger.error(message);
@@ -1673,13 +1686,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         mode: config.responseGate,
         maxMessages: config.responseGateMaxMessages,
         maxWaitMs: config.responseGateMaxWaitMs,
-        ...(responseGateKey === null
+        ...(judgeKey === null || config.responseGate === "off"
           ? {}
           : {
               judge: {
                 quietMs: config.responseGateQuietMs,
                 threshold: config.responseGateThreshold,
-                apiKey: responseGateKey,
+                apiKey: judgeKey,
               },
             }),
         journal: createResponseGateJournal({

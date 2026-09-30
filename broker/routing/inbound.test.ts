@@ -330,6 +330,7 @@ function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
     senderId: OPERATOR,
     author: AUTHOR,
     fromBot: false,
+    fromSelf: false,
     mentionsBot: false,
     repliesToBot: false,
     text: "please run the migration",
@@ -1629,7 +1630,9 @@ test("the bot's own post stamps the thread's last-post clock before it is droppe
   h.pending[0].resolve(verdict(0.9));
   await flush();
 
-  await h.router.deliver(message({ fromBot: true, senderId: "800000000000000001", text: "the reply" }));
+  await h.router.deliver(
+    message({ fromBot: true, fromSelf: true, senderId: "800000000000000001", text: "the reply" }),
+  );
   assert.equal(h.sent.length, 1, "the bot's post is dropped, not routed");
   now += 12_500;
   await h.router.deliver(fromBo({ text: "two", messageId: "2" }));
@@ -1673,4 +1676,63 @@ test("live: closing the router stops the quiet window, and a session's end in sh
   assert.equal(shadow.quiet()[0].cleared, true, "the simulated buffer cleared with its session");
   assert.deepEqual(shadow.notices, [], "nothing was withheld, so nothing is announced");
   assert.deepEqual(lines.filter((line) => line.includes("dropped")), [], "and nothing is logged as lost");
+
+  // The gate's own drop, on a thread admitting for another session, is as silent in shadow.
+  shadow.threads.delete("session-a");
+  announce(shadow.registry, "session-b", "22222222-3333-4444-5555-666666666666");
+  shadow.relays.attach("22222222-3333-4444-5555-666666666666", {
+    send: (event) => {
+      if (event.type !== "hello") shadow.sent.push(event);
+      return true;
+    },
+    close: () => {},
+  });
+  shadow.threads.set("session-b", THREAD);
+  await shadow.router.deliver(message({ text: "for a, still" }));
+  await shadow.router.deliver(message({ text: "for b" }));
+  await flush();
+  assert.equal(shadow.sent.length, 3, "delivered at once, as every shadow message is");
+  assert.deepEqual(shadow.notices, []);
+  assert.deepEqual(lines.filter((line) => line.includes("dropped")), []);
+});
+
+test("shadow: two deliveries whose hand-overs settle in reverse order join the simulated buffer in arrival order", async () => {
+  // The gateway fires each message without awaiting the last, and a shadow delivery with no relay
+  // waits on a Discord round trip for its unreachable notice. The simulated buffer must take each
+  // message when it arrives, before that wait, as the live buffer does: here the first message's
+  // notice is held open while the second's is floored at once, so the second settles first.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let posts = 0;
+  const h = harness({
+    gate: { mode: "shadow" },
+    attachRelay: false,
+    beforePost: () => {
+      posts += 1;
+      return posts === 1 ? held : Promise.resolve();
+    },
+  });
+  const first = h.router.deliver(message({ text: "one", messageId: "1" }));
+  const second = h.router.deliver(fromBo({ text: "two", messageId: "2" }));
+  await second;
+  release();
+  await first;
+  await h.router.deliver(message({ text: "@bot three", mentionsBot: true, messageId: "3" }));
+  assert.deepEqual(h.rows.map((row) => row.lines), [
+    ["Ann (operator): one", "Bo (participant): two", "Ann (operator): @bot three"],
+  ]);
+  assert.deepEqual(h.sent, [], "nothing reached the pipe, which has no relay");
+});
+
+test("only the bot's own post stamps the last-post clock; another bot's or a webhook's does not", async () => {
+  let now = 10_000;
+  const h = harness({ gate: { judge: {} }, now: () => now });
+  await h.router.deliver(message({ fromBot: true, fromSelf: false, senderId: "800000000000000002", text: "another bot" }));
+  now += 5_000;
+  await h.router.deliver(message({ text: "one", messageId: "1" }));
+  elapse(h);
+  assert.equal(h.state(0).seconds_since_assistant_posted, "never", "a foreign bot's post is not the assistant's");
+  assert.equal(h.sent.length, 0, "and it was dropped as every bot post is");
 });

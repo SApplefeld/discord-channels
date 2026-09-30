@@ -11,6 +11,8 @@ import os from "node:os";
 import path from "node:path";
 import { INSTRUCTIONS } from "../../relay/protocol.ts";
 import { MAX_JEV_CODE_POINTS } from "../jev/client.ts";
+import { MAX_AUTHOR_NAME_LENGTH } from "../sanitize.ts";
+import { MAX_INBOUND_TEXT_LENGTH } from "./inbound.ts";
 import type { JevFetch } from "../jev/client.ts";
 import {
   GATE_QUESTIONS,
@@ -659,7 +661,7 @@ test("a buffer carrying a secret makes no call, delivers on judge-failed, and it
   assert.equal(h.released.length, 1, "and the buffer fails open to the session");
   assert.equal(h.released[0].delivery.trigger, "judge-failed");
   assert.equal(h.released[0].delivery.messages.length, 2);
-  assert.deepEqual(Object.keys(h.rows[0]), ["id", "time", "threadId", "sessionId", "trigger", "outcome"]);
+  assert.deepEqual(new Set(Object.keys(h.rows[0])), new Set(["id", "time", "threadId", "sessionId", "trigger", "outcome"]));
   assert.equal(h.rows[0].id, "2");
   assert.equal(h.rows[0].trigger, "judge-failed");
   assert.equal(h.rows[0].outcome, "delivered");
@@ -676,6 +678,73 @@ test("the judge is sent the newest lines that fit the shared cut, and the latest
   const alone = conversationLines([wide("1"), operator("\u{1F600}".repeat(MAX_JEV_CODE_POINTS + 5), false, "2")]);
   assert.equal(alone.length, 1, "a latest line past the cut on its own is sent alone");
   assert.equal([...alone[0]].length, MAX_JEV_CODE_POINTS, "cut to the limit, never splitting a pair");
+
+  // The inequality the cut-alone path rests on: the longest line the router can build, a name at
+  // the gateway's bound and a text at the router's ceiling, fits under the cut.
+  const longest = bufferedLine({
+    id: "3",
+    author: "a".repeat(MAX_AUTHOR_NAME_LENGTH),
+    senderClass: "participant",
+    text: "t".repeat(MAX_INBOUND_TEXT_LENGTH),
+    truncated: false,
+  });
+  assert.ok([...longest].length < MAX_JEV_CODE_POINTS, `${String([...longest].length)} code points`);
+});
+
+test("a throwing onRelease is the client's to log, and a buffer whose window elapsed during the call is still asked", async () => {
+  const h = gate({ judge: {} });
+  const failing = createResponseGate({
+    maxMessages: 20,
+    maxWaitMs: 600_000,
+    judge: {
+      quietMs: 5_000,
+      threshold: 0.6,
+      apiKey: KEY,
+      fetch: (url, init) => {
+        h.calls.push({ url, init });
+        return new Promise((resolve, reject) => h.pending.push({ resolve, reject }));
+      },
+    },
+    journal: (row) => h.rows.push(row),
+    onRelease: () => {
+      throw new Error("the pipe is gone");
+    },
+    setTimer: (callback, ms) => {
+      const entry = { fire: callback, ms, cleared: false };
+      h.scheduled.push(entry);
+      return entry as unknown as NodeJS.Timeout;
+    },
+    clearTimer: (timer) => {
+      (timer as unknown as { cleared: boolean }).cleared = true;
+    },
+    log: (line) => h.lines.push(line),
+  });
+  failing.admit(THREAD, SESSION, operator("one", false, "1"), UNADDRESSED);
+  newestQuiet(h).fire();
+  h.pending[0].resolve(scored(0.9));
+  await settled();
+  assert.deepEqual(failing.held(), [], "delivered, and the throw did not undo the release");
+  assert.ok(h.lines.some((line) => line.includes("verdict handler threw")), h.lines.join("\n"));
+  // The next buffer's window still asks: nothing was stranded by the throw.
+  failing.admit(THREAD, SESSION, operator("two", false, "2"), UNADDRESSED);
+  newestQuiet(h).fire();
+  assert.equal(h.calls.length, 2);
+});
+
+test("clearing a thread and closing the gate drop the last-post clock, so the next ask starts from never", async () => {
+  const h = gate({ judge: {} });
+  h.gate.notePost(THREAD);
+  h.gate.notePost(OTHER_THREAD);
+  h.gate.clear(THREAD);
+  admit(h.gate, operator("one", false, "1"));
+  newestQuiet(h).fire();
+  assert.equal(h.state(0).seconds_since_assistant_posted, "never", "cleared with the thread");
+  h.pending[0].resolve(scored(0.9));
+  await settled();
+  h.gate.close();
+  h.gate.admit(OTHER_THREAD, "session-b", operator("two", false, "2"), UNADDRESSED);
+  newestQuiet(h).fire();
+  assert.equal(h.state(1).seconds_since_assistant_posted, "never", "cleared with everything on close");
 });
 
 test("the judge is told the seconds since the bot last posted in the thread, and never before it has", async () => {
@@ -721,10 +790,10 @@ test("every decision journals one row with the closed field set, and no row carr
     ["5", "judge", "delivered"],
   ]);
   for (const row of h.rows) {
-    const expected = ["id", "time", "threadId", "sessionId", "trigger"];
+    // The closed field set, as a set: the fields are the contract, their order is not.
+    const expected = ["id", "time", "threadId", "sessionId", "trigger", "outcome", "lines"];
     if (row.trigger === "judge") expected.push("probability");
-    expected.push("outcome", "lines");
-    assert.deepEqual(Object.keys(row), expected, JSON.stringify(row));
+    assert.deepEqual(new Set(Object.keys(row)), new Set(expected), JSON.stringify(row));
     assert.equal(row.time, new Date(now).toISOString());
     assert.equal(row.threadId, THREAD);
     assert.equal(row.sessionId, SESSION);
@@ -791,6 +860,11 @@ test("the journal on disk is one JSON row per line, made under the state directo
     assert.ok(active.length > 0 && rotated.length > 0);
     assert.ok(Math.min(...active) > Math.max(...rotated), "the active file holds the newer rows");
 
+    // The directory is made once, and again only where a row finds it gone.
+    rmSync(path.dirname(file), { recursive: true, force: true });
+    journal(row(14));
+    assert.equal(readFileSync(file, "utf8"), `${JSON.stringify(row(14))}\n`, "remade under the running writer");
+
     // A write that cannot land throws, which the gate catches and logs; nothing here swallows it.
     writeFileSync(path.join(dir, "blocker"), "", "utf8");
     const blocked = createResponseGateJournal({
@@ -802,4 +876,33 @@ test("the journal on disk is one JSON row per line, made under the state directo
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a row's lines are screened on every trigger: a pasted token in a mention-delivered or aged buffer never enters the journal", () => {
+  // The control for the no-key-material predicate on the certain-trigger and age-cap paths, which
+  // make no call and so never met the client's screen: a token-shaped line withheld from the
+  // predicate's own literal, matched on the screen's shape.
+  const token = "sk-abcdefghij0123456789xyz";
+  const h = gate({ maxWaitMs: 60_000 });
+  admit(h.gate, operator("one", false, "1"));
+  const deliveries = admit(h.gate, participant(`the key is ${token}`, false, "2"), MENTION);
+  assert.equal(deliveries.length, 1, "delivered to the session regardless: the screen guards the journal, not the pipe");
+  assert.equal(deliveries[0].messages.length, 2);
+
+  admit(h.gate, operator(`password = "hunter2"`, false, "3"));
+  h.scheduled.filter((timer) => timer.ms === 60_000)[1].fire();
+  assert.equal(h.released.length, 1);
+
+  assert.deepEqual(h.rows.map((row) => [row.id, row.trigger, row.outcome, Object.hasOwn(row, "lines")]), [
+    ["2", "mention", "delivered", false],
+    ["3", "age-cap", "delivered", false],
+  ]);
+  for (const row of h.rows) {
+    assert.deepEqual(new Set(Object.keys(row)), new Set(["id", "time", "threadId", "sessionId", "trigger", "outcome"]));
+  }
+  const written = h.rows.map((row) => JSON.stringify(row)).join("\n");
+  assert.ok(!written.includes(token) && !written.includes("hunter2"), written);
+
+  // The predicate's control on this path: the same rows with the lines kept would have carried it.
+  assert.ok(JSON.stringify(deliveries[0].messages.map(bufferedLine)).includes(token));
 });

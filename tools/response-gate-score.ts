@@ -44,7 +44,8 @@ export function readJournal(text: string): Map<string, number> {
 }
 
 /**
- * The labels, `<id>\t<yes|no>` per line, blank lines skipped. Any other line is refused with its
+ * The labels, `<id>\t<yes|no>` per line, blank lines skipped and each line trimmed, so a file
+ * written on a CRLF checkout reads as one written on LF. Any other line is refused with its
  * number, since a label file is short and hand-written and a silently dropped line is a score
  * that reads as measured while missing a case.
  */
@@ -108,13 +109,30 @@ export function render(journal: Map<string, number>, labels: Map<string, boolean
   return `${lines.join("\n")}\n`;
 }
 
+/** One file's text, or one line on stderr and a non-zero exit: an operator's typo earns no stack. */
+function read(file: string): string {
+  try {
+    return readFileSync(file, "utf8");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`cannot read ${file}: ${reason}`);
+    process.exit(1);
+  }
+}
+
 if (runDirectly(import.meta.url)) {
   const [journalPath, labelsPath] = process.argv.slice(2);
   if (journalPath === undefined || labelsPath === undefined) {
     console.error("usage: node tools/response-gate-score.ts <journal> <labels>");
     process.exit(2);
   }
-  process.stdout.write(
-    render(readJournal(readFileSync(journalPath, "utf8")), readLabels(readFileSync(labelsPath, "utf8"))),
-  );
+  const journal = readJournal(read(journalPath));
+  let labels: Map<string, boolean>;
+  try {
+    labels = readLabels(read(labelsPath));
+  } catch (error) {
+    console.error(`${labelsPath}: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  process.stdout.write(render(journal, labels));
 }
