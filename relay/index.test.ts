@@ -38,5 +38,13 @@ test("every outcome that had nowhere to land is reported as an error, and succes
 
   const sent = replyToolResult("sent");
   assert.equal(Object.hasOwn(sent, "isError"), false);
-  assert.equal(text("sent"), "Sent to the operator's thread.");
+  assert.equal(text("sent"), "Sent to this session's thread.");
+});
+
+test("no reply outcome tells the model the thread is the operator's alone", () => {
+  // The thread may hold participants beside the operator, so a result naming it the operator's
+  // would have the model write its next reply for one reader where several read it.
+  for (const status of ["sent", "still-posting", "no-session", "no-thread", "failed"] as const) {
+    assert.doesNotMatch(text(status), /operator/, `${status} must not name the thread the operator's`);
+  }
 });
