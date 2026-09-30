@@ -1073,7 +1073,8 @@ refused by name rather than guessed at.
 | `CHANNEL_BROKER_LOG_MAX_FILES` | 5 | Files kept, active plus rotated |
 | `CHANNEL_DISCORD_TOKEN_FILE` | state root | The bot token file |
 | `CHANNEL_DISCORD_CHANNEL` | unset | The channel threads are opened in |
-| `CHANNEL_ALLOWED_USER_ID` | unset | The one Discord user allowed to steer this host |
+| `CHANNEL_ALLOWED_USER_ID` | unset | One Discord user allowed to steer this host, as an operator |
+| `CHANNEL_SENDERS` | unset | The host's roster, comma-separated `<id>:operator` and `<id>:participant` entries, admitted alongside `CHANNEL_ALLOWED_USER_ID` |
 | `CHANNEL_DISCORD_REFRESH_MS` | 5 s | How often the surfaces are reconciled |
 | `CHANNEL_DISCORD_DWELL_MS` | 60 s | How long a state must hold before a rename is spent on it |
 | `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working` |
@@ -1165,9 +1166,12 @@ else.
 **The broker will not start.** Three refusals are deliberate and each names its cause in the log
 before the process exits. It refuses a token file that any account on the machine can read or write,
 and one whose directory is that permissive, naming the file and the principal. It refuses to run a
-Discord connection with no `CHANNEL_ALLOWED_USER_ID`, because a gate that was misconfigured and a
-gate that was never wired look identical from the outside. And it refuses any out-of-range or
-misordered tunable. Re-run the installer for the first, fix `broker.env` for the other two.
+Discord connection whose sender roster names no operator, in either `CHANNEL_ALLOWED_USER_ID` or
+`CHANNEL_SENDERS`, because a gate that was misconfigured and a gate that was never wired look
+identical from the outside. The same refusal covers a roster it cannot read: an ID that is not a
+snowflake, a `CHANNEL_SENDERS` entry whose class is not `operator` or `participant`, or one ID given
+both classes, and the log line names the entry. And it refuses any out-of-range or misordered
+tunable. Re-run the installer for the first, fix `broker.env` for the other two.
 
 **A message into an old thread gets no answer at all.** A message sent to a session that has ended is
 normally answered in-thread with a notice saying so. That only works while the broker still holds the

@@ -176,7 +176,7 @@ function harness(
   const router = createInboundRouter({
     registry,
     relays,
-    gate: createSenderGate(OPERATOR),
+    gate: createSenderGate([{ id: OPERATOR, class: "operator" }]),
     permissions: permissions.desk,
     // Nothing held, unless a test wires a desk that holds something: the default is a broker whose
     // sessions have no question parked, which is every test above.
@@ -665,7 +665,7 @@ test("a failed notice does not propagate out of the router", async () => {
   const router = createInboundRouter({
     registry,
     relays,
-    gate: createSenderGate(OPERATOR),
+    gate: createSenderGate([{ id: OPERATOR, class: "operator" }]),
     permissions: watchedDesk().desk,
     questions: { answerTyped: () => false },
     threadFor: () => THREAD,

@@ -78,6 +78,7 @@ type InstallArgs = {
   hostName?: string;
   channelId?: string;
   allowedUserId?: string;
+  senders?: string;
   botToken?: string;
   botTokenFile?: string;
   port?: number;
@@ -120,6 +121,7 @@ function runInstallHost(
   if (args.hostName !== undefined) params.push(`HostName = "${args.hostName}"`);
   if (args.channelId !== undefined) params.push(`ChannelId = "${args.channelId}"`);
   if (args.allowedUserId !== undefined) params.push(`AllowedUserId = "${args.allowedUserId}"`);
+  if (args.senders !== undefined) params.push(`Senders = "${args.senders}"`);
   if (args.botTokenFile !== undefined) params.push(`BotTokenFile = "${args.botTokenFile}"`);
   if (args.port !== undefined) params.push(`Port = ${args.port}`);
   if (args.repoRoot !== undefined) params.push(`RepoRoot = "${args.repoRoot}"`);
@@ -279,6 +281,85 @@ describe("Install-Host end to end", { concurrency: 8 }, () => {
     // one route in service. The relay's own registration does not come from here: a settings file's
     // mcpServers key is read by nothing, so the wrapper writes a --mcp-config per launch instead.
     assert.deepEqual(settings.permissions?.allow, ["mcp__plugin_relay_channel-relay__reply"]);
+  });
+
+  it("Install-Host writes a senders list to broker.env, and needs no allowed user beside an operator in it", async (t) => {
+    const repoRoot = fixtureRepoRoot();
+    const settingsDir = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-settings-"));
+    const stateRoot = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-state-"));
+    t.after(() => {
+      rmSync(repoRoot, { recursive: true, force: true });
+      rmSync(settingsDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+    });
+
+    const result = await runInstallHost(
+      {
+        scriptPath: path.join(repoRoot, "install", "Install-Host.ps1"),
+        hostName: "NEO",
+        channelId: "123456789012345678",
+        senders: "111111111111111111:operator,222222222222222222:participant",
+        botToken: "fake-token-value",
+        repoRoot,
+        settingsPath: path.join(settingsDir, "settings.json"),
+        stateRoot,
+        skipNpmCi: true,
+      },
+      repoRoot,
+    );
+    assert.equal(result.status, 0, `Install-Host failed: ${result.stdout}\n${result.stderr}`);
+
+    const env = readFileSync(path.join(stateRoot, "broker.env"), "utf8");
+    assert.match(env, /^CHANNEL_SENDERS=111111111111111111:operator,222222222222222222:participant$/m);
+    // A key this run was not given is left out rather than written empty, so an earlier install's
+    // value would survive the merge rather than be blanked by it.
+    assert.doesNotMatch(env, /CHANNEL_ALLOWED_USER_ID=/);
+  });
+
+  it("Install-Host refuses a roster with no operator and a senders list that is not id:class pairs", async (t) => {
+    const repoRoot = fixtureRepoRoot();
+    const settingsDir = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-settings-"));
+    const stateRoot = mkdtempSync(path.join(os.tmpdir(), "channels-fixture-state-"));
+    t.after(() => {
+      rmSync(repoRoot, { recursive: true, force: true });
+      rmSync(settingsDir, { recursive: true, force: true });
+      rmSync(stateRoot, { recursive: true, force: true });
+    });
+    const base = {
+      scriptPath: path.join(repoRoot, "install", "Install-Host.ps1"),
+      hostName: "NEO",
+      channelId: "123456789012345678",
+      repoRoot,
+      settingsPath: path.join(settingsDir, "settings.json"),
+      stateRoot,
+      skipAcl: true,
+      skipNpmCi: true,
+    };
+
+    // Participants alone: a broker that refuses to start, so the install refuses first.
+    const noOperator = await runInstallHost(
+      { ...base, senders: "222222222222222222:participant" },
+      repoRoot,
+    );
+    assert.notEqual(noOperator.status, 0, `expected a refusal; stdout: ${noOperator.stdout}`);
+    // PowerShell wraps a thrown message at the console width, so these match single tokens rather
+    // than a phrase a line break can land inside.
+    assert.match(noOperator.stderr, /-AllowedUserId/);
+    assert.match(noOperator.stderr, /operator/);
+
+    // An unknown class and a class in the wrong case are both refused at the parameter, before any
+    // file is written. A legacy operator rides beside each, so the refusal is the list's own.
+    for (const senders of ["222222222222222222:admin", "222222222222222222:Participant"]) {
+      const malformed = await runInstallHost(
+        { ...base, allowedUserId: "876543210987654321", senders },
+        repoRoot,
+      );
+      assert.notEqual(malformed.status, 0, `expected a refusal of ${senders}; stdout: ${malformed.stdout}`);
+      // The parameter's pattern is what refuses it, not a script that never heard of -Senders.
+      assert.match(malformed.stderr, /validate/);
+      assert.match(malformed.stderr, /Senders/);
+    }
+    assert.equal(existsSync(path.join(stateRoot, "broker.env")), false);
   });
 
   it("Install-Host rejects both -BotToken and -BotTokenFile together", async (t) => {

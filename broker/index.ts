@@ -1630,9 +1630,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // later as messages that silently never arrive.
     await gateway.start();
 
+    const participants =
+      gate.participantIds.length > 0
+        ? `, joined by participants ${gate.participantIds.join(", ")}`
+        : "";
     note(
       `broker: discord surfaces on, threads open in channel ${discord.channelId}, ` +
-        `steered by user ${gate.operatorId} and nobody else`,
+        `steered by operators ${gate.operatorIds.join(", ")}${participants}, and nobody else`,
     );
   }
 

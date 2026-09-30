@@ -1,6 +1,6 @@
 # Sender classes, author attribution and a response gate for a shared client thread
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-09-30
 

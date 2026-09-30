@@ -25,10 +25,16 @@ entry in wrapper/Enter-ClaudeSession.ps1's channel-flag table to launch a sessio
 The Discord channel this host's threads are opened in. A snowflake (17-20 digits).
 
 .PARAMETER AllowedUserId
-The Discord user ID allowed to send this host's sessions messages and approve their permission
-prompts. A snowflake. Stored in the same config file the broker reads, where its sender gate is the
-only thing that admits an inbound message. A broker with a Discord connection refuses to start
-without it.
+A Discord user ID allowed to send this host's sessions messages and approve their permission
+prompts, as an operator. A snowflake. Stored in the same config file the broker reads, where its
+sender gate is the only thing that admits an inbound message. A broker with a Discord connection
+refuses to start without an operator, so this or an operator in -Senders is required.
+
+.PARAMETER Senders
+The host's roster of Discord users, as a comma-separated list of <snowflake>:operator and
+<snowflake>:participant entries. An operator's word is the host owner's; a participant may talk to a
+session and holds no more than that. Stored as CHANNEL_SENDERS beside CHANNEL_ALLOWED_USER_ID, and
+the broker admits the union of the two. Optional when -AllowedUserId is given.
 
 .PARAMETER BotToken
 The bot token, as a SecureString rather than plain text: a plain-text parameter lands in
@@ -83,9 +89,15 @@ param(
     [ValidatePattern('^\d{17,20}$')]
     [string]$ChannelId,
 
-    [Parameter(Mandatory)]
+    # Not Mandatory: a -Senders list naming an operator stands in for it, which the check below the
+    # parameters enforces.
     [ValidatePattern('^\d{17,20}$')]
     [string]$AllowedUserId,
+
+    # Case-sensitive, as the broker's own parse is: 'Operator' is not a class it recognizes.
+    [ValidatePattern('^\d{17,20}:(operator|participant)(,\d{17,20}:(operator|participant))*$',
+        Options = 'None')]
+    [string]$Senders,
 
     [System.Security.SecureString]$BotToken,
 
@@ -105,6 +117,15 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'Install-Functions.ps1')
+
+# Before anything is written or prompted for: a config with no operator is one the broker refuses
+# to start on, and this is the last point where that is a message rather than a dead service.
+$senderEntries = if ($Senders) { @($Senders -split ',') } else { @() }
+if (-not $AllowedUserId -and -not ($senderEntries -clike '*:operator')) {
+    throw "Install-Host: pass -AllowedUserId, or a -Senders list naming at least one " +
+        "<snowflake>:operator entry. A broker with a Discord connection and no operator refuses " +
+        "to start."
+}
 
 if ($BotToken -and $BotTokenFile) {
     throw "Install-Host: pass -BotToken or -BotTokenFile, not both."
@@ -314,14 +335,15 @@ if (-not $SkipAcl) {
 }
 
 $envFile = Join-Path $StateRoot 'broker.env'
-Set-ChannelEnvFile -Path $envFile -Values ([ordered]@{
+$envValues = [ordered]@{
     CHANNEL_HOST_NAME          = $HostName
     CHANNEL_BROKER_PORT        = $Port
     CHANNEL_DISCORD_CHANNEL    = $ChannelId
     CHANNEL_DISCORD_TOKEN_FILE = $tokenFile
-    # The broker's sender gate checks every inbound message's author against this, and refuses to
-    # start without it whenever Discord is configured.
+    # The broker's sender gate checks every inbound message's author against the union of these
+    # two, and refuses to start without an operator in one of them whenever Discord is configured.
     CHANNEL_ALLOWED_USER_ID    = $AllowedUserId
+    CHANNEL_SENDERS            = $Senders
     CHANNEL_BROKER_LOG_FILE    = (Join-Path $StateRoot 'broker.log')
     CHANNEL_BROKER_STATE       = (Join-Path $StateRoot 'broker-state.json')
     # Pinned rather than left to Start-Broker.ps1 to resolve from PATH under -ExecutionPolicy
@@ -333,7 +355,13 @@ Set-ChannelEnvFile -Path $envFile -Values ([ordered]@{
     # reading this file, or later code, can detect instead of the broker simply failing to read its
     # own token file with no signal pointing back at this.
     CHANNEL_TASK_USER          = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-})
+}
+# A roster key this run was not given is left out rather than written empty, so the value the last
+# install wrote survives the merge instead of being blanked by a run that only passed the other one.
+foreach ($key in @('CHANNEL_ALLOWED_USER_ID', 'CHANNEL_SENDERS')) {
+    if (-not $envValues[$key]) { $envValues.Remove($key) }
+}
+Set-ChannelEnvFile -Path $envFile -Values $envValues
 
 $fragment = Get-SubstitutedFragment -FragmentPath $fragmentPath -SessionStartScriptPath $sessionStartScript
 Merge-ChannelSettingsFile -SettingsPath $SettingsPath -Fragment $fragment | Out-Null

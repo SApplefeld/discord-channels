@@ -129,7 +129,7 @@ function harness(asked: AskedQuestion[] = questions(), rate = NO_RATE, now?: () 
   assert.ok(entryId !== null);
 
   const router = createInteractionRouter({
-    gate: createSenderGate(OPERATOR),
+    gate: createSenderGate([{ id: OPERATOR, class: "operator" }]),
     desk,
     // The permission desk stands in: what it does with a verdict is its own file's subject, and
     // what this one measures is which thread and which nonce reach it, and what a press that found
