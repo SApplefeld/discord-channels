@@ -38,6 +38,7 @@ import {
   HELD_BUFFERS_FORMAT_VERSION,
   bufferedEvent,
   createResponseGate,
+  overBudget,
   saveHeldBuffers,
 } from "./response-gate.ts";
 import type {
@@ -259,32 +260,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * gateway applies to a message on the way in, `boundedAuthor` for the name and `bounded` for the
  * text, so a tampered file re-admits nothing the wire refuses; the ids take the registry file's
  * own normalization. A shape this broker never writes, a text or a name that bounds to nothing,
- * a class that is not one of the two words, an empty list or one past the size cap, is null. So
- * is a time after the clock: the re-armed cap is a timer, and Node clamps a delay past its bound
- * to one millisecond, which would expire the buffer at once.
+ * a class that is not one of the two words, an empty list, or a list whose restored event is
+ * more than the relay's pipe will carry, is null. The list is bounded by that event budget and
+ * not by the size cap: the cap is a knob a config edit lowers at a restart, which is the moment
+ * this reads, and an entry the gate held under the old cap is still one the pipe carries. A time
+ * after the clock is clamped to it rather than refused, since a clock stepped back across the
+ * outage is no reason to lose the host's every held buffer; the clamp keeps the re-armed cap a
+ * delay Node's timers take, at most the age cap itself.
  */
-function heldBufferOf(value: unknown, maxMessages: number, now: number): HeldBuffer | null {
+function heldBufferOf(value: unknown, now: number): HeldBuffer | null {
   if (!isRecord(value)) return null;
   if (typeof value.threadId !== "string" || typeof value.sessionId !== "string") return null;
   const threadId = clean(value.threadId);
   const sessionId = clean(value.sessionId);
   if (threadId === "" || sessionId === "") return null;
   // Finite, not merely a number: JSON.parse turns 1e999 into Infinity.
-  if (
-    typeof value.oldestAt !== "number" ||
-    !Number.isFinite(value.oldestAt) ||
-    value.oldestAt < 0 ||
-    value.oldestAt > now
-  ) {
-    return null;
-  }
-  if (
-    !Array.isArray(value.messages) ||
-    value.messages.length === 0 ||
-    value.messages.length > maxMessages
-  ) {
-    return null;
-  }
+  const oldestAt = value.oldestAt;
+  if (typeof oldestAt !== "number" || !Number.isFinite(oldestAt) || oldestAt < 0) return null;
+  if (!Array.isArray(value.messages) || value.messages.length === 0) return null;
   const messages: BufferedMessage[] = [];
   for (const entry of value.messages as unknown[]) {
     if (!isRecord(entry)) return null;
@@ -312,7 +305,9 @@ function heldBufferOf(value: unknown, maxMessages: number, now: number): HeldBuf
       truncated: entry.truncated || truncated,
     });
   }
-  return { threadId, sessionId, oldestAt: value.oldestAt, messages };
+  // The gate's own budget check, restart line included: an entry it would not have held whole.
+  if (overBudget(threadId, messages)) return null;
+  return { threadId, sessionId, oldestAt: Math.min(oldestAt, now), messages };
 }
 
 /**
@@ -327,7 +322,7 @@ function heldBufferOf(value: unknown, maxMessages: number, now: number): HeldBuf
  */
 export function loadHeldBuffers(
   file: string,
-  options: { maxMessages: number; now: () => number; log: (message: string) => void },
+  options: { now: () => number; log: (message: string) => void },
 ): HeldBuffer[] {
   let raw: string;
   try {
@@ -365,7 +360,7 @@ export function loadHeldBuffers(
   const threads = new Set<string>();
   const now = options.now();
   for (const entry of parsed.buffers as unknown[]) {
-    const buffer = heldBufferOf(entry, options.maxMessages, now);
+    const buffer = heldBufferOf(entry, now);
     // A thread holds one buffer, so a second entry for it is not something this broker wrote.
     if (buffer === null || threads.has(buffer.threadId)) {
       options.log(`routing: the held buffers at ${file} hold a malformed entry, restoring none`);
@@ -750,7 +745,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   // the first admit, delivery or drop writes the file over.
   if (gate !== null && buffersFile !== null && settings?.buffers !== undefined) {
     const records = options.registry.list();
-    const entries = loadHeldBuffers(buffersFile, { maxMessages: settings.maxMessages, now, log });
+    const entries = loadHeldBuffers(buffersFile, { now, log });
     const kept: Array<{ entry: HeldBuffer; record: SessionRecord }> = [];
     for (const entry of entries) {
       const count = String(entry.messages.length);
@@ -761,11 +756,10 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
             "which did not survive the broker restart",
         );
         // Fire and forget, as on every other drop: the announcement never rejects by construction.
-        void announceDrop(entry.threadId, entry.messages.length, dropCause(records, entry.sessionId)).catch(
-          (error: unknown) => {
-            log(`routing: announcing a dropped buffer failed: ${String(error)}`);
-          },
-        );
+        const cause = dropCause(records, entry.sessionId);
+        void announceDrop(entry.threadId, entry.messages.length, cause).catch((error: unknown) => {
+          log(`routing: announcing a dropped buffer failed: ${String(error)}`);
+        });
         continue;
       }
       if (options.threadFor(entry.sessionId) !== entry.threadId) {

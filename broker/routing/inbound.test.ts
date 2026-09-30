@@ -1997,13 +1997,13 @@ test("a missing, unreadable or malformed buffers file restores nothing, logs one
   const file = buffersFile(dir);
   const read = (): { restored: HeldBuffer[]; logged: string[] } => {
     const logged: string[] = [];
-    const restored = loadHeldBuffers(file, {
-      maxMessages: 20,
-      now: () => 1_000_000,
-      log: (line) => logged.push(line),
-    });
+    const restored = loadHeldBuffers(file, { now: () => 1_000_000, log: (line) => logged.push(line) });
     return { restored, logged };
   };
+  // The heaviest line the router can build: a lone surrogate per code point, escaped to six units
+  // each on the wire. Two fit the event budget with the restart line; three do not.
+  const heaviest = (id: string): BufferedMessage =>
+    stored(id, String.fromCharCode(0xd800).repeat(MAX_INBOUND_TEXT_LENGTH));
 
   const missing = read();
   assert.deepEqual(missing.restored, []);
@@ -2023,11 +2023,10 @@ test("a missing, unreadable or malformed buffers file restores nothing, logs one
     ["a blank session", snapshot([{ ...good, sessionId: "  " }])],
     ["an infinite time", snapshot([good]).replace('"oldestAt":1000', '"oldestAt":1e999')],
     ["a negative time", snapshot([{ ...good, oldestAt: -1 }])],
-    ["a time after the clock", snapshot([{ ...good, oldestAt: 1_000_001 }])],
     ["no sender id, the shape without one", snapshot([{ ...good, messages: [(({ senderId: _, ...rest }) => rest)(stored("1", "x"))] }])],
     ["a blank sender id", snapshot([{ ...good, messages: [{ ...stored("1", "x"), senderId: " " }] }])],
     ["no messages", snapshot([{ ...good, messages: [] }])],
-    ["messages past the size cap", snapshot([{ ...good, messages: Array.from({ length: 21 }, (_, i) => stored(String(i), "x")) }])],
+    ["an entry whose restored event is over the relay's budget", snapshot([{ ...good, messages: [heaviest("1"), heaviest("2"), heaviest("3")] }])],
     ["a third class", snapshot([{ ...good, messages: [{ ...stored("1", "x"), senderClass: "admin" }] }])],
     ["a numeric id", snapshot([{ ...good, messages: [{ ...stored("1", "x"), id: 1 }] }])],
     ["a truncated flag that is not a boolean", snapshot([{ ...good, messages: [{ ...stored("1", "x"), truncated: "yes" }] }])],
@@ -2071,11 +2070,25 @@ test("a missing, unreadable or malformed buffers file restores nothing, logs one
   assert.deepEqual(rebounded.logged, []);
   assert.equal(rebounded.restored.length, 1);
   const [first, second] = rebounded.restored[0].messages;
+  assert.equal(first.senderId, OPERATOR, "the sender id rides through");
   assert.equal(first.text, `a${"b".repeat(MAX_INBOUND_TEXT_LENGTH - 1)}`, "the invisible stripped, the ceiling applied");
   assert.equal(first.truncated, true, "and the cut announced when it delivers");
   assert.equal([...first.author].length, MAX_AUTHOR_NAME_LENGTH);
   assert.ok(!first.author.includes("<") && !first.author.includes('"'), first.author);
   assert.deepEqual(second, { ...stored("2", "padded"), truncated: true });
+
+  // A time after the clock is clamped to it rather than refused: a clock stepped back across the
+  // outage is no reason to lose every held buffer, and a clamped time re-arms to at most the cap.
+  writeFileSync(file, snapshot([{ ...good, oldestAt: 1_000_001 }]), "utf8");
+  const clamped = read();
+  assert.deepEqual(clamped.logged, []);
+  assert.equal(clamped.restored[0]?.oldestAt, 1_000_000, "clamped to now");
+
+  // The budget's control: the two heaviest lines fit, with the restart line, and restore.
+  writeFileSync(file, snapshot([{ ...good, messages: [heaviest("1"), heaviest("2")] }]), "utf8");
+  const heavy = read();
+  assert.deepEqual(heavy.logged, []);
+  assert.equal(heavy.restored[0]?.messages.length, 2);
 
   // Over the router: a malformed file is one line, the router is built and routes, and the first
   // change writes the file over.
@@ -2279,10 +2292,36 @@ test("the buffers file round-trips through the shared writer and the reader", (t
   assert.deepEqual(onDisk(dir), { version: 1, buffers });
   const logged: string[] = [];
   assert.deepEqual(
-    loadHeldBuffers(buffersFile(dir), { maxMessages: 20, now: () => 3_000, log: (line) => logged.push(line) }),
+    loadHeldBuffers(buffersFile(dir), { now: () => 3_000, log: (line) => logged.push(line) }),
     buffers,
   );
   assert.deepEqual(logged, []);
+});
+
+test("live: a file holding more messages than the current size cap restores and delivers whole on attach", async (t) => {
+  // The cap is a knob an operator lowers by a config edit that takes effect at a restart, which
+  // is the moment the file is read. Bounding the entry by the knob would lose every held buffer
+  // on the host at that edit; the bound that matters is the event the relay can carry.
+  const dir = stateDir(t);
+  const many = Array.from({ length: MAX_INBOUND_PER_WINDOW + 5 }, (_, index) =>
+    stored(String(index), `line ${String(index)}`),
+  );
+  saveHeldBuffers(buffersFile(dir), [
+    { threadId: THREAD, sessionId: "session-a", oldestAt: 500, messages: many },
+  ]);
+  const lines: string[] = [];
+  const after = harness({
+    gate: { buffers: { dir }, maxMessages: MAX_INBOUND_PER_WINDOW },
+    attachRelay: false,
+    log: (line) => lines.push(line),
+  });
+  assert.equal(lines.length, 0, lines.join(" | "));
+  assert.equal(onDisk(dir).buffers[0]?.messages.length, many.length, "held whole");
+  attachPipe(after);
+  assert.equal(after.sent.length, 1);
+  assert.equal((after.sent[0] as { buffered?: number }).buffered, many.length);
+  assert.equal(textOf(after.sent[0]).split("\n").length, many.length + 1, "every line, under the restart line");
+  assert.ok(JSON.stringify(after.sent[0]).length + 1 <= MAX_LINE_BYTES);
 });
 
 test("live: a message the gateway hands over after the close writes nothing, so the file keeps what the stop left", async (t) => {

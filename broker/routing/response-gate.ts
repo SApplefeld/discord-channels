@@ -36,8 +36,9 @@
 // broker stopping writes nothing, so the file stays as the last change left it. A restore at the
 // next start hands the buffers back, each with its age cap re-armed from its oldest message's own
 // time once a relay can reach the broker, and a restored buffer delivers on the trigger `restored`
-// as soon as its session's relay attaches. Every event carrying a restored message opens with one line of the broker's own saying
-// so, which is why the event budget below reserves that line on every buffer.
+// as soon as its session's relay attaches. Every event carrying a restored message opens with one
+// line of the broker's own saying so, which is why the event budget below reserves that line on
+// every buffer.
 import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { MAX_JEV_CODE_POINTS, SECRET_SCREEN, createJevClient } from "../jev/client.ts";
@@ -345,8 +346,9 @@ export function bufferedEvent(
  * length, plus the newline that ends the line. Measured as a restored delivery whether or not the
  * buffer is one. The restart line is a fixed width, and reserving it on every buffer is what lets a
  * buffer held under the cap be persisted, restored and delivered under it with the line in front.
+ * Exported for the buffers file's reader, which bounds an entry by this and by nothing else.
  */
-function overBudget(chatId: string, messages: readonly BufferedMessage[]): boolean {
+export function overBudget(chatId: string, messages: readonly BufferedMessage[]): boolean {
   return JSON.stringify(bufferedEvent(chatId, messages, 0)).length + 1 > MAX_EVENT_UNITS;
 }
 
