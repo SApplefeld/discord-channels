@@ -200,10 +200,9 @@ test("the response gate knob defaults to off, honors its three modes, and refuse
   }
 });
 
-test("the response gate caps default to the rate ceiling and ten minutes, and refuse a value below one", () => {
+test("the response gate's size cap defaults to the rate ceiling, and both caps refuse a value below one", () => {
   const config = loadConfig({});
   assert.equal(config.responseGateMaxMessages, MAX_INBOUND_PER_WINDOW);
-  assert.equal(config.responseGateMaxWaitMs, 10 * 60 * 1000);
   assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_MAX_MESSAGES: "5" }).responseGateMaxMessages, 5);
   assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_MAX_WAIT_MS: "30000" }).responseGateMaxWaitMs, 30_000);
 

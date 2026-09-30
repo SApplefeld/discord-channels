@@ -492,7 +492,9 @@ test("the worst-case buffered event fits under the relay's stream line cap, and 
   // The same relation for a buffer the response gate delivers. The relay compares the UTF-16
   // length of its decoded line against the cap, so the heaviest message in those units is the one
   // above: a lone surrogate per code point, escaped to six units each, under a name of the same.
-  // A buffer at the size cap of such messages is several times the cap, so the gate has to deliver
+  // The messages are a participant's, whose `(participant)` tag is the longer of the two classes,
+  // so every line is as long as a line can be. A buffer at the size cap of such messages is several
+  // times the cap, so the gate has to deliver
   // early on size; what is pinned is that every event it writes fits, and that the early
   // deliveries between them carry every message admitted.
   const loneSurrogate = String.fromCharCode(0xd800);
@@ -504,7 +506,9 @@ test("the worst-case buffered event fits under the relay's stream line cap, and 
   });
   for (let index = 0; index < MAX_INBOUND_PER_WINDOW; index += 1) {
     now += 10;
-    await router.deliver(message({ author, text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH) }));
+    await router.deliver(
+      message({ senderId: PARTICIPANT, author, text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH) }),
+    );
   }
   // Whatever is still held goes on its timer.
   for (const timer of scheduled) if (!timer.cleared) timer.fire();
