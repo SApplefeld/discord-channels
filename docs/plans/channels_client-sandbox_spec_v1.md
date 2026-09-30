@@ -150,7 +150,7 @@ Acceptance:
 - A missing, unreadable or malformed file restores nothing, logs one line, and the broker starts.
 - With the mode `off` or `shadow`, no file is written.
 - Every restored event fits the relay's stream line cap.
-Files in scope: `broker/routing/response-gate.ts` and its test, `broker/routing/inbound.ts` and its test, `broker/index.ts` (the path, the load at startup and the stop path) and `broker/index.test.ts`, `broker/persistence.ts` where its snapshot write is reused, and `docs/operations.md` (the mode row's restart sentence, a main-thread write).
+Files in scope: `broker/routing/response-gate.ts` and its test, `broker/routing/inbound.ts` and its test, `broker/index.ts` (the path, the load at startup and the stop path) and `broker/index.test.ts`, `broker/persistence.ts` where its snapshot write is reused, and `docs/operations.md` (the mode row's restart sentence, a main-thread write), and, added at section 8's open, `broker/persistence.test.ts` and `broker/routing/relays.ts` and its test (the relay attach signal).
 Tests: each acceptance bullet; the file carries no key or token.
 
 ## Out of Scope
