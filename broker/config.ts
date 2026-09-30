@@ -314,10 +314,12 @@ const MAX_INBOX_CARD_REFRESH_MS = MAX_BOARD_CARD_REFRESH_MS;
 const DEFAULT_INBOX_THRESHOLD = 0.7;
 const MIN_INBOX_THRESHOLD = 0.4;
 const MAX_INBOX_THRESHOLD = 0.95;
-// The size cap is the inbound rate ceiling, as many messages as one session may be handed in a
-// minute, so one delivery holds no more than the ceiling already lets through. The age cap is how
-// late a held ask can be: ten minutes is a long pause in a working conversation and a short wait
-// for someone who stepped away. Both are starting values rather than measured ones.
+// The size cap defaults to the inbound rate ceiling, as many messages as one session may be handed
+// in a minute. It counts messages and has no upper bound; what bounds a delivery's size at any
+// value is the gate's event budget, which delivers a buffer early rather than grow it past what
+// the relay's stream carries. The age cap is how late a held ask can be: ten minutes is a long
+// pause in a working conversation and a short wait for someone who stepped away. Both are
+// starting values rather than measured ones.
 const DEFAULT_RESPONSE_GATE_MAX_MESSAGES = 20;
 const DEFAULT_RESPONSE_GATE_MAX_WAIT_MS = 10 * 60 * 1000;
 // The age cap is a setTimeout delay, and Node clamps a delay past 2^31-1 down to 1ms, which would

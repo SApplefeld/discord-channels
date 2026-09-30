@@ -922,8 +922,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         logger.error(message);
       }
       // The mutate signal is also how a thread's held buffer leaves with its session: a session
-      // ends on several paths, and this is the one that sees them all. It never throws.
-      inbound?.reconcile(sessions);
+      // ends on several paths, and this is the one that sees them all. Caught for the reason the
+      // inbox's is: a throw here would surface out of the sweep's interval or a hook post.
+      try {
+        inbound?.reconcile(sessions);
+      } catch (error) {
+        const message =
+          `broker: the response gate could not reconcile against the registry: ${String(error)}`;
+        console.error(message);
+        logger.error(message);
+      }
     },
     // An operator prompt answers the session it was typed to, which is what clears its inbox item.
     onPrompt: (sessionId, at) => inbox?.clear(sessionId, at),
@@ -1820,6 +1828,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     clearInterval(heartbeat);
     if (tailTimer !== null) clearInterval(tailTimer);
     if (refresh !== null) clearInterval(refresh);
+    // A held buffer goes down in the same synchronous block, before the first await below: its
+    // age-cap timer must not fire into pipes about to be torn down, and a broker asked to stop
+    // does not wait on an age cap. What was held is lost, as it would be to a crash; the operator
+    // reads the thread either way.
+    inbound?.close();
     // The card's own timer goes down with the rest of them, before the first await below: left
     // running across those seconds it starts a pass that writes to Discord and to the binding file
     // for a broker that has already dropped its gateway. What it returns is the drain, awaited
@@ -1840,10 +1853,6 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     if (cardDrain !== null) await cardDrain;
     if (boardDrain !== null) await boardDrain;
     if (inboxDrain !== null) await inboxDrain;
-    // A held buffer goes down before the pipes it would be written to: its timer must not fire
-    // into a pipe being torn down, and a broker asked to stop does not wait on an age cap. What
-    // was held is lost, as it would be to a crash; the operator reads the thread either way.
-    inbound?.close();
     // The broker going down is not a session dying, so the pipes are dropped without ending
     // anything. The relays reconnect; the sessions behind them keep working either way.
     relays.closeAll();

@@ -30,6 +30,7 @@ import {
   TRUNCATED_NOTICE,
   UNREACHABLE_NOTICE,
   createInboundRouter,
+  droppedBufferNotice,
   unreachableNotice,
 } from "./inbound.ts";
 import { MAX_EVENT_UNITS } from "./response-gate.ts";
@@ -189,6 +190,8 @@ function harness(
      * is built as every test above builds it, with no gate at all.
      */
     gate?: { mode?: "off" | "shadow" | "live"; maxMessages?: number; maxWaitMs?: number };
+    /** Awaited before any post lands, so a test can hold a Discord round trip open. */
+    beforePost?: () => Promise<void>;
   } = {},
 ) {
   const now = options.now ?? ((): number => 1_000);
@@ -217,6 +220,7 @@ function harness(
   const notices: Array<{ threadId: string; text: string }> = [];
   const messenger: ThreadMessenger = {
     postToThread: async (input) => {
+      if (options.beforePost !== undefined) await options.beforePost();
       notices.push({ threadId: input.threadId, text: input.text });
       return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
     },
@@ -1119,32 +1123,97 @@ test("live: an operator's message clears the inbox item when the buffer takes it
   assert.deepEqual(ended, []);
 });
 
-test("live: a session's end drops its thread's buffer and its timer, delivering nothing", async () => {
-  const { registry, router, sent, notices, scheduled } = harness({ gate: {} });
-  await router.deliver(message({ text: "one" }));
+test("live: a session's end drops its thread's buffer and its timer, delivering nothing and posting one counted notice", async () => {
+  let now = 1_000;
+  const { registry, router, sent, notices, scheduled } = harness({ gate: {}, now: () => now });
+  await router.deliver(message({ text: "migrate the ledger", author: "Ann" }));
   await router.deliver(message({ text: "a".repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
   assert.equal(scheduled.length, 1);
 
   registry.relayClosed(TOKEN, "session-a");
+  await flush();
   assert.equal(scheduled[0].cleared, true, "the timer went with the buffer");
   scheduled[0].fire();
   await flush();
   assert.deepEqual(sent, []);
-  assert.deepEqual(notices, [], "nothing delivered, so the cut is not announced either");
+  // One notice, counting the two lines the session was holding, naming the cause and asking for
+  // a re-post; the cut is not announced, since nothing was delivered.
+  assert.deepEqual(notices, [{ threadId: THREAD, text: droppedBufferNotice(2, "ended") }]);
+  assert.match(notices[0].text, /\b2 messages\b/);
+  assert.match(notices[0].text, /session has ended/);
+  assert.match(notices[0].text, /re-post/i);
+  assert.ok(!notices[0].text.includes("migrate the ledger"), "no message text");
+  assert.ok(!notices[0].text.includes("Ann"), "no author");
 
-  // A message now takes the ended path, as it does with the gate off, and joins no buffer.
+  // A message now takes the ended path, as it does with the gate off, and joins no buffer. Past
+  // the notice floor, so the ended notice is not swallowed by the drop notice.
+  now += 60_001;
   await router.deliver(message({ text: "hello?", mentionsBot: true }));
   assert.deepEqual(sent, []);
-  assert.deepEqual(notices, [{ threadId: THREAD, text: ENDED_NOTICE }]);
+  assert.equal(notices.length, 2);
+  assert.equal(notices[1].text, ENDED_NOTICE);
   assert.equal(scheduled.length, 1, "no new buffer opened");
+});
+
+test("live: a session's end with nothing held posts no notice", async () => {
+  const lines: string[] = [];
+  const { registry, router, sent, notices } = harness({ gate: {}, log: (line) => lines.push(line) });
+  await router.deliver(message({ text: "delivered already", mentionsBot: true }));
+  assert.equal(sent.length, 1);
+
+  registry.relayClosed(TOKEN, "session-a");
+  await flush();
+  assert.deepEqual(notices, [], "an empty buffer is nothing to report");
+  assert.deepEqual(lines.filter((line) => line.includes("dropped")), []);
+});
+
+test("live: a drop notice the floor refuses is logged once and never retried", async () => {
+  // Two sessions lose a held buffer in the same thread inside one floor interval. The second
+  // notice is floored by the writer, the log line is its only record, and nothing retries it.
+  const lines: string[] = [];
+  const { registry, router, notices, threads } = harness({ gate: {}, log: (line) => lines.push(line) });
+  await router.deliver(message({ text: "for a" }));
+  registry.relayClosed(TOKEN, "session-a");
+  await flush();
+  assert.equal(notices.length, 1);
+
+  threads.delete("session-a");
+  announce(registry, "session-b", "22222222-3333-4444-5555-666666666666");
+  threads.set("session-b", THREAD);
+  await router.deliver(message({ text: "for b" }));
+  registry.relayClosed("22222222-3333-4444-5555-666666666666", "session-b");
+  await flush();
+  assert.equal(notices.length, 1, "the second notice was floored");
+  const floored = lines.filter((line) => line.includes("floored"));
+  assert.equal(floored.length, 1, lines.join("\n"));
+  assert.ok(floored[0].includes(THREAD), floored[0]);
+
+  await flush();
+  assert.equal(notices.length, 1, "and nothing retried it");
+});
+
+test("the dropped-buffer notice counts, names the cause, asks for a re-post, and carries nothing else", () => {
+  assert.match(droppedBufferNotice(1, "ended"), /\bthe message\b/);
+  assert.match(droppedBufferNotice(3, "ended"), /\b3 messages\b/);
+  assert.match(droppedBufferNotice(3, "ended"), /session has ended/);
+  assert.match(droppedBufferNotice(1, "moved"), /\/clear/);
+  assert.match(droppedBufferNotice(2, "moved"), /\b2 messages\b/);
+  for (const text of [droppedBufferNotice(1, "ended"), droppedBufferNotice(2, "moved")]) {
+    assert.match(text, /re-post/i);
+    assert.match(text, /not delivered/);
+  }
 });
 
 test("live: a buffer held for a session is never delivered to the session that takes over its thread", async () => {
   // The surface rebinds a thread from a session to its replacement of the same lineage. A buffer
   // is held for the session it was admitted to, so when that session ends the buffer goes with it
   // even though the thread now resolves to a live session again.
-  const { registry, router, sent, scheduled, threads } = harness({ gate: {} });
-  await router.deliver(message({ text: "for session a" }));
+  const lines: string[] = [];
+  const { registry, router, sent, notices, scheduled, threads } = harness({
+    gate: {},
+    log: (line) => lines.push(line),
+  });
+  await router.deliver(message({ text: "for session a", author: "Ann" }));
   assert.equal(scheduled.length, 1);
 
   // The thread moves to the replacement, and the replacement is announced under the same pipe, which
@@ -1154,10 +1223,51 @@ test("live: a buffer held for a session is never delivered to the session that t
   announce(registry, "session-b", TOKEN, "clear");
   assert.equal(registry.list().find((record) => record.sessionId === "session-a")?.state, "ended");
   assert.equal(scheduled[0].cleared, true, "the buffer went with its session");
+  // The drop is named by count, session and thread, and never by what was said.
+  const dropped = lines.filter((line) => line.includes("dropped"));
+  assert.equal(dropped.length, 1, lines.join("\n"));
+  assert.match(dropped[0], /dropped 1 buffered message/);
+  assert.ok(dropped[0].includes("session-a") && dropped[0].includes(THREAD), dropped[0]);
+  assert.ok(!dropped[0].includes("for session a"), "content-free");
 
   scheduled[0].fire();
   await flush();
   assert.deepEqual(sent, [], "nothing the ended session's buffer held reaches its replacement");
+  // The thread's readers are told, in the /clear wording, without the text or the author.
+  assert.deepEqual(notices, [{ threadId: THREAD, text: droppedBufferNotice(1, "moved") }]);
+  assert.match(notices[0].text, /\/clear/);
+  assert.ok(!notices[0].text.includes("for session a") && !notices[0].text.includes("Ann"));
+});
+
+test("live: two deliveries released by one message reach the pipe back to back, ahead of any announcement", async () => {
+  // The gateway does not await `deliver`, so a message posted during a Discord round trip can be
+  // routed before that round trip returns. If the first event's cut announcement were awaited
+  // before the second event was written, a triggering message arriving in between would reach the
+  // pipe ahead of the earlier message's own event, and the session would read the thread out of
+  // order. So every released event is written first, and only then is anything posted.
+  const loneSurrogate = String.fromCharCode(0xd800);
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { router, sent, notices } = harness({ gate: {}, beforePost: () => held });
+  // Two heavy messages held, the first of them cut; a third overflows the budget and mentions.
+  await router.deliver(message({ text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH + 1) }));
+  await router.deliver(message({ text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH) }));
+  assert.deepEqual(sent, []);
+
+  const pending = router.deliver(
+    message({ text: loneSurrogate.repeat(MAX_INBOUND_TEXT_LENGTH), mentionsBot: true }),
+  );
+  await flush();
+  assert.equal(sent.length, 2, "both events are on the pipe while the announcement is still in flight");
+  assert.equal((sent[0] as { buffered?: number }).buffered, 2);
+  assert.equal(Object.hasOwn(sent[1], "buffered"), false);
+  assert.deepEqual(notices, [], "nothing posted yet");
+
+  release();
+  await pending;
+  assert.deepEqual(notices, [{ threadId: THREAD, text: TRUNCATED_NOTICE }]);
 });
 
 test("live: closing the router drops every held buffer and timer, and a timer fired after it delivers nothing", async () => {

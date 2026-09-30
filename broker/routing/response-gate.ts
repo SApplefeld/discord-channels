@@ -26,8 +26,11 @@ export type ResponseGateMode = "off" | "shadow" | "live";
 /**
  * The most UTF-16 code units one delivered event may serialize to, its newline included.
  *
- * The relay reads its stream as a decoded string and drops a line past its own cap with no signal
- * to either side, so an event over that cap is a buffer lost in silence. This is that cap, written
+ * The relay reads its stream as a decoded string and guards the unterminated remainder after each
+ * read against its own cap: a line the stream splits, whose remainder passes the cap before its
+ * newline arrives, is dropped with no signal to either side. An event over that cap is therefore
+ * a buffer lost in silence whenever the socket splits it, which a line that long is. This is that
+ * cap, written
  * here rather than imported because the relay is the other process and the broker's runtime code
  * does not reach into it; inbound.test.ts pins the two equal, and pins the worst-case buffered
  * event under it. The size cap below has a second reading against it: a buffer delivers early
@@ -68,11 +71,20 @@ export type ResponseGateOptions = {
    */
   onAgeCap: (threadId: string, sessionId: string, delivery: BufferDelivery) => void;
   /**
+   * Told of a buffer `admit` dropped because its thread admitted a message for another session:
+   * the thread, the session the buffer was held for, and how many messages it held. The caller
+   * owns the thread and tells its readers; the gate has no writer and only names the drop in its
+   * log.
+   */
+  onDrop?: (threadId: string, sessionId: string, count: number) => void;
+  /**
    * Injected so a test drives the age cap without sleeping. The default is a real timer that does
    * not hold the process open: a held buffer is not a reason for a broker asked to stop to wait.
    */
   setTimer?: (callback: () => void, ms: number) => NodeJS.Timeout;
   clearTimer?: (timer: NodeJS.Timeout) => void;
+  /** Where a buffer dropped here is named: its count, thread and session, never its text. */
+  log?: (message: string) => void;
 };
 
 export type ResponseGate = {
@@ -90,8 +102,11 @@ export type ResponseGate = {
     message: BufferedMessage,
     addressed: { mentionsBot: boolean; repliesToBot: boolean },
   ) => readonly BufferDelivery[];
-  /** Drops a thread's buffer and its timer, delivering nothing. For a session that has ended. */
-  clear: (threadId: string) => void;
+  /**
+   * Drops a thread's buffer and its timer, delivering nothing, and returns how many messages that
+   * dropped so the caller can say so. For a session that has ended.
+   */
+  clear: (threadId: string) => number;
   /** Drops every thread's buffer and timer, delivering nothing. For the broker stopping. */
   close: () => void;
   /** Every buffer held now, with the session each is held for, so the caller can drop the stale. */
@@ -165,6 +180,7 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     options.setTimer ??
     ((callback: () => void, ms: number): NodeJS.Timeout => setTimeout(callback, ms).unref());
   const clearTimer = options.clearTimer ?? clearTimeout;
+  const log = options.log ?? ((): void => {});
   const held = new Map<string, Held>();
 
   /** Takes a thread's buffer out of the map with its timer stopped, or nothing if none is held. */
@@ -194,6 +210,11 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
       // answer for a router nothing reconciles.
       if (buffer !== undefined && buffer.sessionId !== sessionId) {
         release(threadId);
+        log(
+          `routing: dropped ${String(buffer.messages.length)} buffered messages held for session ` +
+            `${buffer.sessionId}, thread ${threadId} now admits for session ${sessionId}`,
+        );
+        options.onDrop?.(threadId, buffer.sessionId, buffer.messages.length);
         buffer = undefined;
       }
 
@@ -236,7 +257,7 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     },
 
     clear(threadId) {
-      release(threadId);
+      return release(threadId)?.messages.length ?? 0;
     },
 
     close() {

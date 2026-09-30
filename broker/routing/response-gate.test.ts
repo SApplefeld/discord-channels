@@ -48,14 +48,18 @@ function timers() {
 function gate(options: { maxMessages?: number; maxWaitMs?: number } = {}) {
   const clock = timers();
   const expired: Array<{ threadId: string; sessionId: string; delivery: BufferDelivery }> = [];
+  const lines: string[] = [];
+  const dropped: Array<{ threadId: string; sessionId: string; count: number }> = [];
   const built = createResponseGate({
     maxMessages: options.maxMessages ?? 20,
     maxWaitMs: options.maxWaitMs ?? 600_000,
     onAgeCap: (threadId, sessionId, delivery) => expired.push({ threadId, sessionId, delivery }),
+    onDrop: (threadId, sessionId, count) => dropped.push({ threadId, sessionId, count }),
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
+    log: (line) => lines.push(line),
   });
-  return { gate: built, expired, scheduled: clock.scheduled };
+  return { gate: built, expired, scheduled: clock.scheduled, lines, dropped };
 }
 
 /** A buffer of one session in one thread, for the tests that vary neither. */
@@ -183,13 +187,29 @@ test("buffers are held per thread", () => {
 test("a buffer held for one session is dropped, not delivered, when its thread admits for another", () => {
   // The thread moved to the session's replacement between two messages. What the old session
   // was told is not the new session's, so the newcomer's message starts a buffer of its own.
-  const { gate: held, expired, scheduled } = gate();
+  const { gate: held, expired, scheduled, lines, dropped } = gate();
   admit(held, operator("for the old session"));
   const deliveries = held.admit(THREAD, "session-b", operator("for the new one"), MENTION);
   assert.deepEqual(deliveries, [{ messages: [operator("for the new one")], trigger: "mention" }]);
   assert.equal(scheduled[0].cleared, true, "the old session's timer went with its buffer");
   scheduled[0].fire();
   assert.deepEqual(expired, []);
+  // Reported to the caller, which owns the thread and tells its readers; the gate does not.
+  assert.deepEqual(dropped, [{ threadId: THREAD, sessionId: SESSION, count: 1 }]);
+
+  // The drop is named, by count, thread and both sessions, and never by what was said.
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0], /dropped 1 buffered message/);
+  assert.ok(lines[0].includes(THREAD) && lines[0].includes(SESSION) && lines[0].includes("session-b"));
+  assert.ok(!lines[0].includes("for the old session"), "content-free");
+});
+
+test("clearing a thread reports how many messages it dropped", () => {
+  const { gate: held } = gate();
+  admit(held, operator("one"));
+  admit(held, operator("two"));
+  assert.equal(held.clear(THREAD), 2);
+  assert.equal(held.clear(THREAD), 0, "nothing held now");
 });
 
 // The second reading of the size cap: a buffer delivers before it grows past what the relay's
@@ -297,7 +317,7 @@ test("the rendered line and the event's class are the shape and rule the relay's
   // The cross-component pin. The model reads the shape and the lowest-class rule from the
   // instructions and the broker renders both here; each side tested against its own literal would
   // hide a mismatch between them.
-  const stated = INSTRUCTIONS.match(/each reading (<author> \(<class>\): <text>)/)?.[1];
+  const stated = INSTRUCTIONS.match(/<author> \(<class>\): <text>/)?.[0];
   assert.ok(stated !== undefined, "the instructions state the line shape");
   const pattern = new RegExp(
     `^${stated

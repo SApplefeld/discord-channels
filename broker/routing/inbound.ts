@@ -226,6 +226,35 @@ export const UNREACHABLE_NOTICE =
   "it was started without the relay, or the relay is reconnecting.";
 
 /**
+ * Why a held buffer was dropped: its session ended or left the registry, or its thread now belongs
+ * to a different live session, which is what a `/clear` does to a thread.
+ */
+export type DropCause = "ended" | "moved";
+
+/**
+ * Posted into a thread whose held buffer was dropped with its session, so the loss of the held
+ * messages is never silent. It counts them, names the cause the router can tell apart, and asks
+ * for a re-post; it never carries a message's text or an author's name, since a notice is a
+ * broker-authored post in a thread several people read.
+ */
+export function droppedBufferNotice(count: number, cause: DropCause): string {
+  const held = count === 1 ? "the message" : `the ${String(count)} messages`;
+  const them = count === 1 ? "it" : "them";
+  if (cause === "ended") {
+    return (
+      `This session has ended, so ${held} it was still holding ${count === 1 ? "was" : "were"} ` +
+      `not delivered. Nothing is queued: start a new session and re-post ${them} in its thread.`
+    );
+  }
+  return (
+    `This thread now belongs to a new session, after a /clear, so ${held} held for the old one ` +
+    `${count === 1 ? "was" : "were"} not delivered. Nothing is queued: re-post ${them} here and ` +
+    "the new session will read " +
+    `${them}.`
+  );
+}
+
+/**
  * The unreachable notice for what was dropped: the single-message notice above, byte for byte,
  * for one message, and a count for a held buffer of more, since a dropped buffer loses every
  * message in it and a notice about one would understate the loss.
@@ -288,11 +317,33 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     }
   }
 
-  async function notice(threadId: string, text: string): Promise<void> {
+  /**
+   * Posts a notice through the writer's per-thread floor and says what became of it: written,
+   * floored, or failed, the last logged here. Most callers post and move on; a caller whose notice
+   * is the only in-thread record of a loss reads the outcome to log a floored one.
+   */
+  async function notice(threadId: string, text: string): Promise<"posted" | "floored" | "failed"> {
     try {
-      await options.writer.notice(threadId, text);
+      return (await options.writer.notice(threadId, text)) ? "posted" : "floored";
     } catch (error) {
       log(`routing: could not post a notice into thread ${threadId}: ${String(error)}`);
+      return "failed";
+    }
+  }
+
+  /**
+   * Tells a thread that a held buffer was dropped with its session, once, counted, and never with
+   * the text. The floor is the writer's: a second drop notice inside the interval is refused, the
+   * log line is then its only record, and nothing retries it, since the next message into the
+   * thread provokes the next notice. An empty buffer posts nothing.
+   */
+  async function announceDrop(threadId: string, count: number, cause: DropCause): Promise<void> {
+    if (count === 0) return;
+    const outcome = await notice(threadId, droppedBufferNotice(count, cause));
+    if (outcome === "floored") {
+      log(
+        `routing: the drop notice for thread ${threadId} was floored, the log line is its record`,
+      );
     }
   }
 
@@ -335,25 +386,44 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   }
 
   /**
-   * Delivers a buffer the gate released, on a message's own act or on the timer, and announces
-   * each cut it carried. The inbox is not cleared here: an operator's message cleared it when the
-   * buffer took it, since the operator had answered the session either way.
+   * Delivers the buffers the gate released, on a message's own act or on the timer, and announces
+   * each cut they carried. The inbox is not cleared here: an operator's message cleared it when
+   * the buffer took it, since the operator had answered the session either way.
+   *
+   * Every event is written first, back to back with nothing awaited between, and only then is
+   * anything posted or logged. The gateway does not await a delivery, so a message posted during
+   * a Discord round trip is routed before that round trip returns: an announcement awaited between
+   * two writes would let a later message's event reach the pipe ahead of an earlier one's, and the
+   * session would read the thread out of order. A pipe that took nothing earns the unreachable
+   * notice per delivery, counting what that delivery lost.
    */
-  async function handOverBuffer(
+  async function handOverBuffers(
     record: SessionRecord,
     threadId: string,
-    delivery: BufferDelivery,
+    deliveries: readonly BufferDelivery[],
   ): Promise<void> {
-    const event = bufferedEvent(threadId, delivery.messages);
-    if (!(await handOver(record, threadId, event, delivery.messages.length))) return;
-    if (delivery.messages.length > 1) {
-      log(
-        `routing: delivered ${String(delivery.messages.length)} buffered messages to session ` +
-          `${record.sessionId} on ${delivery.trigger}`,
-      );
-    }
-    for (const message of delivery.messages) {
-      if (message.truncated) await announceCut(threadId);
+    const outcomes = deliveries.map((delivery) => ({
+      delivery,
+      written: options.relays.deliver(
+        record.processToken,
+        bufferedEvent(threadId, delivery.messages),
+      ),
+    }));
+    for (const { delivery, written } of outcomes) {
+      if (!written) {
+        log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
+        await notice(threadId, unreachableNotice(delivery.messages.length));
+        continue;
+      }
+      if (delivery.messages.length > 1) {
+        log(
+          `routing: delivered ${String(delivery.messages.length)} buffered messages to session ` +
+            `${record.sessionId} on ${delivery.trigger}`,
+        );
+      }
+      for (const message of delivery.messages) {
+        if (message.truncated) await announceCut(threadId);
+      }
     }
   }
 
@@ -361,16 +431,19 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
    * Whether a buffer held for `sessionId` in `threadId` still has that session to go to: one that
    * is live and is the session the thread resolves to now. A session that ended, left the
    * registry, or handed its thread to its replacement leaves the buffer with nowhere to go, and
-   * it is dropped rather than delivered to whoever holds the thread next.
+   * it is dropped rather than delivered to whoever holds the thread next. The cause is the one
+   * the thread's readers are told: `moved` where the thread now resolves to a different live
+   * session, which is what a `/clear` does, and `ended` otherwise.
    */
-  function stillHeldFor(
+  function holdFor(
     records: readonly SessionRecord[],
     threadId: string,
     sessionId: string,
-  ): SessionRecord | null {
+  ): { record: SessionRecord } | { record: null; cause: DropCause } {
     const record = sessionForThread(records, options.threadFor, threadId);
-    if (record === null || record.state === "ended" || record.sessionId !== sessionId) return null;
-    return record;
+    if (record === null || record.state === "ended") return { record: null, cause: "ended" };
+    if (record.sessionId !== sessionId) return { record: null, cause: "moved" };
+    return { record };
   }
 
   /**
@@ -384,15 +457,16 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     sessionId: string,
     delivery: BufferDelivery,
   ): Promise<void> {
-    const record = stillHeldFor(options.registry.list(), threadId, sessionId);
-    if (record === null) {
+    const hold = holdFor(options.registry.list(), threadId, sessionId);
+    if (hold.record === null) {
       log(
         `routing: dropped ${String(delivery.messages.length)} buffered messages held for session ` +
           `${sessionId}, which no longer holds thread ${threadId}`,
       );
+      await announceDrop(threadId, delivery.messages.length, hold.cause);
       return;
     }
-    await handOverBuffer(record, threadId, delivery);
+    await handOverBuffers(hold.record, threadId, [delivery]);
   }
 
   // Built only for `live`. `off` and `shadow` deliver at once below, and the absence of a gate is
@@ -409,12 +483,21 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
               log(`routing: delivering a buffer at the age cap failed: ${String(error)}`);
             });
           },
+          // The gate dropped a buffer because its thread admitted a message for a different
+          // session, which is what a `/clear` does to a thread. The gate logged it; the thread's
+          // readers are told here, since the writer is this router's.
+          onDrop: (threadId, _sessionId, count) => {
+            void announceDrop(threadId, count, "moved").catch((error: unknown) => {
+              log(`routing: announcing a dropped buffer failed: ${String(error)}`);
+            });
+          },
           ...(options.responseGate.setTimer === undefined
             ? {}
             : { setTimer: options.responseGate.setTimer }),
           ...(options.responseGate.clearTimer === undefined
             ? {}
             : { clearTimer: options.responseGate.clearTimer }),
+          log,
         })
       : null;
 
@@ -579,21 +662,32 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       );
       // Held, when there are none. Nothing is announced then, a cut included: the announcement
       // belongs to a delivery, and this one has not happened yet. Two, when this message pushed
-      // the held buffer past the event budget and then delivered on its own: in order, so the
-      // session reads the thread in the order it was written.
-      for (const delivery of deliveries) {
-        await handOverBuffer(record, message.threadId, delivery);
-      }
+      // the held buffer past the event budget and then delivered on its own: written in order, so
+      // the session reads the thread in the order it was written.
+      await handOverBuffers(record, message.threadId, deliveries);
     },
 
     reconcile(sessions) {
       if (gate === null) return;
       for (const { threadId, sessionId } of gate.held()) {
-        if (stillHeldFor(sessions, threadId, sessionId) === null) gate.clear(threadId);
+        const hold = holdFor(sessions, threadId, sessionId);
+        if (hold.record !== null) continue;
+        const dropped = gate.clear(threadId);
+        log(
+          `routing: dropped ${String(dropped)} buffered messages held for session ${sessionId}, ` +
+            `which no longer holds thread ${threadId}`,
+        );
+        // Fire and forget, on the registry's own mutation tick: the announcement never rejects by
+        // construction, and this seam is synchronous.
+        void announceDrop(threadId, dropped, hold.cause).catch((error: unknown) => {
+          log(`routing: announcing a dropped buffer failed: ${String(error)}`);
+        });
       }
     },
 
     close() {
+      // No notice for these drops: the broker is shutting down, and a post from a process on its
+      // way out is one it may not be there to finish. The operator reads the thread either way.
       gate?.close();
     },
   };
