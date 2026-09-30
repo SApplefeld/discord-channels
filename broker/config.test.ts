@@ -14,6 +14,7 @@ import {
   loadConfig,
   readInboxJudgeKey,
 } from "./config.ts";
+import { MAX_INBOUND_PER_WINDOW } from "./routing/inbound.ts";
 
 test("the relay heartbeat is refused outside the window the relay can survive", () => {
   // The relay's read timeout lives in another process and cannot see this value. A heartbeat slower
@@ -176,6 +177,63 @@ test("the peer message knob defaults to full, honors its three modes, and refuse
       raw,
     );
   }
+});
+
+test("the response gate knob defaults to off, honors its three modes, and refuses a typo", () => {
+  // Off is the absence of the machinery: a host that never asked keeps delivering each message at
+  // once, and a typo must not land it on a mode that holds a session's messages back.
+  assert.equal(loadConfig({}).responseGate, "off");
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE: "" }).responseGate, "off");
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE: "   " }).responseGate, "off");
+
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE: "off" }).responseGate, "off");
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE: "shadow" }).responseGate, "shadow");
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE: "live" }).responseGate, "live");
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE: " LIVE " }).responseGate, "live");
+
+  for (const raw of ["lvie", "on", "1", "true", "yes", "buffer"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_RESPONSE_GATE: raw }),
+      new RegExp(`expected one of off, shadow, live, got ${JSON.stringify(raw)}`),
+      raw,
+    );
+  }
+});
+
+test("the response gate caps default to the rate ceiling and ten minutes, and refuse a value below one", () => {
+  const config = loadConfig({});
+  assert.equal(config.responseGateMaxMessages, MAX_INBOUND_PER_WINDOW);
+  assert.equal(config.responseGateMaxWaitMs, 10 * 60 * 1000);
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_MAX_MESSAGES: "5" }).responseGateMaxMessages, 5);
+  assert.equal(loadConfig({ CHANNEL_RESPONSE_GATE_MAX_WAIT_MS: "30000" }).responseGateMaxWaitMs, 30_000);
+
+  for (const raw of ["0", "-1", "2.5", "soon"]) {
+    assert.throws(
+      () => loadConfig({ CHANNEL_RESPONSE_GATE_MAX_MESSAGES: raw }),
+      /expected an integer of at least 1/,
+      raw,
+    );
+    assert.throws(
+      () => loadConfig({ CHANNEL_RESPONSE_GATE_MAX_WAIT_MS: raw }),
+      /expected an integer between 1 and 2147483647/,
+      raw,
+    );
+  }
+  // Node clamps a timer delay past 2^31-1 to 1ms, so one past it would deliver every buffer at once.
+  assert.equal(
+    loadConfig({ CHANNEL_RESPONSE_GATE_MAX_WAIT_MS: "2147483647" }).responseGateMaxWaitMs,
+    2_147_483_647,
+  );
+  assert.throws(
+    () => loadConfig({ CHANNEL_RESPONSE_GATE_MAX_WAIT_MS: "2147483648" }),
+    /expected an integer between 1 and 2147483647/,
+  );
+  // Read whatever the mode, so a bad cap refuses the restart that writes it rather than the one
+  // that turns the gate on.
+  assert.throws(
+    () => loadConfig({ CHANNEL_RESPONSE_GATE: "off", CHANNEL_RESPONSE_GATE_MAX_MESSAGES: "0" }),
+    /expected an integer of at least 1/,
+  );
 });
 
 test("the usage card is off unless it is asked for, and a typo is refused rather than read", () => {

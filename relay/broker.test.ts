@@ -156,10 +156,22 @@ test("a message written to the broker's stream reaches the relay with its chat i
 
   context.relays.deliver(TOKEN, message("run it"));
   context.relays.deliver(TOKEN, { ...message("and you"), author: "Bo", senderClass: "participant" });
-  await until(() => received.length > 1);
+  // A buffer the response gate delivered: several lines, and the count riding beside the class.
+  context.relays.deliver(TOKEN, {
+    ...message("Ann (operator): one\nBo (participant): two"),
+    author: "Bo",
+    senderClass: "participant",
+    buffered: 2,
+  });
+  await until(() => received.length > 2);
   assert.deepEqual(received, [
     { text: "run it", chatId: THREAD, attribution: { author: "Ann", senderClass: "operator" } },
     { text: "and you", chatId: THREAD, attribution: { author: "Bo", senderClass: "participant" } },
+    {
+      text: "Ann (operator): one\nBo (participant): two",
+      chatId: THREAD,
+      attribution: { author: "Bo", senderClass: "participant", buffered: 2 },
+    },
   ]);
 });
 
@@ -183,6 +195,17 @@ test("a message from a broker that names no author is still delivered, with no a
       `${JSON.stringify({ type: "message", chatId: THREAD, text: "odd class", author: "Cy", senderClass: "admin" })}
 `,
     );
+    // A count that is not a whole number of messages, at least one, is absent the same way.
+    for (const [text, buffered] of [
+      ["string count", "4"],
+      ["fractional count", 2.5],
+      ["zero count", 0],
+    ] as const) {
+      response.write(
+        `${JSON.stringify({ type: "message", chatId: THREAD, text, author: "Cy", buffered })}
+`,
+      );
+    }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => {
@@ -197,11 +220,14 @@ test("a message from a broker that names no author is still delivered, with no a
     onMessage: (text, _chatId, attribution) => received.push({ text, attribution }),
   }));
   client.start();
-  await until(() => received.length > 2);
+  await until(() => received.length > 5);
   assert.deepEqual(received, [
     { text: "old shape", attribution: {} },
     { text: "odd shape", attribution: {} },
     { text: "odd class", attribution: { author: "Cy" } },
+    { text: "string count", attribution: { author: "Cy" } },
+    { text: "fractional count", attribution: { author: "Cy" } },
+    { text: "zero count", attribution: { author: "Cy" } },
   ]);
 });
 

@@ -1098,6 +1098,9 @@ refused by name rather than guessed at.
 | `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning |
 | `CHANNEL_INBOX_THRESHOLD` | 0.7 | The judge score at or above which an unmarked reply opens an item; bounded 0.4 to 0.95 |
 | `CHANNEL_INBOX_CARD_REFRESH_MS` | 60 s | How often the inbox card is re-read and re-rendered; bounded 5 s to 1 h |
+| `CHANNEL_RESPONSE_GATE` | off | Whether a thread's messages are held and delivered to its session together. `off` and `shadow` deliver each admitted message at once. `live` holds a thread's messages until one mentions the bot, replies to one of its messages, or a cap below is reached, then delivers them as one event of `<author> (<class>): <text>` lines. Any other value refuses startup |
+| `CHANNEL_RESPONSE_GATE_MAX_MESSAGES` | 20 | A held buffer delivers on reaching this many messages; an integer of at least 1 |
+| `CHANNEL_RESPONSE_GATE_MAX_WAIT_MS` | 10 min | A held buffer delivers once its oldest message is this old, whether or not another arrives; bounded 1 ms to 2147483647 ms, the longest delay a Node timer holds |
 | `CHANNEL_MODEL_CHANGE_ALERT` | off | Whether a mid-session model change posts on the mention-bearing alert tier rather than the quiet notice tier |
 
 Two keys in that file are metadata rather than settings. `CHANNEL_NODE_EXE` is the absolute path to

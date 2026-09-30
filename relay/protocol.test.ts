@@ -46,6 +46,25 @@ test("a message from a broker that names no author leaves both keys out rather t
   assert.equal(meta.chat_id, "900000000000000001");
 });
 
+test("a gathered event carries its count in meta as a string, and a single message carries none", () => {
+  // The count is a number on the wire and a string here, since every meta value is one; and it is
+  // absent rather than "1" on a single message, so a host with the gate off renders the envelope
+  // it always did.
+  const gathered = channelNotification("Ann (operator): one\nBo (participant): two", "900000000000000001", {
+    author: "Bo",
+    senderClass: "participant",
+    buffered: 2,
+  }).params.meta;
+  assert.equal(gathered.buffered, "2");
+  assert.equal(gathered.sender_class, "participant");
+
+  const single = channelNotification("one", "900000000000000001", {
+    author: "Ann",
+    senderClass: "operator",
+  }).params.meta;
+  assert.equal(Object.hasOwn(single, "buffered"), false);
+});
+
 test("every meta key is one Claude Code keeps, and every meta value is a string", () => {
   // Claude Code validates params.meta as Record<string, string> and then drops any key that is not
   // a plain identifier. A number-valued or oddly-named entry is discarded before the model ever
@@ -53,6 +72,7 @@ test("every meta key is one Claude Code keeps, and every meta value is a string"
   const notification = channelNotification("hello", "900000000000000001", {
     author: "Ann",
     senderClass: "operator",
+    buffered: 4,
   });
   for (const [key, value] of Object.entries(notification.params.meta)) {
     assert.match(key, META_KEY_PATTERN, `meta key ${key} would be dropped`);

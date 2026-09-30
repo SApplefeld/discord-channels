@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MessageType } from "discord.js";
 import {
+  addressing,
   authorName,
   classifyMessage,
   createSystemNoticeCleaner,
@@ -397,4 +398,47 @@ test("the name is bounded on its way out of the gateway", () => {
   const nickname = `<b>"${String.fromCharCode(0x0a)}${"n".repeat(40)}`;
   const name = authorName({ id: OPERATOR, nickname, globalName: null, username: "user" });
   assert.equal(name, `b   ${"n".repeat(28)}`);
+});
+
+// Whether a message addresses this bot, read off the users it mentions and the author of the
+// message it replies to, so the response gate's two certain triggers are driven on values.
+
+test("a direct mention of the bot's own user addresses it, and a mention of anyone else does not", () => {
+  assert.deepEqual(
+    addressing({ selfId: SELF, mentionedUserIds: [OPERATOR, SELF], repliedToAuthorId: null }),
+    { mentionsBot: true, repliesToBot: false },
+  );
+  assert.deepEqual(
+    addressing({ selfId: SELF, mentionedUserIds: [OPERATOR], repliedToAuthorId: null }),
+    { mentionsBot: false, repliesToBot: false },
+  );
+  // A role mention or an @everyone reaches the library's role and everyone flags, never the user
+  // list, so a message carrying only those mentions no user at all here.
+  assert.deepEqual(
+    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: null }),
+    { mentionsBot: false, repliesToBot: false },
+  );
+});
+
+test("a reply to the bot's own message addresses it; a reply to anyone else's, or to one that is gone, does not", () => {
+  assert.deepEqual(
+    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: SELF }),
+    { mentionsBot: false, repliesToBot: true },
+  );
+  assert.deepEqual(
+    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: OPERATOR }),
+    { mentionsBot: false, repliesToBot: false },
+  );
+  // A reply whose referenced message was deleted reports no author, and is not a reply to the bot.
+  assert.deepEqual(
+    addressing({ selfId: SELF, mentionedUserIds: [], repliedToAuthorId: null }),
+    { mentionsBot: false, repliesToBot: false },
+  );
+});
+
+test("before the connection knows its own user, nothing addresses it", () => {
+  assert.deepEqual(
+    addressing({ selfId: null, mentionedUserIds: [SELF], repliedToAuthorId: SELF }),
+    { mentionsBot: false, repliesToBot: false },
+  );
 });

@@ -12,10 +12,12 @@ import {
 import type { PermissionVerdict } from "./permission.ts";
 
 /**
- * Who wrote an inbound message, as the broker names them. Each field is absent when the broker's
- * event did not carry it as a string, which is how a broker that predates attribution speaks.
+ * Who wrote an inbound message, as the broker names them, and how many messages the text gathers
+ * when the broker's response gate delivered several as one. Each field is absent when the broker's
+ * event did not carry it in its shape, which is how a broker that predates attribution speaks and
+ * how one delivering a single message does.
  */
-export type Attribution = { author?: string; senderClass?: string };
+export type Attribution = { author?: string; senderClass?: string; buffered?: number };
 
 export type InboundHandler = (text: string, chatId: string, attribution: Attribution) => void;
 
@@ -212,6 +214,12 @@ export function createBrokerClient(options: BrokerClientOptions): BrokerClient {
     if (typeof fields.author === "string") attribution.author = fields.author;
     if (fields.senderClass === "operator" || fields.senderClass === "participant") {
       attribution.senderClass = fields.senderClass;
+    }
+    // A count is a whole number of messages, at least one. Anything else is left out the way a
+    // non-string author is: the message is still delivered, and the envelope claims no count.
+    const buffered = fields.buffered;
+    if (typeof buffered === "number" && Number.isInteger(buffered) && buffered >= 1) {
+      attribution.buffered = buffered;
     }
     options.onMessage(fields.text, fields.chatId, attribution);
   }

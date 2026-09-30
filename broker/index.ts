@@ -81,7 +81,7 @@ import {
 import type { TranscriptTailer } from "./tail.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
-import type { InboundInbox } from "./routing/inbound.ts";
+import type { InboundInbox, InboundRouter } from "./routing/inbound.ts";
 import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { OutboundInbox, ReplyResult } from "./routing/outbound.ts";
@@ -887,6 +887,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // seams into it read it through this closure. Null while the card is off, which leaves each of
   // those seams a no-op.
   let inbox: Inbox | null = null;
+  // The inbound router, mutable on the same terms: it exists only once Discord is configured below,
+  // and the registry's mutate seam reaches it through this closure so a session's end drops the
+  // buffer its thread was holding. Null on a host with no Discord, which leaves that seam a no-op.
+  let inbound: InboundRouter | null = null;
   const registry = createRegistry({
     host: config.host,
     staleAfterMs: config.staleAfterMs,
@@ -917,6 +921,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.error(message);
         logger.error(message);
       }
+      // The mutate signal is also how a thread's held buffer leaves with its session: a session
+      // ends on several paths, and this is the one that sees them all. It never throws.
+      inbound?.reconcile(sessions);
     },
     // An operator prompt answers the session it was typed to, which is what clears its inbox item.
     onPrompt: (sessionId, at) => inbox?.clear(sessionId, at),
@@ -1591,7 +1598,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
-    const inbound = createInboundRouter({
+    const router = createInboundRouter({
       registry,
       relays,
       gate,
@@ -1603,9 +1610,24 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       threadFor: (sessionId) => surface.threadFor(sessionId),
       writer: steeringWriter,
       ...(inbox === null ? {} : { inbox }),
+      // The mode and caps alone. The router builds the gate, whose timer delivers into the
+      // router's own pipe; the real clock is the default it takes.
+      responseGate: {
+        mode: config.responseGate,
+        maxMessages: config.responseGateMaxMessages,
+        maxWaitMs: config.responseGateMaxWaitMs,
+      },
       now: Date.now,
       log: note,
     });
+    inbound = router;
+    if (config.responseGate !== "off") {
+      note(
+        `broker: the response gate is ${config.responseGate}, a thread's buffer holds at most ` +
+          `${String(config.responseGateMaxMessages)} messages for at most ` +
+          `${String(config.responseGateMaxWaitMs)}ms`,
+      );
+    }
     // Same reason the REST client is imported here: this module is the only one in the routing
     // layer that loads discord.js, and a broker with no Discord configured never touches it.
     const { createGatewayMessageSource } = await import("./routing/gateway.ts");
@@ -1617,7 +1639,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         // most of what lands below a narration block, and the freshness gate must see exactly
         // those to know the block is no longer the thread's newest message.
         outbound.noteThreadMessage(message.threadId, message.messageId);
-        return inbound.deliver(message);
+        return router.deliver(message);
       },
       onInteraction: (interaction) => interactions.deliver(interaction),
       // The other half of the writes that announce themselves: the keeper reconciles which cards

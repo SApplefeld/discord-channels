@@ -45,6 +45,12 @@ export type RelayEvent =
       author: string;
       /** The author's class on the sender roster. Rendered as the event's `sender_class`. */
       senderClass: SenderClass;
+      /**
+       * How many messages the text gathers, one line each, when the response gate delivered a
+       * buffer of more than one. Absent on a single message, so a host with the gate off writes
+       * the event it always wrote. Rendered as the event's `buffered`.
+       */
+      buffered?: number;
     }
   /**
    * The operator's answer to one tool permission prompt. It travels the pipe rather than any

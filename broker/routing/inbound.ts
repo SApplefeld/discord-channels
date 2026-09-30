@@ -11,6 +11,11 @@
 // clears run only for an operator. A participant's message, whatever its shape, is delivered as
 // the text it is.
 //
+// The response gate, where a host turns it on, is the last thing before the pipe: a message that
+// every reading above has passed joins its thread's buffer instead of going down at once, and the
+// buffer goes down whole when a message addresses the bot or a cap is reached. Nothing about who
+// may say what moves; only when the session hears it.
+//
 // A process token identifies a pipe. It is not evidence about who sent a message, and no check
 // here consults it for that.
 import { withoutInvisible } from "../sanitize.ts";
@@ -18,7 +23,9 @@ import { parseVerdict } from "../security/permission.ts";
 import type { PermissionDesk } from "../security/permission.ts";
 import type { SenderClass, SenderGate } from "../security/senders.ts";
 import type { Registry, SessionRecord } from "../registry.ts";
-import type { RelayHub } from "./relays.ts";
+import type { RelayEvent, RelayHub } from "./relays.ts";
+import { bufferedEvent, createResponseGate } from "./response-gate.ts";
+import type { BufferDelivery, ResponseGate, ResponseGateMode } from "./response-gate.ts";
 import type { ThreadWriter } from "./writer.ts";
 
 /**
@@ -46,6 +53,16 @@ export type InboundMessage = {
   author: string;
   /** True when this bot wrote it. Its own cards, replies, and notices all come back over the gateway. */
   fromBot: boolean;
+  /**
+   * True when the message mentions this bot's own user directly. A role mention or an @everyone is
+   * not one. Read by the response gate alone, which delivers a held buffer on it.
+   */
+  mentionsBot: boolean;
+  /**
+   * True when the message replies to one this bot wrote. A reply to anyone else's, or one whose
+   * referenced message is gone, is not one. Read by the response gate alone, as the mention is.
+   */
+  repliesToBot: boolean;
   text: string;
 };
 
@@ -106,6 +123,22 @@ export type InboundInbox = {
   clearEnded: (sessionId: string, at: number) => void;
 };
 
+/**
+ * The response gate as the broker configures it. The router builds the gate from these rather than
+ * taking one built elsewhere, because the gate's age-cap timer delivers into this router's own pipe
+ * and thread, and only this file holds both.
+ */
+export type ResponseGateSettings = {
+  mode: ResponseGateMode;
+  /** A held buffer delivers on reaching this many messages. */
+  maxMessages: number;
+  /** A held buffer delivers once its oldest message is this old. */
+  maxWaitMs: number;
+  /** Injected so a test fires the age cap without sleeping. */
+  setTimer?: (callback: () => void, ms: number) => NodeJS.Timeout;
+  clearTimer?: (timer: NodeJS.Timeout) => void;
+};
+
 export type InboundRouterOptions = {
   registry: Registry;
   relays: RelayHub;
@@ -132,6 +165,11 @@ export type InboundRouterOptions = {
    * whatever the session last asked in its reply.
    */
   inbox?: InboundInbox;
+  /**
+   * The response gate's mode and caps. Absent, or in any mode but `live`, every admitted message is
+   * delivered at once, which is the path a host with one account has always had.
+   */
+  responseGate?: ResponseGateSettings;
   /** Injected so a test drives the rate ceiling without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
@@ -140,6 +178,13 @@ export type InboundRouterOptions = {
 export type InboundRouter = {
   /** Routes one gateway message. Never throws: a failed notice is logged, not propagated. */
   deliver: (message: InboundMessage) => Promise<void>;
+  /**
+   * Drops the held buffer, and its timer, of every thread whose session has ended or left the
+   * registry, delivering nothing. Called with the full record set on every registry mutation, the
+   * seam the inbox reconciles on, because a session ends on several paths and that is the one
+   * that sees them all. A no-op with the gate off. Never throws.
+   */
+  reconcile: (sessions: readonly SessionRecord[]) => void;
 };
 
 /**
@@ -152,12 +197,12 @@ export type InboundRouter = {
  * like for the moment before the old thread is retired.
  */
 function sessionForThread(
-  registry: Registry,
+  records: readonly SessionRecord[],
   threadFor: (sessionId: string) => string | null,
   threadId: string,
 ): SessionRecord | null {
   let ended: SessionRecord | null = null;
-  for (const record of registry.list()) {
+  for (const record of records) {
     if (threadFor(record.sessionId) !== threadId) continue;
     if (record.state !== "ended") return record;
     ended = record;
@@ -232,6 +277,106 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     }
   }
 
+  /**
+   * Announces one cut after the text it was cut from reached a live session. Only the delivered
+   * path earns it: on every undelivered path (no thread, ended session, over the rate ceiling, no
+   * relay, a buffer dropped with its session), a cut is noise about text nobody received.
+   *
+   * Posted as a reply rather than a notice, deliberately: the notice floor would let a recent
+   * failure notice swallow this announcement, or let this announcement swallow the next failure
+   * notice, and a suppressed announcement recreates the silent loss it exists to kill. Its volume
+   * is bounded without the floor: the inbound rate ceiling caps deliveries per minute, and the
+   * writer's post budget paces the wire.
+   */
+  async function announceCut(threadId: string): Promise<void> {
+    try {
+      const outcome = await options.writer.reply(threadId, TRUNCATED_NOTICE);
+      if (outcome.status !== "ok") {
+        log(`routing: could not announce a truncation in thread ${threadId}: ` + outcome.status);
+      }
+    } catch (error) {
+      log(`routing: could not announce a truncation in thread ${threadId}: ` + String(error));
+    }
+  }
+
+  /**
+   * Writes one event down the session's pipe, or tells the thread the session is unreachable.
+   * True when the pipe took it.
+   */
+  async function handOver(
+    record: SessionRecord,
+    threadId: string,
+    event: RelayEvent,
+  ): Promise<boolean> {
+    if (options.relays.deliver(record.processToken, event)) return true;
+    log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
+    await notice(threadId, UNREACHABLE_NOTICE);
+    return false;
+  }
+
+  /**
+   * Delivers a buffer the gate released, on a message's own act or on the timer, and announces
+   * each cut it carried. The inbox is not cleared here: an operator's message cleared it when the
+   * buffer took it, since the operator had answered the session either way.
+   */
+  async function handOverBuffer(
+    record: SessionRecord,
+    threadId: string,
+    delivery: BufferDelivery,
+  ): Promise<void> {
+    if (!(await handOver(record, threadId, bufferedEvent(threadId, delivery.messages)))) return;
+    if (delivery.messages.length > 1) {
+      log(
+        `routing: delivered ${String(delivery.messages.length)} buffered messages to session ` +
+          `${record.sessionId} on ${delivery.trigger}`,
+      );
+    }
+    for (const message of delivery.messages) {
+      if (message.truncated) await announceCut(threadId);
+    }
+  }
+
+  /**
+   * The age cap fired for a thread. The session is looked up again rather than remembered with the
+   * buffer, because it may have ended or been superseded while the buffer waited: a buffer whose
+   * thread no longer has a live session is dropped, which is what `reconcile` does the moment the
+   * registry says so, and this is the same answer for a router nothing reconciles.
+   */
+  async function expired(threadId: string, delivery: BufferDelivery): Promise<void> {
+    const record = sessionForThread(options.registry.list(), options.threadFor, threadId);
+    if (record === null || record.state === "ended") {
+      log(
+        `routing: dropped ${String(delivery.messages.length)} buffered messages, thread ` +
+          `${threadId} has no live session`,
+      );
+      return;
+    }
+    await handOverBuffer(record, threadId, delivery);
+  }
+
+  // Built only for `live`. `off` and `shadow` deliver at once below, and the absence of a gate is
+  // what keeps that path the one it always was rather than a gate with a pass-through mode.
+  const gate: ResponseGate | null =
+    options.responseGate?.mode === "live"
+      ? createResponseGate({
+          maxMessages: options.responseGate.maxMessages,
+          maxWaitMs: options.responseGate.maxWaitMs,
+          // Fire and forget, on the timer's own tick: the delivery never rejects by construction,
+          // and the catch is the same backstop the gateway puts behind `deliver`.
+          onAgeCap: (threadId, delivery) => {
+            void expired(threadId, delivery).catch((error: unknown) => {
+              log(`routing: delivering a buffer at the age cap failed: ${String(error)}`);
+            });
+          },
+          ...(options.responseGate.setTimer === undefined
+            ? {}
+            : { setTimer: options.responseGate.setTimer }),
+          ...(options.responseGate.clearTimer === undefined
+            ? {}
+            : { clearTimer: options.responseGate.clearTimer }),
+        })
+      : null;
+
   return {
     async deliver(message) {
       // Everything this broker writes into a thread arrives back over the same gateway. Without
@@ -284,7 +429,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
       const verdict = truncated || !operator ? null : parseVerdict(text);
       if (verdict !== null && options.permissions.resolve(message.threadId, verdict, null)) return;
 
-      const record = sessionForThread(options.registry, options.threadFor, message.threadId);
+      const record = sessionForThread(options.registry.list(), options.threadFor, message.threadId);
 
       // A message typed while this session's question is held is that question's answer, in the
       // operator's own words, for the whole ask. It is consumed here and not also delivered, for
@@ -356,48 +501,53 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         return;
       }
 
-      const delivered = options.relays.deliver(record.processToken, {
-        type: "message",
-        chatId: message.threadId,
-        text,
-        author: message.author,
-        senderClass,
-      });
-      if (delivered) {
+      if (gate === null) {
+        const delivered = await handOver(record, message.threadId, {
+          type: "message",
+          chatId: message.threadId,
+          text,
+          author: message.author,
+          senderClass,
+        });
+        if (!delivered) return;
         const deliveredAt = now();
         if (operator) {
           toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
         }
-        // Announced only here, after the truncated text reached a live session: on every
-        // undelivered path (no thread, ended session, over the rate ceiling, no relay), a cut is
-        // noise about text nobody received.
-        //
-        // Posted as a reply rather than a notice, deliberately: the notice floor would let a
-        // recent failure notice swallow this announcement, or let this announcement swallow the
-        // next failure notice, and a suppressed announcement recreates the silent loss it exists
-        // to kill. Its volume is bounded without the floor: the inbound rate ceiling caps
-        // deliveries per minute, and the writer's post budget paces the wire.
-        if (truncated) {
-          try {
-            const outcome = await options.writer.reply(message.threadId, TRUNCATED_NOTICE);
-            if (outcome.status !== "ok") {
-              log(
-                `routing: could not announce a truncation in thread ${message.threadId}: ` +
-                  outcome.status,
-              );
-            }
-          } catch (error) {
-            log(
-              `routing: could not announce a truncation in thread ${message.threadId}: ` +
-                String(error),
-            );
-          }
-        }
+        // Announced only here, after the truncated text reached a live session.
+        if (truncated) await announceCut(message.threadId);
         return;
       }
 
-      log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
-      await notice(message.threadId, UNREACHABLE_NOTICE);
+      // The gate is live, so the message joins its thread's buffer rather than going down at once.
+      //
+      // An operator's message clears the inbox item now, whether or not the buffer delivers on it:
+      // the item is the session waiting on an operator, and the operator has answered by writing
+      // in the thread, however long the gate holds the words. A rate-dropped message never reaches
+      // here, so it joins no buffer and counts toward no cap.
+      if (operator) {
+        const admittedAt = now();
+        toInbox((inbox) => inbox.clear(record.sessionId, admittedAt), record.sessionId);
+      }
+      const delivery = gate.admit(
+        message.threadId,
+        // The text as bounded above and the name as the gateway bounded it: what a delivered line
+        // carries is exactly what a delivered message carries, and nothing is sanitized twice.
+        { author: message.author, senderClass, text, truncated },
+        { mentionsBot: message.mentionsBot, repliesToBot: message.repliesToBot },
+      );
+      // Held. Nothing is announced, a cut included: the announcement belongs to a delivery, and
+      // this one has not happened yet.
+      if (delivery === null) return;
+      await handOverBuffer(record, message.threadId, delivery);
+    },
+
+    reconcile(sessions) {
+      if (gate === null) return;
+      for (const threadId of gate.threads()) {
+        const record = sessionForThread(sessions, options.threadFor, threadId);
+        if (record === null || record.state === "ended") gate.clear(threadId);
+      }
     },
   };
 }

@@ -126,6 +126,29 @@ export function authorName(author: {
   return author.id;
 }
 
+/**
+ * Whether a message addresses this bot, from the facts the library reports: the users it mentions
+ * and the author of the message it replies to.
+ *
+ * A mention is a direct user mention of the bot's own id. A role mention or an @everyone names a
+ * group the bot may belong to and is not one, since neither is a person asking the bot. A reply is
+ * to the bot when the message it references was the bot's, which the library reports from the
+ * referenced message's author whether or not the reply pinged them; a reply whose referenced
+ * message is gone reports no author, and is not a reply to the bot. Before the connection has
+ * identified itself there is no self to match, so nothing addresses it.
+ */
+export function addressing(facts: {
+  selfId: string | null;
+  mentionedUserIds: readonly string[];
+  repliedToAuthorId: string | null;
+}): { mentionsBot: boolean; repliesToBot: boolean } {
+  if (facts.selfId === null) return { mentionsBot: false, repliesToBot: false };
+  return {
+    mentionsBot: facts.mentionedUserIds.includes(facts.selfId),
+    repliesToBot: facts.repliedToAuthorId === facts.selfId,
+  };
+}
+
 /** Distinct unexpected system message types one connection names before it goes quiet. */
 const MAX_REPORTED_TYPES = 16;
 
@@ -269,6 +292,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
     // out of here are the ones `classifyMessage` allows and there is no other.
     const channel = message.channel;
     const inThread = channel.isThread();
+    const selfId = client.user?.id ?? null;
     const decision = classifyMessage(
       {
         channelId: message.channelId,
@@ -276,7 +300,7 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
         inThread,
         type: message.type,
         authorId: message.author.id,
-        selfId: client.user?.id ?? null,
+        selfId,
       },
       options.channelId,
     );
@@ -292,6 +316,13 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
       return;
     }
 
+    const addressed = addressing({
+      selfId,
+      mentionedUserIds: [...message.mentions.users.keys()],
+      // The library fills this from the referenced message's author, whether or not the reply
+      // pinged them, and leaves it null where that message is gone.
+      repliedToAuthorId: message.mentions.repliedUser?.id ?? null,
+    });
     void options
       .onMessage({
         threadId: message.channelId,
@@ -306,6 +337,10 @@ export function createGatewayMessageSource(options: GatewayOptions): MessageSour
         // Reported rather than filtered here: every message this broker writes comes back over
         // this connection, and dropping it is a routing decision like any other.
         fromBot: message.author.bot,
+        // Reported on the same terms: whether the message addresses the bot is a fact the routing
+        // reads, and what it does with one is decided there.
+        mentionsBot: addressed.mentionsBot,
+        repliesToBot: addressed.repliesToBot,
         text: message.content,
       })
       .catch((error: unknown) => {

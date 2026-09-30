@@ -31,16 +31,18 @@ export type ChannelNotification = {
  * The author and their class ride `meta` as `author` and `sender_class`, so they render as
  * attributes on the envelope beside `chat_id`. The broker has already bounded the name for that
  * position. Either one the broker did not send is left out rather than sent empty, since an empty
- * attribute would claim an author the event never named.
+ * attribute would claim an author the event never named. A buffered count rides as `buffered` on
+ * the same terms, written as a string because every meta value is one.
  */
 export function channelNotification(
   text: string,
   chatId: string,
-  attribution: { author?: string; senderClass?: string } = {},
+  attribution: { author?: string; senderClass?: string; buffered?: number } = {},
 ): ChannelNotification {
   const meta: Record<string, string> = { chat_id: chatId };
   if (attribution.author !== undefined) meta.author = attribution.author;
   if (attribution.senderClass !== undefined) meta.sender_class = attribution.senderClass;
+  if (attribution.buffered !== undefined) meta.buffered = String(attribution.buffered);
   return {
     method: CHANNEL_NOTIFICATION_METHOD,
     params: { content: text, meta },
