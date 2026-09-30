@@ -58,12 +58,16 @@ account.
 prompt, reply and tool approval in it, a participant included, because the roster governs who
 writes and never who reads. So a client's people must never share a channel, a server or a bot with
 your own fleet, or with another client's. Give each client a Discord server of their own, create a
-bot for it under step 1, and run a broker on a host that serves only that client's sessions.
+bot for it under step 1, and run a broker on a host that serves only that client's sessions. The
+launch wrapper picks each host's channel flag from its host table (`$script:ChannelFlagByHost` in
+`wrapper/Enter-ClaudeSession.ps1`) and refuses to launch on a machine the table does not name, so a
+client machine needs its own entry there before step 4.
 
 **The response gate is off until you turn it on.** With several people in one thread, a session
 would otherwise take a turn on every message. `CHANNEL_RESPONSE_GATE` holds a thread's messages and
 delivers them together when someone mentions or replies to the bot, when a cap is reached, or when
-TypeSafe's classifier judges that the conversation expects a response. While it is at `shadow` or
+TypeSafe's classifier, the one described under "The inbox judge's key file" below, judges that the
+conversation expects a response. While it is at `shadow` or
 `live`, a gated thread's messages are sent to TypeSafe, and it needs the key file under "The inbox
 judge's key file" below. [`operations.md`](operations.md) describes running it in `shadow` for a
 week to choose its threshold before going `live`.

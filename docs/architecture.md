@@ -880,7 +880,7 @@ composes fixed bytes, and the thread module edits the card only when those bytes
 
 The response gate sits between the inbound router and the relay pipe, and decides when a thread's
 messages reach its session. Its mode is `CHANNEL_RESPONSE_GATE`: `off`, the default, delivers each
-admitted message at once as it always has; `live` holds them; `shadow` delivers at once and records
+admitted message at once; `live` holds them; `shadow` delivers at once and records
 what `live` would have done. The module is `broker/routing/response-gate.ts`, and the router in
 `broker/routing/inbound.ts` builds it.
 

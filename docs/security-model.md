@@ -15,7 +15,7 @@ settled by the relay's instructions and resting on the sender gate below.
  which belongs here, or a sign an entry below is drawn too narrow. What is worth protecting is four
  things. The first is the operator's approval authority, since a verdict typed in a thread runs a
  real tool call. The second is conversation content: prompts, replies, narration and tool input. The
- third is the bot token and the operator's account on this machine. The fourth is the operator's
+ third is the bot token and the operator's Windows account on this machine, which the broker runs as. The fourth is the operator's
  attention, meaning the phone this system is allowed to ring.
 
 **T1. A web page or remote host.** It reaches the loopback port only through a browser the operator
@@ -26,8 +26,8 @@ boundary"). This document accepts nothing against this class.
 **T2. Content that passes through a session.** Anything a session reads can shape what it writes: a
 web page, a file, tool output, or a crafted file name, plan status or roster field the board card
 draws. That text reaches the session's thread and cards. Some of it also rests on disk and on `GET
-/sessions`, as the tool-input preview and the task roster, and reaches TypeSafe while the inbox
-judge is on (see T8). Render-site neutralization, the empty mention list, embed suppression and
+/sessions`, as the tool-input preview and the task roster, and reaches TypeSafe, the third-party
+classifier service the inbox judge and the response gate post to, while either is on (see T8). Render-site neutralization, the empty mention list, embed suppression and
 labelled cuts hold what it can draw ("Untrusted strings", "Tool approval over the channel").
 Accepted:
 
@@ -94,7 +94,7 @@ ring the phone without a bound.
  - a crafted `planPath` reaching a plan-shaped file in the persona's own tree, and a symbolic link
    planted there, which the board card's join follows
  - a project `.mcp.json` that squats the relay's name and inherits the reply tool's machine-wide
-   pre-approval These are argued under "The process token authenticates reports, never
+   pre-approval. These are argued under "The process token authenticates reports, never
    instructions", "The transcript is read, not posted", "Tool approval over the channel" and
    "Accepted, and worth stating".
 
@@ -663,7 +663,8 @@ The class then decides what an admitted message can be. Four paths consume a mes
 operator's act: a typed verdict, a held question's typed answer, a component press, and the inbox
 clear. Each takes an operator's message only. A participant's verdict-shaped text is delivered to
 the session as words, a participant speaking while a question is held leaves it held, a participant's
-press is ignored silently, and a participant's post leaves the inbox item standing.
+press is ignored with no reply and no state change, and a participant's post leaves the inbox item
+standing.
 
 **The class travels with the message, and the name does not decide it.** A delivered event carries
 `author`, the sender's display name, and `sender_class`, the class the roster gives the sender's
