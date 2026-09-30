@@ -1411,7 +1411,7 @@ test("a Discord message injected mid-turn advances pickup, with the line's own t
       attachment: {
         type: "queued_command",
         commandMode: "prompt",
-        origin: { kind: "channel" },
+        origin: { kind: "channel", server: "channel-relay" },
         prompt: "<channel:Ann> please check on this",
       },
     }),
@@ -1423,6 +1423,38 @@ test("a Discord message injected mid-turn advances pickup, with the line's own t
   assert.deepEqual(posts, [], "a channel-origin line is never narration");
   assert.deepEqual(prompts, [], "a channel-origin line is never drawn as a prompt");
   assert.deepEqual(peers, [], "a channel-origin line is never drawn as a peer message");
+});
+
+test("a channel-kind origin from a server other than this relay's own yields no pickup", async (t) => {
+  // `origin.kind: "channel"` names only which MCP tool queued the line; any server can register a
+  // tool under that name, so the pickup reading must also check `origin.server` names this relay's
+  // own MCP server, not just any server's "channel" tool.
+  const file = transcriptFile(t);
+  const picked: unknown[] = [];
+  const { tailer, posts, prompts } = harness({
+    notePickup: (sessionId, at) => picked.push({ sessionId, at }),
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    queuedPrompt("unused", SESSION, {
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        origin: { kind: "channel", server: "some-other-mcp-server" },
+        prompt: "SECRET-foreign-server-channel-message",
+      },
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(picked, [], "a foreign server's channel line must not credit this relay's pickup");
+  assert.deepEqual(posts, []);
+  assert.deepEqual(prompts, [], "a channel-kind origin is never drawn as a prompt either, whatever its server");
 });
 
 test("the control: a human-origin queued prompt still yields exactly the prompt it always did", async (t) => {
@@ -4952,9 +4984,11 @@ test("the queued-prompt gate still admits the operator's own typed message, and 
   // attachment timestamp, `peerAttachment`'s own fixed stamp, not `queuedPrompt`'s.
   assert.deepEqual(
     lineItems(
-      peerAttachment({ kind: "channel", body: PEER_BODY, name: PEER_NAME }, SESSION, {
-        prompt: "text an unpinned origin carried",
-      }).trimEnd(),
+      peerAttachment(
+        { kind: "channel", server: "plugin:relay:channel-relay", body: PEER_BODY, name: PEER_NAME },
+        SESSION,
+        { prompt: "text an unpinned origin carried" },
+      ).trimEnd(),
       SESSION,
     ),
     [{ kind: "pickup", at: Date.parse("2026-08-25T07:36:36.406Z") }],

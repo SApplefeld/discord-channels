@@ -383,9 +383,10 @@ which is what keeps this advisory rather than enforced.
 The receipt reactions' picked-up stage takes the permission half's evidence on every path, because
 a spawned `claude -p` fires its own `UserPromptSubmit` with the inherited token. A turn-opening post
 advances a thread's messages only when its payload names the session the token holds. On a
-`-NoMirror` session, and on a host with mirroring off, that means the prompt post's body is read
-after suppression is recorded, for its `session_id` field alone. Nothing else in it is read, and
-nothing read there reaches a log line or a post.
+`-NoMirror` session, the prompt post's body is read after suppression is recorded, for its
+`session_id` field alone. On a host with mirroring off, where no tailer is built at all, a
+token-holding session's prompt post is read the same way and for the same field. In both cases
+nothing else in the body is read, and nothing read there reaches a log line or a post.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by

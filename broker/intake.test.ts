@@ -823,14 +823,22 @@ test("a suppressed UserPromptSubmit fires pickup once its body confirms the curr
   // Every process a wrapped session spawns inherits its process token, so the token alone cannot
   // be trusted to credit pickup: a subprocess of an older turn could advance a message this turn
   // never picked up. The body is read for `session_id` alone, and pickup is credited only when it
-  // names the very session the token holds.
+  // names the very session the token holds. The secret prompt text must never leave this credit
+  // read: not to the log, at any level, and not to the mirror's own delivery seam.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-  const { mirror } = fakeMirror();
+  const { mirror, deliveries } = fakeMirror();
+  const lines: string[] = [];
+  const logger = {
+    info: (message: string) => lines.push(message),
+    warn: (message: string) => lines.push(message),
+    error: (message: string) => lines.push(message),
+  };
   const picked: Array<{ sessionId: string; at: number }> = [];
   const handle = createHandler({
     registry,
     maxBodyBytes: 1024,
     mirror,
+    log: logger,
     now: () => 42_000,
     receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
   });
@@ -858,18 +866,28 @@ test("a suppressed UserPromptSubmit fires pickup once its body confirms the curr
   assert.equal(result.status, 202);
   assert.equal(request.bodyConsumed, true, "the body is read to confirm the session, unlike every other suppressed field");
   assert.deepEqual(picked, [{ sessionId: "session-suppressed", at: 42_000 }]);
+  assert.deepEqual(deliveries, [], "a credit read must never also deliver the body it read");
+  assert.ok(!lines.join("\n").includes(secret), "the secret must never reach the log at any level");
 });
 
 test("a suppressed UserPromptSubmit whose body names no session, or a different one, credits no pickup", async () => {
   // A straggler subprocess of an older turn holds the same process token but is not the session
-  // speaking now; its post must not advance a message the current turn never picked up.
+  // speaking now; its post must not advance a message the current turn never picked up. Every body
+  // here, unparseable one included, carries a secret that must never leave this credit read.
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
-  const { mirror } = fakeMirror();
+  const { mirror, deliveries } = fakeMirror();
+  const lines: string[] = [];
+  const logger = {
+    info: (message: string) => lines.push(message),
+    warn: (message: string) => lines.push(message),
+    error: (message: string) => lines.push(message),
+  };
   const picked: Array<{ sessionId: string; at: number }> = [];
   const handle = createHandler({
     registry,
     maxBodyBytes: 1024,
     mirror,
+    log: logger,
     now: () => 42_000,
     receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
   });
@@ -886,10 +904,15 @@ test("a suppressed UserPromptSubmit whose body names no session, or a different 
     backgroundTasks: null,
   });
 
+  const secrets = [
+    "SECRET-no-session-id-at-all",
+    "SECRET-a-stragglers-own-turn",
+    "SECRET-not-json-at-all",
+  ];
   for (const body of [
-    JSON.stringify({ prompt: "no session id at all" }),
-    JSON.stringify({ prompt: "a straggler's own turn", session_id: "session-older" }),
-    "not json at all",
+    JSON.stringify({ prompt: secrets[0] }),
+    JSON.stringify({ prompt: secrets[1], session_id: "session-older" }),
+    secrets[2], // not json at all
   ]) {
     const request = fakeRequest("127.0.0.1", {
       url: "/mirror",
@@ -900,6 +923,56 @@ test("a suppressed UserPromptSubmit whose body names no session, or a different 
     assert.equal(result.status, 202, body);
   }
 
+  assert.deepEqual(picked, []);
+  assert.deepEqual(deliveries, [], "a credit read must never also deliver a body it read");
+  const captured = lines.join("\n");
+  for (const secret of secrets) {
+    assert.ok(!captured.includes(secret), `${secret} must never reach the log at any level`);
+  }
+});
+
+test("a suppressed UserPromptSubmit's pickup read past the drain ceiling responds with nothing, not a 202", async () => {
+  // The mirror-on path's own drain-cut branch (readCappedBody's `destroyed: true`) never writes a
+  // response either, since the connection is already gone; this credit read must match it rather
+  // than answer 202 to a socket that no longer exists.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror } = fakeMirror({ maxBytes: 10 });
+  const picked: unknown[] = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    lineage: null,
+    sessionId: "session-suppressed",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+    body: JSON.stringify({ prompt: "x".repeat(200), session_id: "session-suppressed" }),
+  });
+  const { response } = fakeResponse();
+  handle(request, response);
+  await settled();
+  await settled();
+
+  assert.equal(request.destroyed, true, "the connection must be destroyed past the drain limit");
+  assert.equal(
+    (response as unknown as { headersSent: boolean }).headersSent,
+    false,
+    "no response may be written once the connection is destroyed",
+  );
   assert.deepEqual(picked, []);
 });
 
@@ -1054,6 +1127,37 @@ test("with the broker-wide mirror off, a straggler or unnamed session fires no p
 
   assert.deepEqual(picked, []);
   assert.deepEqual(lines, [], "the mirror-off socket stays quiet, on or off a session's pickup");
+});
+
+test("with the broker-wide mirror off, a pickup read past the drain ceiling responds with nothing, not a 202", async () => {
+  const { mirror } = fakeMirror({ enabled: false, maxBytes: 10 });
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const picked: unknown[] = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  announce(registry);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit"),
+    body: JSON.stringify({ prompt: "x".repeat(200), session_id: "session-a" }),
+  });
+  const { response } = fakeResponse();
+  handle(request, response);
+  await settled();
+  await settled();
+
+  assert.equal(request.destroyed, true, "the connection must be destroyed past the drain limit");
+  assert.equal(
+    (response as unknown as { headersSent: boolean }).headersSent,
+    false,
+    "no response may be written once the connection is destroyed",
+  );
+  assert.deepEqual(picked, []);
 });
 
 test("with the broker-wide mirror off and no receipts seam wired, the body is never read", async () => {

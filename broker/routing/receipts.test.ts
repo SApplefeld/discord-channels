@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CallOutcome, MessageReactions, RateLimitObservation } from "../discord/transport.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
-import { STAGE_EMOJI, createReceiptTracker } from "./receipts.ts";
+import { PACE_MARGIN_MS, STAGE_EMOJI, createReceiptTracker } from "./receipts.ts";
 
 const HEALTHY: RateLimitObservation = { remaining: 4, resetAfterMs: 5_000, retryAfterMs: null };
 
@@ -173,9 +173,49 @@ test("a stage change lands both its add and its remove against a bucket that emp
   assert.deepEqual(log, [], "an empty-but-usable bucket is not a refusal");
   assert.ok(waits.length > 0, "the pace paid a wait rather than dropping a write");
   assert.ok(
-    waits.every((ms) => ms <= 250),
-    "each wait is bounded by the reported reset, not the pace ceiling",
+    waits.every((ms) => ms <= 250 + PACE_MARGIN_MS),
+    "each wait is bounded by the reported reset plus discord.js's own margin, not the pace ceiling",
   );
+});
+
+test("a paced write wakes past discord.js's own reset offset, not just the bucket's reported reset", async () => {
+  // discord.js's own REST client (node_modules/@discordjs/rest 2.6.3) stamps every rate-limit reset
+  // it records with a 50ms offset (dist/index.js:140 the default, :1113 the fold into the bucket's
+  // own `reset`) and refuses a call made before that instant locally (:975, `localLimited`), never
+  // reaching the wire, because this broker's client is built with `rejectOnRateLimit: () => true`
+  // (broker/discord/rest.ts:70). A wait that lands exactly on the bucket's own reported reset, with
+  // no margin, still wakes inside discord.js's wider window. The fake below refuses a call made
+  // before that same window closes, the way discord.js's own client would.
+  const { now, advance } = clock();
+  let localResetAt = 0;
+  const calls: Call[] = [];
+  const answer = async (call: Call): Promise<CallOutcome<null>> => {
+    if (now() < localResetAt) throw new Error("discord.js refused this call locally: still paced");
+    calls.push(call);
+    // discord.js's own offset, folded into the client's internal reset atop the reported one.
+    localResetAt = now() + 250 + 50;
+    return ok({ remaining: 0, resetAfterMs: 250, retryAfterMs: null });
+  };
+  const reactions: MessageReactions = {
+    addReaction: async (input) => answer({ kind: "add", ...input }),
+    removeReaction: async (input) => answer({ kind: "remove", ...input }),
+  };
+  const log: string[] = [];
+  const sleep = async (ms: number): Promise<void> => {
+    advance(ms);
+  };
+  const tracker = createReceiptTracker({ reactions, log: (message) => log.push(message), now, sleep });
+
+  tracker.delivered("thread-1", "msg-1", now());
+  tracker.pickedUp("thread-1", now());
+  await settle();
+
+  assert.deepEqual(
+    currentEmoji(calls, "msg-1"),
+    new Set([STAGE_EMOJI.pickedUp]),
+    "both the add and the remove must clear discord.js's own local window, not just the budget's",
+  );
+  assert.deepEqual(log, [], "a margin that clears discord.js's window means nothing here is refused");
 });
 
 test("a burst of several messages in one thread each get their own reaction despite one shared bucket", async () => {
@@ -197,6 +237,36 @@ test("a burst of several messages in one thread each get their own reaction desp
     assert.deepEqual(currentEmoji(calls, messageId), new Set([STAGE_EMOJI.delivered]), messageId);
   }
   assert.deepEqual(log, []);
+});
+
+test("a drained queue's next write still waits out the prior block, not a fresh budget", async () => {
+  // A thread's queue drains once nothing is chained behind its last task, but Discord's own bucket
+  // for that channel does not reset just because this tracker stopped watching it: the idle-session
+  // pickup that follows a delivered message by a couple hundred milliseconds is exactly this shape,
+  // and a fresh budget on that next write would try it immediately instead of pacing against a
+  // bucket discord.js still reports exhausted.
+  const { calls, reactions } = reactionsWith(() => ok({ remaining: 0, resetAfterMs: 250, retryAfterMs: null }));
+  const { now, advance } = clock();
+  const log: string[] = [];
+  const { waits, sleep } = fastSleep();
+  const tracker = createReceiptTracker({ reactions, log: (message) => log.push(message), now, sleep });
+
+  tracker.delivered("thread-1", "msg-1", now());
+  await settle(); // the queue fully drains: nothing is chained behind the delivered write
+
+  advance(200); // short of the reported 250ms reset: the bucket is still exhausted
+  tracker.pickedUp("thread-1", now());
+  await settle();
+
+  assert.deepEqual(currentEmoji(calls, "msg-1"), new Set([STAGE_EMOJI.pickedUp]));
+  assert.deepEqual(log, []);
+  // The picked-up transition always paces its own remove behind its add, so one wait is not proof
+  // by itself; a fresh budget would still show exactly that one wait, from the remove alone, while
+  // the add landed immediately on an unblocked budget. Two waits is what only a budget that
+  // survived the drain produces: the add itself had to pace too, against the block the delivered
+  // write left standing.
+  assert.equal(waits.length, 2, "both the add and the remove had to pace against the surviving block");
+  assert.ok(waits.every((ms) => ms > 0));
 });
 
 test("a write past the pace bound is skipped and reported, not delayed further", async () => {
@@ -275,6 +345,94 @@ test("an add that fails leaves the answered transition's old emoji in place", as
       ["add", STAGE_EMOJI.answered],
     ],
     "the failed add must never be followed by a remove of the emoji still standing",
+  );
+});
+
+test("a failed 👀 add followed by answered ends with ✅ alone, never 📨 beside it", async () => {
+  // Before this fix, the remove that follows an add was always the prior stage's own emoji: here,
+  // 📨. The pickedUp add fails here, so 📨 never leaves and the entry's in-memory stage still
+  // advances to "pickedUp" regardless (a message's turn state must not wait on a reaction landing).
+  // answered() then sees stage "pickedUp" and would remove 👀, a reaction that was never actually
+  // painted, leaving 📨 standing beside a freshly added ✅ forever. The fix removes whatever the
+  // entry's own record says is painted, which is still 📨 here, not the emoji the stage machine
+  // assumed.
+  const { calls, reactions } = reactionsWith((call) =>
+    call.kind === "add" && call.emoji === STAGE_EMOJI.pickedUp
+      ? { status: "failed", error: "HTTP 400", rate: NO_RATE_INFO }
+      : ok(),
+  );
+  const { now } = clock();
+  const tracker = createReceiptTracker({ reactions, log: () => {}, now });
+
+  tracker.delivered("thread-1", "msg-1", now());
+  await settle();
+  tracker.pickedUp("thread-1", now());
+  await settle();
+  tracker.answered("thread-1");
+  await settle();
+
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.pickedUp],
+      ["add", STAGE_EMOJI.answered],
+      ["remove", STAGE_EMOJI.delivered],
+    ],
+    "the answered transition must remove 📨, what is actually painted, never 👀, which never landed",
+  );
+});
+
+test("a pickup instant at or before the thread's last answer goes straight to answered, never parking at 👀", async () => {
+  // The tailer polls a live transcript every `interimPollMs` (20s by default), so a mid-turn
+  // injected message's own queued-command line can be read well after the turn that already
+  // answered it. `pickedUp` is told that line's own instant; when it is at or before the thread's
+  // last `answered` call, nothing will ever call `answered` for this message again, so it must
+  // finish the job itself rather than parking at 👀 forever. The control is the ordinary order: a
+  // pickup that arrives before the answer still moves through 👀 exactly as it always has.
+  const { calls, reactions } = reactionsWith();
+  const { now, advance } = clock();
+  const tracker = createReceiptTracker({ reactions, log: () => {}, now });
+
+  const ordinaryAt = now();
+  tracker.delivered("thread-1", "msg-ordinary", ordinaryAt);
+  await settle();
+  tracker.pickedUp("thread-1", ordinaryAt);
+  await settle();
+
+  advance(1_000);
+  const staleAt = now();
+  tracker.delivered("thread-1", "msg-stale", staleAt);
+  await settle();
+
+  advance(1_000);
+  tracker.answered("thread-1"); // answers msg-ordinary; msg-stale is still at 📨, untouched
+  await settle();
+
+  advance(1_000);
+  // The queued line's own instant sits before the answer just posted: a stale pickup signal.
+  tracker.pickedUp("thread-1", staleAt);
+  await settle();
+
+  assert.deepEqual(
+    calls.filter((call) => call.messageId === "msg-ordinary").map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.pickedUp],
+      ["remove", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.answered],
+      ["remove", STAGE_EMOJI.pickedUp],
+    ],
+    "the ordinary order still moves through 👀 exactly as it always has",
+  );
+  assert.deepEqual(
+    calls.filter((call) => call.messageId === "msg-stale").map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.answered],
+      ["remove", STAGE_EMOJI.delivered],
+    ],
+    "a stale pickup instant goes straight to answered, never through 👀",
   );
 });
 

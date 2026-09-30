@@ -630,10 +630,11 @@ export type TranscriptTailerOptions = {
    * Told of a `pickup` item: a Discord message injected mid-turn, with the transcript line's own
    * instant. Nothing here posts anything; it exists only to advance a message's receipt reaction,
    * never to draw content. This reader only ever runs against a mirror-on session's transcript,
-   * since the tailer reads no other kind, so it is the mirror-on half of pickup credit alone. A
-   * mirror-off session's pickup reaches the tracker a separate way entirely, through the intake
-   * handler's own credit on the `UserPromptSubmit` mirror post, never through this seam. Optional
-   * so a caller not wiring receipts, and every existing test, keep working unchanged.
+   * since the tailer reads no other kind, so this is the mirror-on half of pickup credit; the
+   * intake handler's own credit on the `UserPromptSubmit` mirror post is the other. Both halves
+   * are wired to the same session-keyed pickup entry point in startBroker, so neither seam resolves
+   * a session to its thread on its own. Optional so a caller not wiring receipts, and every
+   * existing test, keep working unchanged.
    */
   notePickup?: (sessionId: string, at: number) => void;
   /**
@@ -1568,6 +1569,16 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
 };
 
 /**
+ * The names this repo's own MCP channel server registers under, either of which names a
+ * `queued_command` line's `origin.kind: "channel"` as this relay's own injection rather than some
+ * other MCP server's. `channel-relay` is the manually-configured entry (wrapper/Enter-ClaudeSession.ps1
+ * `$script:ChannelServerName`), and `plugin:relay:channel-relay` is the same server under the
+ * plugin-provided route (plugins/relay/.claude-plugin/plugin.json `server`, prefixed the way Claude
+ * Code names a plugin-installed MCP server).
+ */
+const CHANNEL_RELAY_SERVER_NAMES: readonly string[] = ["channel-relay", "plugin:relay:channel-relay"];
+
+/**
  * What one transcript line contributes, decided by an allowlist and never a denylist. Five line
  * shapes yield anything, and all must first not be a sidechain and must name in `sessionId` the
  * session this transcript was learned for.
@@ -1611,12 +1622,15 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * thread itself, and a `prompt` that is an object rather than a string carries pasted image
  * references rather than prose.
  *
- * A line yields a pickup item when it is that same `queued_command` attachment shape and its
- * `origin.kind` is `channel`: a message posted straight into the thread, injected mid-turn, that
- * was already drawn once on delivery. What this yields is not narration, since posting it again
- * would put the same message on the thread twice, but the transcript line's own instant, which is
- * what lets the message's receipt reaction advance past 📨 the same way a console-typed line's
- * does.
+ * A line yields a pickup item when it is that same `queued_command` attachment shape, its
+ * `origin.kind` is `channel`, and its `origin.server` names this repo's own relay
+ * (`CHANNEL_RELAY_SERVER_NAMES`): a message posted straight into the thread, injected mid-turn,
+ * that was already drawn once on delivery. `kind` alone names only which MCP tool queued the line,
+ * and any server can register a tool under that name, so the server check is what keeps a foreign
+ * or misconfigured server's own "channel" line from being read as this relay's. What this yields is
+ * not narration, since posting it again would put the same message on the thread twice, but the
+ * transcript line's own instant, which is what lets the message's receipt reaction advance past 📨
+ * the same way a console-typed line's does.
  *
  * A `user` line yields a goal when its content carries the console-command markup and the command
  * named in it is `/goal`. One command by allowlist, never a sweep: a command's arguments are
@@ -1800,12 +1814,22 @@ export function lineItems(line: string, sessionId: string): TailItem[] {
     if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return [];
     const peer = peerDelivery(origin);
     if (peer !== null) return [{ kind: "peer-in", name: peer.name, body: peer.body }];
-    const originKind = (origin as Record<string, unknown>)["kind"];
+    const originFields = origin as Record<string, unknown>;
+    const originKind = originFields["kind"];
     // A message someone posted straight into the thread, injected mid-turn: it was already drawn
     // once, on delivery, so nothing here posts it again. What it still owes is the pickup this
     // turn gives it, the same signal a human's queued line gives through the ordinary prompt item
     // below, so a Discord-originated message advances past 📨 exactly as a console-typed one does.
-    if (originKind === "channel") return [{ kind: "pickup", at: lineInstant(record) }];
+    // Gated on `origin.server` naming this repo's own relay, never on `kind` alone: `channel` names
+    // only which MCP tool queued the line, and any server can register a tool under that name, so a
+    // foreign or misconfigured server's own "channel" line must not be read as this relay's.
+    if (
+      originKind === "channel" &&
+      typeof originFields["server"] === "string" &&
+      CHANNEL_RELAY_SERVER_NAMES.includes(originFields["server"])
+    ) {
+      return [{ kind: "pickup", at: lineInstant(record) }];
+    }
     if (originKind !== "human") return [];
     const prompt = fields["prompt"];
     if (typeof prompt !== "string" || prompt === "") return [];

@@ -2697,7 +2697,72 @@ test("startBroker wires the held buffers' restore: the attach, the file and the 
   assert.deepEqual(restoreWiringGaps(source.replace("inbound?.armRestored()", "void 0")), ["armed"]);
 });
 
-test("one message rides delivered, picked up and answered across the inbound router, the intake handler and the outbound router, all wired to one real receipt tracker", async () => {
+// The five receipt seams (outbound's pickedUp and answered, intake's pickup entry point, the
+// tailer's notePickup, and the surface's onRetired) all reach startBroker's own mutable `receipts`
+// and `threadFor` closures, which no test below reaches without a Discord login. This pins that
+// startBroker still makes each connection, read from the source the way `restoreWiringGaps` does.
+function receiptWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  if (!/pickedUp:\s*\(threadId,\s*at\)\s*=>\s*receipts\?\.pickedUp\(threadId,\s*at\)/.test(code)) {
+    gaps.push("outbound-pickedUp");
+  }
+  if (!/answered:\s*\(threadId\)\s*=>\s*receipts\?\.answered\(threadId\)/.test(code)) {
+    gaps.push("outbound-answered");
+  }
+  if (
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*receipts:\s*\{\s*pickedUp:\s*pickupFor\s*\}\s*\}/.test(code)
+  ) {
+    gaps.push("intake");
+  }
+  if (!/delivered:\s*\(threadId,\s*messageId,\s*at\)\s*=>\s*receipts\?\.delivered\(threadId,\s*messageId,\s*at\)/.test(code)) {
+    gaps.push("inbound");
+  }
+  if (!/notePickup:\s*\(sessionId,\s*at\)\s*=>\s*pickupFor\(sessionId,\s*at\)/.test(code)) {
+    gaps.push("tailer");
+  }
+  if (!/onRetired:\s*\(threadId\)\s*=>\s*receipts\?\.forget\(threadId\)/.test(code)) {
+    gaps.push("surface");
+  }
+  return gaps;
+}
+
+test("startBroker wires every receipt seam: outbound, intake's pickup entry point, inbound, the tailer and the surface", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(receiptWiringGaps(source), []);
+  // Each check speaks when its own call is gone, so a green above is the calls being there.
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("pickedUp: (threadId, at) => receipts?.pickedUp(threadId, at)", "void 0")),
+    ["outbound-pickedUp"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("answered: (threadId) => receipts?.answered(threadId)", "void 0")),
+    ["outbound-answered"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("...(discord === null ? {} : { receipts: { pickedUp: pickupFor } }),", "")),
+    ["intake"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(
+      source.replace(
+        "delivered: (threadId, messageId, at) => receipts?.delivered(threadId, messageId, at)",
+        "void 0",
+      ),
+    ),
+    ["inbound"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("notePickup: (sessionId, at) => pickupFor(sessionId, at)", "void 0")),
+    ["tailer"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("onRetired: (threadId) => receipts?.forget(threadId)", "void 0")),
+    ["surface"],
+  );
+});
+
+test("one message rides delivered, picked up and answered when the inbound router, the intake handler and the outbound router are each built directly against one shared receipt tracker, the level a fake reaches with no live discord login", async () => {
   // Only a broker actually configured to reach Discord builds this wiring inside startBroker
   // (threadFor's own closure, the mutable receipts binding, onRetired's forget), and reaching that
   // means a real Discord login. This drives the same three seams startBroker wires, at the level

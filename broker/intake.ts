@@ -499,22 +499,32 @@ async function readCappedBody(
  * alone: nothing else in the payload is read here. Used on the two mirror paths that would
  * otherwise credit a stage reaction on the process token alone, which every process a wrapped
  * session spawns inherits: a subprocess of an older turn could then advance a message the current
- * turn never picked up. Null on anything that is not a usable session id: an over-cap or
- * drain-cut body, a parse failure, a non-object payload, or a payload naming none, all fail
- * closed the same way this route's own body reader does. Nothing here is logged; a parse failure
- * embeds source text the way JSON.parse's own message does elsewhere on this route.
+ * turn never picked up. `sessionId` is null on anything that is not a usable session id: an
+ * over-cap body, a parse failure, a non-object payload, or a payload naming none, all fail closed
+ * the same way this route's own body reader does. Nothing here is logged; a parse failure embeds
+ * source text the way JSON.parse's own message does elsewhere on this route. `destroyed` mirrors
+ * `readCappedBody`'s own drain-cut signal: the connection is already gone, so a caller must not
+ * write a response to it either.
  */
-async function creditedSessionId(request: IncomingMessage, maxBytes: number): Promise<string | null> {
+async function creditedSessionId(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<{ sessionId: string | null; destroyed: boolean }> {
   const read = await readCappedBody(request, maxBytes);
-  if (!("body" in read)) return null;
+  if (!("body" in read)) return { sessionId: null, destroyed: read.destroyed };
   let payload: unknown;
   try {
     payload = JSON.parse(read.body);
   } catch {
-    return null;
+    return { sessionId: null, destroyed: false };
   }
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
-  return payloadString(payload as Record<string, unknown>, "session_id");
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return { sessionId: null, destroyed: false };
+  }
+  return {
+    sessionId: payloadString(payload as Record<string, unknown>, "session_id"),
+    destroyed: false,
+  };
 }
 
 export type HandlerOptions = {
@@ -723,8 +733,11 @@ export function createHandler(
         const processToken = header(request, "x-channel-process-token");
         const holder = processToken !== null ? options.registry.current(processToken) : null;
         if (holder !== null) {
-          const sessionId = await creditedSessionId(request, options.mirror.maxBytes);
-          if (sessionId !== null && sessionId === holder.sessionId) {
+          const credited = await creditedSessionId(request, options.mirror.maxBytes);
+          // The connection is already gone: there is no response to write, mirroring the
+          // mirror-on path's own drain-cut handling below.
+          if (credited.destroyed) return;
+          if (credited.sessionId !== null && credited.sessionId === holder.sessionId) {
             options.receipts.pickedUp(holder.sessionId, now());
           }
         } else {
@@ -799,8 +812,11 @@ export function createHandler(
       // same bar the mirror-on path below uses. A body that fails to parse, or names no session,
       // credits nothing and logs nothing: a parse failure embeds source text.
       if (mapping.kind === "prompt" && options.receipts !== undefined) {
-        const sessionId = await creditedSessionId(request, options.mirror.maxBytes);
-        if (sessionId !== null && sessionId === holder.sessionId) {
+        const credited = await creditedSessionId(request, options.mirror.maxBytes);
+        // The connection is already gone: there is no response to write, mirroring the
+        // mirror-on path's own drain-cut handling below.
+        if (credited.destroyed) return;
+        if (credited.sessionId !== null && credited.sessionId === holder.sessionId) {
           options.receipts.pickedUp(holder.sessionId, now());
         }
       } else {

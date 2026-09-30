@@ -1038,6 +1038,15 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // block runs. A host with no Discord builds one nowhere, and every call through the closures
   // below is a no-op, which is what a broker with no reactions to paint has always done.
   let receipts: ReceiptTracker | null = null;
+  // The one session-keyed pickup entry point, so the intake handler's `UserPromptSubmit` credit
+  // and the tailer's own `notePickup` seam resolve a session to its thread and reach the tracker
+  // through one path rather than two closures that could drift. Reads `threadFor` and `receipts`
+  // through the closure for the reason both are mutable: this is defined before the Discord block
+  // below builds either.
+  function pickupFor(sessionId: string, at: number): void {
+    const threadId = threadFor(sessionId);
+    if (threadId !== null) receipts?.pickedUp(threadId, at);
+  }
   // The fleet usage card's own message, for the channel's pin list. Mutable for the reason
   // `threadFor` is: the card is built after the Discord block below, because it is built under two
   // conditions decided in one place, and the pin reconcile that reads this runs on the surface's
@@ -1224,14 +1233,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliverPrompt: (sessionId, text, source, at) =>
         outbound.interimPrompt(sessionId, text, source, at),
       deliverPeer: (sessionId, traffic) => outbound.peer(sessionId, traffic),
-      // A Discord message injected mid-turn: no post, just the pickup stage, resolved to a thread
-      // through the same mutable `threadFor` closure every other seam here reads, for the reason
-      // it is mutable: the surface that knows a session's thread is built in the Discord block
-      // below, after the tailer.
-      notePickup: (sessionId, at) => {
-        const threadId = threadFor(sessionId);
-        if (threadId !== null) receipts?.pickedUp(threadId, at);
-      },
+      // A Discord message injected mid-turn: no post, just the pickup stage, through the one
+      // session-keyed pickup entry point the intake handler's own credit also calls.
+      notePickup: (sessionId, at) => pickupFor(sessionId, at),
       // The release wrapper above. The delivery is read through a closure rather than passed
       // directly, because `deliverQuestion` is replaced further down once Discord's surfaces
       // exist, and the tailer is constructed before that.
@@ -1328,6 +1332,21 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
   });
 
+  // Read here, ahead of the intake handler below, so the handler can decide at construction
+  // whether the receipts seam is worth wiring at all: a broker this reads as unconfigured for
+  // never builds a tracker, and every pickup credit through it would otherwise read and parse a
+  // mirror-off prompt body for a seam that can never do anything with what it finds.
+  const discord = loadDiscordConfig(process.env, {
+    staleAfterMs: config.staleAfterMs,
+    // A half-configured Discord is the one shape that looks identical to a working one from every
+    // other signal: the broker starts, the registry fills, the status cards would tick. Saying so
+    // once at startup is the difference between a typo and an afternoon.
+    warn: (message) => {
+      console.warn(message);
+      logger.warn(message);
+    },
+  });
+
   const hooks = createHandler({
     registry,
     // Floored at the mirror route's ceiling: both routes receive the same Stop payload, and only
@@ -1371,15 +1390,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliver: (processToken, kind, text, sessionId) =>
         outbound.mirror(processToken, kind, text, sessionId),
     },
-    // Resolved to a thread through the same mutable `threadFor` closure every other seam here
-    // reads, for the reason it is mutable: the surface that knows a session's thread is built in
-    // the Discord block below, after this handler.
-    receipts: {
-      pickedUp: (sessionId, at) => {
-        const threadId = threadFor(sessionId);
-        if (threadId !== null) receipts?.pickedUp(threadId, at);
-      },
-    },
+    // Wired only when Discord is actually configured: with no receipts tracker ever built on this
+    // host, `pickupFor` can only ever be a no-op, and wiring the seam anyway would have the
+    // suppressed and broker-wide-off branches below read and parse every mirror-off prompt body
+    // for a credit that can never land anywhere.
+    ...(discord === null ? {} : { receipts: { pickedUp: pickupFor } }),
   });
   const server = createServer((request, response) => {
     // The relay routes answer first and report whether they took the request; everything else,
@@ -1416,16 +1431,6 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // registry and its intake, which is what a local debugging run and every test wants. The refresh
   // timer lives here for the same reason the sweep does, so the surface itself is drivable by an
   // injected clock.
-  const discord = loadDiscordConfig(process.env, {
-    staleAfterMs: config.staleAfterMs,
-    // A half-configured Discord is the one shape that looks identical to a working one from every
-    // other signal: the broker starts, the registry fills, the status cards would tick. Saying so
-    // once at startup is the difference between a typo and an afternoon.
-    warn: (message) => {
-      console.warn(message);
-      logger.warn(message);
-    },
-  });
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;

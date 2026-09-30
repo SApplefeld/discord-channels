@@ -1,13 +1,15 @@
 // One reaction on each person's own message, in a session's thread, tracking where that message
 // stands: handed to the session, picked up by a turn, or answered.
 //
-// A stage change adds the new emoji and then removes the old one, so a message is never shown
-// with no stage at all. Every write for one thread, across every message in it, runs through one
-// serial queue: Discord's reaction buckets are per channel, and a thread is a channel, so the
-// budget and the ordering are both scoped to the thread rather than to the message or to the
-// tracker as a whole. A stage change's own add/remove pair is chained inside that same queue, so a
-// fast run through all three stages still cannot land on the wire out of order. Every reaction call
-// is fire-and-forget from the caller's side: nothing here is awaited by delivery or posting.
+// A stage change adds the new emoji and, only once that lands, removes whatever is actually
+// painted on the message right now, so a message is never shown with no stage at all, and a
+// remove is never fired against a stage whose own add never reached Discord. Every write for one
+// thread, across every message in it, runs through one serial queue: Discord's reaction buckets
+// are per channel, and a thread is a channel, so the budget and the ordering are both scoped to
+// the thread rather than to the message or to the tracker as a whole. A stage change's own
+// add/remove pair is chained inside that same queue, so a fast run through all three stages still
+// cannot land on the wire out of order. Every reaction call is fire-and-forget from the caller's
+// side: nothing here is awaited by delivery or posting.
 //
 // A write the thread's own budget cannot afford right now waits, inside the queue, for the bucket
 // to refill, up to a bound; past that bound it is skipped rather than delayed further, logged and
@@ -24,11 +26,20 @@ export const STAGE_EMOJI = {
   answered: "✅",
 } as const;
 
-/** One tracked message: its current stage and when it was handed to the session. */
+/** One tracked message: its current stage, when it was handed to the session, and what is
+ * actually painted on it right now. */
 type Tracked = {
   messageId: string;
   stage: "delivered" | "pickedUp";
   deliveredAt: number;
+  /**
+   * The emoji a landed add call last put on this message, or null before any add has landed. A
+   * transition removes whatever this names, never the emoji its own stage machine assumes should
+   * be there: a stage advances in memory as soon as its signal arrives, but its add can still be
+   * refused, and a later transition's remove must clear what Discord is actually showing, not what
+   * the prior stage would have painted had its own add landed.
+   */
+  painted: string | null;
 };
 
 /**
@@ -50,6 +61,18 @@ const REFUSAL_WINDOW_MS = 5 * 60 * 1000;
  * and either way delaying a stage change further costs more than skipping this one write.
  */
 const MAX_PACE_WAIT_MS = 5_000;
+
+/**
+ * Waited past `budget.blockedUntil()` on top of the bucket's own reset, before a paced write is
+ * retried. discord.js's REST client (`node_modules/@discordjs/rest` 2.6.3) folds a 50ms `offset`
+ * into every reset it records (`dist/index.js:140` the default, `:1113` the fold into `this.reset`)
+ * and refuses a call locally once `Date.now() < this.reset` (`:975`, `localLimited`), because this
+ * broker's client is built with `rejectOnRateLimit: () => true` (broker/discord/rest.ts:70). A wait
+ * that lands exactly on the bucket's own reset, with no margin, still wakes inside that client's
+ * wider window and is refused before the request ever reaches the wire. The margin covers that
+ * offset plus ordinary timer slop.
+ */
+export const PACE_MARGIN_MS = 100;
 
 export type ReceiptTrackerOptions = {
   reactions: MessageReactions;
@@ -86,24 +109,28 @@ export type ReceiptTracker = {
   forget: (threadId: string) => void;
 };
 
-/** One thread's serial write queue and the rate budget scoped to it. */
-type ThreadQueue = {
-  budget: Budget;
-  /** The last task chained onto this thread's queue; the next write chains behind it. */
-  tail: Promise<void>;
-};
-
 export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTracker {
   const describeError =
     options.describe ?? ((error: unknown) => (error instanceof Error ? error.message : "unknown transport error"));
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const threads = new Map<string, Tracked[]>();
-  // One queue per thread, holding that thread's own budget: Discord's reaction buckets are per
-  // channel and a thread is a channel, so a burst across several messages in one thread must pace
-  // against one shared budget instead of racing several independent ones. Dropped once nothing is
-  // chained behind the last task that ran, so a thread with no live traffic does not hold a budget
-  // forever; the next write after a drain starts against a fresh one.
-  const queues = new Map<string, ThreadQueue>();
+  // A thread's rate budget, held apart from its queue and cleared only by `forget`. Discord's
+  // reaction bucket for a thread does not reset just because this tracker's own queue drains: the
+  // next write after a quiet stretch (the idle-session pickup that follows a delivered message by a
+  // couple hundred milliseconds, commonly) can land while the bucket discord.js reported is still
+  // exhausted, and a fresh budget would try it immediately instead of pacing against what is
+  // actually still blocked.
+  const budgets = new Map<string, Budget>();
+  // The instant of each thread's last `answered` call, kept until `forget`. The tailer can read a
+  // mid-turn injected message's own queued-command line up to `interimPollMs` behind the turn that
+  // already answered it, so a `pickedUp` signal can arrive for a message whose reply already
+  // posted; without this, that message is moved to 👀 on the strength of a stale signal and never
+  // reaches ✅, because nothing else will ever call `answered` for that turn again.
+  const lastAnsweredAt = new Map<string, number>();
+  // One serial queue per thread, holding only the chain of writes still pending. Dropped once
+  // nothing is chained behind the last task that ran, so a thread with no live traffic does not
+  // hold a queue entry forever; the budget above outlives this regardless.
+  const queues = new Map<string, Promise<void>>();
   let loggedAt: number | null = null;
   let suppressed = 0;
 
@@ -119,13 +146,13 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
     suppressed = 0;
   }
 
-  function queueFor(threadId: string): ThreadQueue {
-    let queue = queues.get(threadId);
-    if (queue === undefined) {
-      queue = { budget: createBudget(), tail: Promise.resolve() };
-      queues.set(threadId, queue);
+  function budgetFor(threadId: string): Budget {
+    let budget = budgets.get(threadId);
+    if (budget === undefined) {
+      budget = createBudget();
+      budgets.set(threadId, budget);
     }
-    return queue;
+    return budget;
   }
 
   /**
@@ -142,7 +169,7 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
   ): Promise<boolean> {
     const at = options.now();
     if (!budget.affordable(at)) {
-      const wait = budget.blockedUntil() - at;
+      const wait = budget.blockedUntil() - at + PACE_MARGIN_MS;
       if (wait > MAX_PACE_WAIT_MS) {
         reportRefusal("the thread's bucket is paced past the wait bound, the write is skipped");
         return false;
@@ -173,20 +200,21 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
 
   /** Chains one thread's next reaction task behind whatever it is already running. */
   function enqueue(threadId: string, task: (budget: Budget) => Promise<void>): void {
-    const queue = queueFor(threadId);
-    const running = queue.tail
-      .then(() => task(queue.budget))
+    const budget = budgetFor(threadId);
+    const priorTail = queues.get(threadId) ?? Promise.resolve();
+    const running = priorTail
+      .then(() => task(budget))
       .catch((error: unknown) => {
         // A throw here (from `options.log`, `options.now`, or `budget.observe`, none of which
         // `write` guards) must not wedge this thread's queue behind an unhandled rejection: the
         // task after it still has to run.
         reportRefusal(`an internal error interrupted a reaction write: ${describeError(error)}`);
       });
-    queue.tail = running;
+    queues.set(threadId, running);
     void running.then(() => {
       // Only when nothing chained onto this task while it ran: a later call already waiting on
-      // `running` must keep the budget it started against, not a fresh one.
-      if (queues.get(threadId)?.tail === running) queues.delete(threadId);
+      // `running` must keep this thread's own queue entry, not have it deleted out from under it.
+      if (queues.get(threadId) === running) queues.delete(threadId);
     });
   }
 
@@ -199,31 +227,64 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
     return list;
   }
 
+  /**
+   * One stage transition's task: adds `emoji`, and only once that lands, removes whatever the
+   * entry's own record says is actually painted right now (skipped when that is already `emoji`,
+   * or nothing at all). The record is updated to `emoji` only once the add has landed, so a
+   * transition whose add is refused leaves the entry's `painted` field, and therefore the next
+   * transition's remove target, exactly where it stood before this one ran.
+   */
+  function transition(
+    threadId: string,
+    entry: Tracked,
+    emoji: string,
+  ): (budget: Budget) => Promise<void> {
+    return async (budget) => {
+      const landed = await write(budget, threadId, entry.messageId, "add", emoji);
+      if (!landed) return;
+      const painted = entry.painted;
+      if (painted !== null && painted !== emoji) {
+        await write(budget, threadId, entry.messageId, "remove", painted);
+      }
+      entry.painted = emoji;
+    };
+  }
+
   return {
     delivered(threadId, messageId, at) {
       const list = trackedFor(threadId);
-      list.push({ messageId, stage: "delivered", deliveredAt: at });
+      const entry: Tracked = { messageId, stage: "delivered", deliveredAt: at, painted: null };
+      list.push(entry);
       if (list.length > MAX_TRACKED_PER_THREAD) list.shift();
-      enqueue(threadId, async (budget) => {
-        await write(budget, threadId, messageId, "add", STAGE_EMOJI.delivered);
-      });
+      enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.delivered));
     },
 
     pickedUp(threadId, at) {
       const list = threads.get(threadId);
       if (list === undefined) return;
+      const answeredAt = lastAnsweredAt.get(threadId);
+      const remaining: Tracked[] = [];
       for (const entry of list) {
-        if (entry.stage !== "delivered" || entry.deliveredAt > at) continue;
+        if (entry.stage !== "delivered" || entry.deliveredAt > at) {
+          remaining.push(entry);
+          continue;
+        }
+        if (answeredAt !== undefined && at <= answeredAt) {
+          // This turn already answered before the tailer's own poll caught up to the line that
+          // credits this message's pickup: nothing will ever call `answered` for it again, so it
+          // goes straight to ✅ rather than parking at 👀 forever.
+          enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.answered));
+          continue;
+        }
         entry.stage = "pickedUp";
-        const messageId = entry.messageId;
-        enqueue(threadId, async (budget) => {
-          const landed = await write(budget, threadId, messageId, "add", STAGE_EMOJI.pickedUp);
-          if (landed) await write(budget, threadId, messageId, "remove", STAGE_EMOJI.delivered);
-        });
+        remaining.push(entry);
+        enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.pickedUp));
       }
+      threads.set(threadId, remaining);
     },
 
     answered(threadId) {
+      lastAnsweredAt.set(threadId, options.now());
       const list = threads.get(threadId);
       if (list === undefined) return;
       const remaining: Tracked[] = [];
@@ -232,18 +293,19 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
           remaining.push(entry);
           continue;
         }
-        const messageId = entry.messageId;
-        enqueue(threadId, async (budget) => {
-          const landed = await write(budget, threadId, messageId, "add", STAGE_EMOJI.answered);
-          if (landed) await write(budget, threadId, messageId, "remove", STAGE_EMOJI.pickedUp);
-        });
+        enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.answered));
       }
       threads.set(threadId, remaining);
     },
 
     forget(threadId) {
       threads.delete(threadId);
-      queues.delete(threadId);
+      budgets.delete(threadId);
+      lastAnsweredAt.delete(threadId);
+      // The queue is left alone: a chain still running for this thread (a write already in flight
+      // when the thread was retired) must keep the entry its own drain cleanup reads, or a later
+      // write racing in under the same id would collide with a chain nothing here is tracking
+      // anymore. The queue's own drain cleanup in `enqueue` removes the entry once that chain ends.
     },
   };
 }
