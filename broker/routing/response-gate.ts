@@ -595,8 +595,8 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
     },
 
     clear(threadId) {
-      // The clock goes with the buffer: the session the thread held is over, and the map does not
-      // grow by one thread for the life of the broker.
+      // The clock goes with the buffer: the session the thread held is over. A thread the bot
+      // posted in and whose session ended with nothing held keeps its entry until `close`.
       lastPost.delete(threadId);
       return release(threadId)?.messages.length ?? 0;
     },

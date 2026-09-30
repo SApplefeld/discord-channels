@@ -909,8 +909,8 @@ export function readJudgeKey(
   const cause =
     problem === null
       ? "CHANNEL_INBOX_JUDGE_KEY_FILE is unset"
-      : "the file CHANNEL_INBOX_JUDGE_KEY_FILE names cannot be used: " +
-        (problem as string).replace(/^broker: the inbox judge is off, its /, "");
+      : "the file CHANNEL_INBOX_JUDGE_KEY_FILE names " +
+        (problem as string).replace(/^broker: the inbox judge is off, its key file /, "");
   throw new Error(
     `the response gate is ${config.responseGate} and needs the inbox judge's key, but ${cause}`,
   );

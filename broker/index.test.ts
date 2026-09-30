@@ -2610,7 +2610,7 @@ test("the key read refuses shadow and live without a usable key, naming the mode
         error.message.includes(`response gate is ${mode}`) &&
         error.message.includes("CHANNEL_INBOX_JUDGE_KEY_FILE") &&
         error.message.includes("cannot be used") &&
-        error.message.includes(`key file ${missing}`),
+        error.message.includes(`names ${missing}`),
       `${mode}, missing, card off`,
     );
     assert.equal(warnings.length, before, "no warning about a judge that was never on");

@@ -1052,8 +1052,9 @@ session at once, and the journal records what `live` would have done with it.
 The journal is `response-gate.jsonl` beside the broker's state file, with its rotated predecessors
 `.1`, `.2` and onward if the week filled it. Its retention follows `CHANNEL_BROKER_LOG_MAX_BYTES`
 and `CHANNEL_BROKER_LOG_MAX_FILES`, so a host that lowered those keeps less of the week. Each line
-is one gate decision. Only rows carrying a `probability` are the judge's, and only those need a
-label. For each, read its `lines`, the buffered conversation with each author's name and class,
+is one gate decision, its `outcome` `delivered` or `held`, or `stale` where a verdict returned
+after its buffer had already gone. Only rows carrying a `probability` are the judge's, and only
+those need a label. For each, read its `lines`, the buffered conversation with each author's name and class,
 and decide whether the last line expected a response from the assistant.
 
 Write one line per judged row to a labels file, `<id>` then a tab then `yes` or `no`, where
@@ -1126,7 +1127,7 @@ refused by name rather than guessed at.
 | `CHANNEL_BOARD_CARD_REFRESH_MS` | 60 s | How often the board card is re-swept and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_BOARD_EVENTS_PATH` | `kit-events.jsonl` under the profile's `.claude` | Where the kit's goal event stream is tailed from. One stream, two readers: the board card's per-plan blocked marker and the session surface's own `⛔` state and its alert, so redirecting this moves both. Read whenever Discord is configured, board card or not |
 | `CHANNEL_INBOX_CARD` | off | Whether the Fleet: Inbox thread and its card exist on this host. Off builds no item store, no snapshot and no judge, so no reply text goes to TypeSafe |
-| `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning |
+| `CHANNEL_INBOX_JUDGE_KEY_FILE` | none | Path of the file holding the TypeSafe key the inbox judge sends unmarked replies under. None keeps the judge off and the inbox on `ASK:` lines alone. The key never lives in this file; a key file that fails the install guide's check turns the judge off with one warning, and refuses startup while `CHANNEL_RESPONSE_GATE` is `shadow` or `live`, since the gate reads the same key |
 | `CHANNEL_INBOX_THRESHOLD` | 0.7 | The judge score at or above which an unmarked reply opens an item; bounded 0.4 to 0.95 |
 | `CHANNEL_INBOX_CARD_REFRESH_MS` | 60 s | How often the inbox card is re-read and re-rendered; bounded 5 s to 1 h |
 | `CHANNEL_RESPONSE_GATE` | off | Whether a thread's messages are held and delivered to its session together. `off` and `shadow` deliver each admitted message at once. `live` holds a thread's messages until one mentions the bot, replies to one of its messages, or a cap below is reached, or until the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS` and TypeSafe's Jev judges that the conversation expects a response, then delivers them as one event of `<author> (<class>): <text>` lines. A judge call that fails delivers the buffer. `shadow` runs the same buffer beside its immediate delivery, asks the judge as `live` would, and writes one row per decision to `response-gate.jsonl` in the state file's directory, rotated at `CHANNEL_BROKER_LOG_MAX_BYTES` and `CHANNEL_BROKER_LOG_MAX_FILES`. In `shadow` and `live` every admitted message in a gated thread is sent to TypeSafe, and the journal keeps the buffered lines on disk, except on a row whose lines the secret screen matches, which leaves them out. Both modes refuse startup unless `CHANNEL_INBOX_JUDGE_KEY_FILE` names a usable key file. A held buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped with one counted notice in the thread. A broker stop or restart drops every held line with a log line only, since the buffer is held in memory: re-post what was held once the broker is back. Any other value refuses startup |
