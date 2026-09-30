@@ -206,6 +206,22 @@ test("the pin routes are the message-scoped ones, on the channel, carrying no bo
   for (const call of calls) assert.equal(call.body, undefined, call.route);
 });
 
+test("the reaction routes are PUT and DELETE on the same path, the emoji percent-encoded", async () => {
+  // Both verbs address `.../@me`, Discord's name for this bot's own reaction, so neither needs
+  // this bot's user id. The emoji is unicode and has to reach the wire percent-encoded, which is
+  // what a raw literal in the route string would not be.
+  const { sent, transport } = transportWith(() => respond(null));
+
+  await transport.addReaction({ threadId: "thread-9", messageId: "message-42", emoji: "📨" });
+  await transport.removeReaction({ threadId: "thread-9", messageId: "message-42", emoji: "📨" });
+
+  const route = `/channels/thread-9/messages/message-42/reactions/${encodeURIComponent("📨")}/@me`;
+  assert.deepEqual(
+    sent.map((call) => `${call.method} ${call.route}`),
+    [`PUT ${route}`, `DELETE ${route}`],
+  );
+});
+
 test("deleting a message is the message route, not the pin route, and carries no body", async () => {
   // The two DELETEs differ by one path segment and mean entirely different things: one takes a pin
   // off, the other removes the message. Pointed at the pin route this would leave every notice in

@@ -41,6 +41,7 @@ import { MAX_EVENT_UNITS, restartLine, saveHeldBuffers } from "./response-gate.t
 import type { BufferedMessage, HeldBuffer, JournalRow } from "./response-gate.ts";
 import type { JevFetch } from "../jev/client.ts";
 import type { InboundInbox, InboundMessage, InboundRouter } from "./inbound.ts";
+import { createReceiptTracker } from "./receipts.ts";
 
 const TOKEN = "11111111-2222-3333-4444-555555555555";
 const THREAD = "900000000000000001";
@@ -192,6 +193,8 @@ function harness(
     verdictResolves?: boolean;
     inbox?: InboundInbox;
     log?: (message: string) => void;
+    /** The receipt tracker's delivered seam, absent unless a test wires one. */
+    receipts?: { delivered: (threadId: string, messageId: string, at: number) => void };
     /**
      * The response gate, live unless a mode is named, with hand-driven timers. Absent, the router
      * is built as every test above builds it, with no gate at all. With `judge`, the gate asks a
@@ -320,6 +323,7 @@ function harness(
     threadFor: (sessionId) => threads.get(sessionId) ?? null,
     writer: createThreadWriter({ messenger, now }),
     ...(options.inbox === undefined ? {} : { inbox: options.inbox }),
+    ...(options.receipts === undefined ? {} : { receipts: options.receipts }),
     ...(options.log === undefined ? {} : { log: options.log }),
     ...(options.gate === undefined
       ? {}
@@ -396,6 +400,44 @@ test("a message in a session's thread reaches that session, carrying the thread 
   assert.deepEqual(sent, [
     delivered("please run the migration"),
   ]);
+});
+
+test("the receipt tracker is told once a message actually lands in the pipe", async () => {
+  const marked: Array<{ threadId: string; messageId: string; at: number }> = [];
+  const { router } = harness({
+    now: () => 5_000,
+    receipts: { delivered: (threadId, messageId, at) => marked.push({ threadId, messageId, at }) },
+  });
+
+  await router.deliver(message({ messageId: "message-a" }));
+
+  assert.deepEqual(marked, [{ threadId: THREAD, messageId: "message-a", at: 5_000 }]);
+});
+
+test("a failing reaction transport never stops the message it is painting from being delivered", async () => {
+  // The real tracker, wired to a reaction transport that refuses every call, standing in for a
+  // rate-limited or broken Discord: the hand-over must land exactly as it would with reactions
+  // working, since reaction painting is fire-and-forget from routing's own point of view.
+  const log: string[] = [];
+  const tracker = createReceiptTracker({
+    reactions: {
+      addReaction: async () => ({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO }),
+      removeReaction: async () => ({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO }),
+    },
+    log: (message) => log.push(message),
+    now: () => 1_000,
+  });
+  const { router, sent } = harness({
+    receipts: { delivered: (threadId, messageId, at) => tracker.delivered(threadId, messageId, at) },
+  });
+
+  await assert.doesNotReject(router.deliver(message({ text: "still gets through" })));
+  assert.deepEqual(sent, [delivered("still gets through")]);
+
+  // The reaction write itself is async and fire-and-forget; give its own chain a turn to run and
+  // log, bounded on the wall clock rather than a counted turn count.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(log.length, 1, "the refusal is logged once, never propagated");
 });
 
 test("a delivered message names its author and the class the gate gives them", async () => {

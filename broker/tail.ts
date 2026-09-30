@@ -627,6 +627,14 @@ export type TranscriptTailerOptions = {
    */
   deliverQuestion: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
   /**
+   * Told of a `pickup` item: a Discord message injected mid-turn, with the transcript line's own
+   * instant. Nothing here posts anything; this is the one signal a mirror-off session cannot give
+   * (it fires no `/mirror` post carrying `origin.kind`), so it exists only to advance a message's
+   * receipt reaction, never to draw content. Optional so a caller not wiring receipts, and every
+   * existing test, keep working unchanged.
+   */
+  notePickup?: (sessionId: string, at: number) => void;
+  /**
    * Reports that an ask reached its resolution line, which Claude Code writes when the picker
    * closes: the question has been answered at the console. The question desk's seam, where it flips
    * a thread message that has been telling the operator to answer there. Called for every question
@@ -836,7 +844,15 @@ export type TailItem =
   | { kind: "model"; reading: ModelReading }
   | { kind: "fallback"; fallback: ModelFallback }
   | { kind: "goal"; goal: string | null }
-  | { kind: "title"; title: string };
+  | { kind: "title"; title: string }
+  /**
+   * A Discord message injected mid-turn: a `queued_command` line whose origin is the channel
+   * itself rather than a human typing at the console or a peer session. It carries no text at
+   * all, only the line's own instant, because this item exists solely to advance a message's
+   * receipt reaction to picked-up; the message itself already reached the thread when the broker
+   * delivered it, so nothing here is drawn a second time.
+   */
+  | { kind: "pickup"; at: number | null };
 
 /**
  * One peer message off the transcript, in either direction: a message another session sent this one
@@ -1775,7 +1791,13 @@ export function lineItems(line: string, sessionId: string): TailItem[] {
     if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return [];
     const peer = peerDelivery(origin);
     if (peer !== null) return [{ kind: "peer-in", name: peer.name, body: peer.body }];
-    if ((origin as Record<string, unknown>)["kind"] !== "human") return [];
+    const originKind = (origin as Record<string, unknown>)["kind"];
+    // A message someone posted straight into the thread, injected mid-turn: it was already drawn
+    // once, on delivery, so nothing here posts it again. What it still owes is the pickup this
+    // turn gives it, the same signal a human's queued line gives through the ordinary prompt item
+    // below, so a Discord-originated message advances past 📨 exactly as a console-typed one does.
+    if (originKind === "channel") return [{ kind: "pickup", at: lineInstant(record) }];
+    if (originKind !== "human") return [];
     const prompt = fields["prompt"];
     if (typeof prompt !== "string" || prompt === "") return [];
     return [{ kind: "prompt", text: prompt, source: "queued", at: lineInstant(record) }];
@@ -2378,6 +2400,12 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
             );
             if (!stillValid()) return;
           }
+          continue;
+        }
+        if (item.kind === "pickup") {
+          // No await, no post: this item exists only to move a stage reaction, so there is nothing
+          // here for a suppress landing mid-batch to interrupt, and no error a delivery could throw.
+          if (item.at !== null) options.notePickup?.(sessionId, item.at);
           continue;
         }
         // What is left is the assistant's own narration. The assignment is the check: a kind added

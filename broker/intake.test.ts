@@ -819,6 +819,105 @@ test("a per-session suppression is logged with the session id, never content", a
   assert.deepEqual(deliveries, []);
 });
 
+test("a suppressed UserPromptSubmit still fires pickup, without the body ever being read", async () => {
+  // The one pickup signal a mirror-off session ever produces. It has to fire before the body is
+  // read at all, since the suppressed branch's whole point is that this session's content never
+  // reaches broker memory.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror } = fakeMirror();
+  const picked: Array<{ sessionId: string; at: number }> = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    now: () => 42_000,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    lineage: null,
+    sessionId: "session-suppressed",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+
+  const secret = "SECRET-suppressed-prompt";
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+    body: JSON.stringify({ prompt: secret }),
+  });
+  const result = await call(handle, request);
+
+  assert.equal(result.status, 202);
+  assert.equal(request.bodyConsumed, false, "pickup must not require reading the body");
+  assert.deepEqual(picked, [{ sessionId: "session-suppressed", at: 42_000 }]);
+});
+
+test("a suppressed Stop never fires pickup", async () => {
+  // Pickup is the UserPromptSubmit mapping alone: Stop marks a turn's end, not its start, and
+  // firing pickup from it would advance a message no turn has actually picked up yet.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const { mirror } = fakeMirror();
+  const picked: unknown[] = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  registry.apply({
+    event: "SessionStart",
+    processToken: TOKEN,
+    sessionName: "neo-intake",
+    lineage: null,
+    sessionId: "session-suppressed",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("Stop", { "x-channel-mirror": "off" }),
+    body: JSON.stringify({ last_assistant_message: "done" }),
+  });
+  await call(handle, request);
+
+  assert.deepEqual(picked, []);
+});
+
+test("a mirror-on UserPromptSubmit fires pickup exactly once per post", async () => {
+  const { mirror } = fakeMirror();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const picked: Array<{ sessionId: string; at: number }> = [];
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror,
+    now: () => 7_000,
+    receipts: { pickedUp: (sessionId, at) => picked.push({ sessionId, at }) },
+  });
+  announce(registry);
+
+  const request = fakeRequest("127.0.0.1", {
+    url: "/mirror",
+    headers: hookHeaders("UserPromptSubmit"),
+    body: JSON.stringify({ prompt: "please run the migration", session_id: "session-a" }),
+  });
+  await call(handle, request);
+  await settled();
+
+  assert.deepEqual(picked, [{ sessionId: "session-a", at: 7_000 }]);
+});
+
 test("an off header on a forged or unrecognized token still produces the unknown-token refusal", async () => {
   // The header check runs after the token and registry checks specifically so this case is still
   // visible: an off value alongside a token no live session holds must not take the same quiet path

@@ -1392,6 +1392,59 @@ test("a mid-turn typed message is delivered as a queued prompt", async (t) => {
   assert.deepEqual(posts, [], "a queued prompt is not narration");
 });
 
+test("a Discord message injected mid-turn advances pickup, with the line's own timestamp, and posts nothing", async (t) => {
+  // The channel-origin queued_command line: a message the relay injected straight from Discord
+  // while the model was working. It was already drawn once, on delivery, so this line's only job
+  // is to move the message's receipt reaction; nothing here reaches the thread a second time.
+  const file = transcriptFile(t);
+  const picked: Array<{ sessionId: string; at: number }> = [];
+  const { tailer, posts, prompts, peers } = harness({
+    notePickup: (sessionId, at) => picked.push({ sessionId, at }),
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    queuedPrompt("<channel:Ann> please check on this", SESSION, {
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        origin: { kind: "channel" },
+        prompt: "<channel:Ann> please check on this",
+      },
+    }),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(picked, [{ sessionId: SESSION, at: QUEUED_AT }]);
+  assert.deepEqual(posts, [], "a channel-origin line is never narration");
+  assert.deepEqual(prompts, [], "a channel-origin line is never drawn as a prompt");
+  assert.deepEqual(peers, [], "a channel-origin line is never drawn as a peer message");
+});
+
+test("the control: a human-origin queued prompt still yields exactly the prompt it always did", async (t) => {
+  // Same poll shape as the channel-origin case above, so a passing pickup test cannot be hiding a
+  // broken human path: this fixture must still reach the thread as a queued prompt, unchanged.
+  const file = transcriptFile(t);
+  const picked: unknown[] = [];
+  const { tailer, posts, prompts } = harness({
+    notePickup: (sessionId, at) => picked.push({ sessionId, at }),
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(file, queuedPrompt("also check the migration order"), "utf8");
+  await tailer.poll();
+
+  assert.deepEqual(prompts, ["also check the migration order"]);
+  assert.deepEqual(posts, []);
+  assert.deepEqual(picked, [], "a human-origin line is the ordinary prompt item, not a pickup item");
+});
+
 test("a queued prompt is matched on sessionId, whatever session_id says or omits", async (t) => {
   // Some of these lines carry a top-level session_id and some carry none, so `sessionId` is the
   // field the match reads. JSON.stringify drops the undefined key, which is the line with none.
@@ -4879,8 +4932,9 @@ test("the queued-prompt gate still admits the operator's own typed message, and 
   ]);
 
   // Every other origin kind still yields nothing at all, peer traffic included: a peer delivery is
-  // never drawn in the operator's register, and the kinds nobody has pinned stay silent.
-  for (const kind of ["channel", "agent", "system", "", "human "]) {
+  // never drawn in the operator's register, and the kinds nobody has pinned stay silent. "channel"
+  // is pinned, but to a pickup item rather than to silence, and is asserted on its own below.
+  for (const kind of ["agent", "system", "", "human "]) {
     assert.deepEqual(
       lineItems(
         peerAttachment({ kind, body: PEER_BODY, name: PEER_NAME }, SESSION, {
@@ -4892,6 +4946,19 @@ test("the queued-prompt gate still admits the operator's own typed message, and 
       kind,
     );
   }
+
+  // A Discord message injected mid-turn: drawn once already, on delivery, so this line only
+  // advances the receipt reaction and carries no text at all. The instant is this fixture's own
+  // attachment timestamp, `peerAttachment`'s own fixed stamp, not `queuedPrompt`'s.
+  assert.deepEqual(
+    lineItems(
+      peerAttachment({ kind: "channel", body: PEER_BODY, name: PEER_NAME }, SESSION, {
+        prompt: "text an unpinned origin carried",
+      }).trimEnd(),
+      SESSION,
+    ),
+    [{ kind: "pickup", at: Date.parse("2026-08-25T07:36:36.406Z") }],
+  );
 
   // The narrower attachment clauses hold for a peer origin exactly as they hold for a human one.
   assert.deepEqual(

@@ -154,6 +154,30 @@ export type ThreadMessenger = {
 };
 
 /**
+ * The two writes that carry one message's receipt reaction in a thread: adding this bot's own
+ * emoji and taking a previous one off.
+ *
+ * Its own surface, on its own Discord rate bucket, because `PUT`/`DELETE
+ * .../reactions/{emoji}/@me` is a route neither `ThreadMessenger` nor `ChannelPins` uses: a caller
+ * cycling a message through several stage emoji must not let that traffic starve, or be starved
+ * by, the reply or the pin writes it runs beside.
+ */
+export type MessageReactions = {
+  /** Adds this bot's own reaction to a message already in the thread. */
+  addReaction: (input: {
+    threadId: string;
+    messageId: string;
+    emoji: string;
+  }) => Promise<CallOutcome<null>>;
+  /** Removes this bot's own reaction from a message in the thread. */
+  removeReaction: (input: {
+    threadId: string;
+    messageId: string;
+    emoji: string;
+  }) => Promise<CallOutcome<null>>;
+};
+
+/**
  * The interaction callback: how a component press is answered.
  *
  * Its own surface beside `ThreadMessenger`, and its own rate bucket at every caller, because

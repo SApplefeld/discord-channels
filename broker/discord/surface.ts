@@ -78,6 +78,14 @@ export type SurfaceOptions = {
   log?: (message: string) => void;
   /** Called once when Discord rejects the credential, which no retry can fix. */
   onFatal?: (message: string) => void;
+  /**
+   * Called once a session's thread state is fully retired and its entry is dropped: the one point
+   * every session's end reaches, whatever ended it. The receipt tracker's forget seam hangs off
+   * this, so a thread's stage tracking never outlives the session it was tracking messages for.
+   * Not called for a rebind, which hands the same thread to a new session id rather than retiring
+   * it.
+   */
+  onRetired?: (threadId: string) => void;
 };
 
 export type Surface = {
@@ -691,7 +699,10 @@ export function createSurface(options: SurfaceOptions): Surface {
           if (present.has(sessionId)) continue;
           if (!(await retire(entry))) continue;
           threads.delete(sessionId);
-          if (entry.threadId !== null) renameBudgets.delete(entry.threadId);
+          if (entry.threadId !== null) {
+            renameBudgets.delete(entry.threadId);
+            options.onRetired?.(entry.threadId);
+          }
           dropped = true;
         }
         if (dropped) bound();

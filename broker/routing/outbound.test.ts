@@ -106,6 +106,39 @@ test("a reply is posted to the thread bound to the session holding the process t
   ]);
 });
 
+test("a reply tool post that lands tells the receipt tracker the thread is answered", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const answered: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: () => {}, answered: (threadId) => answered.push(threadId) },
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, "the migration is done"), { status: "sent" });
+  assert.deepEqual(answered, [THREAD]);
+});
+
+test("a reply tool post that fails to land never tells the receipt tracker anything was answered", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
+  const answered: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: () => {}, answered: (threadId) => answered.push(threadId) },
+  });
+
+  await router.reply(TOKEN, "the migration is done");
+
+  assert.deepEqual(answered, []);
+});
+
 test("a reply tool post says who wrote it, in a line of its own", async () => {
   // Posted bare, it reads as a continuation of whatever sits above it in the thread, which is a
   // mirrored prompt or a mirrored reply as often as not.
@@ -970,6 +1003,40 @@ test("an interim chunk cannot land between the messages of a split reply", async
   ]);
 
   assert.deepEqual(landed, [...messages, renderMirror("interim", "narration racing the reply")[0]]);
+});
+
+test("a transcript-read prompt tells the receipt tracker pickup, with the line's own timestamp", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const picked: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: (threadId, at) => picked.push({ threadId, at }), answered: () => {} },
+  });
+
+  await router.interimPrompt("session-a", "check the migration order too", "queued", 12_345);
+
+  assert.deepEqual(picked, [{ threadId: THREAD, at: 12_345 }]);
+});
+
+test("a transcript-read prompt with no readable timestamp tells the receipt tracker nothing", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const picked: unknown[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: (threadId, at) => picked.push({ threadId, at }), answered: () => {} },
+  });
+
+  await router.interimPrompt("session-a", "check the migration order too", "queued", null);
+
+  assert.deepEqual(picked, []);
 });
 
 test("a queued prompt posts under the operator's attribution, indistinguishable from a mirrored one", async () => {

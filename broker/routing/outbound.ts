@@ -140,6 +140,18 @@ export type OutboundRouterOptions = {
    * mid-run does.
    */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * The receipt tracker's picked-up and answered stages. `pickedUp` is told from the transcript
+   * tailer's prompt seam alone (`interimPrompt` below), the mirror-on half of pickup that reaches
+   * a mid-turn queued message and a lost `UserPromptSubmit` hook's recovered turn-opener alike.
+   * `answered` is told once a reply actually posts, from the reply tool and from a `reply`-kind
+   * mirror that is not itself a dedup of one already on the thread. Optional for the reason every
+   * other seam here is: with nothing wired, no stage reaction is ever painted.
+   */
+  receipts?: {
+    pickedUp: (threadId: string, at: number) => void;
+    answered: (threadId: string) => void;
+  };
 };
 
 /**
@@ -1054,6 +1066,7 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         // arriving seconds later says nothing the thread does not already show.
         options.echo?.noteAnswer(located.sessionId, text);
         tapReply(located.sessionId, text, arrivedAt, run.lastMessageId);
+        options.receipts?.answered(located.threadId);
         return { status: "sent" };
       }
 
@@ -1342,7 +1355,10 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
       const arrivedAt = now();
       const run = await deliver(located.threadId, messages);
       if (run.error === null) {
-        if (kind === "reply") tapReply(located.sessionId, text, arrivedAt, run.lastMessageId);
+        if (kind === "reply") {
+          tapReply(located.sessionId, text, arrivedAt, run.lastMessageId);
+          options.receipts?.answered(located.threadId);
+        }
         return { status: "sent" };
       }
       if (claimed !== null && run.landed === 0) {
@@ -1363,7 +1379,10 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
             run.error,
           );
           if (retry.error === null) {
-            if (kind === "reply") tapReply(located.sessionId, text, arrivedAt, retry.lastMessageId);
+            if (kind === "reply") {
+              tapReply(located.sessionId, text, arrivedAt, retry.lastMessageId);
+              options.receipts?.answered(located.threadId);
+            }
             return { status: "sent" };
           }
           return { status: "failed", error: retry.error };
@@ -1541,6 +1560,13 @@ export function createOutboundRouter(options: OutboundRouterOptions): OutboundRo
         );
         return { status: "no-thread" };
       }
+
+      // The pickup signal this path is source B for: the tailer's own sighting of a prompt,
+      // whichever shape it arrived in, told with the transcript line's own timestamp rather than
+      // this call's arrival, since a queued line's enqueue instant is what places it correctly
+      // against a message delivered after it. A line with no readable timestamp advances nothing,
+      // since there is no instant to compare a queued delivery against.
+      if (at !== null) options.receipts?.pickedUp(threadId, at);
 
       // The same peer classification the mirror path takes, held in one reading so the two paths
       // cannot answer differently about one message. The tailer's own line gates admit a prompt

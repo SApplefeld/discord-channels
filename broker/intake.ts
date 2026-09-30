@@ -578,6 +578,13 @@ export type HandlerOptions = {
       sessionId: string | null,
     ) => Promise<unknown>;
   };
+  /**
+   * The receipt tracker's picked-up stage, told from the `UserPromptSubmit` mapping alone, never
+   * `Stop`: that hook fires at the start of every turn, mirror-on or off, which is what makes it
+   * the one signal that reaches a mirror-off session too. Optional for the reason every other
+   * seam here is: with nothing wired, no stage reaction is ever painted.
+   */
+  receipts?: { pickedUp: (sessionId: string, at: number) => void };
 };
 
 /**
@@ -738,6 +745,10 @@ export function createHandler(
       // header only ever arrives on this route. UserPromptSubmit fires at the start of every
       // turn, so the suppression is recorded before that turn can produce any interim text.
       options.tail?.suppress(holder.sessionId);
+      // The one pickup signal a mirror-off session ever produces: this hook fires at the start of
+      // every turn regardless of mirroring, and nothing here has read the body yet, so the stage
+      // reaction advances without this route ever seeing this session's content.
+      if (mapping.kind === "prompt") options.receipts?.pickedUp(holder.sessionId, now());
       // Static and session-identifying only, never content and never the token: without this line,
       // a session the operator suppressed and a mirror that is silently broken both read as total
       // silence in the log, with no way to tell which is happening.
@@ -805,6 +816,11 @@ export function createHandler(
     // every process a wrapped session spawns inherits the token, so a post that names another
     // session, or names none, is not this session speaking and is not its verdict to give.
     if (sessionId !== null && sessionId === holder.sessionId) options.tail?.allow(holder.sessionId);
+
+    // The same pickup signal as the suppressed branch above, for a mirror-on session: this post is
+    // still the `UserPromptSubmit` hook firing at the start of a turn, told once per post so a
+    // turn opening while other messages sit queued behind it advances all of them together.
+    if (mapping.kind === "prompt") options.receipts?.pickedUp(holder.sessionId, now());
 
     // Extracted raw rather than through payloadString: clean() caps at MAX_FIELD_LENGTH, and a
     // mirrored reply is exactly the string that must survive whole. Rendering safety belongs to

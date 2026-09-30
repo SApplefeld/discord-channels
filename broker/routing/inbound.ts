@@ -216,6 +216,13 @@ export type InboundRouterOptions = {
   /** Injected so a test drives the rate ceiling without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
+  /**
+   * The receipt tracker's delivered stage, told once a message is actually handed to a session:
+   * on the direct path, right after the pipe takes it, and on the response-gate path, once for
+   * each message a released buffer hands over. Optional so a Discord-less broker and every
+   * existing test keep working with no reactions painted at all.
+   */
+  receipts?: { delivered: (threadId: string, messageId: string, at: number) => void };
 };
 
 export type InboundRouter = {
@@ -590,6 +597,10 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         bufferedEvent(threadId, delivery.messages, delivery.restoredAt),
       ),
     }));
+    // Read once for the whole batch: every message this call hands over lands in the pipe in the
+    // same back-to-back pass above, so they are delivered at the same instant as far as a stage
+    // reaction is concerned.
+    const deliveredAt = now();
     for (const { delivery, written } of outcomes) {
       if (!written) {
         log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
@@ -603,6 +614,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         );
       }
       for (const message of delivery.messages) {
+        options.receipts?.delivered(threadId, message.id, deliveredAt);
         if (message.truncated) await announceCut(threadId);
       }
     }
@@ -947,6 +959,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         );
         if (!delivered) return;
         const deliveredAt = now();
+        options.receipts?.delivered(message.threadId, message.messageId, deliveredAt);
         if (operator) {
           toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
         }

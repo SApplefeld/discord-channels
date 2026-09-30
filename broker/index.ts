@@ -86,6 +86,8 @@ import { createResponseGateJournal } from "./routing/response-gate.ts";
 import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { OutboundInbox, ReplyResult } from "./routing/outbound.ts";
+import { createReceiptTracker } from "./routing/receipts.ts";
+import type { ReceiptTracker } from "./routing/receipts.ts";
 import { createRelayRoutes } from "./routing/http.ts";
 import { createThreadWriter } from "./routing/writer.ts";
 import type { ThreadWriter } from "./routing/writer.ts";
@@ -1031,6 +1033,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     onAttach: (processToken) => inbound?.relayAttached(processToken),
   });
   let threadFor: (sessionId: string) => string | null = () => null;
+  // The receipt tracker, mutable for the reason `threadFor` is: it needs the Discord transport,
+  // built inside the Discord block below, and every seam that reaches it is wired before that
+  // block runs. A host with no Discord builds one nowhere, and every call through the closures
+  // below is a no-op, which is what a broker with no reactions to paint has always done.
+  let receipts: ReceiptTracker | null = null;
   // The fleet usage card's own message, for the channel's pin list. Mutable for the reason
   // `threadFor` is: the card is built after the Discord block below, because it is built under two
   // conditions decided in one place, and the pin reconcile that reads this runs on the surface's
@@ -1124,6 +1131,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
     ...(echo === null ? {} : { echo }),
     ...(inbox === null ? {} : { inbox }),
+    // Read through the closure for the reason `threadFor` is: the tracker is built inside the
+    // Discord block below, once the transport it paints reactions through exists.
+    receipts: {
+      pickedUp: (threadId, at) => receipts?.pickedUp(threadId, at),
+      answered: (threadId) => receipts?.answered(threadId),
+    },
   });
   // The steering writer's notices and permission alerts land in threads without passing the
   // outbound router, so a successful post tells the router directly that the thread's narration
@@ -1211,6 +1224,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliverPrompt: (sessionId, text, source, at) =>
         outbound.interimPrompt(sessionId, text, source, at),
       deliverPeer: (sessionId, traffic) => outbound.peer(sessionId, traffic),
+      // A Discord message injected mid-turn: no post, just the pickup stage, resolved to a thread
+      // through the same mutable `threadFor` closure every other seam here reads, for the reason
+      // it is mutable: the surface that knows a session's thread is built in the Discord block
+      // below, after the tailer.
+      notePickup: (sessionId, at) => {
+        const threadId = threadFor(sessionId);
+        if (threadId !== null) receipts?.pickedUp(threadId, at);
+      },
       // The release wrapper above. The delivery is read through a closure rather than passed
       // directly, because `deliverQuestion` is replaced further down once Discord's surfaces
       // exist, and the tailer is constructed before that.
@@ -1350,6 +1371,15 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliver: (processToken, kind, text, sessionId) =>
         outbound.mirror(processToken, kind, text, sessionId),
     },
+    // Resolved to a thread through the same mutable `threadFor` closure every other seam here
+    // reads, for the reason it is mutable: the surface that knows a session's thread is built in
+    // the Discord block below, after this handler.
+    receipts: {
+      pickedUp: (sessionId, at) => {
+        const threadId = threadFor(sessionId);
+        if (threadId !== null) receipts?.pickedUp(threadId, at);
+      },
+    },
   });
   const server = createServer((request, response) => {
     // The relay routes answer first and report whether they took the request; everything else,
@@ -1423,6 +1453,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const request = createRestRequest(discord.token);
     const transport = createDiscordTransport({ channelId: discord.channelId, request });
     messenger = transport;
+    // The receipt tracker, built once the transport it paints reactions through exists. Every seam
+    // wired above this point reaches it through the mutable `receipts` closure, which starts
+    // answering as soon as this assignment runs.
+    receipts = createReceiptTracker({ reactions: transport, log: note, now: Date.now });
     const surface = createSurface({
       transport,
       now: Date.now,
@@ -1431,6 +1465,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       exitedAfterMs: discord.exitedAfterMs,
       archiveOnEnd: discord.archiveOnEnd,
       bindings: loadBindings(bindingsFile),
+      // The one point every session's end reaches, whatever ended it: forgets the thread's receipt
+      // tracking so it never outlives the session.
+      onRetired: (threadId) => receipts?.forget(threadId),
       onBind: (bindings) => {
         try {
           saveBindings(bindingsFile, bindings);
@@ -1721,6 +1758,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       },
       now: Date.now,
       log: note,
+      receipts: { delivered: (threadId, messageId, at) => receipts?.delivered(threadId, messageId, at) },
     });
     inbound = router;
     if (config.responseGate === "live") {
