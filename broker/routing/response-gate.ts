@@ -219,6 +219,8 @@ export type ResponseGate = {
    * fills the buffer to the cap, and two deliveries when the message would also have pushed the
    * held buffer past the event budget: the held buffer first, without this message, and then
    * whatever this message delivers on its own. A held message restarts its thread's quiet window.
+   * A buffer restored across a broker restart delivers on none of these: the message joins it and
+   * waits for the relay's attach, and a message the event budget will not add delivers alone.
    */
   admit: (
     threadId: string,
@@ -754,7 +756,6 @@ export function createResponseGate(options: ResponseGateOptions): ResponseGate {
         if (buffer !== undefined) {
           release(threadId);
           changed = true;
-          if (buffer.restored) delivery.restoredAt = buffer.oldestAt;
         }
         recordDelivery(threadId, sessionId, delivery);
         deliveries.push(delivery);

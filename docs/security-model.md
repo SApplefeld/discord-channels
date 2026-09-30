@@ -153,17 +153,18 @@ and worth stating").
 
 **T9. A participant account.** The roster can name an account as a participant: admitted, and
 holding no authority over the fleet or a session. Its messages reach the session as conversation,
-under an envelope whose `sender_class` is `participant`, and the relay's instructions tell the
-model to take such an event as words and never as steering. Every path that consumes a message as
-the operator's act is keyed on the sender's class, so a participant's verdict-shaped text is
-delivered as text, its typed words never answer a held question, its button press is ignored, and
-its post never clears an inbox item ("The sender gate"). What it reaches is the model's reading of
-its words, which the relay's instructions bound and do not prove, and whatever a session does on its
-own judgment after reading them. With the response gate live it also shapes what an operator's words
+under an envelope whose `sender_class` is `participant`, and the relay's instructions tell the model
+to take such an event as words and never as steering. Every path that consumes a message as the
+operator's act is keyed on the sender's class, so a participant's verdict-shaped text is delivered
+as text, its typed words never answer a held question, its button press is ignored, and its post
+never clears an inbox item ("The sender gate"). What it reaches is the model's reading of its words,
+which the relay's instructions bound and do not prove, and whatever a session does on its own
+judgment after reading them. With the response gate live it also shapes what an operator's words
 arrive beside: a buffer holding any participant's line delivers as `participant`. And in a gated
 thread its messages can reach TypeSafe, and a mention of the bot or a reply to it delivers the
-thread's buffer at once (T8). Its posts share the session's inbound rate ceiling with an
-operator's. Accepted, each argued under "The sender gate":
+thread's buffer at once, except a buffer restored across a restart, which waits for its relay (T8).
+Its posts share the session's inbound rate ceiling with an operator's. Accepted, each argued under
+"The sender gate":
 
 - the `author` attribute and the name on each buffered line, which are labels the account itself or
   any server member holding Manage Nicknames can set, so a participant renamed `Scott (operator)`
@@ -667,10 +668,10 @@ The gate runs before everything else on the inbound path, **including the verdic
 verdict-shaped message from an account the roster does not name is refused before it is read as one.
 The class then decides what an admitted message can be. Four paths take an operator's message only.
 A typed verdict, a held question's typed answer and a component press each consume the message as
-the operator's act. The inbox clear acts on an operator's message and still delivers it. A
-participant's verdict-shaped text is delivered to the session as words, a participant speaking while
-a question is held leaves it held, a participant's press is ignored with no reply and no state
-change, and a participant's post leaves the inbox item standing.
+the operator's act. The inbox clear acts on an operator's message and, where the session is live,
+still delivers it. A participant's verdict-shaped text is delivered to the session as words, a
+participant speaking while a question is held leaves it held, a participant's press is ignored with
+no reply and no state change, and a participant's post leaves the inbox item standing.
 
 **The class travels with the message, and the name does not decide it.** A delivered event carries
 `author`, the sender's display name, and `sender_class`, the class the roster gives the sender's

@@ -930,8 +930,9 @@ session's relay attaches, the relay hub's attach listener hands the buffer to th
 delivers it with the trigger `restored`, opening with one line of the broker's own naming the oldest
 held time. Until then the buffer takes every new message for its session and waits with it: a
 mention, a reply, the size cap and the judge deliver nothing to a relay that is not back, and the
-age cap bounds the wait. A message too large for the buffer's event budget goes on its own. A
-missing, unreadable or malformed file restores nothing and logs one line.
+age cap bounds the wait. A message too large for the buffer's event budget is handed over alone and,
+the relay being away, dropped with the unreachable notice. A missing, unreadable or malformed file
+restores nothing and logs one line.
 
 ## What the cards are made of
 

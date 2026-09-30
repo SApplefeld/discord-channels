@@ -1203,7 +1203,12 @@ test("a message the event budget will not add to a restored buffer goes on its o
   h.gate.restore([persisted(70_000, one)]);
   const heavy = operator("b".repeat(MAX_EVENT_UNITS), false, "2");
   assert.deepEqual(admit(h.gate, heavy, MENTION), [{ messages: [heavy], trigger: "mention" }]);
-  const plain = operator("c".repeat(MAX_EVENT_UNITS), false, "3");
+  // Sized to fit the budget alone, the restart line reserved, and to pass it by one unit beside the
+  // restored line: the measure must be the restored lines and the message together.
+  const base = JSON.stringify(bufferedEvent(THREAD, [one, operator("", false, "3")], 0)).length + 1;
+  const plain = operator("c".repeat(MAX_EVENT_UNITS - base + 1), false, "3");
+  assert.equal(JSON.stringify(bufferedEvent(THREAD, [one, plain], 0)).length + 1, MAX_EVENT_UNITS + 1);
+  assert.ok(JSON.stringify(bufferedEvent(THREAD, [plain], 0)).length + 1 <= MAX_EVENT_UNITS);
   assert.deepEqual(admit(h.gate, plain), [{ messages: [plain], trigger: "size-cap" }]);
   assert.deepEqual(h.saved.at(-1), [persisted(70_000, one)], "the file still holds the restored line alone");
   h.gate.deliverRestored(SESSION);
