@@ -118,29 +118,57 @@ administrator rights, and those read the operator's files directly, so the broke
 attacker nothing new. A built-in service account exists without anyone creating it, but posting from
 one first takes compromising the Windows service that runs as it.
 
-**T6. A Discord account that is not the operator's.** A member of the channel or the server can post
-in a thread and press a component. The sender gate on the operator's user ID refuses every inbound
-action from it before anything is read, verdicts included ("The sender gate", "Tool approval over
-the channel"). The gate governs who writes and not who reads, so this class can read everything the
-channel holds. The channel must therefore be private to the operator (`install.md`). Accepted: its
-messages can end a coalesced block early, which costs one attribution header.
+**T6. A Discord account the sender roster does not name.** A member of the channel or the server
+can post in a thread and press a component. The sender gate refuses every inbound action from an
+account the roster does not name before anything is read, verdicts included ("The sender gate",
+"Tool approval over the channel"). The gate governs who writes and not who reads, so this class can
+read everything the channel holds. The channel must therefore be private to the accounts on the
+roster (`install.md`). A member holding Manage Nicknames can also set a rostered account's name in
+the server, which is the `author` label a delivered event carries and decides nothing (T9).
+Accepted: its messages can end a coalesced block early, which costs one attribution header.
 
-**T7. Whoever holds the operator's Discord account.** It holds the operator's full authority by
-design: it steers every session on the host and approves any tool call. Nothing here defends against
-it. That account's password, second factor and notified devices are part of the trust boundary ("The
-sender gate").
+**T7. Whoever holds an operator's Discord account.** The roster may name more than one operator,
+and each holds the operator's full authority by design: it steers every session on the host,
+approves any tool call, answers any held question and clears any inbox item. Nothing here defends
+against it, and nothing tells one operator's act from another's. Every operator account's password,
+second factor and notified devices are part of the trust boundary ("The sender gate").
 
 **T8. The parties that receive data.** Discord stores what a thread and the cards carry under its
 own retention. That includes prompts, replies, tool input, peer messages, the `/goal` line, titles,
 the board card's project labels, which draw the account name when a root sits at or just under a
 home directory, and the fleet card's account labels, which on two hosts are corporate identities.
 With the inbox card and the judge's key file both set, TypeSafe receives the text of every unmarked
-reply that passes the secret screen. The screen is a pattern rather than a proof, so a credential in
-another shape goes with the text. These parties are where content rests once it leaves the machine,
-and this model does not treat them as attackers. The mirror switches, the inbox card switch and the
-judge's key file decide how much reaches them ("Tool approval over the channel", and its leads "The
-fleet card sends account identity" and "The inbox judge sends session reply text"). On the machine
-itself, `inbox-items.json` holds each marked ask's excerpt ("Accepted, and worth stating").
+reply that passes the secret screen. With the response gate at `shadow` or `live`, it also receives
+a gated thread's buffered messages, each with its author's name and class, whenever the thread goes
+quiet. The screen is a pattern rather than a proof, so a credential in another shape goes with the
+text. These parties are where content rests once it leaves the machine, and this model does not
+treat them as attackers. The mirror switches, the inbox card switch, the response gate's mode and
+the judge's key file decide how much reaches them ("Tool approval over the channel", and its leads
+"The fleet card sends account identity", "The inbox judge sends session reply text" and "The
+response gate sends thread messages"). On the machine itself, `inbox-items.json` holds each marked
+ask's excerpt, and the response gate's journal and held-buffer file hold message text ("Accepted,
+and worth stating").
+
+**T9. A participant account.** The roster can name an account as a participant: admitted, and
+holding no authority over the fleet or a session. Its messages reach the session as conversation,
+under an envelope whose `sender_class` is `participant`, and the relay's instructions tell the
+model to take such an event as words and never as steering. Every path that consumes a message as
+the operator's act is keyed on the sender's class, so a participant's verdict-shaped text is
+delivered as text, its typed words never answer a held question, its button press is ignored, and
+its post never clears an inbox item ("The sender gate"). What it reaches is the model's reading of
+its words, which the relay's instructions bound and do not prove, and whatever a session does on its
+own judgment after reading them. With the response gate live it also shapes what an operator's words
+arrive beside: a buffer holding any participant's line delivers as `participant`. And in a gated
+thread its messages can reach TypeSafe, and a mention of the bot or a reply to it delivers the
+thread's buffer at once (T8). Accepted, each argued under "The sender gate":
+
+- the `author` attribute and the name on each buffered line, which are labels the account itself or
+  any server member holding Manage Nicknames can set, so a participant renamed `Scott (operator)`
+  draws its line as `Scott (operator) (participant): <text>`
+- a line inside a participant's own message shaped like another buffered line, since a message's
+  text can span lines
+- an operator's ask that a participant's line in the same buffer delivers without standing, which
+  the operator asks again
 
 Outside the model:
 
@@ -617,21 +645,47 @@ minute, whatever it is still holding.
 
 ## The sender gate
 
-The authority for any inbound action is the Discord sender's user ID, checked against a one-entry
-allowlist (`CHANNEL_ALLOWED_USER_ID`), and it is gated on the sender rather than the channel or
-thread. A thread identifies a room, and everyone with access to the room can post in it, so treating
-the room as the credential would let any member steer a session and approve its tool calls. A broker
-with a Discord connection refuses to start without an allowlist, and says why in its log rather than
-dying silently under the scheduled task.
+The authority for any inbound action is the Discord sender's user ID, checked against the host's
+sender roster, and it is gated on the sender rather than the channel or thread. A thread identifies
+a room, and everyone with access to the room can post in it, so treating the room as the credential
+would let any member steer a session and approve its tool calls. The roster gives each account it
+names one of two classes. An operator holds the host owner's authority. A participant may talk to a
+session and holds nothing more. `CHANNEL_SENDERS` lists `<id>:operator` and `<id>:participant`
+entries, and `CHANNEL_ALLOWED_USER_ID` names one more operator, so a host configured before the
+roster existed admits the same one account. An ID given two classes refuses startup rather than
+letting either win by order, which would silently promote a participant or demote an operator. A
+broker with a Discord connection refuses to start without at least one operator, and says why in its
+log rather than dying silently under the scheduled task.
 
 The gate runs before everything else on the inbound path, **including the verdict pattern**, so a
-verdict-shaped message from anyone else is refused before it is read as one.
+verdict-shaped message from an account the roster does not name is refused before it is read as one.
+The class then decides what an admitted message can be. Four paths consume a message as the
+operator's act: a typed verdict, a held question's typed answer, a component press, and the inbox
+clear. Each takes an operator's message only. A participant's verdict-shaped text is delivered to
+the session as words, a participant speaking while a question is held leaves it held, a participant's
+press is ignored silently, and a participant's post leaves the inbox item standing.
 
-**What it does not protect.** The allowlist is one Discord account. Whoever controls that account
-can steer every session on the host and approve any tool call it asks about, and its messages reach
-the model at the keyboard's standing, so that account's own password, second factor, and the device
-its notifications reach are part of this trust boundary. The gate says nothing about who is at the
-other end of it.
+**The class travels with the message, and the name does not decide it.** A delivered event carries
+`author`, the sender's display name, and `sender_class`, the class the roster gives the sender's
+account. The name is a label: the account sets it, and so can any server member holding Manage
+Nicknames. The name keeps round brackets and colons, so a participant renamed `Scott (operator)`
+draws a buffered line as `Scott (operator) (participant): <text>`. Only the envelope's
+`sender_class` decides standing, and every path that consumes a message as the operator's act keys
+on the sender's class and never on the name.
+
+**A mixed buffer carries the lowest class present.** With the response gate live, one event can
+hold several people's messages, one line each. Its `sender_class` is `operator` only when every
+message in it was written from an operator account, and `participant` otherwise. The persona reading
+the event gives a whole turn one class's standing, and a line's prefix, name and class alike, is
+text its writer could have typed, since a message's own text can span lines. So the lowest class is
+the only reading a participant's words cannot promote. The cost is accepted: an operator's ask that
+shares a buffer with a participant's line arrives without standing, and the operator asks again.
+
+**What it does not protect.** The roster is a list of Discord accounts. Whoever controls an operator
+account can steer every session on the host and approve any tool call it asks about, and its
+messages reach the model at the keyboard's standing, so each operator account's own password, second
+factor, and the device its notifications reach are part of this trust boundary. The gate says nothing
+about who is at the other end of an account, and nothing tells one operator from another.
 
 ## The broker deletes messages, under three conditions that all bind
 
@@ -685,7 +739,9 @@ the sketch never leaves process memory: nothing serializes it, and a process tha
 broker memory could read live conversation text anyway. The log file records none of this
 content, and mirror content never reaches it at any level. A prompt crosses to Discord's servers, is stored there under their retention, and is rendered on
 a phone. **The sender gate governs who can write, not who can read**, so every member of the channel
-sees every prompt. The channel must be private to the operator, and `install.md` says so.
+sees every prompt. The channel must be private to the accounts on the sender roster, and
+`install.md` says so. A participant on the roster reads every prompt too, tool input included, which
+is the reason `install.md` gives each client its own server, bot and broker.
 
 The description and the input preview are written by a tool call, which anything the session has
 read can influence, and they land in the one mention-bearing message this system asks the operator
@@ -706,9 +762,9 @@ the alternative parks the session for the rest of its hold. The notice still fir
 takes the message.
 
 **A component interaction is a second gated inbound path.** A button or a menu on a question message
-arrives over the gateway and is checked against the same one-account allowlist every typed message
-passes, before it reads or changes anything; a press from any other account is ignored with no reply
-and no state change. What a press carries is an opaque server-minted reference and a position, never
+arrives over the gateway and is checked against the sender roster before it reads or changes
+anything, and only an operator's press counts: a press from a participant, or from an account the
+roster does not name, is ignored with no reply and no state change. What a press carries is an opaque server-minted reference and a position, never
 content: the desk resolves the position against its own copy of the ask, so a press can only ever
 submit a label the session itself offered, and a crafted reference resolves to nothing rather than
 to another session's ask. Interaction acknowledgements spend their own rate budget, separate from
@@ -838,12 +894,13 @@ their lead position on the line. The consequence is a plan that reads as blocked
 a surface that reports state rather than authorizing anything; it draws no live pill, chip, or
 prompt, and the neutralization above is what holds that line.
 
-**The inbox judge sends session reply text to a third party, and it is the one HTTP egress here
-that reaches a host other than Discord.** With `CHANNEL_INBOX_CARD` on and
+**The inbox judge sends session reply text to a third party.** It shares the broker's one HTTP
+egress to a host other than Discord with the response gate below, through one client
+(`broker/jev/client.ts`). With `CHANNEL_INBOX_CARD` on and
 `CHANNEL_INBOX_JUDGE_KEY_FILE` naming a usable file, a turn-final reply or reply-tool answer that
 carries no `ASK:` line is posted to `https://api.typesafe.ai/v1/systemone` over HTTPS, as a JSON
 body holding the reply's text, the model name and the two fixed yes-or-no questions, under
-`Authorization: Bearer <key>`. The host and the model are constants in `broker/inbox/judge.ts`, no
+`Authorization: Bearer <key>`. The host and the model are constants in `broker/jev/client.ts`, no
 setting or argument can point the call elsewhere, and a redirect fails the call so a 307 or 308 can
 never re-post the text to another host. The key is read once at start from the named file and never
 from `broker.env`, because a scheduled task's environment is readable by anything that can read the
@@ -851,7 +908,10 @@ task definition. That file is held to the bot token file's own protection check,
 `docs/install.md` states with the key file's step. Where the token file's failure stops the broker,
 this file's failure only turns the judge off with one warning, since the judge adds a second reading
 of unmarked replies rather than the channel itself. With no key file named, or one that cannot be
-used, nothing leaves the machine on this path, and the inbox runs on `ASK:` lines alone.
+used, nothing leaves the machine on this path, and the inbox runs on `ASK:` lines alone. The one
+exception is the response gate: at `shadow` or `live` the broker refuses to start without a usable
+key file, since the gate reads the same key and a gate with no judge would hold a thread's messages
+until a cap delivered them.
 
 What is sent is closed at the text of one reply, cut to its first 12,000 code points after the
 secret screen has run over its whole length. The screen is one case-insensitive pattern with six
@@ -861,7 +921,7 @@ quoted value of 12 or more characters, `bearer` followed by 20 or more letters, 
 or `-` (which takes the `sk-proj-` and `sk-ant-` shapes with their infix), a GitHub token prefix
 (`gho_`, `ghp_`, `ghs_`, `github_pat_`) followed by 20 or more letters, digits or `_`, and a
 `password` assignment to a quoted value of one or more characters. The pattern itself is
-`SECRET_SCREEN` in `broker/inbox/judge.ts`. Length never blocks a send. What is never sent: a reply
+`SECRET_SCREEN` in `broker/jev/client.ts`. Length never blocks a send. What is never sent: a reply
 carrying an `ASK:` line, which the inbox reads locally and does not judge; any reply from a
 session the registry no longer holds, which is not a session the operator can answer; prompts,
 narration chunks and peer messages, which the tap never sees; tool input and the status card's
@@ -883,6 +943,19 @@ rule every mirror and transcript path here already holds to. Conversation text i
 control in this document keeps on the machine or inside Discord, and the judge is the one place it
 is sent elsewhere on purpose. The accepted-risk list below carries what that costs.
 
+**The response gate sends thread messages to the same third party.** With `CHANNEL_RESPONSE_GATE`
+at `shadow` or `live`, the broker holds each gated thread's admitted messages in a buffer and, once
+the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS`, posts the buffer to the same host
+through the same client, under the same key, redirect refusal and failure discipline as the inbox
+judge. The body carries the newest buffered lines that fit 12,000 code points, each
+`<author> (<class>): <text>`, and how many seconds ago the bot last posted in the thread. A buffer
+any of whose lines the secret screen matches makes no call and delivers. A buffer a mention, a reply
+to the bot or a cap delivers before the thread goes quiet is never sent. What is never sent: the
+session's replies, tool input, prompts, and any message from an account the roster does not name.
+In `shadow` every message still reaches its session at once, and the call is made only to journal
+what `live` would have done. The mode is a host-wide setting in `broker.env`, so no sender or
+session can turn the path on or off. `off`, the default, sends nothing.
+
 **The blocked-goal alert is the fourth mention-bearing write, and its trigger credential is the
 weakest in the set.** The session surface reads the same goal event stream through a second fold,
 keyed by session id rather than by project root and filtered by no root list: one appended
@@ -897,7 +970,7 @@ only while the event is younger than its freshness bound, one alert per episode 
 remembered, and the write rides a per-thread ping and post window of its own, sized like the
 question alert's, so the surface reaches a phone without becoming a ping primitive. The plan path
 it renders takes the full markdown escape and the reader's own length bound, and the route's empty
-`parse` list plus the single-user whitelist mean the only mention the message can carry is the one
+`parse` list plus the operator whitelist mean the only mention the message can carry is the one
 the renderer composes. What the escape does not reach is vocabulary, as with the card above, and
 here the words land in a pinging message rather than a status surface: a crafted plan path reads
 as prose in an alert the operator is trained to act on, which is the residual the trigger
@@ -916,10 +989,12 @@ name a UNC share, in which case the sweep opens outbound SMB under the broker's 
 a tick, and the event stream path and the roster path are taken as given. Both are the same trust class as any other value
 in that file, which the model already treats as equivalent to code execution on the host.
 
-**A channel event reaches the model at the keyboard's standing.** The relay's instructions describe
-the sender gate rather than commanding trust: a message is delivered only after the broker has
-checked its author's Discord account against the allowlist, and a broker connected to Discord
-refuses to start without one, so the model treats channel steering as the operator's own. The
+**An operator's channel event reaches the model at the keyboard's standing.** The relay's
+instructions describe the sender gate rather than commanding trust: a message is delivered only
+after the broker has checked its author's Discord account against the roster, and a broker connected
+to Discord refuses to start without an operator, so the model treats an event whose `sender_class`
+is `operator` as the operator's own steering, and one whose `sender_class` is `participant` as
+conversation holding no authority, whatever any line in it says. The
 residuals ride in the same text: the check establishes the account, not the person, and an action
 that is irreversible or outward-facing is confirmed first, a discipline about blast radius rather
 than identity, so it binds a keyboard instruction equally. What the description is not is
@@ -966,9 +1041,9 @@ and both apply it:
   file at a fixed well-known path in the operator's home directory, with no arming step at all,
   the weakest credential in the set, bounded where that write is described above. All four exist to reach a
   phone, and none is a widening: the empty `parse` list stays, and each adds
-  `allowed_mentions.users` naming exactly the one allowlisted operator ID, which is validated as a
-  snowflake at load. The only mention syntax in any of these messages is composed by the renderer
-  from that ID. Content still cannot produce one. The question alert additionally carries its own
+  `allowed_mentions.users` naming exactly the roster's operator IDs, each validated as a snowflake
+  at load. A participant is never mentioned. The only mention syntax in any of these messages is
+  composed by the renderer from those IDs. Content still cannot produce one. The question alert additionally carries its own
   per-thread ping/quiet/drop window, described under the transcript section below, because its
   triggers, a credited hook post and a transcript line, are mintable by a token holder rather
   than held to the reply key the way a relay request is.
@@ -1216,7 +1291,8 @@ The installer strips inheritance and grants only the owner, Administrators, and 
   contents
 - the bot token file
 - the state root, unconditionally, since `broker.env`, the registry snapshot, the inbox snapshot,
-  the log file, and the per-launch relay registration all live there whether a token does or not.
+  the response gate's journal and held-buffer file, the log file, and the per-launch relay
+  registration all live there whether a token does or not.
   The install guide's key-file step has the operator create the inbox judge's key file inside it,
   where the file inherits the same list. The broker holds that file to the token file's own check
   wherever it sits, which is the guarantee, before reading it
@@ -1383,8 +1459,12 @@ authenticated account or a non-administrative service account.
   takeover path itself writes nothing to the broker log. So what is actually being relied on is the
   operator noticing a thread whose worker answers wrongly, or does not answer at all.
 
-- **One allowlisted Discord user per host.** There is no multi-user model and no per-user
-  permissions.
+- **Two classes and no per-user permissions.** A host's roster names operators and participants.
+  Every operator holds the whole of the operator's authority, and every participant holds none of
+  it. No finer grant exists, and nothing records which operator took an act.
+- **A participant reads everything the channel holds.** The gate governs who writes, so a
+  participant sees every prompt, tool input and reply in the channel. A client host is its own
+  server, bot and broker for that reason (`install.md`).
 - **A session cannot be started or restarted remotely.** A channel injects into a running session; it
   cannot create one. This is a property of the mechanism, not a gap to close.
 - **The judge's secret screen is a pattern, not a proof.** Six shapes are refused before a reply is
@@ -1419,6 +1499,23 @@ authenticated account or a non-administrative service account.
   paragraphs above already accept: the same forged post already clears a standing blocked state,
   and the inbox reads the same stamp. A `BLOCKED:` on the desk and an item on the card are evidence
   when they draw and never proof when they do not.
+- **While the response gate is at `shadow` or `live`, a gated thread's messages leave the
+  machine.** Each time a thread goes quiet, its buffered lines, names and classes included, go to
+  TypeSafe unless the secret screen matches them, and the vendor's retention of a request body is
+  the vendor's. `off` removes the path, and it is the default.
+- **`response-gate.jsonl` holds buffered message text on disk.** In `shadow` and `live` each gate
+  decision writes one row to the journal in the state root, carrying the buffered lines it decided
+  on, with authors and classes. A row whose lines the secret screen matches omits them. The journal
+  rotates on the broker log's own size and file-count settings, so its oldest rows are gone once the
+  rotation passes them, and it sits under the state root's protection.
+- **`response-gate-buffers.json` holds every held line on disk.** In `live` the file beside the
+  state file is rewritten on every change to what the gate holds, so a line waiting for delivery rests
+  on disk until the buffer delivers or drops. A buffer whose lines the secret screen matches is left
+  out and held in memory only. The file sits under the state root's protection, and a restart reads
+  it back, classing each line again against the roster as it then stands. A writer running as the
+  operator can rewrite it, which T4 already covers: a line it plants is delivered from the account
+  id it names, so such a writer can put words in a rostered account's mouth. That writer already
+  holds every session's process token.
 - **`inbox-items.json` holds `ASK:` excerpts on disk.** Each marked item carries up to 200 code
   points of the session's own reply, taken from its first `ASK:` line, in the state root beside the
   registry snapshot and under the same protection. A judged item holds two scores and no text. The

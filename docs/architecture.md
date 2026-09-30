@@ -124,8 +124,11 @@ listener.
    a reply key, later lines carry inbound messages and permission verdicts, and its closing is the
    session's death signal. `POST /relay/reply` and `POST /relay/permission` carry the other
    direction and must present that key.
-4. **Discord inbound.** A gateway message is gated on the sender's user ID, then either resolved as
-   a permission verdict or handed to the session bound to that thread.
+4. **Discord inbound.** A gateway message is gated on the sender's user ID, whose place on the
+   sender roster gives it a class, operator or participant. An operator's message may be resolved as
+   a permission verdict, a held question's answer or the inbox clear. Any admitted message is
+   otherwise handed to the session bound to that thread, directly, or through the thread's buffer
+   while the response gate is live ("The response gate" below).
 5. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
    thread names, the starter-message card, any reply, mirrored message, or notice waiting to be
    written, the archiving of an exited session's thread, and, chained after that pass, the channel's
@@ -213,8 +216,8 @@ because the posts ahead of it are a window several round trips wide in which the
 continuation texts are composed from the questions alone, never from the operator's accumulated
 selections, so a redraw after a tap yields the same texts, which the caller has already posted and
 never edits. A
-press arrives as an `INTERACTION_CREATE` gateway event, passes the same one-account allowlist every
-inbound message passes before it touches any state, and resolves against an opaque
+press arrives as an `INTERACTION_CREATE` gateway event, is checked against the sender roster and
+counts only from an operator before it touches any state, and resolves against an opaque
 server-minted entry reference rather than anything the press itself carries, so what a press can
 submit is only a label the session's own tool call offered. An ask the bounded reader could not
 carry whole is refused the thread path and released to the console instead, because the caps that
@@ -873,6 +876,57 @@ names how many asks it left out. The renderer takes its clock as an argument, so
 composes fixed bytes, and the thread module edits the card only when those bytes change, on
 `CHANNEL_INBOX_CARD_REFRESH_MS`.
 
+## The response gate
+
+The response gate sits between the inbound router and the relay pipe, and decides when a thread's
+messages reach its session. Its mode is `CHANNEL_RESPONSE_GATE`: `off`, the default, delivers each
+admitted message at once as it always has; `live` holds them; `shadow` delivers at once and records
+what `live` would have done. The module is `broker/routing/response-gate.ts`, and the router in
+`broker/routing/inbound.ts` builds it.
+
+In `live`, an admitted message that is not consumed as a verdict, an answer or a clear joins its
+thread's buffer, one buffer per thread. Four triggers deliver the buffer as one event:
+
+- a message that mentions the bot, or replies to one of the bot's messages, delivers at once
+- the buffer reaching `CHANNEL_RESPONSE_GATE_MAX_MESSAGES` messages delivers at once
+- the buffer's oldest message reaching `CHANNEL_RESPONSE_GATE_MAX_WAIT_MS` delivers it
+- once the thread has been quiet for `CHANNEL_RESPONSE_GATE_QUIET_MS`, the buffer is put to Jev,
+  which is asked whether the latest message expects a response; a probability at or above
+  `CHANNEL_RESPONSE_GATE_THRESHOLD` delivers, and a call that fails delivers too
+
+One call is in flight per thread at a time, and a message arriving while it is out restarts the
+quiet window for the next one. A buffer the secret screen matches makes no call and delivers.
+
+The delivered event's text is one line per message, `<author> (<class>): <text>`, oldest first.
+Its `author` is the triggering message's, its `buffered` attribute the count, and its
+`sender_class` the lowest class present: `operator` only when every message in it was an
+operator's. Every event the gate composes fits the relay's stream line cap (`MAX_LINE_BYTES` in
+`relay/broker.ts`): the buffer measures each admission against that budget and delivers before a
+message would take it past.
+
+A buffer whose session ends, or whose thread passes to a new session after a `/clear`, is dropped
+with one counted notice in the thread naming the cause and asking for a re-post. A buffer whose
+session's relay is not attached when a trigger fires is dropped with the unreachable notice.
+
+In `shadow`, the same buffer runs beside the immediate delivery and asks the judge as `live` would.
+Every gate decision in `shadow` and `live` appends one row to `response-gate.jsonl` beside the
+state file, rotated on the broker log's own size and count settings. `tools/response-gate-score.ts`
+reads that journal beside a hand-labelled file and prints precision and recall at candidate
+thresholds, which is how a threshold is chosen before a host goes `live`. `operations.md` has the
+procedure.
+
+**Held buffers survive a restart.** In `live`, the gate writes every held buffer to
+`response-gate-buffers.json` beside the state file on each admit, delivery and drop, through the
+same atomic temp-file-and-rename write the registry snapshot uses (`writeSnapshot` in
+`broker/persistence.ts`). At startup the router reads the file back and keeps each buffer whose
+session record restored and whose thread is still that session's, classing each line again against
+the roster as it now stands. The rest are dropped with the counted notice. A kept buffer's age cap
+starts again at the listener bind, beside the relay restart windows, from its oldest message's own
+time and never shorter than the restart window. When the session's relay attaches, the relay hub's
+attach listener hands the buffer to the router, which delivers it with the trigger `restored`,
+opening with one line of the broker's own naming the oldest held time. A missing, unreadable or
+malformed file restores nothing and logs one line.
+
 ## What the cards are made of
 
 The session and fleet cards draw their bodies inside fenced monospace blocks so the columns line up
@@ -1008,8 +1062,9 @@ Four, and each one fails in its own way.
 - **Discord.** The REST API for thread creation, renames, and message writes, and the gateway for
   inbound messages. Renames are the scarce resource, so the broker reads the rate-limit response
   headers and drops a rename it cannot afford rather than queueing it.
-- **TypeSafe's Jev.** The inbox judge, and the broker's one HTTP call to a host other than
-  Discord. Each unmarked reply is posted to
+- **TypeSafe's Jev.** The inbox judge and the response gate, through one client
+  (`broker/jev/client.ts`), and the broker's one HTTP egress to a host other than Discord. The
+  gate's calls are described under "The response gate". Each unmarked reply is posted to
   `https://api.typesafe.ai/v1/systemone` as a JSON body carrying the reply's text, the model name
   `jev-latest` and the two fixed questions, under a bearer key read from the file
   `CHANNEL_INBOX_JUDGE_KEY_FILE` names. The host is a constant that no setting can redirect, and a
