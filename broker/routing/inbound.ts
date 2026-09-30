@@ -428,12 +428,34 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
   }
 
   /**
+   * Why a buffer held for `sessionId` has nowhere to go, read off the records and never off the
+   * thread binding. A `/clear` ends the session and registers its replacement in one registry
+   * mutation, and the surface moves the thread to the replacement only on a later refresh, by
+   * lineage, so at the moment of the drop the thread still resolves to the ended session. What
+   * tells a `/clear` from a plain end is the replacement itself: a live record sharing the ended
+   * session's lineage and started after it, the same rule the surface rebinds on, since only a
+   * newer session takes a lineage over. A session with no lineage has nothing to link it to a
+   * replacement, so its drop is an end.
+   */
+  function dropCause(records: readonly SessionRecord[], sessionId: string): DropCause {
+    const held = records.find((record) => record.sessionId === sessionId);
+    if (held === undefined || held.lineage === null) return "ended";
+    const replaced = records.some(
+      (record) =>
+        record.sessionId !== sessionId &&
+        record.state !== "ended" &&
+        record.lineage === held.lineage &&
+        record.startedAt > held.startedAt,
+    );
+    return replaced ? "moved" : "ended";
+  }
+
+  /**
    * Whether a buffer held for `sessionId` in `threadId` still has that session to go to: one that
    * is live and is the session the thread resolves to now. A session that ended, left the
    * registry, or handed its thread to its replacement leaves the buffer with nowhere to go, and
-   * it is dropped rather than delivered to whoever holds the thread next. The cause is the one
-   * the thread's readers are told: `moved` where the thread now resolves to a different live
-   * session, which is what a `/clear` does, and `ended` otherwise.
+   * it is dropped rather than delivered to whoever holds the thread next, with the cause the
+   * thread's readers are told.
    */
   function holdFor(
     records: readonly SessionRecord[],
@@ -441,9 +463,10 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     sessionId: string,
   ): { record: SessionRecord } | { record: null; cause: DropCause } {
     const record = sessionForThread(records, options.threadFor, threadId);
-    if (record === null || record.state === "ended") return { record: null, cause: "ended" };
-    if (record.sessionId !== sessionId) return { record: null, cause: "moved" };
-    return { record };
+    if (record !== null && record.state !== "ended" && record.sessionId === sessionId) {
+      return { record };
+    }
+    return { record: null, cause: dropCause(records, sessionId) };
   }
 
   /**
@@ -484,10 +507,11 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
             });
           },
           // The gate dropped a buffer because its thread admitted a message for a different
-          // session, which is what a `/clear` does to a thread. The gate logged it; the thread's
-          // readers are told here, since the writer is this router's.
-          onDrop: (threadId, _sessionId, count) => {
-            void announceDrop(threadId, count, "moved").catch((error: unknown) => {
+          // session. The gate logged it; the thread's readers are told here, since the writer is
+          // this router's, with the cause read off the records as on every other drop.
+          onDrop: (threadId, sessionId, count) => {
+            const cause = dropCause(options.registry.list(), sessionId);
+            void announceDrop(threadId, count, cause).catch((error: unknown) => {
               log(`routing: announcing a dropped buffer failed: ${String(error)}`);
             });
           },

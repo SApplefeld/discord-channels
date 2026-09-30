@@ -30,11 +30,10 @@ export type ResponseGateMode = "off" | "shadow" | "live";
  * read against its own cap: a line the stream splits, whose remainder passes the cap before its
  * newline arrives, is dropped with no signal to either side. An event over that cap is therefore
  * a buffer lost in silence whenever the socket splits it, which a line that long is. This is that
- * cap, written
- * here rather than imported because the relay is the other process and the broker's runtime code
- * does not reach into it; inbound.test.ts pins the two equal, and pins the worst-case buffered
- * event under it. The size cap below has a second reading against it: a buffer delivers early
- * rather than grow past what the pipe will carry.
+ * cap, written here rather than imported because the relay is the other process and the broker's
+ * runtime code does not reach into it; inbound.test.ts pins the two equal, and pins the
+ * worst-case buffered event under it. The size cap below has a second reading against it: a
+ * buffer delivers early rather than grow past what the pipe will carry.
  */
 export const MAX_EVENT_UNITS = 64 * 1024;
 

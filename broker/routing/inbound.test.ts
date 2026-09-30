@@ -92,12 +92,13 @@ function announce(
   sessionId: string,
   processToken = TOKEN,
   source: "startup" | "clear" = "startup",
+  lineage: string | null = null,
 ): void {
   registry.apply({
     event: "SessionStart",
     processToken,
     sessionName: "neo-warden",
-    lineage: null,
+    lineage,
     sessionId,
     source,
     toolName: null,
@@ -192,6 +193,8 @@ function harness(
     gate?: { mode?: "off" | "shadow" | "live"; maxMessages?: number; maxWaitMs?: number };
     /** Awaited before any post lands, so a test can hold a Discord round trip open. */
     beforePost?: () => Promise<void>;
+    /** The lineage `session-a` is announced under, for a test that replaces it by lineage. */
+    lineage?: string;
   } = {},
 ) {
   const now = options.now ?? ((): number => 1_000);
@@ -204,7 +207,7 @@ function harness(
     // router's held buffers against the record set.
     onMutate: (sessions) => router?.reconcile(sessions),
   });
-  announce(registry, "session-a");
+  announce(registry, "session-a", TOKEN, "startup", options.lineage ?? null);
   const relays = createRelayHub({ registry, graceMs: 10_000, now });
   const sent: RelayEvent[] = [];
   if (options.attachRelay !== false) {
@@ -1208,19 +1211,23 @@ test("live: a buffer held for a session is never delivered to the session that t
   // The surface rebinds a thread from a session to its replacement of the same lineage. A buffer
   // is held for the session it was admitted to, so when that session ends the buffer goes with it
   // even though the thread now resolves to a live session again.
+  let now = 1_000;
   const lines: string[] = [];
   const { registry, router, sent, notices, scheduled, threads } = harness({
     gate: {},
     log: (line) => lines.push(line),
+    now: () => now,
+    lineage: "persona-neo",
   });
   await router.deliver(message({ text: "for session a", author: "Ann" }));
   assert.equal(scheduled.length, 1);
 
-  // The thread moves to the replacement, and the replacement is announced under the same pipe, which
-  // ends the session the buffer was held for.
+  // The thread moves to the replacement, and the replacement is announced under the same pipe and
+  // lineage, later, which ends the session the buffer was held for.
   threads.set("session-b", THREAD);
   threads.delete("session-a");
-  announce(registry, "session-b", TOKEN, "clear");
+  now += 5_000;
+  announce(registry, "session-b", TOKEN, "clear", "persona-neo");
   assert.equal(registry.list().find((record) => record.sessionId === "session-a")?.state, "ended");
   assert.equal(scheduled[0].cleared, true, "the buffer went with its session");
   // The drop is named by count, session and thread, and never by what was said.
@@ -1237,6 +1244,52 @@ test("live: a buffer held for a session is never delivered to the session that t
   assert.deepEqual(notices, [{ threadId: THREAD, text: droppedBufferNotice(1, "moved") }]);
   assert.match(notices[0].text, /\/clear/);
   assert.ok(!notices[0].text.includes("for session a") && !notices[0].text.includes("Ann"));
+});
+
+test("live: a /clear is named as one in the registry's own order, before the surface rebinds the thread", async () => {
+  // Production order: SessionStart ends the old session and creates its replacement in one
+  // mutation, and `reconcile` runs at once, while the surface moves the thread to the replacement
+  // only on a later refresh tick, by lineage. So when the drop is decided the thread still
+  // resolves to the ended session, and the cause has to be read off the records: a live record
+  // sharing the ended session's lineage and started after it is a /clear.
+  let now = 1_000;
+  const { registry, router, sent, notices, scheduled, threads } = harness({
+    gate: {},
+    now: () => now,
+    lineage: "persona-neo",
+  });
+  await router.deliver(message({ text: "for session a", author: "Ann" }));
+  assert.equal(scheduled.length, 1);
+
+  now += 5_000;
+  announce(registry, "session-b", TOKEN, "clear", "persona-neo");
+  assert.equal(threads.get("session-b"), undefined, "the surface has not rebound the thread yet");
+  assert.equal(threads.get("session-a"), THREAD);
+  await flush();
+  assert.equal(scheduled[0].cleared, true, "the buffer went with its session");
+  assert.deepEqual(notices, [{ threadId: THREAD, text: droppedBufferNotice(1, "moved") }]);
+  assert.match(notices[0].text, /\/clear/);
+  assert.ok(!notices[0].text.includes("for session a") && !notices[0].text.includes("Ann"));
+
+  // Only now does the surface rebind, and nothing the old session held reaches the new one.
+  threads.delete("session-a");
+  threads.set("session-b", THREAD);
+  scheduled[0].fire();
+  await flush();
+  assert.deepEqual(sent, []);
+});
+
+test("live: a session replaced under a null lineage is reported as ended, since nothing links the two", async () => {
+  let now = 1_000;
+  const { registry, router, notices, scheduled } = harness({ gate: {}, now: () => now });
+  await router.deliver(message({ text: "for session a" }));
+
+  now += 5_000;
+  announce(registry, "session-b", TOKEN, "clear");
+  await flush();
+  assert.equal(scheduled[0].cleared, true);
+  assert.deepEqual(notices, [{ threadId: THREAD, text: droppedBufferNotice(1, "ended") }]);
+  assert.match(notices[0].text, /session has ended/);
 });
 
 test("live: two deliveries released by one message reach the pipe back to back, ahead of any announcement", async () => {
