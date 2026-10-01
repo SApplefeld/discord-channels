@@ -777,7 +777,9 @@ A torn read is drawn rather than hidden. A plan caught mid-write redraws its las
 held marker whose age climbs, so the operator sees staleness instead of a plan that silently stopped
 moving. The blocked marker is set by a `goal-blocked` event and cleared by a newer plan modification
 time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
-timestamp would pin the marker permanently.
+timestamp would pin the marker permanently. A persona entry drawn from its store alone is the
+exception: the store is rewritten every turn, so its marker clears only on the goal completing or the
+entry leaving the store's active status.
 
 Order is decided at the card and nowhere else. The sweep lists a root's plans by name, and that
 listing is what the per-root cap is defined against, so it stays name-ordered and the renderer sorts

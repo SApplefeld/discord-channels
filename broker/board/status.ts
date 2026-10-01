@@ -171,6 +171,13 @@ function heldRoot(latest: ReadonlyMap<string, BoardEvent>, workdir: string): str
  * root spelling the events are keyed under. An entry with no parsed plan reading takes no event,
  * because the rule reads the document's own modification time to decide whether a block has since
  * cleared and an archived entry carries none. Such an entry is already done anyway.
+ *
+ * A reading taken from the store alone never clears a block by its modification time. That time is
+ * the store file's, which the plugin rewrites at every turn end, the blocking turn's included, so it
+ * says the worker took a turn and not that a Chapter landed. Such a block clears only on a
+ * `goal-complete` for the pair, or once the store stops calling the entry active, which leaves it no
+ * reading. The in-flight rule still ages the reading by the store, since there the
+ * question is whether the worker is taking turns.
  */
 function eventBlocked(
   reading: QueuePlanReading | undefined,
@@ -179,7 +186,8 @@ function eventBlocked(
   now: number,
 ): boolean {
   if (root === null || reading === undefined || reading.archived) return false;
-  return blockedAt({ reading: { ...reading, root }, heldSince: null }, events, now) !== null;
+  const mtimeMs = reading.fromStore === true ? Number.NEGATIVE_INFINITY : reading.mtimeMs;
+  return blockedAt({ reading: { ...reading, root, mtimeMs }, heldSince: null }, events, now) !== null;
 }
 
 /**

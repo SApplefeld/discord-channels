@@ -548,8 +548,10 @@ Chapters the launch folder's file holds, the card draws the store's count. It al
 next step where the store carries one, and no next step where it does not, since the file's names a
 section the worker has passed. Where the file's count is equal or higher, the file wins. An active
 entry carrying a Chapter count, whose plan has no file in any of the four folders, draws from the
-store alone, as `9 chapters` where the store carries no section total. Any other entry with no file
-there, such as one paused on a plan checked out on another branch, draws no count.
+store alone, as `9 chapters` where the store carries no section total. Once such an entry draws
+blocked, it stays blocked until its goal completes or the store stops calling it active, since the
+store is rewritten every turn and so cannot say a Chapter landed. Any other entry with no file there, such as one paused on a plan checked
+out on another branch, draws no count.
 
 Each group opens with a shaded label: the persona's name, `N of M done`, and the worker's state.
 The state is `running now` while the heartbeat says the worker is inside a turn. Otherwise it is

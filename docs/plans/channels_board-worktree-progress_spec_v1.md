@@ -18,7 +18,9 @@ What done does not need to do. It does not enumerate git worktrees, read `.git` 
 
 Alternatives refused. Enumerating `git worktree list` under each persona's folder and reading the newest copy, the ASSISTANT's second direction: refused because a worktree's path would be a path read out of a `.git` file, which the reader's own rule forbids, and because the store already carries the figure. Having the plugin record the path of every Edit or Write that names the plan file, the first direction: refused in the plugin's plan, since the plugin's own count is already right, which DEV-PLUGIN's store proved on 2026-10-01 with the mechanism-cut holder at Chapter 9. Waiting for the plugin's two new fields before shipping anything here: refused because the Chapter count alone closes the visible defect today and the two fields only complete the line.
 
-Rulings after the spec shipped, each appended dated. None yet.
+Rulings after the spec shipped, each appended dated.
+
+- decided 2026-10-01 by the operator ("Agreed, Fix it"), on the scope adjudicator's ask and the ARCHITECT persona's concurring answer: a store-only reading never clears a `goal-blocked` block by its modification time, and it clears only on a `goal-complete` for the pair or the entry leaving the store's `active` status. The store is rewritten at every turn end, the blocking turn's included, so its write says the worker took a turn and not that a Chapter landed. The in-flight rule keeps aging the reading by the store, since there the question is whether the worker is taking turns. A stale "blocked" sends the operator to look, where a false clear hides a stopped run.
 
 Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT persona's operator-directed record, the broker sources at `525c05e`, the plugin sources at `a92b351`, and DEV-PLUGIN's persona store read on this machine the same day.
 
@@ -36,6 +38,10 @@ Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT 
 
 **The coverage sweep.** Searches run 2026-10-01 at `525c05e`: `PlanReading`, `QueuePlanReading`, `ParsedReading`, `QueueEntry`, `entryOf`, `planSegment`, `textPlanName`, `planName`, `eventPlanName`, `CHANNEL_BOARD_PROJECTS`, `boardProjects`, `sweepPlans`, `eventRoots` and `heldSince` over `broker/` and `docs/`. Surfaces found: `broker/board/queues.ts:114` (`QueueEntry`), `:152` (`QueuePlanReading`), `:360` (`entryOf`), `:659` (`joinPlan`), `:796` to `:810` (the readings map); `broker/board/thread.ts:576`, `:621` (the persona view's reading shape); `broker/board/status.ts:134`, `:138` (`ParsedReading`, `started`); `broker/board/card.ts:72`, `:114`, `:446` (`sectionCount`), `:360`, `:374`; `broker/board/plans.ts:72`, `:95`, `:557`; `broker/config.ts:136`, `:690`; `broker/index.ts:699`; tests `broker/board/queues.test.ts:26`, `:137`, `broker/board/card.test.ts:39`, `:57`, `:392`, `broker/board/status.test.ts:41`, `:64`, `broker/board/thread.test.ts:153`, `:299`, `:351`; docs `docs/operations.md:517`, `:590`, `:1197`, `docs/install.md:112`, `:116`, `docs/architecture.md:713`, `docs/security-model.md:912`, `docs/archive/plans/channels_board-worker-queues_spec_v1.md:55`. The roots, `sweepPlans`, `eventRoots` and the config surfaces are out of scope: this plan reads no new root.
 
+## Standing Brief Amendments
+
+- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair or the entry leaving the store's `active` status, and the in-flight rule still ages the reading by the store.
+
 ## Sections of Work
 
 ### 1. The queue reader takes the three store fields and prefers the newer reading
@@ -49,7 +55,7 @@ Acceptance:
 - A persona whose plan file parses at `completed` 2 of 11 with `next` "3. The executing-work skill", and whose entry carries `chapterCount` 9 and no other field, reads `completed` 9, `sections` 11 and `next` null. With `nextSection` present, `next` is that value. With `sectionCount` 12 present, `sections` is 12. With `chapterCount` 15, `completed` is 11.
 - The same persona with `chapterCount` 2 or 1 reads the file's `completed` 2 and the file's `next` unchanged. An archived reading with `chapterCount` 9 beside it is unchanged.
 - An active entry whose plan is in none of the four places, carrying `chapterCount` 9 and `sectionCount` 11, reads a parsed reading with `completed` 9, `sections` 11, status `In Progress`, `fromStore` true, and the store file's modification time. The same entry with status `paused`, or with no `chapterCount`, reads nothing, as today.
-- The status rule's `started` holds for the store-only reading, so the entry draws as in flight. `blockedAt` on it reads the store's modification time.
+- The status rule's `started` holds for the store-only reading, so the entry draws as in flight. A `goal-blocked` event for it stands however far the store's modification time has moved past the event (ruling 2026-10-01 under Intent).
 - `npm test` exits 0 with the new cases present and no prior case removed.
 
 Files in scope: `broker/board/queues.ts`, `broker/board/queues.test.ts`, `broker/board/status.ts` (only where `ParsedReading` or `started` must admit `fromStore`), `broker/board/status.test.ts` (only where a fixture needs the new field).
@@ -83,7 +89,7 @@ Tests: the three count forms, and the cost bound holding.
 - assumed 2026-10-01 (source: DEV-PLUGIN's store on this machine, holder `plan-muovpehg-ew9q` at `chapterCount` 9 while `D:\claude-kit\docs\plans\claude-kit_mechanism-cut_spec_v1.md` held two Chapters): the store is the newer reading whenever a worker is in a worktree, and the file whenever it is not; reversal: none needed, the higher count wins in either direction.
 - assumed 2026-10-01 (source: the plugin's plan under Assumptions): the companion field names are `sectionCount` and `nextSection`; reversal: rename in both plans before either is armed.
 - assumed 2026-10-01 (default): a store-only reading is synthesized for an `active` entry alone, since the store carries no document status and `active` is the one store status that says the worker is on it; reversal: one condition.
-- assumed 2026-10-01 (default): the store-only reading takes the store file's modification time as its stat, so the in-flight and blocked rules age it by the store; reversal: one assignment.
+- assumed 2026-10-01 (default): the store-only reading takes the store file's modification time as its stat, so the in-flight rule ages it by the store; the blocked half was reversed by the operator's ruling of 2026-10-01 under Intent, and a store-only reading never clears a block by that time; reversal: one assignment.
 - assumed 2026-10-01 (default): the count-without-total form is `<n> chapters`; reversal: one template string. Swap menu: `chapter <n>`, `<n> done`.
 - assumed 2026-10-01 (default): the blind read and the plan review are skipped, since the spec is two sections over one module and one renderer form; the plugin's companion plan skipped them on the same ground.
 

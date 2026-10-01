@@ -1584,7 +1584,7 @@ test("a store-only reading held over a torn store carries the store's hold insta
   assert.equal(reading.heldSince, 9_000, "the reading is as old as the store it came from");
 });
 
-test("a store-only reading draws as in flight, and a block clears once the store moves past it", (t) => {
+test("a store-only reading draws as in flight, and a store write never clears its block", (t) => {
   const work = workdir();
   t.after(work.cleanup);
   const hour = 60 * 60 * 1_000;
@@ -1618,5 +1618,9 @@ test("a store-only reading draws as in flight, and a block clears once the store
 
   assert.equal(word(null), "in flight", "the store-only reading's status satisfies started");
   assert.equal(word(now - hour), "blocked", "a block newer than the store stands");
-  assert.equal(word(now - 3 * hour), "in flight", "a store written after the block clears it");
+  assert.equal(
+    word(now - 3 * hour),
+    "blocked",
+    "the store is rewritten every turn, the blocking one included, so its write says no Chapter landed",
+  );
 });
