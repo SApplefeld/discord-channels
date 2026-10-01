@@ -658,9 +658,10 @@ test("an in-flight pass is not overtaken by the next tick", async () => {
   });
 
   const first = surface.tick([view()]);
-  await surface.tick([view()]);
+  const declined = await surface.tick([view()]);
+  assert.equal(declined, false, "the overlapping tick is declined, so a caller reconciles nothing from it");
   release();
-  await first;
+  assert.equal(await first, true, "the pass that actually ran resolves true");
 
   assert.equal(calls.posts.length, 1);
 });
@@ -1548,11 +1549,12 @@ test("a rejected token stops the surfaces once, loudly", async () => {
     fatal: true,
   };
   await surface.tick([view()]);
-  await surface.tick([view()]);
+  const declined = await surface.tick([view()]);
 
   assert.equal(fatal.length, 1, fatal.join(" / "));
   assert.match(fatal[0], /token was rejected/);
   assert.equal(calls.posts.length, 1, "no further call is made against a rejected credential");
+  assert.equal(declined, false, "a tick after the credential is rejected is declined");
 });
 
 // Item 2 (docs/plans/channels_thread-rebinding_spec_v1.md): a session carrying the same lineage as

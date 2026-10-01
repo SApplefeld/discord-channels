@@ -16,9 +16,9 @@ import type { RepeatLogSurface } from "../repeat-log.ts";
 import type { CallOutcome, ThreadTyping } from "./transport.ts";
 
 /**
- * How often the indicator is refreshed for a thread still working. Discord shows "is typing..." for
- * ten seconds per call (confirmed: Discord's channel resource docs, cited in the spec's "What Is
- * Known"), so eight seconds leaves two seconds of margin against a tick landing a little late.
+ * How often the indicator is refreshed for a thread still working. Discord's typing route shows
+ * "is typing..." for ten seconds per call, so eight seconds leaves two seconds of margin against a
+ * tick landing a little late.
  */
 export const TYPING_PERIOD_MS = 8_000;
 
@@ -29,14 +29,25 @@ export const TYPING_PERIOD_MS = 8_000;
  */
 const REFUSAL_WINDOW_MS = 5 * 60 * 1000;
 
+/**
+ * Consecutive permanent or missing refusals one thread takes before its indicator stops being
+ * attempted at all, the same shape the pin keeper's own per-route cap takes and for the same
+ * reason: a refusal of this kind repeats forever, so a cap is what keeps a dead thread from being
+ * retried on every tick for the life of the broker. A dropped thread restarts only once it leaves
+ * the working set and re-enters it, since re-entry is the only signal available that something
+ * about it may have changed.
+ */
+export const MAX_THREAD_REFUSALS = 3;
+
 export type TypingKeeper = {
   /**
    * Drives the kept timers to match `working`: the thread ids whose derived state is `working`
    * right now. A thread newly in the set gets one call at once and then one every
-   * `TYPING_PERIOD_MS`; a thread no longer in it has its timer cleared at once.
+   * `TYPING_PERIOD_MS`; a thread no longer in it has its timer cleared at once. A no-op once the
+   * keeper has stopped, whether through `stop()` or a fatal outcome on the typing route itself.
    */
   reconcile: (working: readonly string[]) => void;
-  /** Clears every timer. Called once, at broker shutdown. */
+  /** Clears every timer and latches the keeper against any later `reconcile`. Idempotent. */
   stop: () => void;
 };
 
@@ -54,6 +65,14 @@ export type TypingKeeperOptions = {
    * default stringification can carry the request object, Authorization header included.
    */
   describe?: (error: unknown) => string;
+  /**
+   * Called once, when a typing call reports the credential itself was rejected. The keeper has
+   * already halted by the time this runs, the same way `stop()` leaves it: discord.js discards the
+   * token after a 401, and this keeper, driven by its own timers rather than by the surface pass,
+   * is as likely as the surface itself to be the first caller to notice. Wired to the same handler
+   * the surface's own `onFatal` uses, so either caller stops the whole Discord refresh.
+   */
+  onFatal?: (message: string) => void;
 };
 
 /**
@@ -77,17 +96,65 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
   const schedule = options.setTimer ?? setInterval;
   const unschedule = options.clearTimer ?? clearInterval;
 
-  /** One kept thread: the interval driving its refresh, and the budget it spends against. */
-  type Kept = { timer: NodeJS.Timeout; budget: Budget };
+  /** One kept thread: the interval driving its refresh, and its run of permanent or missing refusals. */
+  type Kept = { timer: NodeJS.Timeout; budget: Budget; refusals: number };
   const kept = new Map<string, Kept>();
+  // A thread's budget outlives its timer: a session flapping out of and back into working inside a
+  // 429's own window must stay blocked, not get a fresh bucket that reads as affordable at once.
+  // Dropped only on `stop()`, since nothing before that is ever a reason to forget what a thread's
+  // own bucket last reported.
+  const budgets = new Map<string, Budget>();
+  // Threads refused past the cap, held here rather than in `kept` so a reconcile that still finds
+  // them working does not start them again. Cleared only by the thread leaving the working set.
+  const dropped = new Set<string>();
+  // Latched by `stop()` and by a fatal outcome on this keeper's own route; once set, `reconcile`
+  // and `start` do nothing, which is what keeps a surface pass already in flight when the latch
+  // trips from restarting timers it just cleared.
+  let stopped = false;
+
+  function budgetFor(threadId: string): Budget {
+    let budget = budgets.get(threadId);
+    if (budget === undefined) {
+      budget = createBudget();
+      budgets.set(threadId, budget);
+    }
+    return budget;
+  }
+
+  function clear(threadId: string): void {
+    const entry = kept.get(threadId);
+    if (entry === undefined) return;
+    unschedule(entry.timer);
+    kept.delete(threadId);
+  }
+
+  /** Clears every kept timer and latches the keeper, whether from `stop()` or a fatal outcome. */
+  function halt(): void {
+    if (stopped) return;
+    stopped = true;
+    for (const threadId of [...kept.keys()]) clear(threadId);
+    dropped.clear();
+  }
+
+  /** This thread's run of permanent or missing refusals has reached the cap: stop retrying it. */
+  function drop(threadId: string, refusals: number): void {
+    clear(threadId);
+    dropped.add(threadId);
+    log(
+      `discord typing: the thread's typing call was refused ${String(refusals)} times in a row, ` +
+        "its indicator is not attempted again until it leaves and rejoins the working set",
+    );
+  }
 
   /**
    * One typing call, spent against the thread's own budget and never thrown out of the timer: a
    * refusal is logged and dropped, and the timer that called this keeps running regardless, since
-   * the next tick eight seconds away is this keeper's own retry.
+   * the next tick eight seconds away is this keeper's own retry. Looks the thread's entry up by id
+   * rather than closing over it, so a call a cleared or dropped thread's timer fires late (the gap
+   * between `clearInterval` and the event loop's next turn) finds nothing left to act on.
    */
-  async function fire(threadId: string, budget: Budget): Promise<void> {
-    if (!budget.affordable(now())) {
+  async function fire(threadId: string, entry: Kept): Promise<void> {
+    if (!entry.budget.affordable(now())) {
       repeats("a typing call was skipped", "the thread's bucket is paced out");
       return;
     }
@@ -98,44 +165,58 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
       repeats("a typing call failed", describeError(error));
       return;
     }
-    budget.observe(outcome.rate, now());
+    if (outcome.status !== "failed") entry.budget.observe(outcome.rate, now());
     if (outcome.status === "rate-limited") {
       repeats("a typing call was skipped", "the bucket is empty");
       return;
     }
-    if (outcome.status === "failed") {
-      repeats("a typing call failed", outcome.error);
+    if (outcome.status === "ok") return;
+    if (outcome.fatal === true) {
+      // Guarded on `stopped` rather than relying on `halt()`'s own idempotence: two threads can
+      // both be mid-call when the token is rejected, and only the first to resume here should
+      // report it, the same way the surface's own fatal handling reports once per credential.
+      if (stopped) return;
+      halt();
+      options.onFatal?.("discord typing: the bot token was rejected, the surfaces are stopped");
+      return;
     }
+    repeats("a typing call failed", outcome.error);
+    if (outcome.permanent !== true && outcome.missing !== true) return;
+    entry.refusals += 1;
+    if (entry.refusals >= MAX_THREAD_REFUSALS) drop(threadId, entry.refusals);
   }
 
   function start(threadId: string): void {
-    const budget = createBudget();
-    void fire(threadId, budget);
-    const timer = schedule(() => {
-      void fire(threadId, budget);
-    }, TYPING_PERIOD_MS);
-    kept.set(threadId, { timer, budget });
-  }
-
-  function clear(threadId: string): void {
-    const entry = kept.get(threadId);
-    if (entry === undefined) return;
-    unschedule(entry.timer);
-    kept.delete(threadId);
+    const budget = budgetFor(threadId);
+    const run = (): void => {
+      const entry = kept.get(threadId);
+      if (entry === undefined) return;
+      void fire(threadId, entry);
+    };
+    const timer = schedule(run, TYPING_PERIOD_MS);
+    kept.set(threadId, { timer, budget, refusals: 0 });
+    run();
   }
 
   return {
     reconcile(working) {
+      if (stopped) return;
       const workingSet = new Set(working);
       for (const threadId of [...kept.keys()]) {
         if (!workingSet.has(threadId)) clear(threadId);
       }
+      // A dropped thread may restart only once it has left the working set: its absence here is
+      // the only signal that whatever made it unreachable may no longer apply.
+      for (const threadId of [...dropped]) {
+        if (!workingSet.has(threadId)) dropped.delete(threadId);
+      }
       for (const threadId of workingSet) {
-        if (!kept.has(threadId)) start(threadId);
+        if (!kept.has(threadId) && !dropped.has(threadId)) start(threadId);
       }
     },
     stop() {
-      for (const threadId of [...kept.keys()]) clear(threadId);
+      halt();
+      budgets.clear();
     },
   };
 }

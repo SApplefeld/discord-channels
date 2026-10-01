@@ -1437,8 +1437,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;
   // The typing keeper's own timers run outside `refresh`, one per working thread rather than one for
-  // the whole reconcile pass, so clearing `refresh` alone leaves them running: every site that tears
-  // `refresh` down also calls `typingKeeper?.stop()`.
+  // the whole reconcile pass, so clearing `refresh` alone leaves them running. Every site that tears
+  // `refresh` down calls `typingKeeper?.stop()`, which also latches the keeper: a surface pass
+  // already in flight when `stop()` runs still resolves and still calls `reconcile`, and the latch
+  // is what keeps that call from restarting timers `stop()` just cleared.
   let typingKeeper: TypingKeeper | null = null;
   // What the fleet card needs from Discord, filled in below only when a channel exists. It is one
   // of the two conditions the card is built under, and the card is built after this block rather
@@ -1458,6 +1460,15 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
       typingKeeper?.stop();
+    };
+    // Shared by the surface and the typing keeper: either one can be the caller that first learns
+    // the credential was rejected, since discord.js discards the token after a 401 and the typing
+    // keeper's own timers run independently of the surface pass. Whichever notices, the whole
+    // Discord refresh stops the same way.
+    const onFatal = (message: string): void => {
+      console.error(message);
+      logger.error(message);
+      stopRefresh();
     };
     // One HTTP client for every Discord write this broker makes, the message routes and the
     // interaction callback alike. Sharing the client shares no budget: each surface holds its own
@@ -1493,11 +1504,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.log(message);
         logger.info(message);
       },
-      onFatal: (message) => {
-        console.error(message);
-        logger.error(message);
-        stopRefresh();
-      },
+      onFatal,
       // Item 3: the reconciler itself never posts (see ThreadMessenger's own comment on why), so
       // this is the caller that turns a rebind into the one-line notice the thread gets and clears
       // the departed session's inbox item, guarded so neither a failure in the clear nor a missing
@@ -1531,6 +1538,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
       describe,
+      onFatal,
     });
     refresh = setInterval(() => {
       // A rejection here would be fatal to the process under Node 24, taking the hook intake down
@@ -1560,10 +1568,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
         // spends no Discord call here at all.
-        .then(() => {
+        .then((ran) => {
           // Synchronous and never thrown out of a timer's own closure, so it rides ahead of the pin
-          // keeper's awaited call rather than needing a `Promise.all` leg of its own.
-          typingKeeper?.reconcile(surface.workingThreads());
+          // keeper's awaited call rather than needing a `Promise.all` leg of its own. Gated on
+          // `ran`: a declined tick (an overlapping pass, or a credential already rejected) left the
+          // surface's derived state exactly where the last pass put it, so reconciling the typing
+          // keeper against it again would restate the last pass rather than drive this one.
+          if (ran) typingKeeper?.reconcile(surface.workingThreads());
           return pinKeeper.reconcile({
             permanent: permanentCards(),
             live: surface.livePins(),

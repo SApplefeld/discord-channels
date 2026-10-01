@@ -26,6 +26,8 @@ Operator decisions:
 
 - **Decided 2026-09-30: the broker may read queued-message lines from mirror-off transcripts, so 👀 marks a message injected mid-turn.** The operator answered on the relay thread: "Absolutely that's allowed. ... the prohibition against reading with mirroring turned off was to keep the text shown to the user minimized. It wasn't meant to prevent you from reading things programmatically for insight or processing." Rationale: the mirror-off gate governs what is published to the thread, not what the broker may read to derive a status. Section 1 exposes one pickup entry point, and Section 3's mirror-off reader feeds it, per the Standing Brief Amendments.
 
+- **Decided 2026-09-30: the typing indicator runs only while a turn is open.** The operator answered on the relay thread: "Agreed, Option 1 is way more logical and fits better. Yes please!" Rationale: the card's `working` lasts `idleAfterMs` (120 s) past a turn's end, and indefinitely while background agents run, so typing that followed it would show "is typing" for about two minutes after every answer. Typing that tracks the open turn reads as "working on it right now", and it meets the section's own "gone within 10 seconds of the turn ending". The card itself is unchanged, so for up to two minutes after a turn ends the card can read working while typing has stopped.
+
 ## What Is Known
 
 - **Confirmed:** Discord's `POST /channels/{channel.id}/typing` shows the indicator for 10 seconds, per Discord's channel resource docs. The broker's discord.js 14 client exposes it as `sendTyping()`.
@@ -41,6 +43,7 @@ Operator decisions:
 - **Section 3, mirror-off pickup.** The mirror-off reader also reads the transcript line that records a queued message being injected mid-turn, using only its type and timestamp, and calls Section 1's pickup entry point with that timestamp. Acceptance: a mirror-off session's message delivered mid-turn moves from 📨 to 👀 when that line appears, and none of the line's text reaches Discord.
 - **Section 3, reader coverage.** The status reader runs for every session whose transcript path the broker has learned, whether or not the interim tailer is built on this host. With `CHANNEL_INTERIM_MIRROR` off or the host-wide mirror off, no tailer exists, and the mid-turn pickup of a message injected into a running turn comes only from this reader.
 - **Section 3, turn-opening pickup.** The same reader also credits pickup, with the line's own timestamp, for a `user` line whose root `origin` kind is `channel` and whose server names this relay: the line a Discord message writes when it opens a turn on an idle session. That covers a turn whose `UserPromptSubmit` post the broker never received.
+- **Section 2, turn-open typing.** The keeper types for a thread only while its session's derived state is `working` and a turn is open. A turn opens on the session's credited `UserPromptSubmit` post or a completed tool call, and closes on its `Stop` hook. A broker restarted mid-turn treats the turn as closed until the next of those events. Acceptance: after a `Stop`, no typing call is sent for that thread, though the card still reads working. A session with an outstanding background roster and no open turn shows no typing.
 - **Section 3, added acceptance.** A test feeds a mirror-off session's transcript holding assistant text, a user prompt and an `api_error` line. Only the fixed-wording notice reaches Discord.
 
 ## Sections of Work
@@ -151,3 +154,10 @@ Delta: kit-size, 2026-09-30, main checkout:
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 2 - 2026-09-30
+
+- **Section 2, Typing Indicator: fix round 1 being dispatched; one finding held for the operator.** First green f021ecf, pushed. Review round 1 (adversarial, blind, security at opus, high effort, Workflow) returned a blind Critical (a refresh pass in flight restarts the keeper's timers after `stop()`), a blind Major (the keeper ignores fatal, permanent and missing refusals, so a typing call can consume the one 401 and leave the surfaces running on a dead token) and ten Minors. Fix round 1 takes all of those.
+- **Held: the adversarial Critical on the typing source.** The section's bullet "the indicator comes from the same state the card shows" conflicts with its acceptance "gone within 10 seconds of the turn ending": `working` lasts `idleAfterMs` (120 s) after a `Stop` and indefinitely while a background roster is outstanding (`broker/discord/state.ts:171-173`). Asked the operator on the relay thread 2026-09-30 with three options: typing only while a turn is open (recommended), typing as the card (as built), or typing only while a thread message is picked up and unanswered. Section 2 does not close until this is answered.
+- **Gate baseline:** Section 2 targeted lane (typing, adapter, surface, index tests) 170 tests, 170 pass, 0 fail, exit 0, and lint exit 0, on f021ecf, main checkout, 2026-09-30, no foreign runner.
+- **Next per section:** Section 2: verify fix round 1, then apply the operator's answer, then review round 2. Section 3: dispatch from `.kit/scratch/session-activity/s3-brief.md` after Section 2 closes.
