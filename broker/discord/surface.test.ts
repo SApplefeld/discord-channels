@@ -111,6 +111,9 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    // True by default so every existing test, written before the typing keeper's turn-open gate
+    // existed, still exercises a working session with an open turn unless it overrides this.
+    turnOpen: true,
     title: null,
     lineage: null,
     turnCount: 1,
@@ -1466,6 +1469,54 @@ test("working threads are the threads of the sessions whose derived state is wor
   time.advance(EXITED_AFTER_MS + 1);
   await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
   assert.deepEqual(surface.workingThreads(), [], "an exited session's thread stays out of the set");
+});
+
+test("working threads also require the open-turn flag the view carries, not `working` alone", async () => {
+  // Pins Section 2's turn-open typing (Standing Brief Amendments): the keeper types only while a
+  // turn is open, because `working` alone can read true for up to idleAfterMs past a Stop and
+  // indefinitely while a background roster is outstanding, and the indicator must stop with the
+  // turn rather than with either of those.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  const working = async (built: Partial<SessionView>) => {
+    await surface.tick([view(built)]);
+    return surface.workingThreads();
+  };
+
+  assert.deepEqual(
+    await working({ turnOpen: true }),
+    ["thread-1"],
+    "working with a turn open is in the set",
+  );
+
+  // The acceptance case: Stop closes the turn, but working's own idleAfterMs window has not
+  // elapsed, so the derived state is still working while the typing set already excludes it.
+  assert.deepEqual(
+    await working({ turnOpen: false }),
+    [],
+    "working after Stop is excluded, though the derived state is unmoved",
+  );
+
+  // An outstanding background roster reads working whatever the hook clock says, with no turn open.
+  assert.deepEqual(
+    await working({
+      turnOpen: false,
+      backgroundTasks: [
+        { id: "task-a", kind: "subagent", description: null, agentType: null, since: time.now() },
+      ],
+    }),
+    [],
+    "a background roster with no open turn is excluded",
+  );
+
+  // needs-you outranks working in the derivation, so an open turn does not pull it back in.
+  assert.deepEqual(
+    await working({ turnOpen: true, needsAttention: true }),
+    [],
+    "needs-you with a turn open is excluded",
+  );
 });
 
 test("a card is kept current even while its thread cannot be opened", async () => {

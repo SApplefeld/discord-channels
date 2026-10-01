@@ -258,6 +258,16 @@ export type SessionRecord = {
    */
   goal: string | null;
   /**
+   * True while a turn is open: set by a completed tool call (`PostToolUse`) or by the registry's own
+   * `noteTurnOpened` for a credited `UserPromptSubmit` post, and cleared by `Stop`. This is what the
+   * typing keeper gates on beside the derived `working` state, since `working` itself lasts
+   * `idleAfterMs` past a `Stop` and indefinitely while a background roster is outstanding, and the
+   * indicator must not run through either. Never persisted: a restarted broker has no way to know
+   * whether a turn was open at the moment it died, so a loaded record starts with this false, which
+   * treats the turn as closed until the next of the events above re-opens it.
+   */
+  turnOpen: boolean;
+  /**
    * The session's own title, as a `custom-title` transcript line last set it: written at launch by
    * `--name` and again by any in-session `/rename`, and null for a session neither has touched.
    * Distinct from `name`, which is the launch label the hook header carries on every post and never
@@ -405,6 +415,12 @@ export type Registry = {
    * transcript, so it lives where the card can read it and nowhere else.
    */
   noteGoal: (sessionId: string, goal: string | null) => SessionRecord | null;
+  /**
+   * Opens the turn for a session, told from a credited `UserPromptSubmit` post reaching the registry
+   * through /mirror rather than as a hook event. Returns the record it touched, and null when
+   * nothing unended holds that ID.
+   */
+  noteTurnOpened: (sessionId: string) => SessionRecord | null;
   /**
    * Records the title a `custom-title` transcript line named, whether written by a launch `--name`
    * or an in-session `/rename`. Returns the record it wrote, and null when nothing unended holds
@@ -627,6 +643,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
+      turnOpen: false,
       title: null,
     };
     sessions.set(sessionId, record);
@@ -698,6 +715,10 @@ export function createRegistry(options: RegistryOptions): Registry {
 
     if (intake.event === "PostToolUse") {
       record.toolCount += 1;
+      // A completed tool call is one of the two events a turn opens on, the other being a credited
+      // `UserPromptSubmit` post through `noteTurnOpened`. Set unconditionally, the same as toolCount
+      // above, whether or not this call carried a usable name.
+      record.turnOpen = true;
       // The name and the preview move together, under the one guard, because the card renders them
       // as one line describing one call. Set apart, an event carrying an input but no usable name
       // would leave the previous call's name beside this one's input, and the card would assert a
@@ -709,6 +730,11 @@ export function createRegistry(options: RegistryOptions): Registry {
       }
     } else if (intake.event === "Stop") {
       record.turnCount += 1;
+      // The turn this Stop closes. Set unconditionally, the same as turnCount above: a session that
+      // never opened a turn by this registry's lights (its UserPromptSubmit arrived only through
+      // /mirror and crediting failed) still has nothing open to clear, and the assignment costs
+      // nothing when it is already false.
+      record.turnOpen = false;
       // An empty report is as load-bearing as a populated one: a session that has finished its
       // agents reports an empty table, and a roster only replaced when there is something to
       // replace it with would hold that session at working for the rest of its life. Null is the
@@ -878,6 +904,21 @@ export function createRegistry(options: RegistryOptions): Registry {
     return null;
   }
 
+  /**
+   * Opens the turn for a session, told from a credited `UserPromptSubmit` post. That credit arrives
+   * through /mirror rather than as a registry hook event, so `apply`'s own PostToolUse/Stop pair
+   * cannot see it, and this is the one other place a turn opens from. Returns the record it touched,
+   * and null when nothing unended holds that ID, the same refusal `noteGoal` gives.
+   */
+  function noteTurnOpened(sessionId: string): SessionRecord | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    record.turnOpen = true;
+    // Not persisted on its own account, the same reasoning the goal field holds: this flag is not
+    // liveness, so it rides no stamp and reaches no snapshot write of its own.
+    return record;
+  }
+
   function noteGoal(sessionId: string, goal: string | null): SessionRecord | null {
     const record = reading(sessionId);
     if (record === null) return null;
@@ -1012,6 +1053,7 @@ export function createRegistry(options: RegistryOptions): Registry {
     noteModel,
     noteFallback,
     noteGoal,
+    noteTurnOpened,
     noteTitle,
     dueModelChanges,
     sweep,

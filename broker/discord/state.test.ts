@@ -22,6 +22,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnOpen: false,
     title: null,
     lineage: null,
     turnCount: 0,
@@ -208,6 +209,7 @@ const RECORD: SessionRecord = {
   downgrade: null,
   backgroundTasks: [],
   goal: null,
+  turnOpen: false,
   title: null,
 };
 

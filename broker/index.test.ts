@@ -618,6 +618,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnOpen: true,
     title: null,
   };
   const halted: SessionRecord = {
@@ -2359,6 +2360,7 @@ test("startBroker's inbox restores beside the registry, clears on an operator pr
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnOpen: false,
     title: null,
   });
   saveSessions(stateFile, [
@@ -2724,6 +2726,13 @@ function receiptWiringGaps(source: string): string[] {
   if (!/onRetired:\s*\(threadId\)\s*=>\s*receipts\?\.forget\(threadId\)/.test(code)) {
     gaps.push("surface");
   }
+  if (
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{\s*opened:\s*\(sessionId: string\)\s*=>\s*\{\s*registry\.noteTurnOpened\(sessionId\);\s*\}\s*\}/.test(
+      code,
+    )
+  ) {
+    gaps.push("turns");
+  }
   return gaps;
 }
 
@@ -2759,6 +2768,15 @@ test("startBroker wires every receipt seam: outbound, intake's pickup entry poin
   assert.deepEqual(
     receiptWiringGaps(source.replace("onRetired: (threadId) => receipts?.forget(threadId)", "void 0")),
     ["surface"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(
+      source.replace(
+        ": { turns: { opened: (sessionId: string) => { registry.noteTurnOpened(sessionId); } } }",
+        ": {}",
+      ),
+    ),
+    ["turns"],
   );
 });
 

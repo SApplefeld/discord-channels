@@ -1067,6 +1067,90 @@ test("a mirror-on UserPromptSubmit naming no session, or a different one, fires 
   assert.deepEqual(picked, []);
 });
 
+test("turns.opened fires on all three pickup paths, each with no receipts seam wired", async () => {
+  // Section 2's turn-open typing (Standing Brief Amendments): the turns seam is called whether or
+  // not receipts is wired, since the registry it reaches exists with no Discord configured at all.
+  // One handler per path, receipts absent from every one of them, proves the call does not ride on
+  // receipts being present.
+  const opened: string[] = [];
+  const turns = { opened: (sessionId: string) => opened.push(sessionId) };
+
+  // The mirror-on path.
+  {
+    const { mirror } = fakeMirror();
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    const handle = createHandler({ registry, maxBodyBytes: 1024, mirror, turns });
+    announce(registry);
+    await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers: hookHeaders("UserPromptSubmit"),
+        body: JSON.stringify({ prompt: "please run the migration", session_id: "session-a" }),
+      }),
+    );
+    await settled();
+  }
+
+  // The per-session -NoMirror suppressed path.
+  {
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    const { mirror } = fakeMirror();
+    const handle = createHandler({ registry, maxBodyBytes: 1024, mirror, turns });
+    announce(registry);
+    await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers: hookHeaders("UserPromptSubmit", { "x-channel-mirror": "off" }),
+        body: JSON.stringify({ prompt: "secret prompt", session_id: "session-a" }),
+      }),
+    );
+  }
+
+  // The broker-wide mirror-off path.
+  {
+    const { mirror } = fakeMirror({ enabled: false });
+    const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+    const handle = createHandler({ registry, maxBodyBytes: 1024, mirror, turns });
+    announce(registry);
+    await call(
+      handle,
+      fakeRequest("127.0.0.1", {
+        url: "/mirror",
+        headers: hookHeaders("UserPromptSubmit"),
+        body: JSON.stringify({ prompt: "sensitive work", session_id: "session-a" }),
+      }),
+    );
+  }
+
+  assert.deepEqual(opened, ["session-a", "session-a", "session-a"]);
+});
+
+test("turns.opened is not called for a straggler whose session_id does not match the token holder", async () => {
+  // The same straggler gate `receipts.pickedUp` is credited through: a subprocess of an older turn
+  // holds the same process token but is not the session speaking now.
+  const opened: string[] = [];
+  const turns = { opened: (sessionId: string) => opened.push(sessionId) };
+  const { mirror } = fakeMirror();
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({ registry, maxBodyBytes: 1024, mirror, turns });
+  announce(registry);
+
+  for (const body of [
+    JSON.stringify({ prompt: "no session id at all" }),
+    JSON.stringify({ prompt: "a straggler's own turn", session_id: "session-older" }),
+  ]) {
+    await call(
+      handle,
+      fakeRequest("127.0.0.1", { url: "/mirror", headers: hookHeaders("UserPromptSubmit"), body }),
+    );
+    await settled();
+  }
+
+  assert.deepEqual(opened, []);
+});
+
 test("with the broker-wide mirror off, a matching UserPromptSubmit still fires pickup", async () => {
   // On a host with the mirror switched off entirely, this route is the only signal a message was
   // ever picked up: no /hook UserPromptSubmit exists, so without this every message on such a host

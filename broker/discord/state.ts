@@ -39,6 +39,13 @@ export type SessionView = {
    */
   goal: string | null;
   /**
+   * True while a turn is open, mirroring `SessionRecord.turnOpen`. The typing keeper's input,
+   * `workingThreads`, gates on this beside the derived `working` state: `working` itself can read
+   * true for up to `idleAfterMs` after a `Stop` and indefinitely while a background roster is
+   * outstanding, and typing must stop with the turn rather than with either of those.
+   */
+  turnOpen: boolean;
+  /**
    * The session's own title, as a `custom-title` transcript line last set it (launch `--name` or an
    * in-session `/rename`), and null for a session neither has touched. `displayName` prefers this
    * over `name` when it is set.
@@ -96,6 +103,7 @@ export function toView(record: SessionRecord, signals: ViewSignals = {}): Sessio
     downgrade: record.downgrade,
     backgroundTasks: record.backgroundTasks,
     goal: record.goal,
+    turnOpen: record.turnOpen,
     title: record.title,
     needsAttention: signals.needsAttention ?? false,
     blocked: signals.blocked ?? false,

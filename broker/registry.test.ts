@@ -1114,6 +1114,42 @@ test("a goal for a session the registry does not hold unended changes nothing", 
   assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
 });
 
+test("a fresh session starts with its turn closed", () => {
+  const { registry, sessionId } = withSession();
+  assert.equal(byId(registry.list(), sessionId).turnOpen, false);
+});
+
+test("a completed tool call opens the turn, and Stop closes it", () => {
+  // Section 2's turn-open typing (Standing Brief Amendments): a turn opens on a completed tool call
+  // or a credited UserPromptSubmit, and closes on Stop. This pins the two hook-driven transitions.
+  const { registry, sessionId } = withSession();
+
+  registry.apply(postToolUse("Bash"));
+  assert.equal(byId(registry.list(), sessionId).turnOpen, true, "a completed tool call opens it");
+
+  registry.apply(stop());
+  assert.equal(byId(registry.list(), sessionId).turnOpen, false, "Stop closes it");
+});
+
+test("noteTurnOpened opens the turn for an unended session, told from a credited UserPromptSubmit", () => {
+  const { registry, sessionId } = withSession();
+
+  const touched = registry.noteTurnOpened(sessionId);
+  assert.ok(touched);
+  assert.equal(touched.sessionId, sessionId);
+  assert.equal(byId(registry.list(), sessionId).turnOpen, true);
+});
+
+test("noteTurnOpened refuses a session the registry does not hold unended", () => {
+  const { registry, sessionId } = withSession();
+  registry.apply(postToolUse("Bash"));
+  registry.relayClosed(TOKEN, sessionId);
+
+  assert.equal(registry.noteTurnOpened(sessionId), null, "an ended record cannot be re-opened");
+  assert.equal(registry.noteTurnOpened("no-such-session"), null);
+  assert.equal(registry.list()[0].turnOpen, true, "the ended record's flag is left exactly as it was");
+});
+
 test("a title is held on the record it names, replaced by the next one, and stamps no engagement", () => {
   const time = clock();
   const sessions = registry(time.now);

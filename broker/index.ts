@@ -1397,6 +1397,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // suppressed and broker-wide-off branches below read and parse every mirror-off prompt body
     // for a credit that can never land anywhere.
     ...(discord === null ? {} : { receipts: { pickedUp: pickupFor } }),
+    // Behind the same gate as receipts and for the same reason: the open-turn flag's one reader is
+    // the typing keeper, which exists only with Discord, so on any other host this seam would have
+    // the mirror-off branches read every prompt body for a flag nothing reads.
+    ...(discord === null
+      ? {}
+      : { turns: { opened: (sessionId: string) => { registry.noteTurnOpened(sessionId); } } }),
   });
   const server = createServer((request, response) => {
     // The relay routes answer first and report whether they took the request; everything else,

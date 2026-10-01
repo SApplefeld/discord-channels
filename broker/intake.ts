@@ -618,6 +618,14 @@ export type HandlerOptions = {
    * seam here is: with nothing wired, no stage reaction is ever painted.
    */
   receipts?: { pickedUp: (sessionId: string, at: number) => void };
+  /**
+   * Opens the registry's turn-open flag for a session, told from the same credited
+   * `UserPromptSubmit` post as `receipts.pickedUp` and at the same three call sites, under the same
+   * evidence gate. Its one reader is the typing keeper, so the broker wires it only where Discord
+   * is configured, as it does `receipts`. The credited-session-id read runs whenever either seam is
+   * present, and each one wired is called.
+   */
+  turns?: { opened: (sessionId: string) => void };
 };
 
 /**
@@ -684,6 +692,9 @@ export function redact(record: SessionRecord): PublicSessionRecord {
     // Published, unlike the goal: session identity of the same class as `name` above, not operator
     // prose held for one display surface.
     title: record.title,
+    // Whether a turn is open, session state of the same class as `turnCount` above and carrying no
+    // conversation content.
+    turnOpen: record.turnOpen,
   };
 }
 
@@ -729,7 +740,10 @@ export function createHandler(
     // session the token holds, the same evidence bar the mirror-on path below uses. No log lines
     // on this path: it is deliberately quiet at the socket, on or off.
     if (!options.mirror.enabled) {
-      if (mapping.kind === "prompt" && options.receipts !== undefined) {
+      if (
+        mapping.kind === "prompt" &&
+        (options.receipts !== undefined || options.turns !== undefined)
+      ) {
         const processToken = header(request, "x-channel-process-token");
         const holder = processToken !== null ? options.registry.current(processToken) : null;
         if (holder !== null) {
@@ -738,7 +752,8 @@ export function createHandler(
           // mirror-on path's own drain-cut handling below.
           if (credited.destroyed) return;
           if (credited.sessionId !== null && credited.sessionId === holder.sessionId) {
-            options.receipts.pickedUp(holder.sessionId, now());
+            options.receipts?.pickedUp(holder.sessionId, now());
+            options.turns?.opened(holder.sessionId);
           }
         } else {
           request.resume();
@@ -811,13 +826,17 @@ export function createHandler(
       // and pickup is credited only when the payload names the very session the token holds, the
       // same bar the mirror-on path below uses. A body that fails to parse, or names no session,
       // credits nothing and logs nothing: a parse failure embeds source text.
-      if (mapping.kind === "prompt" && options.receipts !== undefined) {
+      if (
+        mapping.kind === "prompt" &&
+        (options.receipts !== undefined || options.turns !== undefined)
+      ) {
         const credited = await creditedSessionId(request, options.mirror.maxBytes);
         // The connection is already gone: there is no response to write, mirroring the
         // mirror-on path's own drain-cut handling below.
         if (credited.destroyed) return;
         if (credited.sessionId !== null && credited.sessionId === holder.sessionId) {
-          options.receipts.pickedUp(holder.sessionId, now());
+          options.receipts?.pickedUp(holder.sessionId, now());
+          options.turns?.opened(holder.sessionId);
         }
       } else {
         request.resume();
@@ -894,6 +913,7 @@ export function createHandler(
     // must not advance a message this turn never picked up.
     if (mapping.kind === "prompt" && sessionId !== null && sessionId === holder.sessionId) {
       options.receipts?.pickedUp(holder.sessionId, now());
+      options.turns?.opened(holder.sessionId);
     }
 
     // Extracted raw rather than through payloadString: clean() caps at MAX_FIELD_LENGTH, and a
