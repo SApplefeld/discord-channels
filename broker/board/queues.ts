@@ -36,6 +36,7 @@ import path from "node:path";
 import { readCappedFile } from "../capped-read.ts";
 import type { CappedRead as SharedCappedRead } from "../capped-read.ts";
 import {
+  MAX_INTAKE_NEXT_LENGTH,
   bounded,
   isReadmeStem,
   parsePlan,
@@ -134,6 +135,19 @@ export type QueueEntry = {
    */
   readonly textPlanName?: string;
   readonly lead?: { readonly state?: string; readonly reason?: string };
+  /**
+   * The persona plugin's own count of this entry's closed Chapters, which it takes from the copy of
+   * the plan the worker writes, a linked worktree's included. Absent unless the store wrote a
+   * finite, non-negative integer. The readings map prefers it over a file reading that counts fewer.
+   */
+  readonly chapterCount?: number;
+  /** The plugin's own count of the plan's sections, under the same rule as `chapterCount`. */
+  readonly sectionCount?: number;
+  /**
+   * The plugin's own record of the plan's next step: free text, whitespace-collapsed and held to
+   * `MAX_INTAKE_NEXT_LENGTH`, the bound a plan file's own `Next:` value takes.
+   */
+  readonly nextSection?: string;
 };
 
 /**
@@ -148,9 +162,18 @@ export type QueueEntry = {
  * unmoved, which is as current as one read this tick. It is the instant the parse was last known to
  * describe the file when the reading is a hold handed back over a document that failed to read or
  * parse this tick, so the card can say how old what it draws from that entry is.
+ *
+ * A parsed reading's counts and next step are the store's own where the entry's `chapterCount` is
+ * above the count the file gave, and an active entry whose plan is in none of the four places reads
+ * a reading built from the store alone. That one carries `fromStore: true`, and a parse carries no
+ * such field. `preferNewer` and `storeOnly` below state the two rules.
  */
 export type QueuePlanReading =
-  | ({ readonly archived: false; readonly heldSince: number | null } & PlanReading)
+  | ({
+      readonly archived: false;
+      readonly heldSince: number | null;
+      readonly fromStore?: true;
+    } & PlanReading)
   | {
       readonly archived: true;
       readonly root: string;
@@ -236,6 +259,9 @@ const PLAN_IN_TEXT = /docs\/plans\/([A-Za-z0-9][A-Za-z0-9._-]{0,250}?\.md)(?![A-
 // Either separator spelling, because a store written on this platform carries both.
 const PATH_SEPARATOR = /[\\/]/;
 
+/** The one live place among the four below, which is also the path a store-only reading carries. */
+const LIVE_PLANS: readonly string[] = ["docs", "plans"];
+
 /**
  * The closed list of places a named plan is looked for, under that persona's own `workdir`, in this
  * order. The three archive shapes are all in use across the fleet today, and a name found under one
@@ -243,7 +269,7 @@ const PATH_SEPARATOR = /[\\/]/;
  * the card draws.
  */
 const PLAN_PLACES: readonly { segments: readonly string[]; archived: boolean }[] = [
-  { segments: ["docs", "plans"], archived: false },
+  { segments: LIVE_PLANS, archived: false },
   { segments: ["docs", "archive", "plans"], archived: true },
   { segments: ["docs", "archive"], archived: true },
   { segments: ["docs", "plans", "archive"], archived: true },
@@ -271,6 +297,17 @@ function boundedField(value: unknown, limit: number): string | undefined {
 
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * One store count, or `undefined` when the store wrote anything but a finite, non-negative integer.
+ *
+ * A count stands in for what the card would otherwise count out of a plan file, so it takes the shape
+ * that count has. A string of digits, a negative, a fraction, `NaN` and an infinity are each a value
+ * no Chapter count can be, and each is dropped rather than rounded or clamped into one.
+ */
+function countField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 /**
@@ -356,6 +393,11 @@ function textPlanNameField(value: unknown): string | undefined {
  * pattern that finds it rather than by a cap here, to about 254 code points. `title` and
  * `objective` are searched for a plan name before `title` is cut, the title first, and `objective`
  * is read for nothing else and so goes no further than this function.
+ *
+ * `chapterCount`, `sectionCount` and `nextSection` are the plugin's own reading of the plan, taken
+ * from whichever copy of it the worker writes. The two counts pass `countField` and the next step
+ * takes the plan file's own `Next:` bound, so a store value reaches the card no wider than the file
+ * value it stands in for. None of the three is ever used as a path.
  */
 function entryOf(value: unknown): QueueEntry | null {
   if (!isRecord(value)) return null;
@@ -382,6 +424,9 @@ function entryOf(value: unknown): QueueEntry | null {
     planSegment: planSegmentField(value.planPath),
     textPlanName: textPlanNameField(value.title) ?? textPlanNameField(value.objective),
     lead,
+    chapterCount: countField(value.chapterCount),
+    sectionCount: countField(value.sectionCount),
+    nextSection: boundedField(value.nextSection, MAX_INTAKE_NEXT_LENGTH),
   };
 }
 
@@ -655,6 +700,10 @@ function readHeldFile<T>(
  *
  * The stat a failure was reached at is held too, so a document that has not moved since it failed is
  * not opened again, whether that is a second entry naming it inside this tick or the tick after.
+ *
+ * A name in none of the four places answers with what `absent` returns, which is the store-only
+ * reading where the entry earns one and null otherwise. A document that is there and failed with no
+ * parse held is a file found, and answers null without asking `absent`.
  */
 function joinPlan(
   workdir: string,
@@ -665,6 +714,7 @@ function joinPlan(
   at: number,
   stat: (file: string) => PlanStat | null,
   read: (file: string) => PlanRead,
+  absent: () => QueuePlanReading | null,
 ): QueuePlanReading | null {
   const stem = planStem(name);
   for (const place of PLAN_PLACES) {
@@ -739,7 +789,81 @@ function joinPlan(
     parses.set(file, { stat: moved, parse: parsed, readAt: at });
     return { archived: false, heldSince: null, ...parsed, ...where };
   }
-  return null;
+  return absent();
+}
+
+/** The store status that says the worker is on an entry, compared on the case-folded value. The
+ * intake has already collapsed and trimmed it. */
+const STORE_ACTIVE = "active";
+
+/**
+ * One file reading with the store's own figures in place of the file's, where the store's are newer.
+ *
+ * The plugin counts Chapters in the copy of the plan the worker writes, which for a worker in a
+ * linked worktree is not the copy under `workdir` that the join read. Chapters are append-only, so
+ * the higher count is the newer reading whichever copy it came from. Where the entry's `chapterCount`
+ * is above the file's `completed`, the reading takes that count, held at or below the section total
+ * where there is one; it takes `sectionCount` where the store wrote one, else keeps the file's; and
+ * it takes `nextSection` where the store wrote one, else null, since the file's `Next:` names a
+ * Chapter the worker has passed. Where the file's count is equal or higher, the file is returned
+ * unchanged: a Chapter written under `workdir` after the worker's last turn is the newer reading.
+ *
+ * An archived reading is returned unchanged too, because the card has already called that entry done.
+ * The reading keeps its own path, stat and `heldSince`, a held parse's included, so the in-flight and
+ * blocked rules still age it by the document it came from.
+ */
+function preferNewer(reading: QueuePlanReading, entry: QueueEntry): QueuePlanReading {
+  if (reading.archived) return reading;
+  const count = entry.chapterCount;
+  if (count === undefined || count <= reading.completed) return reading;
+  const sections = entry.sectionCount ?? reading.sections;
+  return {
+    ...reading,
+    sections,
+    completed: sections > 0 ? Math.min(count, sections) : count,
+    next: entry.nextSection ?? null,
+  };
+}
+
+/**
+ * The reading the store alone gives an entry whose plan is in none of the four places, or null when
+ * the entry does not earn one.
+ *
+ * Only an entry the store calls `active` and that carries a `chapterCount` earns one. The store
+ * carries no document status of its own, and `active` is the one store status that says the worker
+ * is on the entry, so the reading reads `In Progress` and draws as in flight. `sections` is the
+ * store's `sectionCount` or 0, `completed` its `chapterCount`, and `next` its `nextSection` or null.
+ *
+ * Nothing is stat'd or opened for it. Its stat is the store file's own, the one the store reading in
+ * hand was taken at, since the reading is exactly as fresh as the store, and its `heldSince` is the
+ * store's hold instant. Its `path` is the first place the join already looked for the name, built and
+ * never touched again, because the in-flight rule takes a reading's path as its document's identity:
+ * two store-only plans of one persona sharing the store file's path would read as one document.
+ */
+function storeOnly(
+  entry: QueueEntry,
+  workdir: string,
+  name: string,
+  store: HeldFile<StoreReading>,
+): QueuePlanReading | null {
+  if (entry.chapterCount === undefined) return null;
+  if (entry.status?.toLowerCase() !== STORE_ACTIVE) return null;
+  if (store.held === null) return null;
+  return {
+    archived: false,
+    heldSince: store.heldSince,
+    fromStore: true,
+    status: "In Progress",
+    terminal: false,
+    sections: entry.sectionCount ?? 0,
+    completed: entry.chapterCount,
+    next: entry.nextSection ?? null,
+    root: workdir,
+    path: path.join(workdir, ...LIVE_PLANS, name),
+    stem: planStem(name),
+    mtimeMs: store.held.stat.mtimeMs,
+    sizeBytes: store.held.stat.sizeBytes,
+  };
 }
 
 /**
@@ -806,8 +930,20 @@ export function createQueueReader(options: QueueReaderOptions = {}): QueueReader
           joined.add(entry.id);
           const name = planNameFor(entry);
           if (name === null) continue;
-          const reading = joinPlan(persona.workdir, name, state, parses, failures, at, stat, read);
-          if (reading !== null) readings.set(entry.id, reading);
+          const absent = (): QueuePlanReading | null =>
+            storeOnly(entry, persona.workdir, name, state.store);
+          const reading = joinPlan(
+            persona.workdir,
+            name,
+            state,
+            parses,
+            failures,
+            at,
+            stat,
+            read,
+            absent,
+          );
+          if (reading !== null) readings.set(entry.id, preferNewer(reading, entry));
         }
         // Only the documents this tick actually joined to are held, so a queue that drops an entry
         // drops its parse with it rather than keeping it for as long as the broker runs. A failure

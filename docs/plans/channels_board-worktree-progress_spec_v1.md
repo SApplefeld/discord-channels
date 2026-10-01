@@ -1,6 +1,6 @@
 # The board card draws a worker's plan progress from the worker's own store reading
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
