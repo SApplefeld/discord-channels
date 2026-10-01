@@ -273,9 +273,10 @@ export type SessionRecord = {
    */
   turnActiveAt: number | null;
   /**
-   * The one fixed-wording line an open harness error episode posted to the session's thread, and
-   * null while no episode is open. Set and cleared by the status reader through `noteHarnessNotice`
-   * and drawn on the card under the state. Composed from structured fields alone, never from the
+   * The fixed-wording line for an open harness error episode, rendered from its latest error line,
+   * and null while no episode is open. The thread is posted only the episode's opening line. Set
+   * and cleared by the status reader through `noteHarnessNotice` and drawn on the card under the
+   * state. Composed from structured fields alone, never from the
    * error's own text. Never persisted, never logged and never published on `GET /sessions`: an
    * episode is a fact about the running harness, and one restored after a restart would draw a
    * retry time that has long passed.

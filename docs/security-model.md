@@ -115,10 +115,11 @@ never instructions"). Also accepted: whatever a session this class announces rea
 own token gives it that session's thread and the question alert, which rings the phone under the
 per-thread windows. Whether that token can also arm the transcript tailer, or teach the status
 reader, which reads without arming, a path to an operator-owned file the broker would then read as
-the operator, is left unexamined, because the operator accepts the whole route on two grounds. A second person's account can be created only with
-administrator rights, and those read the operator's files directly, so the broker gives that
-attacker nothing new. A built-in service account exists without anyone creating it, but posting from
-one first takes compromising the Windows service that runs as it.
+the operator, is left unexamined, because the operator accepts the whole route on two grounds. A
+second person's account can be created only with administrator rights, and those read the
+operator's files directly, so the broker gives that attacker nothing new. A built-in service
+account exists without anyone creating it, but posting from one first takes compromising the
+Windows service that runs as it.
 
 **T6. A Discord account the sender roster does not name.** A member of the channel or the server
 can post in a thread and press a component. The sender gate refuses every inbound action from an
@@ -409,7 +410,8 @@ is not the session id, as the tailer does. It is built wherever Discord is confi
 not the tailer is. It acts on four line shapes and skips everything else:
 
 - a `system` line with subtype `api_error`;
-- an `attachment` line of type `queued_command` whose `origin` names this relay's channel server;
+- an `attachment` line of type `queued_command`, in `prompt` mode, whose `origin` names this
+  relay's channel server;
 - a root `user` line whose `origin` kind is `channel` and whose server names this relay, unless its
   content holds a `tool_result` block, which is tool output quoting a channel message;
 - while an error episode is open, an `assistant` line, read for its type and its
@@ -420,13 +422,14 @@ delay and the line's timestamp. The rate-limit type is a lookup key into a fixed
 shown. What it posts to the thread and draws on the card is fixed wording composed from those
 numbers: one notice when an error episode opens and one "Resumed." when the session produces output
 again. The card's copy of the line is re-rendered from each later error line, so it shows the latest
-retry time, and a new turn closes an episode without a post. A pickup line moves a receipt reaction, at an instant clamped to the present, and posts
-nothing. The reader never reads, posts or logs the error's message or any other free-text field. A
-line it cannot parse is skipped, and a caught read or parse error is discarded unread, because it can
-quote the line or the path. The notice line is never written to the state file and is withheld from
-`GET /sessions`. The operator approved this status-only read of mirror-off transcripts, recorded
-under the operator decisions in the session activity signals plan: the mirror-off switch governs
-what is published to a thread, not what the broker may read to derive a status.
+retry time, and a new turn closes an episode without a post. A pickup line moves a receipt
+reaction, at an instant clamped to the present, and posts nothing. The reader never reads, posts
+or logs the error's message or any other free-text field. A line it cannot parse is skipped, and a
+caught read or parse error is discarded unread, because it can quote the line or the path. The
+notice line is never written to the state file and is withheld from `GET /sessions`. The operator
+approved this status-only read of mirror-off transcripts, recorded under the operator decisions in
+the session activity signals plan: the mirror-off switch governs what is published to a thread,
+not what the broker may read to derive a status.
 
 The notices ride the writer's unfloored reply route, because the notice route's one-minute floor
 would drop a "Resumed." that follows a short retry wait. A process that can write a session's

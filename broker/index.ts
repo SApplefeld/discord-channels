@@ -1376,6 +1376,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         const threadId = threadFor(sessionId);
         if (threadId === null) return;
         const posted = await steeringWriter.reply(threadId, text);
+        // The notice bypasses the outbound router, so a landed one ends the thread's narration block
+        // here, as the steering writer's own notice and alert verbs do: a dropped gateway would
+        // otherwise lose the echo that clears it and leave new narration editing a message above it.
+        if (posted.status === "ok") outbound.endNarration(threadId);
         if (posted.status !== "ok") {
           note(
             `broker: session ${sessionId}'s harness notice was not posted: ` +
@@ -1463,8 +1467,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           turns: {
             opened: (sessionId: string) => {
               registry.noteTurnOpened(sessionId);
-              // A new turn closes an error episode the last turn left open, which an interrupted or
-              // abandoned turn does by writing no output line.
+              // Any credited prompt submission closes an open error episode, a queued message injected
+              // mid-turn included: an interrupted or abandoned failing turn writes no output line, and
+              // an injection lands only at a tool boundary, after output has already closed it.
               status?.turnOpened(sessionId, Date.now());
             },
             closed: (sessionId: string) => {

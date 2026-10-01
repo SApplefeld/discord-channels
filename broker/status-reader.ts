@@ -74,8 +74,10 @@ export type StatusReader = {
    */
   learn: (sessionId: string, path: string) => void;
   /**
-   * The session opened a new turn at `at`. An episode still open is the last turn's, which can end
-   * with no output line when it is interrupted or abandoned, so it closes without a "Resumed." post.
+   * The session submitted a prompt at `at`: a new turn, or a queued message injected mid-turn, which
+   * lands only at a tool boundary, after output has closed any episode. An episode still open is the
+   * last turn's, which can end with no output line when it is interrupted or abandoned, so it closes
+   * without a "Resumed." post.
    * `at` also becomes the session's floor: an error line stamped before it belongs to an earlier turn
    * and is ignored, since a pass after this call can still read the old turn's last lines.
    */

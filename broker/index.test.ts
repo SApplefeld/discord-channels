@@ -2804,6 +2804,9 @@ function statusWiringGaps(source: string): string[] {
   }
   // A notice the writer's budget refuses resolves rather than rejects, so only this line records it.
   if (!/if \(posted\.status !== "ok"\) \{\s*note\(/.test(reader)) gaps.push("notice-dropped");
+  // A notice bypasses the outbound router, so a landed one ends the thread's narration block, as the
+  // steering writer's own notice and alert verbs do.
+  if (!/if \(posted\.status === "ok"\) outbound\.endNarration\(threadId\);/.test(reader)) gaps.push("narration");
   if (!/registry\.noteHarnessNotice\(sessionId, open === null \? null : open\.text\)/.test(reader)) gaps.push("card");
   if (
     !/if \(open === null\) receipts\?\.restore\(threadId\);\s*else receipts\?\.warn\(threadId\);/.test(reader)
@@ -2857,6 +2860,9 @@ test("startBroker wires the status reader: built with Discord, its pickups, noti
     "notice",
   ]);
   assert.deepEqual(statusWiringGaps(withoutInReader('if (posted.status !== "ok") {')), ["notice-dropped"]);
+  assert.deepEqual(statusWiringGaps(withoutInReader('if (posted.status === "ok") outbound.endNarration(threadId);')), [
+    "narration",
+  ]);
   assert.deepEqual(
     statusWiringGaps(withoutInReader("registry.noteHarnessNotice(sessionId, open === null ? null : open.text)")),
     ["card"],

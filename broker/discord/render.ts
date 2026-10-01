@@ -2772,10 +2772,11 @@ function goalLines(view: SessionView, state: SurfaceState): string[] {
 const MAX_CARD_HARNESS_NOTICE_LENGTH = 200;
 
 /**
- * The card's harness notice: the same one line the thread was told while a harness error episode
- * is open, drawn under the field block that carries the state, and nothing at all once the episode
- * closes or the session has exited. Outside a fence so it wraps at phone width, and escaped like
- * every other field drawn outside one, although the only writer composes it from fixed wording.
+ * The card's harness notice: the open harness error episode's line, rendered from its latest error
+ * line (the thread is told only the opening one), drawn under the field block that carries the
+ * state, and nothing at all once the episode closes or the session has exited. Outside a fence so
+ * it wraps at phone width, and escaped like every other field drawn outside one, although the only
+ * writer composes it from fixed wording.
  */
 function harnessNoticeLines(view: SessionView, state: SurfaceState): string[] {
   if (view.harnessNotice === null || state === "exited") return [];

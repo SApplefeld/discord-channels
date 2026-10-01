@@ -45,9 +45,9 @@ export type SessionView = {
    */
   turnActiveAt: number | null;
   /**
-   * The one fixed-wording line an open harness error episode posted to the thread, mirroring
-   * `SessionRecord.harnessNotice`, and null while no episode is open. Drawn on the card under the
-   * state.
+   * The fixed-wording line for an open harness error episode, rendered from its latest error line,
+   * mirroring `SessionRecord.harnessNotice`, and null while no episode is open. Drawn on the card
+   * under the state.
    */
   harnessNotice: string | null;
   /**
