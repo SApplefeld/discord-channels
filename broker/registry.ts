@@ -728,11 +728,14 @@ export function createRegistry(options: RegistryOptions): Registry {
     if (intake.event === "PostToolUse") {
       record.toolCount += 1;
       // A main-thread tool call is one of the two events a turn opens on, the other being a credited
-      // `UserPromptSubmit` post through `noteTurnOpened`. A subagent's call only keeps an open turn
-      // fresh: it carries the parent's session id, and a background agent still working after the
-      // session's `Stop` must not reopen the turn that `Stop` closed. Stamped whether or not this
-      // call carried a usable name, the same as toolCount above.
-      if (intake.fromSubagent !== true || record.turnActiveAt !== null) record.turnActiveAt = now();
+      // `UserPromptSubmit` post through `noteTurnOpened`, and each one restamps the turn's activity.
+      // It counts only on the bar `Stop` uses to close a turn: a payload naming the very session it
+      // was credited to, since a token-only post may be a straggler from a session that token used
+      // to run. A subagent's call neither opens a turn nor refreshes one. It carries the parent's
+      // session id, so a background agent still working after a turn ended without a `Stop` would
+      // otherwise hold the thread typing for as long as it runs. Stamped whether or not this call
+      // carried a usable name, the same as toolCount above.
+      if (intake.sessionId === record.sessionId && intake.fromSubagent !== true) record.turnActiveAt = now();
       // The name and the preview move together, under the one guard, because the card renders them
       // as one line describing one call. Set apart, an event carrying an input but no usable name
       // would leave the previous call's name beside this one's input, and the card would assert a

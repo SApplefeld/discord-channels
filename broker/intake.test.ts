@@ -1069,10 +1069,9 @@ test("a mirror-on UserPromptSubmit naming no session, or a different one, fires 
 });
 
 test("turns.opened fires on all three pickup paths, each with no receipts seam wired", async () => {
-  // Section 2's turn-open typing (Standing Brief Amendments): the turns seam is called whether or
-  // not receipts is wired, since the registry it reaches exists with no Discord configured at all.
-  // One handler per path, receipts absent from every one of them, proves the call does not ride on
-  // receipts being present.
+  // The turns seam is called whether or not receipts is wired, since the registry it reaches exists
+  // with no Discord configured at all. One handler per path, receipts absent from every one of
+  // them, proves the call does not ride on receipts being present.
   const opened: string[] = [];
   const turns = { opened: (sessionId: string) => opened.push(sessionId), closed: () => {} };
 
@@ -1129,10 +1128,10 @@ test("turns.opened fires on all three pickup paths, each with no receipts seam w
 });
 
 test("a credited Stop releases the session's typing thread before any refresh runs", async () => {
-  // Pins the acceptance line "after a `Stop`, no typing call is sent for that thread": the intake
-  // calls turns.closed on a credited Stop, wired here the way startBroker wires it (thread lookup,
-  // then the keeper's release), so the thread's timer is cleared inside the hook post itself, with
-  // no refresh tick and no reconcile anywhere in this test.
+  // After a Stop, no typing call is sent for that thread: the intake calls turns.closed on a
+  // credited Stop, wired here the way startBroker wires it (thread lookup, then the keeper's
+  // release), so the thread's timer is cleared inside the hook post itself, with no refresh tick
+  // and no reconcile anywhere in this test.
   const timers: { id: number; callback: () => void }[] = [];
   const cleared: number[] = [];
   const sent: string[] = [];
@@ -1202,8 +1201,8 @@ test("a credited Stop releases the session's typing thread before any refresh ru
 });
 
 test("a subagent's PostToolUse after Stop leaves the turn closed, read off the payload's agent_id", async () => {
-  // Pins the parse end to end: the intake marks a payload carrying `agent_id` as a subagent's, and
-  // the registry refuses to open a turn on it. A main-thread PostToolUse is the control.
+  // End to end through the parse: the intake marks a payload carrying `agent_id` as a subagent's,
+  // and the registry opens no turn on it. A main-thread PostToolUse is the control.
   const { registry, handle } = harness();
   announce(registry);
   const post = (body: Record<string, unknown>) =>
@@ -1224,8 +1223,8 @@ test("a subagent's PostToolUse after Stop leaves the turn closed, read off the p
 });
 
 test("any present, non-null agent_id marks a subagent, whatever its shape", () => {
-  // An unexpected shape fails toward no typing: read as a subagent's, the event can refresh an
-  // open turn but never open one.
+  // An unexpected shape fails toward no typing: read as a subagent's, the event neither opens a
+  // turn nor refreshes an open one.
   const fromSubagent = (body: Record<string, unknown>): boolean | undefined => {
     const parsed = parseIntake(
       fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse") }),

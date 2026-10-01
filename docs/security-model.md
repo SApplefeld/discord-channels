@@ -386,7 +386,17 @@ advances a thread's messages only when its payload names the session the token h
 `-NoMirror` session, the prompt post's body is read after suppression is recorded, for its
 `session_id` field alone. On a host with mirroring off, where no tailer is built at all, a
 token-holding session's prompt post is read the same way and for the same field. In both cases
-nothing else in the body is read, and nothing read there reaches a log line or a post.
+nothing else in the body is read, and nothing read there reaches a log line or a post. The typing
+indicator's turn opens on that same credited post, behind the same read, and the broker wires both
+seams only where Discord is configured, so a host without Discord reads no mirror-off prompt body.
+
+The typing indicator is one more Discord write: `POST /channels/{thread}/typing`, with no body, on a
+thread id the broker itself holds. It runs only while a session's own main thread has a turn open
+with activity inside `idleAfterMs`. To tell a subagent's tool call from the main thread's, the hook
+intake reads whether a `PostToolUse` payload carries an `agent_id`, as a presence check. The value
+is never stored, logged or published. The turn's activity instant is never written to the state file
+and is withheld from `GET /sessions`. A `401` on the typing route halts the whole Discord refresh,
+the same as on any surface write, because discord.js discards a rejected token.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by

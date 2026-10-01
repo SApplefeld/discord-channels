@@ -641,6 +641,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   missing Add Reactions is refused again on every stage change. The load is bounded far below
   Discord's invalid-request budget by the inbound ceiling, which is why it was left; a per-thread
   latch like the pin cleaner's is the fix if that ceiling ever rises.
+- Close a turn on `StopFailure` (parked 2026-09-30, from the Session Activity Signals plan's section 2
+  reviews). Claude Code fires `StopFailure` instead of `Stop` when an API error ends a turn, and
+  `hooks/settings-fragment.json` does not register it. The typing indicator therefore keeps showing
+  for up to `idleAfterMs` (120 s by default) after a turn dies on a rate limit or auth error, which
+  the plan accepts. Registering the event and routing it to the same turn close a `Stop` takes would
+  end that window. It changes the installed hooks fragment, which every host must re-apply, so it
+  was not done inside that plan.
 
 ## Snapshots
 

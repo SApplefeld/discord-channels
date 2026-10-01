@@ -70,8 +70,9 @@ Four pieces per host, plus an installer.
 - **Hooks** (`hooks/`). `SessionStart` is a `command` hook running `session-start.ps1`, which posts
   identity to the broker. `PostToolUse` and a `Stop` liveness tick are `http` hooks posting straight
   to the broker; the broker keeps a bounded, neutralized preview of the tool's input from
-  `PostToolUse` for the status card and each event's `transcript_path` for the tailer below, and
-  drops the rest of the payload unread. `UserPromptSubmit` and a second `Stop` entry are the mirror:
+  `PostToolUse` for the status card and each event's `transcript_path` for the tailer below, reads
+  whether a `PostToolUse` carries an `agent_id` (a subagent's call, which never opens or extends a
+  turn for the typing indicator), and drops the rest of the payload unread. `UserPromptSubmit` and a second `Stop` entry are the mirror:
   `http` hooks posting their whole payload, which already carries the console prompt and the turn's
   final assistant reply, to the content-bearing route. The transport split is fixed by observation:
   the `http` type never delivered `SessionStart`.
@@ -1072,7 +1073,7 @@ Four, and each one fails in its own way.
 - **Claude Code's hook protocol.** The user-level settings file registers four events and five hooks:
   `SessionStart`, `PostToolUse`, and a `Stop` liveness tick post payloads the broker reads only as
   far as a session's identity and activity plus the two bounded fields above (a tool-input preview
-  and a transcript path); the Stop tick's payload also carries the turn's final reply, which that
+  and a transcript path) and the presence of an `agent_id`; the Stop tick's payload also carries the turn's final reply, which that
   route drops unread. `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the
   turn's final assistant reply to the mirror, which keeps them, save for a background task's wake
   prompt, which mirrors as the one-line notice under the default `CHANNEL_TASK_NOTIFICATION`

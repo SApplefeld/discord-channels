@@ -282,9 +282,8 @@ function liveRegistry(start: number) {
 }
 
 test("a credited prompt to a session idle past idleAfterMs wants typing at once", () => {
-  // Pins the acceptance line "a message to a session idle past `idleAfterMs` shows typing from its
-  // credited prompt": the prompt moves no liveness field, so the session still derives idle, and the
-  // gate must not require `working`.
+  // The prompt moves no liveness field, so the session still derives idle, and typing is wanted
+  // from the open turn alone without requiring `working`.
   const session = liveRegistry(NOW);
   session.advance(IDLE_AFTER_MS * 5);
   const before = toView(session.registry.list()[0] as SessionRecord);
@@ -299,9 +298,8 @@ test("a credited prompt to a session idle past idleAfterMs wants typing at once"
 });
 
 test("a turn that stalls with a roster outstanding stops wanting typing past idleAfterMs", () => {
-  // Pins the acceptance line "a turn that stalls or ends without a `Stop` stops typing within
-  // `idleAfterMs` of its last activity", in its worst case: a roster outstanding holds the derived
-  // state at working for as long as it stands, so only the activity window can end the indicator.
+  // A roster outstanding holds the derived state at working for as long as it stands, so for a turn
+  // that stalls or ends without a Stop, only the activity window can end the indicator.
   const session = liveRegistry(NOW);
   session.hook("Stop", {
     backgroundTasks: [{ id: "task-a", kind: "subagent", description: null, agentType: null }],
@@ -319,9 +317,8 @@ test("a turn that stalls with a roster outstanding stops wanting typing past idl
 });
 
 test("after a Stop, background agents' tool calls want no typing though the card reads working", () => {
-  // Pins the acceptance lines "after a `Stop`, no typing call is sent for that thread, though the
-  // card still reads working" and "a session with an outstanding background roster and no open
-  // turn shows no typing, including while its background agents make tool calls".
+  // A Stop closes the turn while the outstanding roster holds the card at working, and a background
+  // agent's tool call afterwards, which carries the parent's session id, reopens nothing.
   const session = liveRegistry(NOW);
   session.hook("PostToolUse");
   session.hook("Stop", {
@@ -333,6 +330,23 @@ test("after a Stop, background agents' tool calls want no typing though the card
   const shown = toView(session.registry.list()[0] as SessionRecord);
   assert.equal(deriveSurfaceState(shown, session.now(), WINDOWS), "working", "the card reads working");
   assert.equal(session.wanted(), false, "no typing is wanted");
+});
+
+test("a turn ended without a Stop stops wanting typing past idleAfterMs, though subagents keep calling tools", () => {
+  // An API error or an Esc interrupt ends a turn without a Stop, and background agents may work on.
+  // Their tool calls carry the parent's session id but are not the turn's activity, so the turn
+  // goes quiet idleAfterMs after its main thread's last call.
+  const session = liveRegistry(NOW);
+  session.hook("PostToolUse");
+  assert.equal(session.wanted(), true, "a main-thread tool call opens a turn");
+
+  for (let elapsed = 0; elapsed <= IDLE_AFTER_MS; elapsed += IDLE_AFTER_MS / 4) {
+    session.hook("PostToolUse", { fromSubagent: true });
+    session.advance(IDLE_AFTER_MS / 4);
+  }
+
+  assert.ok(session.now() > NOW + IDLE_AFTER_MS, "the precondition: past idleAfterMs since the turn opened");
+  assert.equal(session.wanted(), false, "the subagents' calls did not keep the turn typing");
 });
 
 test("typingWanted excludes a session waiting on a person, blocked, or exited, whatever its turn", () => {

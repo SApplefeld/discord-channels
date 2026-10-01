@@ -93,13 +93,8 @@ export type SurfaceOptions = {
 };
 
 export type Surface = {
-  /**
-   * Reconciles every session against its thread. Safe to call on a timer.
-   *
-   * Resolves to whether the pass actually ran. False when a previous pass was still in flight or
-   * the credential has already been rejected: nothing about the surface's derived state changed.
-   */
-  tick: (views: SessionView[]) => Promise<boolean>;
+  /** Reconciles every session against its thread. Safe to call on a timer. */
+  tick: (views: SessionView[]) => Promise<void>;
   /** The thread bound to a session, for the message routing that arrives with the relay. */
   threadFor: (sessionId: string) => string | null;
   /**
@@ -715,9 +710,8 @@ export function createSurface(options: SurfaceOptions): Surface {
   return {
     tick: async (views) => {
       // One pass at a time. A slow call would otherwise let the next tick post a second starter
-      // message for a session whose first post had not returned yet. A declined tick reports it
-      // ran nothing, so a caller gated on that cannot reconcile against a pass this half-finished.
-      if (running || credentialRejected) return false;
+      // message for a session whose first post had not returned yet.
+      if (running || credentialRejected) return;
       running = true;
       calls = 0;
       try {
@@ -739,7 +733,6 @@ export function createSurface(options: SurfaceOptions): Surface {
       } finally {
         running = false;
       }
-      return true;
     },
 
     threadFor: (sessionId) => threads.get(sessionId)?.threadId ?? null,

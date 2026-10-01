@@ -81,9 +81,9 @@ function typingWith(): Typing {
 }
 
 test("a thread newly working gets one call at once, then one every TYPING_PERIOD_MS", async () => {
-  // Pins the spec's acceptance: "a unit test with a fake clock shows calls every 8 seconds while
-  // `working`." The period is read off the exported constant rather than a literal, so a change to
-  // it moves this test's expectation along with the real schedule.
+  // A working thread is typed on at once and then once per period, on a fake clock. The period is
+  // read off the exported constant rather than a literal, so a change to it moves this test's
+  // expectation along with the real schedule.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -108,8 +108,8 @@ test("a thread newly working gets one call at once, then one every TYPING_PERIOD
 });
 
 test("reconciling the same working set again starts no second timer", async () => {
-  // "One timer per thread, never two," per the brief: a session surface pass that reconciles on
-  // every tick with no state change must not pile up timers for a thread that was already working.
+  // One timer per thread, never two: a surface pass that reconciles on every tick with no state
+  // change must not pile up timers for a thread that was already working.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -162,10 +162,9 @@ test("a thread leaving the working set has its timer cleared at once", async () 
 });
 
 test("stop() clears every kept timer and latches against a later reconcile", async () => {
-  // Pins the broker-shutdown half of the same acceptance line: "cleared ... on session end," which
-  // for the keeper as a whole is every thread still kept when the broker goes down. Also pins the
-  // critical fix: a surface pass already in flight when stop() runs still resolves and still calls
-  // reconcile, and the latch is what keeps that call from restarting what stop() just cleared.
+  // Broker shutdown clears every thread still kept, so no timer outlives the broker. A surface pass
+  // already in flight when stop() runs still resolves and still calls reconcile, and the latch is
+  // what keeps that call from restarting what stop() just cleared.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -212,9 +211,9 @@ test("reconcile after stop() starts no timer and sends no call", async () => {
 });
 
 test("a fatal typing outcome halts the keeper and reports through onFatal", async () => {
-  // Pins finding 2: discord.js discards the token after a 401, so this keeper, driven by its own
-  // timers rather than by the surface pass, is as likely as the surface to be the first caller to
-  // notice. It must say so and stop every timer, not just the thread that saw the 401.
+  // discord.js discards the token after a 401, so this keeper, driven by its own timers rather than
+  // by the surface pass, is as likely as the surface to be the first caller to notice. It must say
+  // so and stop every timer, not just the thread that saw the 401.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -241,10 +240,9 @@ test("a fatal typing outcome halts the keeper and reports through onFatal", asyn
 });
 
 test("two threads hitting a fatal outcome in the same pass report onFatal once", async () => {
-  // Regression for the fix alongside finding 2: `halt()` is idempotent, but a second thread's fire()
-  // resuming after the first already halted must not report a second time, the same way the
-  // surface's own fatal handling reports a rejected token once, not once per call a pass happened
-  // to have in flight against it.
+  // `halt()` is idempotent, and a second thread's fire() resuming after the first already halted
+  // must not report a second time either, the same way the surface's own fatal handling reports a
+  // rejected token once, not once per call a pass happened to have in flight against it.
   const time = clock();
   const timer = fakeTimer();
   const calls: string[] = [];
@@ -271,8 +269,8 @@ test("two threads hitting a fatal outcome in the same pass report onFatal once",
 });
 
 test("a thread refused permanently is dropped after a small cap, and only that thread", async () => {
-  // Pins finding 2's drop-after-cap behavior: a session whose thread Discord keeps refusing must
-  // not be retried forever, and a thread kept beside it must be unaffected.
+  // A session whose thread Discord keeps refusing is not retried forever, and a thread kept beside
+  // it is unaffected.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -317,9 +315,9 @@ test("a thread refused permanently is dropped after a small cap, and only that t
 });
 
 test("a thread's standing rate-limit block survives leaving and rejoining the working set", async () => {
-  // Pins the minor fix at typing.ts: a thread's Budget persists across clear/start, so a session
-  // that flaps out of and back into working inside a 429's own window stays blocked rather than
-  // getting a fresh budget that reads as affordable at once.
+  // A thread's Budget persists across clear/start, so a session that flaps out of and back into
+  // working inside a 429's own window stays blocked rather than getting a fresh budget that reads
+  // as affordable at once.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -374,8 +372,8 @@ for (const failure of [
   },
 ]) {
   test(`${failure.name} is logged and dropped, and never stops the timer`, async () => {
-    // Pins the spec's "a failed call does not throw and does not stop the timer." The timer firing a
-    // second time, successfully, after a scripted failure is what proves the loop survived it.
+    // A failed call does not throw and does not stop the timer. The timer firing a second time,
+    // successfully, after a scripted failure is what proves the loop survived it.
     const time = clock();
     const timer = fakeTimer();
     const typing = typingWith();
@@ -438,9 +436,9 @@ test("a call the thread's own budget cannot afford is skipped and logged, not se
 });
 
 test("release clears a thread's timer at once, and no call follows it", async () => {
-  // Pins the acceptance line "after a `Stop`, no typing call is sent for that thread": a credited
-  // Stop releases the thread before any refresh runs, and the released timer's own stored callback,
-  // fired late the way a real interval can between `clearInterval` and the next turn, sends nothing.
+  // After a Stop, no typing call is sent for that thread: a credited Stop releases the thread
+  // before any refresh runs, and the released timer's own stored callback, fired late the way a
+  // real interval can between `clearInterval` and the next turn, sends nothing.
   const time = clock();
   const timer = fakeTimer();
   const typing = typingWith();
@@ -596,7 +594,7 @@ test("forget clears a retired thread's timer and its budget", async () => {
 });
 
 test("a tick due past the thread's deadline sends nothing, with no reconcile in between", async () => {
-  // Pins the aging-out bound: a turn gone quiet for `idleAfterMs` stops typing at its deadline, not
+  // A turn gone quiet for `idleAfterMs` stops typing at its deadline, not
   // at the next reconcile, which can be a whole refresh interval later. A later reconcile handing in
   // a fresh deadline extends it.
   const time = clock();

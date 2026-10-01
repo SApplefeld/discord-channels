@@ -659,10 +659,9 @@ test("an in-flight pass is not overtaken by the next tick", async () => {
   });
 
   const first = surface.tick([view()]);
-  const declined = await surface.tick([view()]);
-  assert.equal(declined, false, "the overlapping tick is declined, so a caller reconciles nothing from it");
+  await surface.tick([view()]);
   release();
-  assert.equal(await first, true, "the pass that actually ran resolves true");
+  await first;
 
   assert.equal(calls.posts.length, 1);
 });
@@ -1443,9 +1442,9 @@ test("the pin list reads the cards of the sessions that are running, and only af
 });
 
 test("typing threads read the views handed in, not what the last pass derived", async () => {
-  // Pins Section 2's live input: the keeper's set is computed from this tick's views at `now`, so a
-  // turn closing between passes leaves the set without waiting on a pass to run, and the surface
-  // contributes only the session-to-thread mapping.
+  // The typing keeper's set is computed from this tick's views at `now`, so a turn closing between
+  // passes leaves the set without waiting on a pass to run, and the surface contributes only the
+  // session-to-thread mapping.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -1486,8 +1485,8 @@ test("typing threads read the views handed in, not what the last pass derived", 
 });
 
 test("typing threads leave out an archived thread and a session waiting on a person", async () => {
-  // Pins the exclusions the surface and the gate each own: an archived thread cannot show the
-  // indicator, and an open turn does not pull a needs-you or blocked session back in.
+  // The surface and the gate each own an exclusion: an archived thread cannot show the indicator,
+  // and an open turn does not pull a needs-you or blocked session back in.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls, { archiveOnEnd: true });
@@ -1596,12 +1595,11 @@ test("a rejected token stops the surfaces once, loudly", async () => {
     fatal: true,
   };
   await surface.tick([view()]);
-  const declined = await surface.tick([view()]);
+  await surface.tick([view()]);
 
   assert.equal(fatal.length, 1, fatal.join(" / "));
   assert.match(fatal[0], /token was rejected/);
   assert.equal(calls.posts.length, 1, "no further call is made against a rejected credential");
-  assert.equal(declined, false, "a tick after the credential is rejected is declined");
 });
 
 // Item 2 (docs/plans/channels_thread-rebinding_spec_v1.md): a session carrying the same lineage as
