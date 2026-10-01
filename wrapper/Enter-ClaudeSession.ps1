@@ -29,10 +29,10 @@
 # switch header, and throws rather than launching a session that mirrors exactly as it would without
 # the switch; see Assert-InstalledMirrorSwitch.
 
-# Which flag opens channels on each host. Plain --channels loads a channel only when its plugin is
-# on an allowlist; otherwise the launch is refused, and a refused channel is this project's worst
-# shape of failure, because the session starts, the hooks announce it, and the thread and card look
-# healthy while nothing can reach it.
+# Which flag opens channels. Plain --channels loads a channel only when its plugin is on an
+# allowlist; otherwise the launch is refused, and a refused channel is this project's worst shape of
+# failure, because the session starts, the hooks announce it, and the thread and card look healthy
+# while nothing can reach it.
 #
 # This repository is itself a marketplace hosting the relay as a plugin
 # (.claude-plugin/marketplace.json and plugins/relay), so plain --channels is open to a host that has
@@ -41,17 +41,16 @@
 # every session regardless of route, so a dev-flag launch beside it would register two relays
 # against one session. A brand-new host still runs the per-host checklist in docs/install.md on
 # its first wrapped launch, because a refused or silently absent channel is indistinguishable from
-# a healthy one from inside the session. The development flag remains available here for a host
-# that must launch before its plugin is installed.
+# a healthy one from inside the session.
 #
-# Operator check D settled that a local managed-settings file is honored on a personal account, so
-# this is not a Team-and-Enterprise privilege: every host here can move to plain --channels, SCOTT
-# included.
-$script:ChannelFlagByHost = @{
-    'NEO'   = '--channels'
-    'ASR'   = '--channels'
-    'SCOTT' = '--channels'
-}
+# The development flag remains available for a host that must launch before its plugin is
+# installed, chosen by the machine's own CHANNEL_LAUNCH_FLAG environment variable rather than by
+# anything in this checkout: an edit here leaves the checkout dirty, and Repair-Broker.ps1 -Pull
+# then refuses every later update on that host. The variable is read from the environment rather
+# than broker.env because the installer rewrites broker.env keeping only the broker's own keys, which
+# would silently drop a hand-added flag on the next install.
+$script:DefaultChannelFlag = '--channels'
+$script:AllowedChannelFlags = @('--channels', '--dangerously-load-development-channels')
 
 # Both channel flags are variadic and take tagged entries, not a bare switch: `server:<name>` for a
 # manually configured MCP server, `plugin:<name>@<marketplace>` for a plugin-provided channel. Which
@@ -82,39 +81,25 @@ $script:SessionStartHook = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\s
 
 <#
 .SYNOPSIS
-Resolves which of the configured hosts this machine is.
+Returns the channel flag this machine launches with.
 
 .DESCRIPTION
-CHANNEL_HOST_NAME, when set, takes priority. It goes through the same matching as COMPUTERNAME
-rather than being used as a literal table key: broker/config.ts reads the same variable as a
-free-form display label, so an operator who sets it to 'SCOTT-CLAUDE' or 'NEO-2' for a better
-registry label must not thereby break the launcher.
-
-Matching requires either an exact name or the prefix followed by a delimiter. A bare StartsWith
-would classify SCOTTSDALE-KIOSK as SCOTT and hand it the development-channel flag, and the
-unknown-host throw below exists precisely to stop a machine from being launched under another
-host's channel policy.
+CHANNEL_LAUNCH_FLAG, when set, must name one of the two flags exactly. Any other value throws rather
+than falling back: a misspelt flag that quietly became --channels would launch a host meant for the
+development route onto a channel its missing plugin refuses, the silent failure described above.
+Unset or blank, the machine takes --channels, the route every host runs.
 #>
-function Resolve-ChannelHost {
-    param([string]$ComputerName = $env:COMPUTERNAME)
+function Resolve-ChannelFlag {
+    param([string]$Value = $env:CHANNEL_LAUNCH_FLAG)
 
-    $source = 'COMPUTERNAME'
-    $candidateName = $ComputerName
-    if (-not [string]::IsNullOrWhiteSpace($env:CHANNEL_HOST_NAME)) {
-        $source = 'CHANNEL_HOST_NAME'
-        $candidateName = $env:CHANNEL_HOST_NAME
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $script:DefaultChannelFlag }
+    $flag = $Value.Trim()
+    if ($script:AllowedChannelFlags -cnotcontains $flag) {
+        throw "Enter-ClaudeSession: CHANNEL_LAUNCH_FLAG is '$flag', which is not a channel flag. " +
+            "Set it to one of: $($script:AllowedChannelFlags -join ', '), or clear it to launch " +
+            "with $script:DefaultChannelFlag."
     }
-
-    if ([string]::IsNullOrWhiteSpace($candidateName)) { $candidateName = '' }
-    $upper = $candidateName.Trim().ToUpperInvariant()
-
-    $known = $script:ChannelFlagByHost.Keys | Sort-Object -Property Length -Descending
-    foreach ($candidate in $known) {
-        if ($upper -eq $candidate -or $upper -like "${candidate}-*") {
-            return [pscustomobject]@{ Host = $candidate; Source = $source; Raw = $upper }
-        }
-    }
-    return [pscustomobject]@{ Host = $upper; Source = $source; Raw = $upper }
+    return $flag
 }
 
 function Enter-ClaudeSession {
@@ -179,14 +164,7 @@ function Enter-ClaudeSession {
             "the first argument (cchat <name> ...); flags for claude come after it."
     }
 
-    $resolved = Resolve-ChannelHost
-    $channelFlag = $script:ChannelFlagByHost[$resolved.Host]
-    if (-not $channelFlag) {
-        throw "Enter-ClaudeSession: no channel flag configured for host '$($resolved.Host)' " +
-            "(resolved from $($resolved.Source) '$($resolved.Raw)'). Add it to " +
-            "`$script:ChannelFlagByHost in wrapper/Enter-ClaudeSession.ps1, or set " +
-            "CHANNEL_HOST_NAME to one of: $($script:ChannelFlagByHost.Keys -join ', ')."
-    }
+    $channelFlag = Resolve-ChannelFlag
 
     if (-not (Test-Path -LiteralPath $script:SessionStartHook)) {
         throw "Enter-ClaudeSession: the SessionStart hook script is missing at " +

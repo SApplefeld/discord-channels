@@ -79,9 +79,11 @@ function probeMirrorEnv(directory: string, noMirror: boolean): string {
   delete env.CHANNEL_SESSION_MIRROR;
   delete env.CHANNEL_SESSION;
   delete env.CHANNEL_PROCESS_TOKEN;
-  // Resolve-ChannelHost throws on a COMPUTERNAME outside its known set, which the machine running
-  // this suite may or may not have; naming a known host directly keeps the probe independent of it.
-  env.CHANNEL_HOST_NAME = "NEO";
+  // A CHANNEL_LAUNCH_FLAG on the machine running this suite would choose the launch route, or refuse
+  // the launch outright on a value that is not a flag, so the probe runs on the default route.
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === "CHANNEL_LAUNCH_FLAG") delete env[key];
+  }
   env.LOCALAPPDATA = localAppData;
 
   const result = spawnSync(
