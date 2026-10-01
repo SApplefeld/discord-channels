@@ -175,8 +175,8 @@ function heldRoot(latest: ReadonlyMap<string, BoardEvent>, workdir: string): str
  * A reading taken from the store alone never clears a block by its modification time. That time is
  * the store file's, which the plugin rewrites at every turn end, the blocking turn's included, so it
  * says the worker took a turn and not that a Chapter landed. Such a block clears only on a
- * `goal-complete` for the pair, or once the store stops calling the entry active, which leaves it
- * no reading. The in-flight rule still ages the reading by the store, since there the question is
+ * `goal-complete` for the pair, or once the store stops calling the entry active or drops its
+ * `chapterCount`, either of which leaves it no reading. The in-flight rule still ages the reading by the store, since there the question is
  * whether the worker is taking turns.
  */
 function eventBlocked(
@@ -238,17 +238,18 @@ function reason(value: string | undefined): string | null {
  *
  * The document decides it, save the one case below: the entry whose plan document says
  * `In Progress` and moved last is the one a worker is on, and a plan document moves when its Chapter
- * or its status is written. Two entries joined to one document are one document, whatever the two stats behind them
- * read, so they tie and the earlier entry in queue order takes the word. Within one tick the reader
- * stats each entry rather than each file, so a document saved between two of those stats would
- * otherwise hand one file two modification times and let the later entry outrank the earlier one for
- * the same work.
+ * or its status is written. Two entries joined to one document are one document, whatever the two
+ * stats behind them read, so they tie and the earlier entry in queue order takes the word. Within one
+ * tick the reader stats each entry rather than each file, so a document saved between two of those
+ * stats would otherwise hand one file two modification times and let the later entry outrank the
+ * earlier one for the same work.
  *
  * A document is identified by the path it was read from, which the join builds under the persona's
  * own working folder, so two entries naming one file carry one path. Its instant is the newest any
  * entry read it at, which is the freshest observation of the same file.
  *
- * A reading the store overrode is the one place the store's time counts. Its worker is in a linked
+ * A reading the store overrode on the entry it calls active is the one place the store's time
+ * counts. Its worker is in a linked
  * worktree, so the file under the working folder stays where the worktree was cut, and the store's
  * `turnedAtMs`, rewritten at every turn end, is the time that says the worker is still on it. Such a
  * reading's instant is the later of the two. The blocked rule never reads `turnedAtMs`.

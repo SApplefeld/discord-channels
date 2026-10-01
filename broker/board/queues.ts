@@ -166,8 +166,8 @@ export type QueueEntry = {
  * A parsed reading's counts and next step are the store's own where the entry's `chapterCount` is
  * above the count the file gave, and an active entry whose plan is in none of the four places reads
  * a reading built from the store alone. That one carries `fromStore: true`, and a parse carries no
- * such field. A parse the store overrode carries `turnedAtMs`, the store file's modification time,
- * beside its own. `preferNewer` and `storeOnly` below state the two rules.
+ * such field. A parse the store overrode on the entry it calls active carries `turnedAtMs`, the store
+ * file's modification time, beside its own. `preferNewer` and `storeOnly` below state the two rules.
  */
 export type QueuePlanReading =
   | ({
@@ -816,10 +816,11 @@ const STORE_ACTIVE = "active";
  * and so is a reading `storeOnly` built, which already holds the store's figures.
  *
  * The reading keeps its own path, stat and `heldSince`, a held parse's included, so the blocked rule
- * still ages it by the document it came from. It also carries `turnedAtMs`, the store file's own
- * modification time, which the in-flight rule weighs beside the file's: the store is rewritten at
- * every turn end, so it says the worker is taking turns on this entry even while the file under
- * `workdir` stays where the worktree was cut.
+ * still ages it by the document it came from. Where the store calls the entry `active`, it also
+ * carries `turnedAtMs`, the store file's own modification time, which the in-flight rule weighs
+ * beside the file's: the store is rewritten at every turn end, so it says the worker is taking turns
+ * on this entry even while the file under `workdir` stays where the worktree was cut. Any other
+ * entry goes without it, because a write made on the active entry's turn says nothing of the rest.
  */
 function preferNewer(
   reading: QueuePlanReading,
@@ -836,7 +837,9 @@ function preferNewer(
     sections,
     completed: sections > 0 ? Math.min(count, sections) : count,
     next: entry.nextSection ?? null,
-    ...(storeMtimeMs === null ? {} : { turnedAtMs: storeMtimeMs }),
+    ...(storeMtimeMs === null || entry.status?.toLowerCase() !== STORE_ACTIVE
+      ? {}
+      : { turnedAtMs: storeMtimeMs }),
   };
 }
 

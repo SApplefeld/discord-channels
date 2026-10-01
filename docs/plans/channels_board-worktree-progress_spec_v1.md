@@ -40,12 +40,12 @@ Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT 
 
 ## Standing Brief Amendments
 
-- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair or the entry leaving the store's `active` status, and the in-flight rule still ages the reading by the store.
+- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair, the entry leaving the store's `active` status, or the store dropping its `chapterCount`, and the in-flight rule still ages the reading by the store.
 - A store `sectionCount` of zero leaves the file's known section total in place, since a zero total is no newer reading of it.
 - A store-only reading carries the store's hold instant as its `heldSince`, so a torn store ages that line as it ages any held reading.
 - `docs/security-model.md` states the three fields' intake rule in a paragraph of its own under the first property, beside the lead paragraph's naming of them.
 - `docs/architecture.md` and `docs/operations.md` each state, in one sentence, when a store-only entry's blocked mark clears.
-- A file reading the store overrode is aged for the in-flight rule by the later of its file's modification time and the store file's, and for the blocked rule by its file's alone, so a worktree worker's entry outranks a parked plan whose file was touched after the worktree was cut.
+- A file reading the store overrode on the entry the store calls `active` is aged for the in-flight rule by the later of its file's modification time and the store file's, and for the blocked rule by its file's alone, so a worktree worker's entry outranks a parked plan whose file was touched after the worktree was cut.
 
 ## Sections of Work
 

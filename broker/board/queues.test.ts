@@ -12,7 +12,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { eventKey, initialEventState } from "./events.ts";
-import type { BoardEvent } from "./events.ts";
+import type { BoardEvent, BoardEventKind } from "./events.ts";
 import { MAX_INTAKE_NEXT_LENGTH, readPlanFile } from "./plans.ts";
 import type { PlanReading } from "./plans.ts";
 import {
@@ -1612,6 +1612,49 @@ test("an overridden reading takes the word from a parked plan touched after its 
 
   // The block rule still ages the overridden reading by its own file, so the reading keeps that stat.
   assert.equal(live(queue.readings.get("worktree")).mtimeMs, statSync(worktreeFile).mtimeMs);
+  const blocked = initialEventState();
+  const event: BoardEvent = {
+    root: work.dir,
+    plan: `docs/plans/${WORKTREE_PLAN}`,
+    event: "goal-blocked",
+    ts: new Date(now - 1.5 * hour).toISOString(),
+    session: null,
+    detail: null,
+  };
+  blocked.latest.set(eventKey(event.root, event.plan), event);
+  assert.equal(
+    personaStatus(queue, blocked, now).entries.find((entry) => entry.id === "worktree")?.word,
+    "blocked",
+    "a block newer than the file stands though the store moved after it",
+  );
+});
+
+test("only the entry the store calls active takes the store's turn time", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const hour = 60 * 60 * 1_000;
+  const now = Date.now();
+  const pausedFile = work.file(["docs", "plans"], "paused_v1.md", elevenSectionDoc());
+  const activeFile = work.file(["docs", "plans"], WORKTREE_PLAN, elevenSectionDoc());
+  utimesSync(pausedFile, (now - 3 * hour) / 1_000, (now - 3 * hour) / 1_000);
+  utimesSync(activeFile, (now - 2 * hour) / 1_000, (now - 2 * hour) / 1_000);
+  work.store(
+    store([
+      goal({ id: "paused", status: "paused", planPath: "paused_v1.md", chapterCount: 9 }),
+      goal({ id: "active", status: "active", planPath: WORKTREE_PLAN }),
+    ]),
+  );
+  const storeAt = now - hour;
+  utimesSync(path.join(work.dir, STORE_FILE_NAME), storeAt / 1_000, storeAt / 1_000);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.ok(queue !== undefined);
+  assert.equal(live(queue.readings.get("paused")).completed, 9, "the store still overrides the count");
+  const status = personaStatus(queue, initialEventState(), now);
+  const word = (id: string): string | undefined =>
+    status.entries.find((entry) => entry.id === id)?.word;
+  assert.equal(word("active"), "in flight", "a paused entry's retained count lends it no turn");
+  assert.notEqual(word("paused"), "in flight");
 });
 
 test("a store-only reading draws as in flight, and a store write never clears its block", (t) => {
@@ -1630,13 +1673,13 @@ test("a store-only reading draws as in flight, and a store write never clears it
   const reading = live(queue.readings.get("goal-1"));
   assert.equal(Math.round(reading.mtimeMs / 1_000), Math.round(storeAt / 1_000));
 
-  const word = (eventAt: number | null): string | undefined => {
+  const word = (eventAt: number | null, kind: BoardEventKind = "goal-blocked"): string | undefined => {
     const state = initialEventState();
     if (eventAt !== null) {
       const event: BoardEvent = {
         root: work.dir,
         plan: `docs/plans/${WORKTREE_PLAN}`,
-        event: "goal-blocked",
+        event: kind,
         ts: new Date(eventAt).toISOString(),
         session: null,
         detail: null,
@@ -1653,4 +1696,5 @@ test("a store-only reading draws as in flight, and a store write never clears it
     "blocked",
     "the store is rewritten every turn, the blocking one included, so its write says no Chapter landed",
   );
+  assert.notEqual(word(now - hour, "goal-complete"), "blocked", "a goal-complete for the pair clears it");
 });
