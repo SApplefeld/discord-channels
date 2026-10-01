@@ -539,9 +539,16 @@ heartbeat, `.agentic-heartbeat.json`, both in that `workdir`. It then finds the 
 each queue entry. The entry's `planPath` wins when present, and otherwise the first
 `docs/plans/<name>.md` in the entry's title and then its objective. Only the file name is kept, and
 it is looked for in four folders under the same `workdir`: `docs/plans/`, `docs/archive/plans/`,
-`docs/archive/` and `docs/plans/archive/`. A plan found only in an archive folder counts as done. A
-plan checked out on another branch is invisible to the card, so a parked plan can under-report its
-sections.
+`docs/archive/` and `docs/plans/archive/`. A plan found only in an archive folder counts as done.
+
+The count on a worker's plan is the worker's own where its store is ahead of the file. A worker in a
+linked worktree writes its Chapters to a copy of the plan the card never reads, while its plugin
+records the Chapter count in the store. Where the store's `chapterCount` for an entry is above the
+Chapters the launch folder's file holds, the card draws the store's count. It also draws the store's
+next step where the store carries one, and no next step where it does not, since the file's names a
+section the worker has passed. Where the file's count is equal or higher, the file wins. An active
+entry whose plan has no file in any of the four folders draws from the store alone, as `9 chapters`
+where the store carries no section total. A paused plan with no file draws no count.
 
 Each group opens with a shaded label: the persona's name, `N of M done`, and the worker's state.
 The state is `running now` while the heartbeat says the worker is inside a turn. Otherwise it is

@@ -449,6 +449,18 @@ function sectionCount(counts: { sections: number; completed: number }): string {
 }
 
 /**
+ * `9 chapters`, for a reading that counts finished sections out of no known total.
+ *
+ * A worker's store can carry its Chapter count before it carries the plan's section total, and a
+ * plan the join found no file for has no other source of one. The count alone still says how far
+ * the worker is, where a fraction over zero would say nothing.
+ */
+function chapterTally(completed: number): string {
+  const count = drawnCount(completed);
+  return `${count} ${count === 1 ? "chapter" : "chapters"}`;
+}
+
+/**
  * How many units of untrusted field text this card has handed to the escape, counted so a test can
  * hold one render to a cost bounded by what the readers' intake caps allow rather than by what a
  * plan file carries.
@@ -809,8 +821,10 @@ function personaLabel(group: BoardPersona, index: number, now: number): string {
  * the word first, because the word is why the entry is drawn where it is, then how far through its
  * sections the plan document is, then what the block is waiting on.
  *
- * A plan document declaring no sections draws no count, as a swept plan's bullet does: `0/0` is what
- * a doc with no `## Sections of Work` block yields, and a fraction of nothing measures nothing.
+ * A plan document declaring no sections draws no fraction, as a swept plan's bullet does: `0/0` is
+ * what a doc with no `## Sections of Work` block yields, and a fraction of nothing measures nothing.
+ * A reading with no total and at least one finished section draws the count of those alone, which is
+ * what a reading taken from the worker's store before it knows the plan's total carries.
  *
  * `next:` draws on the entry in flight alone. It is the sentence saying what is happening right now,
  * and on an entry nobody is working it would be the sentence saying what was happening when the
@@ -822,6 +836,8 @@ function entryLines(item: BoardPersonaEntry): string[] {
   const parts = [item.word === "in flight" ? IN_FLIGHT_DRAWN : item.word];
   if (item.reading !== null && drawnCount(item.reading.sections) > 0) {
     parts.push(sectionCount(item.reading));
+  } else if (item.reading !== null && drawnCount(item.reading.completed) > 0) {
+    parts.push(chapterTally(item.reading.completed));
   }
   if (item.word === "blocked" && item.reason !== null) {
     const reason = cutField(item.reason, MAX_BLOCKED_REASON_LENGTH);
