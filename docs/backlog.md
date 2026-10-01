@@ -631,6 +631,17 @@ and none carries a date of its own. An item added from here on carries `(parked 
   titled runbook section beside the threshold procedure. Each is prose, older than or placed on
   purpose by the plan.
 
+- Transitive dependency advisories (parked 2026-09-30, from the Session Activity Signals plan's
+  section 1 security reviews). `npm audit --omit=dev` reports four advisories, all under
+  `@modelcontextprotocol/sdk` 1.30.0: `fast-uri` (high) and `hono`, `ip-address` and `qs`
+  (moderate). The lockfile predates that plan, and the broker binds loopback only, so they are not
+  done there. Run `npm audit fix` in its own change and confirm the SDK pin holds.
+- Receipt reactions retry a hopeless refusal (parked 2026-09-30, same source). The tracker in
+  `broker/routing/receipts.ts` ignores the `permanent` flag the adapter's classifier sets, so a bot
+  missing Add Reactions is refused again on every stage change. The load is bounded far below
+  Discord's invalid-request budget by the inbound ceiling, which is why it was left; a per-thread
+  latch like the pin cleaner's is the fix if that ceiling ever rises.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

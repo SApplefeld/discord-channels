@@ -2,8 +2,8 @@
 // stands: handed to the session, picked up by a turn, or answered.
 //
 // A stage change adds the new emoji and, only once that lands, removes every emoji believed
-// painted on the message other than the new one, so a message is never shown with no stage at
-// all, a remove is never fired against a stage whose own add never reached Discord, and a
+// painted on the message other than the new one, so a stage change never leaves a message with
+// no stage at all, a remove is never fired against a stage whose own add never reached Discord, and a
 // leftover whose remove was refused is tried again by the next stage change. Every write for one
 // thread, across every message in it, runs through one serial queue: Discord's reaction buckets
 // are per channel, and a thread is a channel, so the budget and the ordering are both scoped to
@@ -125,7 +125,9 @@ export type ReceiptTracker = {
 export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTracker {
   const describeError =
     options.describe ?? ((error: unknown) => (error instanceof Error ? error.message : "unknown transport error"));
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // Unref'd so a pace wait in flight never holds the process open at shutdown.
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref()));
   const threads = new Map<string, Tracked[]>();
   // A thread's rate budget, held apart from its queue. Discord's reaction bucket for a thread does
   // not reset just because this tracker's own queue drains: the next write after a quiet stretch
@@ -311,7 +313,8 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
           // A reply that arrived after this turn opened has already answered it, and only now has
           // the tailer's own poll caught up to the line that credits this message's pickup:
           // nothing will ever call `answered` for it again, so it goes straight to ✅ rather than
-          // parking at 👀 forever.
+          // parking at 👀 forever. It leaves tracking here, so a refused ✅ add is not retried and
+          // the message keeps whatever stage it already showed.
           enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.answered));
           continue;
         }
@@ -326,10 +329,13 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
       // Never moved backwards: two replies' posts can land in the opposite order to their
       // arrivals, and a stale pickup is measured against the latest reply that arrived, whichever
       // post landed last.
-      const previous = lastAnsweredAt.get(threadId);
-      if (previous === undefined || at > previous) lastAnsweredAt.set(threadId, at);
+      // Recorded only for a thread with tracking: with nothing delivered yet, no later pickup can
+      // carry an instant at or before this one, and a reply landing after `forget` must not leave
+      // an entry behind that no later `forget` would ever clear.
       const list = threads.get(threadId);
       if (list === undefined) return;
+      const previous = lastAnsweredAt.get(threadId);
+      if (previous === undefined || at > previous) lastAnsweredAt.set(threadId, at);
       const remaining: Tracked[] = [];
       for (const entry of list) {
         // Only what the turn that produced this reply carried: a message picked up after the

@@ -407,7 +407,8 @@ no cause; a `user` line whose console-command markup names exactly `/goal`, whos
 the goal line; a `custom-title` line, whose `customTitle` field is refused outright if it is
 ill-formed and otherwise stripped, cleaned and cut into the session's own title, and which yields
 no item at all rather than a null when nothing readable survives that; a `queued_command`
-attachment whose mode is `prompt` and whose origin kind is `channel`, which yields only the line's
+attachment whose mode is `prompt`, whose origin kind is `channel` and whose origin server names
+this relay (`channel-relay` or `plugin:relay:channel-relay`), which yields only the line's
 `timestamp` as the relay message's picked-up instant and reads no text at all; and a `user` line whose
 `promptSource` is `typed` and whose root `origin` kind is `human`, carrying no `isMeta` stamped
 `true`, no closed `<command-name>`/`</command-name>` pair anywhere in its text, and text that is
