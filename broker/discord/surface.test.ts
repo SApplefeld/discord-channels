@@ -1450,11 +1450,13 @@ test("typing threads read the views handed in, not what the last pass derived", 
   const calls = recorder();
   const surface = surfaceWith(time, calls);
   const open = view({ turnActiveAt: time.now() });
+  // Each thread carries its turn's deadline, so the keeper can stop at it between passes.
+  const typing = [{ threadId: "thread-1", until: time.now() + IDLE_AFTER_MS }];
 
   assert.deepEqual(surface.typingThreads([open], time.now()), [], "no thread exists before the first pass");
 
   await surface.tick([open]);
-  assert.deepEqual(surface.typingThreads([open], time.now()), ["thread-1"], "an open turn's thread is in the set");
+  assert.deepEqual(surface.typingThreads([open], time.now()), typing, "an open turn's thread is in the set");
 
   // No pass runs between these reads: the closed turn arrives only in the views handed in.
   assert.deepEqual(
@@ -1466,7 +1468,7 @@ test("typing threads read the views handed in, not what the last pass derived", 
   // The activity window is measured against the `now` passed in, under the surface's own idleAfterMs.
   assert.deepEqual(
     surface.typingThreads([open], time.now() + IDLE_AFTER_MS),
-    ["thread-1"],
+    typing,
     "a turn active exactly idleAfterMs ago is still in the set",
   );
   assert.deepEqual(

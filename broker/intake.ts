@@ -435,8 +435,10 @@ export function parseIntake(
       backgroundTasks: event === "Stop" ? backgroundTasks(fields) : null,
       // Presence only: a subagent's hook event carries the parent's session id with its own
       // identity in `agent_id`, and the registry needs to know which of the two spoke, never who
-      // the subagent is. The value is read for its type and dropped here, never logged or stored.
-      fromSubagent: typeof fields["agent_id"] === "string" && fields["agent_id"] !== "",
+      // the subagent is. Any present, non-null value counts, whatever its shape, so a value of an
+      // unexpected type fails toward no typing rather than toward opening a turn. The value itself
+      // is dropped here, never logged or stored.
+      fromSubagent: fields["agent_id"] !== undefined && fields["agent_id"] !== null,
     },
   };
 }
@@ -1097,11 +1099,14 @@ export function createHandler(
       // session's open prompt on a straggler. A `Stop` that arrives without a session id therefore
       // clears nothing and leaves the entry for the ended-session sweep, which is the direction
       // this surface fails in.
-      // The typing keeper's release rides the same gate: a straggler's `Stop` credited on the token
-      // alone must not cut the indicator of the turn the session is running now.
+      // The typing keeper's release rides the same gate, and the registry closes the turn on the
+      // same bar, so a straggler's `Stop` credited on the token alone neither cuts the indicator
+      // nor closes the turn the session is running now. Both also pass over a subagent's `Stop`,
+      // which ends the subagent rather than the turn; releasing on it would only have the next
+      // reconcile restart the indicator for the turn still open.
       if (parsed.intake.event === "Stop" && parsed.intake.sessionId === record.sessionId) {
         options.permissions?.turnEnded(record.sessionId, arrivedAt);
-        options.turns?.closed(record.sessionId);
+        if (parsed.intake.fromSubagent !== true) options.turns?.closed(record.sessionId);
       }
       // Learned only from a post the registry credited to a record: an unwatched, forged, or
       // unroutable post must not aim the tailer at a file of its choosing under a session it does

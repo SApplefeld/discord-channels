@@ -202,6 +202,16 @@ export function typingWanted(
   now: number,
   idleAfterMs: number,
 ): boolean {
-  if (view.turnActiveAt === null || now - view.turnActiveAt > idleAfterMs) return false;
+  const until = typingDeadline(view, idleAfterMs);
+  if (until === null || now > until) return false;
   return state !== "needs you" && state !== "blocked" && state !== "exited";
+}
+
+/**
+ * The epoch milliseconds past which a session's open turn no longer wants typing, or null while no
+ * turn is open. `typingWanted` reads it at a refresh pass, and the typing keeper holds it between
+ * passes, so a turn that has gone quiet stops typing at this moment rather than at the next pass.
+ */
+export function typingDeadline(view: SessionView, idleAfterMs: number): number | null {
+  return view.turnActiveAt === null ? null : view.turnActiveAt + idleAfterMs;
 }

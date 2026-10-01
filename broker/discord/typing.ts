@@ -1,5 +1,6 @@
 // Keeps Discord's "is typing..." indicator alive in every thread whose session has a turn open,
-// the set `typingWanted` in ./state.ts decides and the surface's `typingThreads` hands in.
+// the set `typingWanted` in ./state.ts decides and the surface's `typingThreads` hands in, each
+// thread with the deadline past which its turn no longer wants typing.
 //
 // Discord shows the indicator for ten seconds per call, so a thread that stays in the set needs the
 // call repeated inside that window to read as continuously typing rather than flickering on and
@@ -41,14 +42,21 @@ const REFUSAL_WINDOW_MS = 5 * 60 * 1000;
  */
 export const MAX_THREAD_REFUSALS = 3;
 
+/**
+ * One thread that should show the indicator, and `until`, the epoch milliseconds past which its
+ * turn no longer wants typing (`typingDeadline` in ./state.ts).
+ */
+export type TypingThread = { threadId: string; until: number };
+
 export type TypingKeeper = {
   /**
-   * Drives the kept timers to match `typing`: the thread ids that should show the indicator right
+   * Drives the kept timers to match `typing`: the threads that should show the indicator right
    * now. A thread newly in the set gets one call at once and then one every `TYPING_PERIOD_MS`; a
-   * thread no longer in it has its timer cleared at once. A no-op once the keeper has stopped,
+   * thread no longer in it has its timer cleared at once. Each thread's `until` is recorded, and
+   * replaces the one a thread already kept was holding. A no-op once the keeper has stopped,
    * whether through `stop()` or a fatal outcome on the typing route itself.
    */
-  reconcile: (typing: readonly string[]) => void;
+  reconcile: (typing: readonly TypingThread[]) => void;
   /**
    * Clears one thread's timer now, for a turn whose `Stop` was just credited. The thread is not
    * latched out: the next `reconcile` starts it again only if its session has opened a new turn
@@ -111,13 +119,17 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
 
   /**
    * One kept thread: the interval driving its refresh, its run of consecutive permanent or missing
-   * refusals, and whether a call it made is still awaiting Discord's answer.
+   * refusals, and the deadline the last reconcile handed in for it.
    */
-  type Kept = { timer: NodeJS.Timeout; budget: Budget; refusals: number; inFlight: boolean };
+  type Kept = { timer: NodeJS.Timeout; budget: Budget; refusals: number; until: number };
   const kept = new Map<string, Kept>();
+  // Threads with a typing call still awaiting Discord's answer, keyed by thread rather than held on
+  // the entry: a thread released and restarted within one period gets a fresh entry while the old
+  // entry's call is still on the wire, and that call must still hold the new entry's first call off.
+  const inFlight = new Set<string>();
   // A thread's budget outlives its timer: a turn ending and a new one opening inside a 429's own
   // window must stay blocked, not get a fresh bucket that reads as affordable at once. Dropped only
-  // when the surface retires the thread (`forget`) or on `stop()`.
+  // when the surface retires the thread (`forget`) or the keeper halts.
   const budgets = new Map<string, Budget>();
   // Threads refused past the cap, held here rather than in `kept` so a reconcile that still finds
   // them in the set does not start them again. Cleared by the thread leaving the set.
@@ -143,11 +155,16 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
     kept.delete(threadId);
   }
 
-  /** Clears every kept timer and latches the keeper, whether from `stop()` or a fatal outcome. */
+  /**
+   * Clears every kept timer, budget and dropped mark and latches the keeper, whether from `stop()`
+   * or a fatal outcome, so both leave the same residue. A call still in flight keeps its thread in
+   * `inFlight` until it returns, and acts on nothing once it does.
+   */
   function halt(): void {
     if (stopped) return;
     stopped = true;
     for (const threadId of [...kept.keys()]) clear(threadId);
+    budgets.clear();
     dropped.clear();
   }
 
@@ -167,26 +184,29 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
    * the next tick eight seconds away is this keeper's own retry.
    *
    * A thread whose previous call is still awaiting Discord skips this one, so a slow call never has
-   * a second stacked on top of it. Once the call returns, nothing is acted on if the keeper has
+   * a second stacked on top of it, whichever entry made that call. A tick past the thread's
+   * deadline sends nothing: its turn has gone quiet for `idleAfterMs`, and the reconcile that drops
+   * the thread can be a whole refresh interval away. Once the call returns, nothing is acted on if the keeper has
    * stopped meanwhile. A call that comes back after its thread was released, cleared or restarted
    * still feeds the thread's budget and still reports a rejected token, since both are facts about
    * the route. It never resets, counts or drops against an entry other than the one that made it.
    */
   async function fire(threadId: string, entry: Kept): Promise<void> {
-    if (entry.inFlight) return;
+    if (inFlight.has(threadId)) return;
+    if (now() > entry.until) return;
     if (!entry.budget.affordable(now())) {
       repeats("a typing call was skipped", "the thread's bucket is paced out");
       return;
     }
     let outcome: CallOutcome<null>;
-    entry.inFlight = true;
+    inFlight.add(threadId);
     try {
       outcome = await options.typing.sendTyping({ threadId });
     } catch (error) {
       if (!stopped) repeats("a typing call failed", describeError(error));
       return;
     } finally {
-      entry.inFlight = false;
+      inFlight.delete(threadId);
     }
     // Checked before anything is acted on rather than relying on `halt()`'s own idempotence: two
     // threads can both be mid-call when the token is rejected, and only the first to resume here
@@ -214,7 +234,7 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
     if (entry.refusals >= MAX_THREAD_REFUSALS) drop(threadId, entry.refusals);
   }
 
-  function start(threadId: string): void {
+  function start(threadId: string, until: number): void {
     const budget = budgetFor(threadId);
     const run = (): void => {
       const entry = kept.get(threadId);
@@ -222,14 +242,14 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
       void fire(threadId, entry);
     };
     const timer = schedule(run, TYPING_PERIOD_MS);
-    kept.set(threadId, { timer, budget, refusals: 0, inFlight: false });
+    kept.set(threadId, { timer, budget, refusals: 0, until });
     run();
   }
 
   return {
     reconcile(typing) {
       if (stopped) return;
-      const typingSet = new Set(typing);
+      const typingSet = new Map(typing.map((thread) => [thread.threadId, thread.until]));
       for (const threadId of [...kept.keys()]) {
         if (!typingSet.has(threadId)) clear(threadId);
       }
@@ -238,8 +258,10 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
       for (const threadId of [...dropped]) {
         if (!typingSet.has(threadId)) dropped.delete(threadId);
       }
-      for (const threadId of typingSet) {
-        if (!kept.has(threadId) && !dropped.has(threadId)) start(threadId);
+      for (const [threadId, until] of typingSet) {
+        const entry = kept.get(threadId);
+        if (entry !== undefined) entry.until = until;
+        else if (!dropped.has(threadId)) start(threadId, until);
       }
     },
     release(threadId) {
@@ -252,7 +274,6 @@ export function createTypingKeeper(options: TypingKeeperOptions): TypingKeeper {
     },
     stop() {
       halt();
-      budgets.clear();
     },
   };
 }

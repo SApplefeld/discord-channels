@@ -744,11 +744,12 @@ export function createRegistry(options: RegistryOptions): Registry {
       }
     } else if (intake.event === "Stop") {
       record.turnCount += 1;
-      // The turn this Stop closes. Set unconditionally, the same as turnCount above: a session that
-      // never opened a turn by this registry's lights (its UserPromptSubmit arrived only through
-      // /mirror and crediting failed) still has nothing open to clear, and the assignment costs
-      // nothing when it is already null.
-      record.turnActiveAt = null;
+      // The turn this Stop closes, on the bar the intake's own Stop handling uses: a payload naming
+      // the very session it was credited to. The token-only route credits a Stop to whatever
+      // session holds the token, so a straggler from a session that token used to run must not
+      // close the turn running now. A subagent's Stop, which carries an `agent_id`, ends the
+      // subagent and not the turn, the same as its tool calls never open one.
+      if (intake.sessionId === record.sessionId && intake.fromSubagent !== true) record.turnActiveAt = null;
       // An empty report is as load-bearing as a populated one: a session that has finished its
       // agents reports an empty table, and a roster only replaced when there is something to
       // replace it with would hold that session at working for the rest of its life. Null is the

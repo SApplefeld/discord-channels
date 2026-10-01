@@ -14,9 +14,10 @@ import { createBudget } from "./budget.ts";
 import type { Budget } from "./budget.ts";
 import type { ThreadBinding } from "./bindings.ts";
 import { inertName, renderCard, threadName, titleState } from "./render.ts";
-import { deriveSurfaceState, typingWanted } from "./state.ts";
+import { deriveSurfaceState, typingDeadline, typingWanted } from "./state.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 import type { CallOutcome, DiscordTransport } from "./transport.ts";
+import type { TypingThread } from "./typing.ts";
 
 /**
  * States worth a rename the moment they appear. Both of them are waiting on a person, and damping
@@ -120,14 +121,16 @@ export type Surface = {
   /**
    * The threads that should show the typing indicator right now, for the typing keeper: those whose
    * session `typingWanted` accepts, with each state derived from `views` at `now` under the same
-   * thresholds a pass uses.
+   * thresholds a pass uses, and each paired with its session's `typingDeadline`.
    *
-   * Reads the views it is handed rather than what the last pass derived, so the answer does not
-   * wait on a pass completing, or on a pass running at all. The surface contributes only the
-   * thread: a session with no thread yet, or whose entry is abandoned or archived, is left out,
-   * since none of those can show a typing indicator.
+   * Reads the views it is handed rather than what the last pass derived, so a session's turn state
+   * does not wait on a pass completing. The thread does: the surface contributes only the thread,
+   * and a session with no thread yet, or whose entry is abandoned or archived, is left out, since
+   * none of those can show a typing indicator. A thread the pass running this tick creates is
+   * recorded only once that pass's creation call returns, so its session enters the set one tick
+   * after the thread appears.
    */
-  typingThreads: (views: readonly SessionView[], now: number) => readonly string[];
+  typingThreads: (views: readonly SessionView[], now: number) => readonly TypingThread[];
 };
 
 type ThreadState = {
@@ -752,7 +755,7 @@ export function createSurface(options: SurfaceOptions): Surface {
     },
 
     typingThreads: (views, now) => {
-      const typing: string[] = [];
+      const typing: TypingThread[] = [];
       for (const view of views) {
         const entry = threads.get(view.sessionId);
         if (entry === undefined || entry.threadId === null || entry.abandoned || entry.archived) continue;
@@ -760,7 +763,9 @@ export function createSurface(options: SurfaceOptions): Surface {
           idleAfterMs: options.idleAfterMs,
           exitedAfterMs: options.exitedAfterMs,
         });
-        if (typingWanted(view, state, now, options.idleAfterMs)) typing.push(entry.threadId);
+        if (!typingWanted(view, state, now, options.idleAfterMs)) continue;
+        const until = typingDeadline(view, options.idleAfterMs);
+        if (until !== null) typing.push({ threadId: entry.threadId, until });
       }
       return typing;
     },

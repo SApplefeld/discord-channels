@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { MAX_THREAD_REFUSALS, TYPING_PERIOD_MS, createTypingKeeper } from "./typing.ts";
+import type { TypingThread } from "./typing.ts";
 import type { CallOutcome, RateLimitObservation, ThreadTyping } from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
 
@@ -12,6 +13,14 @@ function flush(): Promise<void> {
 
 const START = 1_000_000;
 const HEALTHY: RateLimitObservation = { remaining: 4, resetAfterMs: 5_000, retryAfterMs: null };
+
+/** A deadline no test here reaches, for the tests whose subject is not the deadline. */
+const FAR = START + 60 * 60 * 1000;
+
+/** The typing set for `ids`, every thread holding the far deadline. */
+function threads(...ids: string[]): TypingThread[] {
+  return ids.map((threadId) => ({ threadId, until: FAR }));
+}
 
 function ok(): CallOutcome<null> {
   return { status: "ok", value: null, rate: HEALTHY };
@@ -85,7 +94,7 @@ test("a thread newly working gets one call at once, then one every TYPING_PERIOD
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   assert.deepEqual(typing.calls, ["thread-1"], "the first call fires at once, not on the first tick");
   assert.equal(timer.timers.length, 1, "one timer for the one working thread");
@@ -111,9 +120,9 @@ test("reconciling the same working set again starts no second timer", async () =
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1"]);
-  keeper.reconcile(["thread-1"]);
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
+  keeper.reconcile(threads("thread-1"));
+  keeper.reconcile(threads("thread-1"));
   await flush();
 
   assert.equal(timer.timers.length, 1, "still one timer for the one thread");
@@ -131,11 +140,11 @@ test("a thread leaving the working set has its timer cleared at once", async () 
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   const handle = timer.timers[0]?.id;
 
-  keeper.reconcile([]);
+  keeper.reconcile(threads());
 
   assert.deepEqual(timer.cleared, [handle], "the one timer this thread held is cleared");
 
@@ -167,7 +176,7 @@ test("stop() clears every kept timer and latches against a later reconcile", asy
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
   assert.equal(timer.timers.length, 2);
 
@@ -175,7 +184,7 @@ test("stop() clears every kept timer and latches against a later reconcile", asy
 
   assert.equal(timer.cleared.length, 2, "both threads' timers are cleared");
 
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
   assert.equal(timer.timers.length, 2, "stop() latches the keeper: no later reconcile starts a new timer");
   assert.deepEqual(typing.calls, ["thread-1", "thread-2"], "and no later reconcile sends a new call either");
@@ -195,7 +204,7 @@ test("reconcile after stop() starts no timer and sends no call", async () => {
   });
 
   keeper.stop();
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
 
   assert.equal(timer.timers.length, 0, "no timer is started once the keeper is stopped");
@@ -219,14 +228,14 @@ test("a fatal typing outcome halts the keeper and reports through onFatal", asyn
     onFatal: (message) => fatal.push(message),
   });
 
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
 
   assert.equal(fatal.length, 1, fatal.join(" / "));
   assert.match(fatal[0] ?? "", /token was rejected/);
   assert.equal(timer.cleared.length, 2, "every kept timer is cleared, not just the one that saw the 401");
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   assert.equal(timer.timers.length, 2, "the latch stops reconcile from starting a new timer after a fatal outcome");
 });
@@ -254,7 +263,7 @@ test("two threads hitting a fatal outcome in the same pass report onFatal once",
     onFatal: (message) => fatal.push(message),
   });
 
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
 
   assert.deepEqual(calls.sort(), ["thread-1", "thread-2"], "both threads' immediate calls land");
@@ -276,7 +285,7 @@ test("a thread refused permanently is dropped after a small cap, and only that t
     log: (message) => log.push(message),
   });
 
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
 
   for (let i = 0; i < MAX_THREAD_REFUSALS; i += 1) {
@@ -295,14 +304,14 @@ test("a thread refused permanently is dropped after a small cap, and only that t
 
   // The thread stays dropped while it is still in the working set: a later reconcile with the
   // same set must not restart a timer the cap just took away.
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
   assert.equal(timer.timers.length, 2, "the dropped thread gets no new timer while still working");
   assert.ok(typing.calls.includes("thread-2"), "the healthy thread beside it keeps being called throughout");
 
   // Leaving and re-entering the working set is what lets the dropped thread restart.
-  keeper.reconcile(["thread-2"]);
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-2"));
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
   assert.equal(timer.timers.length, 3, "the thread restarts once it has left and rejoined the set");
 });
@@ -322,12 +331,12 @@ test("a thread's standing rate-limit block survives leaving and rejoining the wo
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   assert.deepEqual(typing.calls, ["thread-1"], "the first call lands and reports the 429's block");
 
-  keeper.reconcile([]);
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads());
+  keeper.reconcile(threads("thread-1"));
   await flush();
 
   assert.deepEqual(
@@ -381,7 +390,7 @@ for (const failure of [
     failure.script(typing);
 
     assert.doesNotThrow(() => {
-      keeper.reconcile(["thread-1"]);
+      keeper.reconcile(threads("thread-1"));
     });
     await flush();
 
@@ -413,7 +422,7 @@ test("a call the thread's own budget cannot afford is skipped and logged, not se
     log: (message) => log.push(message),
   });
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   assert.deepEqual(typing.calls, ["thread-1"], "the first call lands, and reports the block");
 
@@ -442,7 +451,7 @@ test("release clears a thread's timer at once, and no call follows it", async ()
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
   keeper.release("thread-1");
   assert.deepEqual(timer.cleared, [timer.timers[0]?.id], "only the released thread's timer is cleared");
@@ -454,7 +463,7 @@ test("release clears a thread's timer at once, and no call follows it", async ()
   assert.deepEqual(typing.calls, ["thread-1", "thread-2", "thread-2"], "the released thread is sent nothing more");
 
   // Not latched: a new turn reaching the next reconcile starts the thread again.
-  keeper.reconcile(["thread-1", "thread-2"]);
+  keeper.reconcile(threads("thread-1", "thread-2"));
   await flush();
   assert.equal(timer.timers.length, 3, "a released thread restarts when its session opens a new turn");
 });
@@ -483,7 +492,7 @@ test("a tick while the thread's previous call is still in flight sends nothing",
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   timer.timers[0]?.callback();
   await flush();
@@ -513,7 +522,7 @@ test("a refusal answered after its thread restarted never drops the new entry", 
   });
   const forbidden: CallOutcome<null> = { status: "failed", error: "403 forbidden", rate: NO_RATE_INFO, permanent: true };
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   for (let i = 1; i < MAX_THREAD_REFUSALS; i += 1) {
     pending.settle(forbidden);
@@ -523,7 +532,7 @@ test("a refusal answered after its thread restarted never drops the new entry", 
   }
   // The old entry now holds a cap-minus-one run and one call in flight.
   keeper.release("thread-1");
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   const restarted = timer.timers[1]?.id;
   assert.ok(restarted !== undefined, "the thread restarted as a new entry");
@@ -549,7 +558,7 @@ test("an accepted call resets the thread's run of refusals, so the cap counts co
   });
 
   typing.next = { status: "failed", error: "403 forbidden", rate: NO_RATE_INFO, permanent: true };
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   // Refusals separated by an accepted call, up to the cap's worth in total but never consecutive.
   for (let i = 1; i < MAX_THREAD_REFUSALS * 2; i += 1) {
@@ -576,12 +585,74 @@ test("forget clears a retired thread's timer and its budget", async () => {
     clearTimer: timer.clearTimer,
   });
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   keeper.forget("thread-1");
   assert.deepEqual(timer.cleared, [timer.timers[0]?.id], "the timer is cleared");
 
-  keeper.reconcile(["thread-1"]);
+  keeper.reconcile(threads("thread-1"));
   await flush();
   assert.deepEqual(typing.calls, ["thread-1", "thread-1"], "a fresh budget affords the call at once");
+});
+
+test("a tick due past the thread's deadline sends nothing, with no reconcile in between", async () => {
+  // Pins the aging-out bound: a turn gone quiet for `idleAfterMs` stops typing at its deadline, not
+  // at the next reconcile, which can be a whole refresh interval later. A later reconcile handing in
+  // a fresh deadline extends it.
+  const time = clock();
+  const timer = fakeTimer();
+  const typing = typingWith();
+  const keeper = createTypingKeeper({
+    typing: typing.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+  });
+
+  keeper.reconcile([{ threadId: "thread-1", until: START + TYPING_PERIOD_MS }]);
+  await flush();
+  time.advance(TYPING_PERIOD_MS);
+  timer.timers[0]?.callback();
+  await flush();
+  assert.deepEqual(typing.calls, ["thread-1", "thread-1"], "a tick at exactly the deadline still sends");
+
+  time.advance(1);
+  timer.timers[0]?.callback();
+  await flush();
+  assert.deepEqual(typing.calls, ["thread-1", "thread-1"], "a tick past the deadline sends nothing");
+  assert.deepEqual(timer.cleared, [], "and no reconcile has run to clear the timer");
+
+  keeper.reconcile([{ threadId: "thread-1", until: time.now() + TYPING_PERIOD_MS }]);
+  timer.timers[0]?.callback();
+  await flush();
+  assert.deepEqual(typing.calls, ["thread-1", "thread-1", "thread-1"], "a fresh deadline resumes the same timer");
+  assert.equal(timer.timers.length, 1, "on the one timer the thread already held");
+});
+
+test("a thread released and restarted while its call is in flight sends nothing on top of it", async () => {
+  // In-flight is a fact about the thread, not the entry: the restarted entry's immediate call must
+  // wait out the old entry's call still awaiting Discord.
+  const time = clock();
+  const timer = fakeTimer();
+  const pending = pendingTyping();
+  const keeper = createTypingKeeper({
+    typing: pending.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+  });
+
+  keeper.reconcile(threads("thread-1"));
+  await flush();
+  keeper.release("thread-1");
+  keeper.reconcile(threads("thread-1"));
+  await flush();
+  assert.equal(timer.timers.length, 2, "the thread restarted as a new entry");
+  assert.deepEqual(pending.calls, ["thread-1"], "the restart's immediate call is held off by the call in flight");
+
+  pending.settle(ok());
+  await flush();
+  timer.timers[1]?.callback();
+  await flush();
+  assert.deepEqual(pending.calls, ["thread-1", "thread-1"], "once answered, the new entry's tick calls");
 });

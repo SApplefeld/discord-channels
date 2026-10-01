@@ -1595,7 +1595,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         );
       // On every tick, whatever the pass does: the typing set reads this tick's views, not what a
       // pass derived, so a declined, slow, or rejected pass cannot hold the indicator on past a
-      // turn's end. Synchronous and never thrown out of the keeper, so it needs no leg of its own.
+      // turn's end. Called while this tick's pass is still awaiting Discord, so a thread that pass
+      // creates is not yet recorded, and its session enters the set on the next tick. Each thread carries its turn's
+      // deadline, which the keeper honors between ticks. Synchronous and never thrown out of the
+      // keeper, so it needs no leg of its own.
       typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));
       inFlight = Promise.all([blockedPass, surfacePass])
         .then(() => undefined)

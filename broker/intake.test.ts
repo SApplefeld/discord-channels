@@ -1167,13 +1167,27 @@ test("a credited Stop releases the session's typing thread before any refresh ru
     },
   });
   announce(registry);
-  keeper.reconcile(["thread-a"]);
+  registry.noteTurnOpened("session-a");
+  keeper.reconcile([{ threadId: "thread-a", until: Number.MAX_SAFE_INTEGER }]);
   await settled();
   assert.deepEqual(sent, ["thread-a"], "the thread is typing");
 
-  // A Stop credited on the token alone names no session, so it releases nothing.
+  // A Stop credited on the token alone names no session, so it may be a straggler from a session
+  // this token used to run: it neither releases the thread nor closes the turn running now.
   await call(handle, fakeRequest("127.0.0.1", { headers: hookHeaders("Stop"), body: "{}" }));
-  assert.deepEqual(cleared, [], "a Stop naming no session leaves the indicator to the next reconcile");
+  assert.deepEqual(cleared, [], "a Stop naming no session leaves the indicator running");
+  assert.notEqual(registry.list()[0]?.turnActiveAt, null, "and leaves the turn open for the next reconcile");
+
+  // A subagent's Stop names the session but ends only the subagent.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("Stop"),
+      body: JSON.stringify({ session_id: "session-a", agent_id: "a1b2c3" }),
+    }),
+  );
+  assert.deepEqual(cleared, [], "a subagent's Stop leaves the indicator running");
+  assert.notEqual(registry.list()[0]?.turnActiveAt, null, "and leaves the turn open");
 
   await call(
     handle,
@@ -1207,6 +1221,25 @@ test("a subagent's PostToolUse after Stop leaves the turn closed, read off the p
   );
   await post({ session_id: "session-a", tool_name: "Bash", agent_id: "a1b2c3", agent_type: "general-purpose" });
   assert.equal(registry.list()[0]?.turnActiveAt, null, "after Stop, a background agent's call reopens nothing");
+});
+
+test("any present, non-null agent_id marks a subagent, whatever its shape", () => {
+  // An unexpected shape fails toward no typing: read as a subagent's, the event can refresh an
+  // open turn but never open one.
+  const fromSubagent = (body: Record<string, unknown>): boolean | undefined => {
+    const parsed = parseIntake(
+      fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse") }),
+      JSON.stringify({ session_id: "session-a", ...body }),
+    );
+    assert.ok("intake" in parsed);
+    return parsed.intake.fromSubagent;
+  };
+
+  for (const agentId of ["a1b2c3", "", 7, true, { id: "a1b2c3" }, ["a1b2c3"]]) {
+    assert.equal(fromSubagent({ agent_id: agentId }), true, JSON.stringify(agentId));
+  }
+  assert.equal(fromSubagent({}), false, "absent is the main thread");
+  assert.equal(fromSubagent({ agent_id: null }), false, "null is the main thread");
 });
 
 test("the agent_id value is neither stored on the record nor published", async () => {

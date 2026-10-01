@@ -1135,8 +1135,27 @@ test("a main-thread tool call opens the turn and restamps it, and Stop closes it
   registry.apply(postToolUse("Read"));
   assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "the next one restamps it");
 
-  registry.apply(stop());
+  registry.apply({ ...stop(), sessionId });
   assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "Stop closes it");
+});
+
+test("only a main-thread Stop naming the session closes its turn", () => {
+  // The token-only route credits a Stop with no session id to whatever session holds the token, so
+  // such a Stop may be a straggler from a session that token used to run. And a subagent's Stop
+  // ends the subagent, not the turn. Neither may close the turn the session is running now.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+  registry.apply(postToolUse("Bash"));
+  const opened = time.now();
+
+  registry.apply(stop());
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, opened, "a token-only Stop leaves the turn open");
+
+  registry.apply({ ...stop(), sessionId, fromSubagent: true });
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, opened, "a subagent's Stop leaves it open");
+
+  registry.apply({ ...stop(), sessionId });
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "a Stop naming the session closes it");
 });
 
 test("a subagent's tool call refreshes an open turn but never opens one", () => {
@@ -1159,7 +1178,7 @@ test("a subagent's tool call refreshes an open turn but never opens one", () => 
     "an open turn is kept fresh by its subagents' calls",
   );
 
-  registry.apply(stop());
+  registry.apply({ ...stop(), sessionId });
   time.advance(5_000);
   registry.apply(fromSubagent);
   assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "after Stop a background agent's call reopens nothing");
