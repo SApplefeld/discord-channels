@@ -2732,7 +2732,7 @@ function receiptWiringGaps(source: string): string[] {
     gaps.push("surface");
   }
   if (
-    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{\s*opened:\s*\(sessionId: string\)\s*=>\s*\{\s*registry\.noteTurnOpened\(sessionId\);\s*\}/.test(
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{\s*opened:\s*\(sessionId: string\)\s*=>\s*\{\s*registry\.noteTurnOpened\(sessionId\);/.test(
       code,
     )
   ) {
@@ -2777,7 +2777,8 @@ test("startBroker wires every receipt seam: outbound, intake's pickup entry poin
 // The status reader's connections inside startBroker, which no test reaches without a Discord
 // login: built behind the Discord gate and not the tailer's, reading every session not ended, its
 // pickups through the one session-keyed entry point, its notices through the thread's steering
-// writer, its episodes into the card line and the ⚠️ swap, its path seam into the intake, and its
+// writer with a refused post logged, its episodes into the card line and the ⚠️ swap, its path seam
+// into the intake, a credited prompt's new turn closing any open episode, and its
 // own poll timer, cleared at both teardown sites, with its pass and its post chains awaited at
 // shutdown. Read from the source the way `receiptWiringGaps` reads its
 // seams.
@@ -2795,12 +2796,14 @@ function statusWiringGaps(source: string): string[] {
   }
   if (!/notePickup:\s*\(sessionId,\s*at\)\s*=>\s*pickupFor\(sessionId,\s*at\)/.test(reader)) gaps.push("pickup");
   if (
-    !/notice:\s*async \(sessionId, text\) => \{\s*const threadId = threadFor\(sessionId\);\s*if \(threadId !== null\) await steeringWriter\.reply\(threadId, text\);/.test(
+    !/notice:\s*async \(sessionId, text\) => \{\s*const threadId = threadFor\(sessionId\);\s*if \(threadId === null\) return;\s*const posted = await steeringWriter\.reply\(threadId, text\);/.test(
       reader,
     )
   ) {
     gaps.push("notice");
   }
+  // A notice the writer's budget refuses resolves rather than rejects, so only this line records it.
+  if (!/if \(posted\.status !== "ok"\) \{\s*note\(/.test(reader)) gaps.push("notice-dropped");
   if (!/registry\.noteHarnessNotice\(sessionId, open === null \? null : open\.text\)/.test(reader)) gaps.push("card");
   if (
     !/if \(open === null\) receipts\?\.restore\(threadId\);\s*else receipts\?\.warn\(threadId\);/.test(reader)
@@ -2808,6 +2811,10 @@ function statusWiringGaps(source: string): string[] {
     gaps.push("receipts");
   }
   if (!/\.\.\.\(status === null \? \{\} : \{ status: \{ learn: status\.learn \} \}\)/.test(code)) gaps.push("intake");
+  // A credited prompt opens a new turn, which closes any episode the last turn left open.
+  if (!/opened:\s*\(sessionId: string\)\s*=>\s*\{[^}]*status\?\.turnOpened\(sessionId, Date\.now\(\)\);/.test(code)) {
+    gaps.push("turn");
+  }
   if (!/statusTimer = setInterval\(\(\) => \{\s*statusInFlight = reader\.poll\(\)/.test(code)) gaps.push("timer");
   if (!/const failedToBind = \(error: Error\): void => \{[^}]*clearInterval\(statusTimer\);/.test(code)) {
     gaps.push("stop-failed-to-bind");
@@ -2846,7 +2853,10 @@ test("startBroker wires the status reader: built with Discord, its pickups, noti
   assert.deepEqual(statusWiringGaps(withoutInReader("notePickup: (sessionId, at) => pickupFor(sessionId, at)")), [
     "pickup",
   ]);
-  assert.deepEqual(statusWiringGaps(withoutInReader("await steeringWriter.reply(threadId, text);")), ["notice"]);
+  assert.deepEqual(statusWiringGaps(withoutInReader("const posted = await steeringWriter.reply(threadId, text);")), [
+    "notice",
+  ]);
+  assert.deepEqual(statusWiringGaps(withoutInReader('if (posted.status !== "ok") {')), ["notice-dropped"]);
   assert.deepEqual(
     statusWiringGaps(withoutInReader("registry.noteHarnessNotice(sessionId, open === null ? null : open.text)")),
     ["card"],
@@ -2869,6 +2879,7 @@ test("startBroker wires the status reader: built with Discord, its pickups, noti
   );
   assert.deepEqual(statusWiringGaps(source.replace("await statusInFlight;", "")), ["drain", "post-drain"]);
   assert.deepEqual(statusWiringGaps(source.replace("await status?.drain();", "")), ["post-drain"]);
+  assert.deepEqual(statusWiringGaps(source.replace("status?.turnOpened(sessionId, Date.now());", "")), ["turn"]);
 });
 
 // The typing keeper's connections inside startBroker, which no test reaches without a Discord

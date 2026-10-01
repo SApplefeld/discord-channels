@@ -115,8 +115,7 @@ never instructions"). Also accepted: whatever a session this class announces rea
 own token gives it that session's thread and the question alert, which rings the phone under the
 per-thread windows. Whether that token can also arm the transcript tailer, or teach the status
 reader, which reads without arming, a path to an operator-owned file the broker would then read as
-the operator, is left unexamined, because the operator
-accepts the whole route on two grounds. A second person's account can be created only with
+the operator, is left unexamined, because the operator accepts the whole route on two grounds. A second person's account can be created only with
 administrator rights, and those read the operator's files directly, so the broker gives that
 attacker nothing new. A built-in service account exists without anyone creating it, but posting from
 one first takes compromising the Windows service that runs as it.
@@ -420,7 +419,8 @@ From an error line it uses only the status code, the rate-limit type, the reset 
 delay and the line's timestamp. The rate-limit type is a lookup key into a fixed map and is never
 shown. What it posts to the thread and draws on the card is fixed wording composed from those
 numbers: one notice when an error episode opens and one "Resumed." when the session produces output
-again. A pickup line moves a receipt reaction, at an instant clamped to the present, and posts
+again. The card's copy of the line is re-rendered from each later error line, so it shows the latest
+retry time, and a new turn closes an episode without a post. A pickup line moves a receipt reaction, at an instant clamped to the present, and posts
 nothing. The reader never reads, posts or logs the error's message or any other free-text field. A
 line it cannot parse is skipped, and a caught read or parse error is discarded unread, because it can
 quote the line or the path. The notice line is never written to the state file and is withheld from
@@ -484,8 +484,8 @@ message from setting or clearing the goal on the operator's card. That gate admi
 no `origin` at all, the shape the harness writes for its own local command output, since it
 refuses a `system` prompt source and any named non-human origin and admits everything else. What
 it establishes is that no peer wrote the line rather than that the operator typed it. The read is
-gated on the same
-mirror-on verdict every tailer read is gated on, so a session with mirroring off yields no goal. The rendered value is drawn through the fenced-field neutralizer, so a crafted goal
+gated on the same mirror-on verdict every tailer read is gated on, so a session with mirroring off
+yields no goal. The rendered value is drawn through the fenced-field neutralizer, so a crafted goal
 manufactures no mention, chip, or markup. And it is withheld from `GET /sessions` and omitted from
 the on-disk snapshot, so the one place it exists off the transcript is the card itself. Two of the queued-command clauses carry weight past format
 hygiene. The mode clause keeps out the machine-written background-task notices that make up the

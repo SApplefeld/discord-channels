@@ -227,7 +227,11 @@ test("while an episode is open every error line folds into it, whatever its requ
   await h.feed(apiError({ requestId: "req_a" }), apiError({ requestId: "req_a" }), apiError({ requestId: null }));
   await h.feed(apiError({ requestId: "req_b", status: 529, rateLimits: null }));
   assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "a second id while the episode is open posts nothing");
-  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE], "and records nothing new");
+  assert.deepEqual(
+    h.episodes,
+    [FIVE_HOUR_NOTICE, "API error (status 529). Retrying at 1:16 PM."],
+    "only the card line moves, to what the latest line renders",
+  );
   await h.feed(assistantText("ok"));
   // With none open, a line with no id opens an episode, and an id after it folds in.
   await h.feed(apiError({ requestId: null, status: 529, rateLimits: null }), apiError({ requestId: "req_c" }));
@@ -241,6 +245,89 @@ test("two episodes separated by output post two notices and two Resumed lines", 
   await h.feed(apiError({ requestId: "req_c" }), apiError({ requestId: "req_d" }), assistantText("back again"));
   assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, HARNESS_RESUMED, FIVE_HOUR_NOTICE, HARNESS_RESUMED]);
   assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null, FIVE_HOUR_NOTICE, null]);
+});
+
+test("the card line follows the latest retry time without a second post, and an identical line changes nothing", async (t) => {
+  const h = await harness(t);
+  const later = renderHarnessNotice(
+    {
+      rateLimited: true,
+      rateLimitType: "five_hour",
+      status: 429,
+      retryAt: STAMP_MS + 90_000,
+      resetsAt: Date.UTC(2026, 9, 1, 3, 0),
+    },
+    "UTC",
+  );
+  assert.notEqual(later, FIVE_HOUR_NOTICE, "the precondition: the later retry renders differently");
+  await h.feed(apiError({ requestId: "req_a", retryInMs: 30_000 }), apiError({ requestId: "req_b", retryInMs: 90_000 }));
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "the thread notice stays one per episode");
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, later], "the card line moves to the later retry time");
+  await h.feed(apiError({ requestId: "req_b", retryInMs: 90_000 }));
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, later], "a line rendering the same text reports nothing");
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE]);
+});
+
+test("a new turn closes an open episode without posting Resumed", async (t) => {
+  const h = await harness(t);
+  await h.feed(apiError());
+  h.reader.turnOpened(SESSION, STAMP_MS + 60_000);
+  await settle();
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null], "the card line and the ⚠️ swap are cleared");
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "and nothing says resumed");
+  await h.feed(assistantText("the new turn's output"));
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "output after the close finds no episode to resume");
+});
+
+test("error lines stamped before a new turn's floor open nothing, and a line after it opens a fresh episode", async (t) => {
+  const h = await harness(t);
+  const floor = STAMP_MS + 60_000;
+  await h.feed(apiError());
+  // The old turn's last error lines reach the file before the turn closes, and a later pass reads them.
+  appendFileSync(h.file, apiError({ retryInMs: 40_000 }) + apiError({ retryInMs: 50_000 }), "utf8");
+  h.reader.turnOpened(SESSION, floor);
+  await h.feed();
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null], "the stale lines neither reopen nor fold");
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE]);
+
+  const fresh = new Date(floor + 1_000).toISOString();
+  await h.feed(apiError({ timestamp: fresh }));
+  const freshNotice = renderHarnessNotice(
+    {
+      rateLimited: true,
+      rateLimitType: "five_hour",
+      status: 429,
+      retryAt: floor + 1_000 + 30_000,
+      resetsAt: Date.UTC(2026, 9, 1, 3, 0),
+    },
+    "UTC",
+  );
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, freshNotice], "a line after the floor opens a fresh episode");
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null, freshNotice]);
+
+  // A line with no readable instant cannot be placed against the floor, and is acted on as before.
+  await h.feed(assistantText("back"));
+  await h.feed(apiError({ timestamp: 12 }));
+  assert.equal(h.notices.length, 4, h.notices.join("\n"));
+});
+
+test("a channel turn-opening line closes the open episode silently, and a queued channel message does not", async (t) => {
+  const h = await harness(t);
+  await h.feed(apiError());
+  await h.feed(queuedChannel("2026-09-30T13:16:00.000Z"));
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE], "a message injected mid-turn is no new turn");
+  const opening = "2026-09-30T13:20:00.000Z";
+  await h.feed(channelTurnOpen(opening));
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null], "a channel message opening a turn closes the episode");
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "with no Resumed");
+  assert.deepEqual(
+    h.pickups.map((pickup) => pickup.at),
+    [Date.parse("2026-09-30T13:16:00.000Z"), Date.parse(opening)],
+    "both lines still credit pickup",
+  );
+  // The turn-opening line's own instant is the floor.
+  await h.feed(apiError({ timestamp: "2026-09-30T13:19:00.000Z" }));
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE]);
 });
 
 test("a session's posts start in order, each after the one before it settles", async (t) => {

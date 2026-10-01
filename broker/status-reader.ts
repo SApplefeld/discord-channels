@@ -16,7 +16,7 @@
 //   continuing an error episode.
 // - An `attachment` line recording a queued channel message injected mid-turn: a pickup credit.
 // - A root `user` line whose `origin` names this relay's channel: a Discord message opening a turn
-//   on an idle session, also a pickup credit.
+//   on an idle session, also a pickup credit, and a new turn that closes an open episode unannounced.
 // - While an episode is open, an `assistant` line, read for its type and its `isApiErrorMessage`
 //   flag alone: unflagged, the session is producing output again, which closes the episode.
 //
@@ -52,8 +52,9 @@ export type StatusReaderOptions = {
   /** Credits the session's pickup at the line's own instant; the broker's `pickupFor`. */
   notePickup: (sessionId: string, at: number) => void;
   /**
-   * Told when an episode opens, with the notice it posts, and with null when it closes. The broker
-   * feeds the card line and the ⚠️ receipt swap from it.
+   * Told when an episode opens, with the notice it posts; again while it stays open, whenever a later
+   * error line renders different text, such as a later retry time; and with null when it closes. The
+   * broker feeds the card line and the ⚠️ receipt swap from it. Only the opening call posts.
    */
   episode: (sessionId: string, open: { text: string } | null) => void;
   log?: (message: string) => void;
@@ -73,6 +74,13 @@ export type StatusReader = {
    */
   learn: (sessionId: string, path: string) => void;
   /**
+   * The session opened a new turn at `at`. An episode still open is the last turn's, which can end
+   * with no output line when it is interrupted or abandoned, so it closes without a "Resumed." post.
+   * `at` also becomes the session's floor: an error line stamped before it belongs to an earlier turn
+   * and is ignored, since a pass after this call can still read the old turn's last lines.
+   */
+  turnOpened: (sessionId: string, at: number) => void;
+  /**
    * One pass over every current session with a learned path. A call while a pass is running answers
    * with that pass. Never rejects in normal operation.
    */
@@ -91,11 +99,17 @@ type Entry = {
   /** The baseline probe `learn` started, awaited by a pass that lands before it resolves. */
   probe: Promise<void> | null;
   /**
-   * True while an error episode is open. Not keyed on the request id: each retry attempt is a new
-   * request with a new id, and the lines under one id are countdown rewrites of a single attempt,
-   * so one episode spans every id the harness tries until output resumes.
+   * The notice text the open error episode last reported, and null while none is open. Not keyed on
+   * the request id: each retry attempt is a new request with a new id, and the lines under one id
+   * are countdown rewrites of a single attempt, so one episode spans every id the harness tries
+   * until output resumes.
    */
-  episode: boolean;
+  episode: string | null;
+  /**
+   * The instant the session's latest turn opened, and null before any. An error line stamped before
+   * it belongs to an earlier turn and is ignored.
+   */
+  floor: number | null;
 };
 
 const REPEAT_WINDOW_MS = 60_000;
@@ -170,8 +184,8 @@ function carriesToolResult(message: unknown): boolean {
 
 /** What one line asks of the reader. */
 type StatusItem =
-  | { kind: "error"; fields: HarnessErrorFields }
-  | { kind: "pickup"; at: number }
+  | { kind: "error"; fields: HarnessErrorFields; at: number | null }
+  | { kind: "pickup"; at: number; opensTurn: boolean }
   | { kind: "output" };
 
 /**
@@ -205,7 +219,7 @@ function statusItem(line: string, sessionId: string, episodeOpen: boolean): Stat
   if (record["sessionId"] !== sessionId) return null;
   const type = record["type"];
   if (type === "system" && record["subtype"] === "api_error") {
-    return { kind: "error", fields: harnessError(record) };
+    return { kind: "error", fields: harnessError(record), at: lineInstant(record) };
   }
   if (type === "assistant") {
     // A failed request's terminal record is an assistant line flagged `isApiErrorMessage`. It is the
@@ -219,14 +233,15 @@ function statusItem(line: string, sessionId: string, episodeOpen: boolean): Stat
     if (attachment["commandMode"] !== "prompt") return null;
     if (!relayChannelOrigin(attachment["origin"])) return null;
     const at = lineInstant(record);
-    return at === null ? null : { kind: "pickup", at };
+    // Injected into a running turn, so it opens none.
+    return at === null ? null : { kind: "pickup", at, opensTurn: false };
   }
   if (type === "user") {
     // `isMeta` is deliberately not consulted: every real channel turn-opener carries it as true.
     if (!relayChannelOrigin(record["origin"])) return null;
     if (carriesToolResult(record["message"])) return null;
     const at = lineInstant(record);
-    return at === null ? null : { kind: "pickup", at };
+    return at === null ? null : { kind: "pickup", at, opensTurn: true };
   }
   return null;
 }
@@ -274,22 +289,37 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
     const held = sessions.get(sessionId);
     // Every credited hook post re-teaches the same path, and the held offset must survive that.
     if (held !== undefined && held.path === path) return;
-    // A new path baselines fresh. An episode open on the old file stays open: it is the session's,
-    // and the next line on the new file either continues or closes it.
-    const entry: Entry = { path, offset: null, probe: null, episode: held?.episode ?? false };
+    // A new path baselines fresh. An episode open on the old file stays open, and the turn floor
+    // stands: both are the session's, and the next line on the new file continues or closes it.
+    const entry: Entry = {
+      path,
+      offset: null,
+      probe: null,
+      episode: held?.episode ?? null,
+      floor: held?.floor ?? null,
+    };
     sessions.set(sessionId, entry);
     startProbe(sessionId, entry);
   }
 
   /** Closes a session's episode, posting `Resumed.` only when `announce` is set. */
   function closeEpisode(sessionId: string, held: Entry, announce: boolean): void {
-    held.episode = false;
+    held.episode = null;
     try {
       options.episode(sessionId, null);
     } catch {
       repeats(`session ${sessionId}'s episode close could not be recorded`, "the error detail is withheld");
     }
     if (announce) post(sessionId, HARNESS_RESUMED);
+  }
+
+  function turnOpened(sessionId: string, at: number): void {
+    const held = sessions.get(sessionId);
+    // A session with no entry has no episode to close, and its first learn baselines at the file's
+    // end, which already puts the old turn's lines behind it.
+    if (held === undefined) return;
+    held.floor = held.floor === null ? at : Math.max(held.floor, at);
+    if (held.episode !== null) closeEpisode(sessionId, held, false);
   }
 
   function post(sessionId: string, text: string): void {
@@ -316,26 +346,44 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
 
   function act(sessionId: string, held: Entry, item: StatusItem): void {
     if (item.kind === "pickup") {
+      // A line stamped ahead of this host's clock must not credit a message delivered after this
+      // read, so the instant is capped at now. The same cap keeps a future stamp from raising the
+      // turn floor past errors that have not happened yet.
+      const at = Math.min(item.at, now());
       try {
-        // A line stamped ahead of this host's clock must not credit a message delivered after this
-        // read, so the instant is capped at now.
-        options.notePickup(sessionId, Math.min(item.at, now()));
+        options.notePickup(sessionId, at);
       } catch {
         repeats(`session ${sessionId}'s pickup could not be recorded`, "the error detail is withheld");
       }
+      // A channel message opening a turn on an idle session is a new turn, the same as a credited
+      // prompt the broker hears about directly.
+      if (item.opensTurn) turnOpened(sessionId, at);
       return;
     }
     if (item.kind === "output") {
-      if (held.episode) closeEpisode(sessionId, held, true);
+      if (held.episode !== null) closeEpisode(sessionId, held, true);
       return;
     }
-    // One notice per episode, never per retry: while an episode is open every error line folds into
-    // it, whatever its request id, and only output closes it.
-    if (held.episode) return;
-    // Rendered before the episode is recorded open, so a render that throws leaves no episode open
+    // An error stamped before the latest turn opened is the old turn's, read late by this pass. A
+    // line with no readable instant cannot be placed, so it is acted on.
+    if (item.at !== null && held.floor !== null && item.at < held.floor) return;
+    // Rendered before the episode is recorded, so a render that throws leaves no episode open
     // without its notice.
     const text = renderHarnessNotice(item.fields, options.timeZone);
-    held.episode = true;
+    // One notice per episode, never per retry: while an episode is open every error line folds into
+    // it, whatever its request id, and only output or a new turn closes it. A folded line still
+    // moves the card line when it renders differently, so the retry time shown is the latest one.
+    if (held.episode !== null) {
+      if (text === held.episode) return;
+      held.episode = text;
+      try {
+        options.episode(sessionId, { text });
+      } catch {
+        repeats(`session ${sessionId}'s episode could not be recorded`, "the error detail is withheld");
+      }
+      return;
+    }
+    held.episode = text;
     try {
       options.episode(sessionId, { text });
     } catch {
@@ -390,7 +438,7 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
     for (const raw of consumed.split("\n")) {
       const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
       if (line === "") continue;
-      const episodeOpen = held.episode;
+      const episodeOpen = held.episode !== null;
       if (!worthParsing(line, episodeOpen)) continue;
       const item = statusItem(line, sessionId, episodeOpen);
       if (item !== null) act(sessionId, held, item);
@@ -404,7 +452,7 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
       sessions.delete(sessionId);
       // Closed without a post: the session is gone, so there is nothing to say resumed, but the card
       // line and the ⚠️ reactions must not outlive it.
-      if (held.episode) closeEpisode(sessionId, held, false);
+      if (held.episode !== null) closeEpisode(sessionId, held, false);
     }
     await Promise.all(
       [...current].map(async (sessionId) => {
@@ -436,5 +484,5 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
     await Promise.all([...chains.values()]);
   }
 
-  return { learn, poll, drain };
+  return { learn, turnOpened, poll, drain };
 }

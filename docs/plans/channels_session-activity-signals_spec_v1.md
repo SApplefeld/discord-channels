@@ -39,7 +39,7 @@ Operator decisions:
 
 ## Standing Brief Amendments
 
-- **Section 3, mirror-off read bounds.** In a mirror-off transcript, the reader acts only on a `system` line with subtype `api_error` and on the queued-message line named below, uses only their structured fields, and fails closed on any line it cannot parse. No text from any mirror-off line is ever published.
+- **Section 3, mirror-off read bounds.** In a mirror-off transcript, the reader acts only on a `system` line with subtype `api_error`, on the queued-message line and the turn-opening line named below, and, while an error episode is open, on an `assistant` line read for its type and its `isApiErrorMessage` flag alone. It uses only their structured fields, and fails closed on any line it cannot parse. No text from any mirror-off line is ever published.
 - **Section 3, mirror-off pickup.** The mirror-off reader also reads the transcript line that records a queued message being injected mid-turn, using only its type and timestamp, and calls Section 1's pickup entry point with that timestamp. Acceptance: a mirror-off session's message delivered mid-turn moves from 📨 to 👀 when that line appears, and none of the line's text reaches Discord.
 - **Section 3, reader coverage.** The status reader runs for every session whose transcript path the broker has learned, whether or not the interim tailer is built on this host. With `CHANNEL_INTERIM_MIRROR` off or the host-wide mirror off, no tailer exists, and the mid-turn pickup of a message injected into a running turn comes only from this reader.
 - **Section 3, turn-opening pickup.** The same reader also credits pickup, with the line's own timestamp, for a `user` line whose root `origin` kind is `channel` and whose server names this relay: the line a Discord message writes when it opens a turn on an idle session. That covers a turn whose `UserPromptSubmit` post the broker never received.
@@ -91,7 +91,7 @@ Gate: answered 2026-09-30, see Operator decisions under Intent.
 
 When a session's transcript records an `api_error` line, the broker posts one short notice in its thread. On a pending inbound message, it also swaps the stage reaction to ⚠️.
 
-- **One notice per episode, never per retry.** An episode is a run of `api_error` lines between two outputs. Every line in it folds into the one notice, whatever its request id, and only the next output closes it. (As built: each retry attempt is a new request with a new id, and the lines under one id are countdown rewrites of a single attempt, so keying on the id would post once per retry. Measured 2026-09-30 across this machine's transcripts: 21 of 33 episodes span more than one id, the largest 16.)
+- **One notice per episode, never per retry.** An episode is a run of `api_error` lines between two outputs. Every line in it folds into the one notice, whatever its request id, and only the next output or a new turn closes it. Each retry attempt is a new request with a new id, so the request id cannot key an episode.
 - **Built from structured fields only.** The notice is rendered in fixed wording from `status`, `rateLimitType`, `resetsAt` and `retryInMs`. For example: "Rate-limited (seven-day Fable limit). Retrying at 1:16 PM, limit resets 3:00 AM." The error's free-text message is never posted.
 - **A recovery line closes the episode.** When the next assistant output or tool call appears, post "Resumed," and restore the stage reaction.
 - **The notice reaches the card.** Where the card has room, it carries the same one line under the session's state.

@@ -1370,9 +1370,18 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // The unfloored route: `notice` drops a second post inside a minute, which would swallow the
       // "Resumed." that follows a short retry wait. The reader posts once per episode and once per
       // recovery, so the floor has nothing left to collapse.
+      // A post the writer's budget refuses resolves rather than rejects, so it is logged here, with
+      // the session id and the outcome's status alone. Not retried: the next episode posts afresh.
       notice: async (sessionId, text) => {
         const threadId = threadFor(sessionId);
-        if (threadId !== null) await steeringWriter.reply(threadId, text);
+        if (threadId === null) return;
+        const posted = await steeringWriter.reply(threadId, text);
+        if (posted.status !== "ok") {
+          note(
+            `broker: session ${sessionId}'s harness notice was not posted: ` +
+              (posted.status === "rate-limited" ? "rate limited" : "failed"),
+          );
+        }
       },
       notePickup: (sessionId, at) => pickupFor(sessionId, at),
       // The card line and the ⚠️ swap on the session's still-unanswered messages, both cleared when
@@ -1454,6 +1463,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
           turns: {
             opened: (sessionId: string) => {
               registry.noteTurnOpened(sessionId);
+              // A new turn closes an error episode the last turn left open, which an interrupted or
+              // abandoned turn does by writing no output line.
+              status?.turnOpened(sessionId, Date.now());
             },
             closed: (sessionId: string) => {
               const threadId = threadFor(sessionId);
