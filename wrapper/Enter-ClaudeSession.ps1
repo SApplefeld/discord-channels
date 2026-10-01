@@ -96,8 +96,8 @@ function Resolve-ChannelFlag {
     $flag = $Value.Trim()
     if ($script:AllowedChannelFlags -cnotcontains $flag) {
         throw "Enter-ClaudeSession: CHANNEL_LAUNCH_FLAG is '$flag', which is not a channel flag. " +
-            "Set it to one of: $($script:AllowedChannelFlags -join ', '), or clear it to launch " +
-            "with $script:DefaultChannelFlag."
+            "Set it to one of: $($script:AllowedChannelFlags -join ', ') (matched exactly, " +
+            "case included), or clear it to launch with $script:DefaultChannelFlag."
     }
     return $flag
 }

@@ -283,7 +283,9 @@ discloses that much of itself on all three surfaces.
 That also makes an environment variable a privacy control surface, alongside the files below:
 anything that can set `CHANNEL_SESSION_MIRROR` for a session influences whether that session is
 mirrored, and anything that can set `CHANNEL_MIRROR` in the broker's own environment influences the
-host.
+host. Anything that can set the operator's `CHANNEL_LAUNCH_FLAG` chooses whether the wrapper loads
+the relay through the managed allowlist or through the development flag, a choice between two
+routes on the execution chain below rather than a new one.
 
 No key stronger than the token is available to close this. The mirror hooks are `http` hooks whose
 only credential is an environment variable Claude Code interpolates into a header, and any variable

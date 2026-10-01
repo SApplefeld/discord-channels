@@ -194,6 +194,11 @@ test("a CHANNEL_LAUNCH_FLAG that is not a channel flag refuses the launch", (t) 
 
   const run = runLaunch(dir, "--channel");
   assert.notEqual(run.status, 0, "the wrapper launched on a misspelt flag");
-  assert.match(run.stderr, /CHANNEL_LAUNCH_FLAG is '--channel', which is not a channel flag/);
+  // PowerShell wraps a thrown message across lines at the console width, so the tokens are read
+  // from the stream with its whitespace collapsed.
+  const stderr = run.stderr.replace(/\s+/g, " ");
+  for (const token of ["CHANNEL_LAUNCH_FLAG", "'--channel'", "--channels,", "--dangerously-load-development-channels"]) {
+    assert.ok(stderr.includes(token), `the refusal does not name ${token}: ${run.stderr}`);
+  }
   assert.equal(run.args, null, "claude was called despite the refusal");
 });

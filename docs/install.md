@@ -148,8 +148,8 @@ malformed ID or port on disk naming the key. An argument you supply always wins,
 rebound to a different channel.
 
 Step 1 stays manual either way (it is Discord's web console), and a host still runs the per-host
-verification checklist under "The relay as a plugin" on its first wrapped launch. The sections below describe what the one command does, and remain the way to run any
-piece alone.
+verification checklist under "The relay as a plugin" on its first wrapped launch. The sections
+below describe what the one command does, and remain the way to run any piece alone.
 
 ## 2. Provision the host
 
