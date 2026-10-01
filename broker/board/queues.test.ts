@@ -1657,6 +1657,35 @@ test("only the entry the store calls active takes the store's turn time", (t) =>
   assert.notEqual(word("paused"), "in flight");
 });
 
+test("a worker at its round limit is on its entry for the store's turn time and store-only reading", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const hour = 60 * 60 * 1_000;
+  const now = Date.now();
+  const limited = { status: "blocked", blockedReason: " max rounds REACHED", chapterCount: 9 };
+  const worktreeFile = work.file(["docs", "plans"], WORKTREE_PLAN, elevenSectionDoc());
+  const parkedFile = work.file(["docs", "plans"], "parked_v1.md", elevenSectionDoc());
+  utimesSync(worktreeFile, (now - 3 * hour) / 1_000, (now - 3 * hour) / 1_000);
+  utimesSync(parkedFile, (now - 2 * hour) / 1_000, (now - 2 * hour) / 1_000);
+  work.store(
+    store([
+      goal({ id: "parked", planPath: "parked_v1.md" }),
+      goal({ id: "worktree", planPath: WORKTREE_PLAN, ...limited }),
+      goal({ id: "elsewhere", planPath: "elsewhere_v1.md", ...limited }),
+      goal({ id: "stopped", planPath: "stopped_v1.md", ...limited, blockedReason: "needs a key" }),
+    ]),
+  );
+  const storeAt = now - hour;
+  utimesSync(path.join(work.dir, STORE_FILE_NAME), storeAt / 1_000, storeAt / 1_000);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.ok(queue !== undefined);
+  const status = personaStatus(queue, initialEventState(), now);
+  assert.equal(status.entries.find((entry) => entry.id === "worktree")?.word, "in flight");
+  assert.equal(live(queue.readings.get("elsewhere")).completed, 9, "the round limit is ordinary running");
+  assert.equal(queue.readings.has("stopped"), false, "a real block is not the worker on its entry");
+});
+
 test("a store-only reading draws as in flight, and a store write never clears its block", (t) => {
   const work = workdir();
   t.after(work.cleanup);

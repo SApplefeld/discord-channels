@@ -546,15 +546,18 @@ linked worktree writes its Chapters to a copy of the plan the card never reads, 
 records the Chapter count in the store. Where the store's `chapterCount` for an entry is above the
 Chapters the launch folder's file holds, the card draws the store's count. It also draws the store's
 next step where the store carries one, and no next step where it does not, since the file's names a
-section the worker has passed. Where the file's count is equal or higher, the file wins. The store
-is rewritten at every turn end, so where it overrides the entry it calls active, that entry is
-weighed for `in progress` by the later of its file's time and the store's. A block still ages by the
-file's time alone. An active
-entry carrying a Chapter count, whose plan has no file in any of the four folders, draws from the
-store alone, as `9 chapters` where the store carries no section total. Once such an entry draws
-blocked, it stays blocked until its goal completes, the store stops calling it active, or the store
-drops its Chapter count. The store is rewritten every turn, so its time cannot say a Chapter landed. Any other entry with no file
-there, such as one paused on a plan checked out on another branch, draws no count.
+section the worker has passed. Where the file's count is equal or higher, the file wins.
+
+The store says the worker is on an entry when it calls the entry active, or blocked with the reason
+`Max rounds reached`, which is ordinary running. The store is rewritten at every turn end, so where
+it overrides such an entry, that entry is weighed for `in progress` by the later of its file's time
+and the store's. A block still ages by the file's time alone. Such an entry carrying a Chapter
+count, whose plan has no file in any of the four folders, draws from the store alone, as
+`9 chapters` where the store carries no section total. Once it draws blocked, it stays blocked
+until its goal completes, the store stops saying the worker is on it, or the store drops its
+Chapter count. The store is rewritten every turn, so its time cannot say a Chapter landed. Any
+other entry with no file there, such as one paused on a plan checked out on another branch, draws
+no count.
 
 Each group opens with a shaded label: the persona's name, `N of M done`, and the worker's state.
 The state is `running now` while the heartbeat says the worker is inside a turn. Otherwise it is

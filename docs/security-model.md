@@ -941,10 +941,10 @@ because it is nearly free, and it carries no raised review on security grounds a
 The store contributes three progress fields as well, and none of them is ever used as a path. Each
 entry's `chapterCount` and `sectionCount` are kept only where the store wrote a finite, whole,
 non-negative number. Its `nextSection` is kept only where it is a string, whitespace-collapsed and
-held to the bound a plan document's own `Next:` value takes, and it is escaped on the card
-as that value is. The card draws them in place of a file whose count is behind the store's. It draws
-them alone for an active entry whose plan is in none of the four folders, and that entry opens
-nothing at all.
+held to `MAX_INTAKE_NEXT_LENGTH` in `broker/board/plans.ts`, the bound a plan document's own `Next:`
+value takes, and it is escaped on the card as that value is. The card draws them in place of a file
+whose count is behind the store's. It draws them alone for the entry the worker is on when its plan
+is in none of the four folders, and that entry opens nothing at all.
 
 The second is that roots are matched as strings, separator-normalized and case-folded on Windows,
 never by asking the filesystem whether two paths name the same place, and both readers fold through
