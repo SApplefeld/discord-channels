@@ -3078,7 +3078,7 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
   // transcript-sourced field is. A goal that neutralizes to nothing draws no block.
   const goal = goalLines(view, state);
   const notice = harnessNoticeLines(view, state);
-  const title =(name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
+  const title = (name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
   const heading = (name: string): string =>
     `${TITLE_HEADING} ${GLYPHS[state]} ${name} ${SEPARATOR} ${label}`;
   const compose = (count: number): string => {

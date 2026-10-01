@@ -1360,10 +1360,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let statusInFlight: Promise<void> = Promise.resolve();
   if (discord !== null) {
     const reader = createStatusReader({
-      liveSessions: () =>
+      // Stale sessions included: a session waiting out a long retry fires no hooks and goes stale,
+      // and dropping it would clear its card line and ⚠️ without ever saying "Resumed.".
+      currentSessions: () =>
         registry
           .list()
-          .filter((record) => record.state === "live")
+          .filter((record) => record.state !== "ended")
           .map((record) => record.sessionId),
       // The unfloored route: `notice` drops a second post inside a minute, which would swallow the
       // "Resumed." that follows a short retry wait. The reader posts once per episode and once per
@@ -2093,6 +2095,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     await inFlight;
     await tailInFlight;
     await statusInFlight;
+    // The status reader's notices are posted off its pass, so they are awaited apart from it. Not
+    // bounded here, as the card drains below are not: each post is one Discord call.
+    await status?.drain();
     // The card's pass may still be waiting on a Discord edit, and its binding write follows that
     // call's return.
     if (cardDrain !== null) await cardDrain;

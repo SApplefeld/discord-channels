@@ -113,8 +113,9 @@ preview, the task roster, the title, the model reading and the engagement timest
 class could not otherwise read ("The trust boundary", "The process token authenticates reports,
 never instructions"). Also accepted: whatever a session this class announces reaches. Minting its
 own token gives it that session's thread and the question alert, which rings the phone under the
-per-thread windows. Whether that token can also arm the transcript tailer against an operator-owned
-file, which the broker would then read as the operator, is left unexamined, because the operator
+per-thread windows. Whether that token can also arm the transcript tailer, or teach the status
+reader, which reads without arming, a path to an operator-owned file the broker would then read as
+the operator, is left unexamined, because the operator
 accepts the whole route on two grounds. A second person's account can be created only with
 administrator rights, and those read the operator's files directly, so the broker gives that
 attacker nothing new. A built-in service account exists without anyone creating it, but posting from
@@ -337,7 +338,9 @@ a local process park every session on the host by spending it first, turning phi
 ## The transcript is read, not posted
 
 Everything above describes content that reaches Discord because a session posted it. The transcript
-tailer is the one stream that reaches Discord because the broker went and read it. Two things the
+tailer is the one stream whose content reaches Discord because the broker went and read it. The
+status reader, described at the end of this section, also reads transcripts, but nothing it
+publishes carries text from them. Two things the
 console shows are carried by no hook payload: the text a model writes between tool calls, and a
 message the operator types while the model is mid-turn, which the harness queues and injects without
 firing the hook the mirror rides. So `broker/tail.ts` polls the session's own transcript file, the
@@ -361,14 +364,15 @@ where the file is the only authority for it.
 That inverts the direction a mirror switch has to fail in, and the design accounts for it.
 Everywhere else, suppression means the hooks post nothing, so an absent signal means absent content.
 Here an absent signal would mean the broker reads and publishes anyway. **So the tailer reads
-nothing until it is armed.** A session's transcript is not opened at all until an explicit
+nothing until it is armed.** The tailer does not open a session's transcript until an explicit
 mirror-on verdict has arrived for that session under the current broker process, which every
 `/mirror` post from a live session carries, and that names that very session: a post naming another
 session or naming none is a subprocess mirroring a conversation of its own, which the router already
 refuses to post, and it is not this session's verdict to give. A session launched `-NoMirror` is
 never armed by its own traffic under any ordering, a broker restarted mid-turn narrates nothing for
 the remainder of that turn, and a transcript path learned without an accompanying verdict is a path
-that is never read.
+the tailer never reads. The status reader is the one reader that needs no verdict, and the paragraph
+on it below states the narrower contract that replaces arming there.
 
 The two halves of the verdict take deliberately different evidence, and both routes that carry a
 verdict hold the same split. Suppression is recorded on the process token alone, before the
@@ -397,6 +401,39 @@ intake reads whether a `PostToolUse` payload carries an `agent_id`, as a presenc
 is never stored, logged or published. The turn's activity instant is never written to the state file
 and is withheld from `GET /sessions`. A `401` on the typing route halts the whole Discord refresh,
 the same as on any surface write, because discord.js discards a rejected token.
+
+**The status reader reads every learned transcript, mirror-off included, and publishes no text from
+any of them.** It is the one transcript reader that needs no mirror-on verdict, so it is held to a
+narrower contract than arming. `broker/status-reader.ts` reads the transcript of every session that
+has not ended and whose path a credited hook post has taught it, refusing a path whose filename stem
+is not the session id, as the tailer does. It is built wherever Discord is configured, whether or
+not the tailer is. It acts on four line shapes and skips everything else:
+
+- a `system` line with subtype `api_error`;
+- an `attachment` line of type `queued_command` whose `origin` names this relay's channel server;
+- a root `user` line whose `origin` kind is `channel` and whose server names this relay, unless its
+  content holds a `tool_result` block, which is tool output quoting a channel message;
+- while an error episode is open, an `assistant` line, read for its type and its
+  `isApiErrorMessage` flag alone.
+
+From an error line it uses only the status code, the rate-limit type, the reset time, the retry
+delay and the line's timestamp. The rate-limit type is a lookup key into a fixed map and is never
+shown. What it posts to the thread and draws on the card is fixed wording composed from those
+numbers: one notice when an error episode opens and one "Resumed." when the session produces output
+again. A pickup line moves a receipt reaction, at an instant clamped to the present, and posts
+nothing. The reader never reads, posts or logs the error's message or any other free-text field. A
+line it cannot parse is skipped, and a caught read or parse error is discarded unread, because it can
+quote the line or the path. The notice line is never written to the state file and is withheld from
+`GET /sessions`. The operator approved this status-only read of mirror-off transcripts, recorded
+under the operator decisions in the session activity signals plan: the mirror-off switch governs
+what is published to a thread, not what the broker may read to derive a status.
+
+The notices ride the writer's unfloored reply route, because the notice route's one-minute floor
+would drop a "Resumed." that follows a short retry wait. A process that can write a session's
+transcript can therefore mint one post per error line and output line it alternates, against the
+create-message budget the session's replies and the permission prompt share. These posts carry no
+mention and reach no phone. Their volume is not yet bounded per thread, and `docs/backlog.md`
+carries that bound as an open item.
 
 **What the tailer extracts is decided by an allowlist, never by a denylist.** The transcript belongs
 to another program and can grow line shapes without notice, so a line yields something only by
@@ -448,8 +485,7 @@ no `origin` at all, the shape the harness writes for its own local command outpu
 refuses a `system` prompt source and any named non-human origin and admits everything else. What
 it establishes is that no peer wrote the line rather than that the operator typed it. The read is
 gated on the same
-mirror-on verdict every other transcript read is gated on, so a session with mirroring off yields
-nothing. The rendered value is drawn through the fenced-field neutralizer, so a crafted goal
+mirror-on verdict every tailer read is gated on, so a session with mirroring off yields no goal. The rendered value is drawn through the fenced-field neutralizer, so a crafted goal
 manufactures no mention, chip, or markup. And it is withheld from `GET /sessions` and omitted from
 the on-disk snapshot, so the one place it exists off the transcript is the card itself. Two of the queued-command clauses carry weight past format
 hygiene. The mode clause keeps out the machine-written background-task notices that make up the

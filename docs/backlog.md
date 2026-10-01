@@ -649,6 +649,16 @@ and none carries a date of its own. An item added from here on carries `(parked 
   end that window. It changes the installed hooks fragment, which every host must re-apply, so it
   was not done inside that plan.
 
+- Bound the status reader's notice volume per thread (parked 2026-09-30, from the Session Activity
+  Signals plan's section 3 security review). The reader posts one notice when an error episode opens
+  and one "Resumed." when output returns, on the writer's unfloored reply route. A process that can
+  write a session's transcript can alternate `api_error` and `assistant` lines to mint one post per
+  pair, against the create-message budget the session's replies and the permission prompt share.
+  The posts carry no mention, so they reach no phone. The model-change notice already has a
+  per-thread window for the phone-reaching version of this risk (`docs/security-model.md`, "A model
+  change is the third mention-bearing write"). A window of the same shape on episode opens would
+  close the gap. It was not done in that plan because the spec names no such guard.
+
 ## Snapshots
 
 Completed items are archived to `archive/backlog-YYYY-QN.md`.

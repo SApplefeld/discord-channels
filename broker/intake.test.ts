@@ -2081,7 +2081,7 @@ test("with no tailer built, a credited post still teaches the status reader its 
   writeFileSync(file, "", "utf8");
   const notices: string[] = [];
   const reader = createStatusReader({
-    liveSessions: () => ["session-a"],
+    currentSessions: () => ["session-a"],
     notice: async (_sessionId, text) => {
       notices.push(text);
     },

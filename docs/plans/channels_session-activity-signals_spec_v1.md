@@ -91,7 +91,7 @@ Gate: answered 2026-09-30, see Operator decisions under Intent.
 
 When a session's transcript records an `api_error` line, the broker posts one short notice in its thread. On a pending inbound message, it also swaps the stage reaction to ⚠️.
 
-- **One notice per episode, never per retry.** The harness rewrites the countdown every 30 seconds under one `requestId`. Key the episode on the request id, and post again only when the id changes.
+- **One notice per episode, never per retry.** An episode is a run of `api_error` lines between two outputs. Every line in it folds into the one notice, whatever its request id, and only the next output closes it. (As built: each retry attempt is a new request with a new id, and the lines under one id are countdown rewrites of a single attempt, so keying on the id would post once per retry. Measured 2026-09-30 across this machine's transcripts: 21 of 33 episodes span more than one id, the largest 16.)
 - **Built from structured fields only.** The notice is rendered in fixed wording from `status`, `rateLimitType`, `resetsAt` and `retryInMs`. For example: "Rate-limited (seven-day Fable limit). Retrying at 1:16 PM, limit resets 3:00 AM." The error's free-text message is never posted.
 - **A recovery line closes the episode.** When the next assistant output or tool call appears, post "Resumed," and restore the stage reaction.
 - **The notice reaches the card.** Where the card has room, it carries the same one line under the session's state.

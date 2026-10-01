@@ -113,7 +113,7 @@ export type ReceiptTrackerOptions = {
 };
 
 export type ReceiptTracker = {
-  /** The message was handed to the session: track it and paint 📨. */
+  /** The message was handed to the session: track it and paint 📨, or ⚠️ while the thread is warned. */
   delivered: (threadId: string, messageId: string, at: number) => void;
   /**
    * A turn in this thread started carrying every message still at 📨 whose `deliveredAt` is at or
@@ -130,7 +130,8 @@ export type ReceiptTracker = {
   answered: (threadId: string, at: number) => void;
   /**
    * The thread's session hit a harness error: every message still tracked, which is every one not
-   * yet answered, swaps its stage reaction to ⚠️. A message already warned is left as it stands.
+   * yet answered, swaps its stage reaction to ⚠️. A message already warned is left as it stands,
+   * and a message delivered before `restore` is painted ⚠️ from the start.
    */
   warn: (threadId: string) => void;
   /**
@@ -174,6 +175,10 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
   // nothing is chained behind the last task that ran, so a thread with no live traffic does not
   // hold a queue entry forever; the budget above outlives this unless the thread was forgotten.
   const queues = new Map<string, Promise<void>>();
+  // The threads whose session has a harness error episode open, set by `warn` and cleared by
+  // `restore` or `forget`. A message delivered into one of these is painted ⚠️ straight away, since
+  // a message queued during a long retry wait is the case the warning exists for.
+  const episodes = new Set<string>();
   let loggedAt: number | null = null;
   let suppressed = 0;
 
@@ -313,16 +318,19 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
   return {
     delivered(threadId, messageId, at) {
       const list = trackedFor(threadId);
+      // Delivered into an open episode, the message shows ⚠️ in place of 📨, and `restore` paints
+      // its recorded stage once the episode closes.
+      const warned = episodes.has(threadId);
       const entry: Tracked = {
         messageId,
         deliveredAt: at,
         pickedUpAt: null,
         painted: new Set(),
-        warned: false,
+        warned,
       };
       list.push(entry);
       if (list.length > MAX_TRACKED_PER_THREAD) list.shift();
-      enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.delivered));
+      enqueue(threadId, transition(threadId, entry, warned ? STAGE_EMOJI.warning : STAGE_EMOJI.delivered));
     },
 
     pickedUp(threadId, at) {
@@ -377,6 +385,7 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
     },
 
     warn(threadId) {
+      episodes.add(threadId);
       const list = threads.get(threadId);
       if (list === undefined) return;
       for (const entry of list) {
@@ -387,6 +396,7 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
     },
 
     restore(threadId) {
+      episodes.delete(threadId);
       const list = threads.get(threadId);
       if (list === undefined) return;
       for (const entry of list) {
@@ -400,6 +410,7 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
     forget(threadId) {
       threads.delete(threadId);
       lastAnsweredAt.delete(threadId);
+      episodes.delete(threadId);
       // The queue is left alone: a chain still running for this thread (a write already in flight
       // when the thread was retired) must keep the entry its own drain cleanup reads, or a later
       // write racing in under the same id would collide with a chain nothing here is tracking

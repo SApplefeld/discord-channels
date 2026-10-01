@@ -17,8 +17,8 @@
 // - An `attachment` line recording a queued channel message injected mid-turn: a pickup credit.
 // - A root `user` line whose `origin` names this relay's channel: a Discord message opening a turn
 //   on an idle session, also a pickup credit.
-// - While an episode is open, an `assistant` line, read for its type alone: the session is producing
-//   output again, which closes the episode.
+// - While an episode is open, an `assistant` line, read for its type and its `isApiErrorMessage`
+//   flag alone: unflagged, the session is producing output again, which closes the episode.
 //
 // A line that fails to parse, names another session, is a sidechain, or matches none of these is
 // skipped, and a caught error is discarded unread, because a parse or read error can quote the line
@@ -37,22 +37,27 @@ import {
 import type { TranscriptSlice } from "./tail.ts";
 
 export type StatusReaderOptions = {
-  /** The session ids the registry holds live; each pass reads these and drops every other entry. */
-  liveSessions: () => string[];
   /**
-   * Posts one fixed-wording line to the session's own thread. The result is not consulted, and a
-   * rejection is caught and logged without its detail.
+   * The session ids the registry has not ended, stale ones included; each pass reads these and
+   * drops every other entry. A session waiting out a long retry fires no hooks and goes stale, and
+   * its episode has to outlive that so its recovery is still read and announced.
+   */
+  currentSessions: () => string[];
+  /**
+   * Posts one fixed-wording line to the session's own thread. A session's posts run one at a time
+   * in the order they were made, each starting once the one before it settles. The result is not
+   * consulted, and a rejection is caught and logged without its detail.
    */
   notice: (sessionId: string, text: string) => Promise<unknown>;
   /** Credits the session's pickup at the line's own instant; the broker's `pickupFor`. */
   notePickup: (sessionId: string, at: number) => void;
   /**
-   * Told when an episode opens or moves to a new request, with the notice it posted, and with null
-   * when it closes. The broker feeds the card line and the ⚠️ receipt swap from it.
+   * Told when an episode opens, with the notice it posts, and with null when it closes. The broker
+   * feeds the card line and the ⚠️ receipt swap from it.
    */
   episode: (sessionId: string, open: { text: string } | null) => void;
   log?: (message: string) => void;
-  /** Drives the repeat-log rate limiter. */
+  /** Drives the repeat-log rate limiter, and caps a pickup instant so a future stamp credits nothing early. */
   now?: () => number;
   /** The one read this module performs. Injected so a test can count reads or fail them. */
   readFile?: (path: string, offset: number, maxBytes: number) => Promise<TranscriptSlice>;
@@ -68,17 +73,16 @@ export type StatusReader = {
    */
   learn: (sessionId: string, path: string) => void;
   /**
-   * One pass over every live session with a learned path. A call while a pass is running answers
+   * One pass over every current session with a learned path. A call while a pass is running answers
    * with that pass. Never rejects in normal operation.
    */
   poll: () => Promise<void>;
+  /**
+   * Settles once every notice already handed to a session's post chain has settled. Shutdown awaits
+   * it after the pass, so a notice in flight is not cut off by the teardown that follows.
+   */
+  drain: () => Promise<void>;
 };
-
-/**
- * The episode key of an `api_error` line that carried no request id. A line with no id while an
- * episode is open folds into that episode; with none open it opens one under this key.
- */
-const NO_REQUEST_ID = Symbol("no request id");
 
 type Entry = {
   path: string;
@@ -86,8 +90,12 @@ type Entry = {
   offset: number | null;
   /** The baseline probe `learn` started, awaited by a pass that lands before it resolves. */
   probe: Promise<void> | null;
-  /** The open episode's request id, or null while no episode is open. */
-  episode: string | typeof NO_REQUEST_ID | null;
+  /**
+   * True while an error episode is open. Not keyed on the request id: each retry attempt is a new
+   * request with a new id, and the lines under one id are countdown rewrites of a single attempt,
+   * so one episode spans every id the harness tries until output resumes.
+   */
+  episode: boolean;
 };
 
 const REPEAT_WINDOW_MS = 60_000;
@@ -119,34 +127,25 @@ function finite(value: unknown): number | null {
 }
 
 /**
- * The structured fields of an `api_error` line and its request id, validated. The error's own
- * message, its formatted text and every field not named here are never read.
+ * The structured fields of an `api_error` line, validated. The error's own message, its formatted
+ * text, its request id and every field not named here are never read.
  */
-function harnessError(record: Record<string, unknown>): {
-  fields: HarnessErrorFields;
-  requestId: string | null;
-} {
+function harnessError(record: Record<string, unknown>): HarnessErrorFields {
   const error = objectOf(record["error"]);
   const rawStatus = error === null ? null : finite(error["status"]);
   const status =
     rawStatus !== null && Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599 ? rawStatus : null;
-  // An equality key only: compared against the open episode's and never rendered or logged.
-  const rawId = error === null ? undefined : error["requestId"];
-  const requestId = typeof rawId === "string" && rawId !== "" ? rawId : null;
   const limits = error === null ? null : objectOf(error["rateLimits"]);
   const limitType = limits === null ? undefined : limits["rateLimitType"];
   const resetsAtSeconds = limits === null ? null : finite(limits["resetsAt"]);
   const at = lineInstant(record);
   const retryInMs = finite(record["retryInMs"]);
   return {
-    fields: {
-      rateLimited: limits !== null,
-      rateLimitType: typeof limitType === "string" ? limitType : null,
-      status,
-      retryAt: at !== null && retryInMs !== null && retryInMs >= 0 ? at + retryInMs : null,
-      resetsAt: resetsAtSeconds === null ? null : resetsAtSeconds * 1000,
-    },
-    requestId,
+    rateLimited: limits !== null,
+    rateLimitType: typeof limitType === "string" ? limitType : null,
+    status,
+    retryAt: at !== null && retryInMs !== null && retryInMs >= 0 ? at + retryInMs : null,
+    resetsAt: resetsAtSeconds === null ? null : resetsAtSeconds * 1000,
   };
 }
 
@@ -171,19 +170,22 @@ function carriesToolResult(message: unknown): boolean {
 
 /** What one line asks of the reader. */
 type StatusItem =
-  | { kind: "error"; fields: HarnessErrorFields; requestId: string | null }
+  | { kind: "error"; fields: HarnessErrorFields }
   | { kind: "pickup"; at: number }
   | { kind: "output" };
 
 /**
  * The cheap prefilter run before any parse. A line is parsed only when it contains `"api_error"`,
- * `"queued_command"` or `"channel"`, or, while an episode is open for the session, when it starts
- * with `{"type":"assistant"` or contains `"type":"assistant"`. Every shape this reader acts on
- * carries one of those substrings in its own serialized form, so the filter only ever skips lines
- * the parse below would also skip, and it keeps a busy transcript from costing a parse per line.
+ * `"queued_command"` or `"kind":"channel"`, or, while an episode is open for the session, when it
+ * starts with `{"type":"assistant"` or contains `"type":"assistant"`. Every shape this reader acts
+ * on carries one of those substrings in its own serialized form, because the harness writes a
+ * channel origin compactly as `"origin":{"kind":"channel",...}`. So the filter only ever skips
+ * lines the parse below would also skip. What it buys: outside an episode only error lines, queued
+ * commands and channel-origin lines are parsed, so a line whose text merely says `channel` and
+ * every assistant line pass without a parse.
  */
 function worthParsing(line: string, episodeOpen: boolean): boolean {
-  if (line.includes('"api_error"') || line.includes('"queued_command"') || line.includes('"channel"')) {
+  if (line.includes('"api_error"') || line.includes('"queued_command"') || line.includes('"kind":"channel"')) {
     return true;
   }
   return episodeOpen && (line.startsWith('{"type":"assistant"') || line.includes('"type":"assistant"'));
@@ -203,9 +205,14 @@ function statusItem(line: string, sessionId: string, episodeOpen: boolean): Stat
   if (record["sessionId"] !== sessionId) return null;
   const type = record["type"];
   if (type === "system" && record["subtype"] === "api_error") {
-    return { kind: "error", ...harnessError(record) };
+    return { kind: "error", fields: harnessError(record) };
   }
-  if (type === "assistant") return episodeOpen ? { kind: "output" } : null;
+  if (type === "assistant") {
+    // A failed request's terminal record is an assistant line flagged `isApiErrorMessage`. It is the
+    // error's last word, not output, so it closes nothing.
+    if (record["isApiErrorMessage"] === true) return null;
+    return episodeOpen ? { kind: "output" } : null;
+  }
   if (type === "attachment") {
     const attachment = objectOf(record["attachment"]);
     if (attachment === null || attachment["type"] !== "queued_command") return null;
@@ -230,6 +237,11 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
   const repeats = createRepeatLog(STATUS_REPEAT_LOG, log, now);
   const read = options.readFile ?? readSlice;
   const sessions = new Map<string, Entry>();
+  // Each session's post chain, holding only the posts still pending. A session's posts run one at a
+  // time, so a notice and the "Resumed." that follows it in the same pass land in that order. Kept
+  // apart from `sessions` so a session dropped mid-post still finishes its chain, and deleted once
+  // nothing is chained behind the last post.
+  const chains = new Map<string, Promise<void>>();
   // One pass at a time, the tailer's own hold: a second pass over the same offsets would act on the
   // same lines twice, and the promise a busy poll answers with is what shutdown awaits.
   let running: Promise<void> | null = null;
@@ -264,14 +276,14 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
     if (held !== undefined && held.path === path) return;
     // A new path baselines fresh. An episode open on the old file stays open: it is the session's,
     // and the next line on the new file either continues or closes it.
-    const entry: Entry = { path, offset: null, probe: null, episode: held?.episode ?? null };
+    const entry: Entry = { path, offset: null, probe: null, episode: held?.episode ?? false };
     sessions.set(sessionId, entry);
     startProbe(sessionId, entry);
   }
 
   /** Closes a session's episode, posting `Resumed.` only when `announce` is set. */
   function closeEpisode(sessionId: string, held: Entry, announce: boolean): void {
-    held.episode = null;
+    held.episode = false;
     try {
       options.episode(sessionId, null);
     } catch {
@@ -281,33 +293,49 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
   }
 
   function post(sessionId: string, text: string): void {
-    // Not awaited: a slow Discord write must not hold the pass, and nothing here depends on it.
-    void Promise.resolve()
+    // Not awaited by the pass, since a slow Discord write must not hold it. Chained behind the
+    // session's previous post instead, with a rejection caught inside the link so the chain never
+    // breaks.
+    const prior = chains.get(sessionId) ?? Promise.resolve();
+    const link = prior
       .then(() => options.notice(sessionId, text))
+      .then(
+        () => {},
+        () => {
+          repeats(`session ${sessionId}'s harness notice could not be posted`, "the error detail is withheld");
+        },
+      )
       .catch(() => {
-        repeats(`session ${sessionId}'s harness notice could not be posted`, "the error detail is withheld");
+        // Reached only by a throwing log; the chain stays resolved for the next post.
       });
+    chains.set(sessionId, link);
+    void link.then(() => {
+      if (chains.get(sessionId) === link) chains.delete(sessionId);
+    });
   }
 
   function act(sessionId: string, held: Entry, item: StatusItem): void {
     if (item.kind === "pickup") {
       try {
-        options.notePickup(sessionId, item.at);
+        // A line stamped ahead of this host's clock must not credit a message delivered after this
+        // read, so the instant is capped at now.
+        options.notePickup(sessionId, Math.min(item.at, now()));
       } catch {
         repeats(`session ${sessionId}'s pickup could not be recorded`, "the error detail is withheld");
       }
       return;
     }
     if (item.kind === "output") {
-      if (held.episode !== null) closeEpisode(sessionId, held, true);
+      if (held.episode) closeEpisode(sessionId, held, true);
       return;
     }
-    // One notice per episode, never per retry. A line with no request id folds into whatever
-    // episode is open; a line with an id opens a new episode only when it differs from the open one.
-    const key = item.requestId ?? NO_REQUEST_ID;
-    if (held.episode !== null && (item.requestId === null || held.episode === key)) return;
-    held.episode = key;
+    // One notice per episode, never per retry: while an episode is open every error line folds into
+    // it, whatever its request id, and only output closes it.
+    if (held.episode) return;
+    // Rendered before the episode is recorded open, so a render that throws leaves no episode open
+    // without its notice.
     const text = renderHarnessNotice(item.fields, options.timeZone);
+    held.episode = true;
     try {
       options.episode(sessionId, { text });
     } catch {
@@ -325,7 +353,7 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
       if (held.offset === null) held.offset = probe.size;
       return;
     }
-    const slice = await read(held.path, held.offset, MAX_TAIL_READ_BYTES);
+    let slice = await read(held.path, held.offset, MAX_TAIL_READ_BYTES);
     if (sessions.get(sessionId) !== held) return;
     if (slice.size < held.offset) {
       // A replaced or truncated file: resume from its current end rather than re-reading it.
@@ -333,22 +361,36 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
       repeats(`session ${sessionId}'s transcript shrank below the held offset`, `resuming at ${slice.size} bytes`);
       return;
     }
+    // Where the bytes in `slice` start in the file, and whether the text before their first newline
+    // is the tail of a line the read cut, to be dropped.
+    let start = held.offset;
+    let cut = false;
     if (slice.size - held.offset > MAX_TAIL_READ_BYTES) {
-      const skipped = slice.size - held.offset;
-      held.offset = slice.size;
-      repeats(`session ${sessionId}'s transcript outgrew one status pass`, `${skipped} bytes skipped to its end`);
-      return;
+      // A backlog past one pass's bound is read from its newest bound's worth, and the rest is
+      // skipped: the newest lines decide what the thread shows now, and an assistant line closing an
+      // episode can sit anywhere in the window. The read starts one byte early, so a line starting
+      // exactly at the cut keeps its preceding newline and is read whole.
+      start = slice.size - MAX_TAIL_READ_BYTES - 1;
+      cut = true;
+      repeats(
+        `session ${sessionId}'s transcript outgrew one status pass`,
+        `${start + 1 - held.offset} bytes skipped, the newest ${MAX_TAIL_READ_BYTES} read`,
+      );
+      slice = await read(held.path, start, MAX_TAIL_READ_BYTES + 1);
+      if (sessions.get(sessionId) !== held) return;
     }
     // Only whole lines are consumed: a trailing partial line stays behind the offset and is read
-    // whole by the next pass.
+    // whole by the next pass. A cut window holding no complete line consumes nothing, and the next
+    // pass reads the file's newest window again.
+    const firstByte = cut ? slice.bytes.indexOf(0x0a) + 1 : 0;
     const lastNewline = slice.bytes.lastIndexOf(0x0a);
     if (lastNewline === -1) return;
-    const consumed = slice.bytes.subarray(0, lastNewline + 1).toString("utf8");
-    held.offset += lastNewline + 1;
+    const consumed = slice.bytes.subarray(firstByte, lastNewline + 1).toString("utf8");
+    held.offset = start + lastNewline + 1;
     for (const raw of consumed.split("\n")) {
       const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
       if (line === "") continue;
-      const episodeOpen = held.episode !== null;
+      const episodeOpen = held.episode;
       if (!worthParsing(line, episodeOpen)) continue;
       const item = statusItem(line, sessionId, episodeOpen);
       if (item !== null) act(sessionId, held, item);
@@ -356,16 +398,16 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
   }
 
   async function pass(): Promise<void> {
-    const live = new Set(options.liveSessions());
+    const current = new Set(options.currentSessions());
     for (const [sessionId, held] of [...sessions]) {
-      if (live.has(sessionId)) continue;
+      if (current.has(sessionId)) continue;
       sessions.delete(sessionId);
       // Closed without a post: the session is gone, so there is nothing to say resumed, but the card
       // line and the ⚠️ reactions must not outlive it.
-      if (held.episode !== null) closeEpisode(sessionId, held, false);
+      if (held.episode) closeEpisode(sessionId, held, false);
     }
     await Promise.all(
-      [...live].map(async (sessionId) => {
+      [...current].map(async (sessionId) => {
         const held = sessions.get(sessionId);
         if (held === undefined) return;
         try {
@@ -390,5 +432,9 @@ export function createStatusReader(options: StatusReaderOptions): StatusReader {
     return running;
   }
 
-  return { learn, poll };
+  async function drain(): Promise<void> {
+    await Promise.all([...chains.values()]);
+  }
+
+  return { learn, poll, drain };
 }

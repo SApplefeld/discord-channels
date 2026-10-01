@@ -2775,16 +2775,24 @@ test("startBroker wires every receipt seam: outbound, intake's pickup entry poin
 });
 
 // The status reader's connections inside startBroker, which no test reaches without a Discord
-// login: built behind the Discord gate and not the tailer's, its pickups through the one
-// session-keyed entry point, its notices through the thread's steering writer, its episodes into the
-// card line and the ⚠️ swap, its path seam into the intake, and its own poll timer, cleared at both
-// teardown sites and awaited at shutdown. Read from the source the way `receiptWiringGaps` reads its
+// login: built behind the Discord gate and not the tailer's, reading every session not ended, its
+// pickups through the one session-keyed entry point, its notices through the thread's steering
+// writer, its episodes into the card line and the ⚠️ swap, its path seam into the intake, and its
+// own poll timer, cleared at both teardown sites, with its pass and its post chains awaited at
+// shutdown. Read from the source the way `receiptWiringGaps` reads its
 // seams.
 function statusWiringGaps(source: string): string[] {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const gaps: string[] = [];
   if (!/if \(discord !== null\) \{\s*const reader = createStatusReader\(\{/.test(code)) gaps.push("build");
   const reader = /const reader = createStatusReader\(\{([\s\S]*?)\n    \}\);/.exec(code)?.[1] ?? "";
+  // Every session not ended, stale included: a session waiting out a retry fires no hooks and goes
+  // stale, and its episode must outlive that.
+  if (
+    !/currentSessions:\s*\(\)\s*=>\s*registry\s*\.list\(\)\s*\.filter\(\(record\) => record\.state !== "ended"\)/.test(reader)
+  ) {
+    gaps.push("sessions");
+  }
   if (!/notePickup:\s*\(sessionId,\s*at\)\s*=>\s*pickupFor\(sessionId,\s*at\)/.test(reader)) gaps.push("pickup");
   if (
     !/notice:\s*async \(sessionId, text\) => \{\s*const threadId = threadFor\(sessionId\);\s*if \(threadId !== null\) await steeringWriter\.reply\(threadId, text\);/.test(
@@ -2808,6 +2816,7 @@ function statusWiringGaps(source: string): string[] {
     gaps.push("stop-shutdown");
   }
   if (!/await tailInFlight;\s*await statusInFlight;/.test(code)) gaps.push("drain");
+  if (!/await statusInFlight;\s*await status\?\.drain\(\);/.test(code)) gaps.push("post-drain");
   return gaps;
 }
 
@@ -2823,6 +2832,17 @@ test("startBroker wires the status reader: built with Discord, its pickups, noti
   assert.notEqual(readerBlock, "", "the precondition: the reader block is found");
   const withoutInReader = (needle: string): string =>
     source.replace(readerBlock, readerBlock.replace(needle, "void 0"));
+  assert.deepEqual(statusWiringGaps(withoutInReader('.filter((record) => record.state !== "ended")')), ["sessions"]);
+  // A revert to reading live sessions alone is a gap.
+  assert.deepEqual(
+    statusWiringGaps(
+      source.replace(
+        readerBlock,
+        readerBlock.replace('record.state !== "ended"', 'record.state === "live"'),
+      ),
+    ),
+    ["sessions"],
+  );
   assert.deepEqual(statusWiringGaps(withoutInReader("notePickup: (sessionId, at) => pickupFor(sessionId, at)")), [
     "pickup",
   ]);
@@ -2847,7 +2867,8 @@ test("startBroker wires the status reader: built with Discord, its pickups, noti
     statusWiringGaps(source.replace(/(async function stop\(\)[\s\S]*?)if \(statusTimer !== null\) clearInterval\(statusTimer\);/, "$1")),
     ["stop-shutdown"],
   );
-  assert.deepEqual(statusWiringGaps(source.replace("await statusInFlight;", "")), ["drain"]);
+  assert.deepEqual(statusWiringGaps(source.replace("await statusInFlight;", "")), ["drain", "post-drain"]);
+  assert.deepEqual(statusWiringGaps(source.replace("await status?.drain();", "")), ["post-drain"]);
 });
 
 // The typing keeper's connections inside startBroker, which no test reaches without a Discord

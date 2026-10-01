@@ -81,6 +81,20 @@ function assistantText(text: string): string {
   );
 }
 
+/** The assistant line a failed request ends with: flagged at the root, written in place of output. */
+function apiErrorMessage(): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: false,
+      sessionId: SESSION,
+      timestamp: STAMP,
+      isApiErrorMessage: true,
+      message: { model: "<synthetic>", content: [{ type: "text", text: "API Error: 429" }] },
+    }) + "\n"
+  );
+}
+
 function consolePrompt(text: string): string {
   return (
     JSON.stringify({
@@ -147,7 +161,12 @@ type Harness = {
 async function harness(
   t: TestContext,
   existing = "",
-  overrides: { notePickup?: (sessionId: string, at: number) => void } = {},
+  overrides: {
+    notePickup?: (sessionId: string, at: number) => void;
+    notice?: (sessionId: string, text: string) => Promise<unknown>;
+    now?: () => number;
+    timeZone?: string;
+  } = {},
 ): Promise<Harness> {
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-status-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -159,14 +178,17 @@ async function harness(
   const logs: string[] = [];
   const live = new Set([SESSION]);
   const reader = createStatusReader({
-    liveSessions: () => [...live],
-    notice: async (_sessionId, text) => {
-      notices.push(text);
-    },
+    currentSessions: () => [...live],
+    notice:
+      overrides.notice ??
+      (async (_sessionId, text) => {
+        notices.push(text);
+      }),
     notePickup: overrides.notePickup ?? ((sessionId, at) => pickups.push({ sessionId, at })),
     episode: (_sessionId, open) => episodes.push(open === null ? null : open.text),
     log: (message) => logs.push(message),
-    timeZone: "UTC",
+    ...(overrides.now === undefined ? {} : { now: overrides.now }),
+    timeZone: overrides.timeZone ?? "UTC",
   });
   reader.learn(SESSION, file);
   // The baseline: the first pass waits for the probe `learn` started and acts on nothing before it.
@@ -199,19 +221,75 @@ test("twenty retries under one request id post one notice, and the next assistan
   assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null], "the card line opens once and closes once");
 });
 
-test("a new request id opens a new episode, a line with no id folds into the open one, and one with none open opens its own", async (t) => {
+test("while an episode is open every error line folds into it, whatever its request id or none", async (t) => {
   const h = await harness(t);
+  // Each retry attempt is a new request with a new id, so a second id is the same episode retrying.
   await h.feed(apiError({ requestId: "req_a" }), apiError({ requestId: "req_a" }), apiError({ requestId: null }));
-  assert.equal(h.notices.length, 1, "the no-id line folded into req_a's episode");
   await h.feed(apiError({ requestId: "req_b", status: 529, rateLimits: null }));
-  assert.equal(h.notices.length, 2, "a different id is a new episode");
-  assert.equal(h.notices[1], "API error (status 529). Retrying at 1:16 PM.");
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "a second id while the episode is open posts nothing");
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE], "and records nothing new");
   await h.feed(assistantText("ok"));
-  await h.feed(apiError({ requestId: null }), apiError({ requestId: null }));
-  assert.equal(h.notices.length, 4, "Resumed, then one notice for the no-id episode however many lines it has");
-  await h.feed(apiError({ requestId: "req_c" }));
-  assert.equal(h.notices.length, 5, "an id after a no-id episode opens its own");
-  assert.equal(h.notices[2], HARNESS_RESUMED);
+  // With none open, a line with no id opens an episode, and an id after it folds in.
+  await h.feed(apiError({ requestId: null, status: 529, rateLimits: null }), apiError({ requestId: "req_c" }));
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, HARNESS_RESUMED, "API error (status 529). Retrying at 1:16 PM."]);
+});
+
+test("two episodes separated by output post two notices and two Resumed lines", async (t) => {
+  const h = await harness(t);
+  await h.feed(apiError({ requestId: "req_a" }), apiError({ requestId: "req_b" }));
+  await h.feed(assistantText("back"));
+  await h.feed(apiError({ requestId: "req_c" }), apiError({ requestId: "req_d" }), assistantText("back again"));
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, HARNESS_RESUMED, FIVE_HOUR_NOTICE, HARNESS_RESUMED]);
+  assert.deepEqual(h.episodes, [FIVE_HOUR_NOTICE, null, FIVE_HOUR_NOTICE, null]);
+});
+
+test("a session's posts start in order, each after the one before it settles", async (t) => {
+  const started: string[] = [];
+  let releaseFirst = (): void => {};
+  const h = await harness(t, "", {
+    notice: (_sessionId, text) => {
+      started.push(text);
+      // The first post is held open; any later one resolves at once.
+      return started.length === 1 ? new Promise<void>((resolve) => (releaseFirst = resolve)) : Promise.resolve();
+    },
+  });
+  // The episode opens and closes inside one slice, so both posts are made in one pass.
+  await h.feed(apiError(), assistantText("back"));
+  assert.deepEqual(started, [FIVE_HOUR_NOTICE], "the Resumed line waits for the notice to settle");
+  let drained = false;
+  const drain = h.reader.drain().then(() => (drained = true));
+  await settle();
+  assert.equal(drained, false, "drain waits on the held post");
+  releaseFirst();
+  await drain;
+  assert.deepEqual(started, [FIVE_HOUR_NOTICE, HARNESS_RESUMED]);
+});
+
+test("a failed request's own isApiErrorMessage assistant line is not output and closes nothing", async (t) => {
+  const h = await harness(t);
+  await h.feed(apiError(), apiErrorMessage());
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "no Resumed for the error's own terminal record");
+  await h.feed(assistantText("real output"));
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, HARNESS_RESUMED]);
+});
+
+test("a render that throws leaves no episode open, so no Resumed follows a notice that was never posted", async (t) => {
+  // An unknown zone makes Intl.DateTimeFormat throw inside the render.
+  const h = await harness(t, "", { timeZone: "Not/AZone" });
+  await h.feed(apiError());
+  await h.feed(assistantText("back"));
+  assert.deepEqual(h.notices, []);
+  assert.deepEqual(h.episodes, [], "no episode was recorded open, and none is closed");
+});
+
+test("a pickup line stamped ahead of the host clock credits pickup at now, not at its stamp", async (t) => {
+  const NOW = STAMP_MS + 60_000;
+  const h = await harness(t, "", { now: () => NOW });
+  await h.feed(queuedChannel(new Date(NOW + 3_600_000).toISOString()), channelTurnOpen(STAMP));
+  assert.deepEqual(h.pickups, [
+    { sessionId: SESSION, at: NOW },
+    { sessionId: SESSION, at: STAMP_MS },
+  ], "a past stamp passes through unchanged");
 });
 
 test("no text from an error line reaches a notice, the card or the log, and the same check catches a planted leak", async (t) => {
@@ -343,7 +421,7 @@ test("a path whose stem is not the session id is refused, and history before the
   assert.ok(!h.logs.some((line) => line.includes(dir)), "without the path");
 });
 
-test("a partial trailing line waits for its end, and a backlog past the bound skips to the end with a contentless log line", async (t) => {
+test("a partial trailing line waits for its end, and a backlog past the bound reads its newest window with a contentless log line", async (t) => {
   const h = await harness(t);
   const line = apiError();
   await h.feed(line.slice(0, 40));
@@ -351,17 +429,31 @@ test("a partial trailing line waits for its end, and a backlog past the bound sk
   await h.feed(line.slice(40));
   assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "the line is acted on once it is whole");
 
-  const filler = assistantText("x".repeat(1_000)).repeat(Math.ceil(MAX_TAIL_READ_BYTES / 1_000) + 10);
-  await h.feed(filler + apiError({ requestId: "req_buried" }));
-  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE], "a skipped backlog is not acted on");
+  // A pickup at the head of the backlog falls outside the newest window; the output line closing
+  // the open episode sits at its end and must still be read.
+  const filler = consolePrompt("x".repeat(1_000)).repeat(Math.ceil(MAX_TAIL_READ_BYTES / 1_000) + 10);
+  await h.feed(queuedChannel(STAMP) + filler + assistantText("back"));
+  assert.deepEqual(h.pickups, [], "the skipped head is not acted on");
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, HARNESS_RESUMED], "the newest lines are");
   assert.ok(h.logs.some((entry) => /outgrew one status pass/.test(entry)));
   assert.ok(!h.logs.some((entry) => entry.includes("xxxx")));
   // The offset now sits at the file's end, so the next line is read normally.
   await h.feed(apiError({ requestId: "req_after" }));
-  assert.equal(h.notices.length, 2);
+  assert.equal(h.notices.length, 3);
 });
 
-test("a session leaving the live set closes its open episode without posting Resumed", async (t) => {
+test("a backlog whose newest window starts exactly on a line keeps that line whole", async (t) => {
+  const h = await harness(t);
+  await h.feed(apiError());
+  // The closing line is sized so the window of the newest MAX_TAIL_READ_BYTES starts on its first byte.
+  const head = consolePrompt("x".repeat(1_000)).repeat(20);
+  const closing = assistantText("y".repeat(MAX_TAIL_READ_BYTES - assistantText("").length));
+  assert.equal(closing.length, MAX_TAIL_READ_BYTES);
+  await h.feed(head + closing);
+  assert.deepEqual(h.notices, [FIVE_HOUR_NOTICE, HARNESS_RESUMED]);
+});
+
+test("a session leaving the current set (ended) closes its open episode without posting Resumed", async (t) => {
   const h = await harness(t);
   await h.feed(apiError());
   h.live.delete(SESSION);
@@ -377,7 +469,7 @@ test("a failing notice, pickup or episode callback is logged without detail and 
   writeFileSync(file, "", "utf8");
   const logs: string[] = [];
   const reader = createStatusReader({
-    liveSessions: () => [SESSION],
+    currentSessions: () => [SESSION],
     notice: async () => {
       throw new Error("PLANTED discord detail");
     },
