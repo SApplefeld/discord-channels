@@ -194,8 +194,9 @@ export type PersonaQueue = {
   readonly lastTurnComplete: number | null;
   /** The heartbeat's `turnStartedAt`: a number while the worker is inside a turn, null otherwise. */
   readonly turnStartedAt: number | null;
-  /** The plan reading for each entry that named one, by entry id. An entry naming no plan, or one
-   * whose plan is in none of the four places, has no key here. */
+  /** The plan reading for each entry that named one, by entry id. An entry naming no plan has no key
+   * here, and neither has one whose plan is in none of the four places, unless `storeOnly` gives it
+   * a reading from the store alone. */
   readonly readings: ReadonlyMap<string, QueuePlanReading>;
   /** When the store reading in hand began to be held, or null when it is this tick's own. Null as
    * well for a persona whose store has never once been read, since there is nothing being held. */
@@ -803,7 +804,8 @@ const STORE_ACTIVE = "active";
  * linked worktree is not the copy under `workdir` that the join read. Chapters are append-only, so
  * the higher count is the newer reading whichever copy it came from. Where the entry's `chapterCount`
  * is above the file's `completed`, the reading takes that count, held at or below the section total
- * where there is one; it takes `sectionCount` where the store wrote one, else keeps the file's; and
+ * where there is one; it takes `sectionCount` where the store wrote one above zero, else keeps the
+ * file's, since a store total of zero says the store has none and the file's is known; and
  * it takes `nextSection` where the store wrote one, else null, since the file's `Next:` names a
  * Chapter the worker has passed. Where the file's count is equal or higher, the file is returned
  * unchanged: a Chapter written under `workdir` after the worker's last turn is the newer reading.
@@ -816,7 +818,8 @@ function preferNewer(reading: QueuePlanReading, entry: QueueEntry): QueuePlanRea
   if (reading.archived) return reading;
   const count = entry.chapterCount;
   if (count === undefined || count <= reading.completed) return reading;
-  const sections = entry.sectionCount ?? reading.sections;
+  const sections =
+    entry.sectionCount !== undefined && entry.sectionCount > 0 ? entry.sectionCount : reading.sections;
   return {
     ...reading,
     sections,
@@ -832,7 +835,8 @@ function preferNewer(reading: QueuePlanReading, entry: QueueEntry): QueuePlanRea
  * Only an entry the store calls `active` and that carries a `chapterCount` earns one. The store
  * carries no document status of its own, and `active` is the one store status that says the worker
  * is on the entry, so the reading reads `In Progress` and draws as in flight. `sections` is the
- * store's `sectionCount` or 0, `completed` its `chapterCount`, and `next` its `nextSection` or null.
+ * store's `sectionCount` or 0, `completed` its `chapterCount` held at or below that total where
+ * there is one, as `preferNewer` holds it, and `next` its `nextSection` or null.
  *
  * Nothing is stat'd or opened for it. Its stat is the store file's own, the one the store reading in
  * hand was taken at, since the reading is exactly as fresh as the store, and its `heldSince` is the
@@ -849,14 +853,15 @@ function storeOnly(
   if (entry.chapterCount === undefined) return null;
   if (entry.status?.toLowerCase() !== STORE_ACTIVE) return null;
   if (store.held === null) return null;
+  const sections = entry.sectionCount ?? 0;
   return {
     archived: false,
     heldSince: store.heldSince,
     fromStore: true,
     status: "In Progress",
     terminal: false,
-    sections: entry.sectionCount ?? 0,
-    completed: entry.chapterCount,
+    sections,
+    completed: sections > 0 ? Math.min(entry.chapterCount, sections) : entry.chapterCount,
     next: entry.nextSection ?? null,
     root: workdir,
     path: path.join(workdir, ...LIVE_PLANS, name),

@@ -1418,6 +1418,7 @@ test("a store count above the file's replaces the file's count and drops its sta
       goal({ id: "next", ...named, chapterCount: 9, nextSection: "10. The charters" }),
       goal({ id: "total", ...named, chapterCount: 9, sectionCount: 12 }),
       goal({ id: "over", ...named, chapterCount: 15 }),
+      goal({ id: "untotalled", ...named, chapterCount: 9, sectionCount: 0 }),
       goal({ id: "equal", ...named, chapterCount: 2, nextSection: "never drawn" }),
       goal({ id: "lower", ...named, chapterCount: 1, sectionCount: 4 }),
       goal({ id: "none", ...named }),
@@ -1436,6 +1437,11 @@ test("a store count above the file's replaces the file's count and drops its sta
   assert.equal(at("total").sections, 12);
   assert.equal(at("total").completed, 9);
   assert.equal(at("over").completed, 11, "held at the section total");
+  assert.deepEqual(
+    [at("untotalled").completed, at("untotalled").sections],
+    [9, 11],
+    "a store total of zero is no total, so the file's known one stands",
+  );
 
   for (const id of ["equal", "lower", "none"]) {
     const unchanged = at(id);
@@ -1477,6 +1483,20 @@ test("an archived reading is never overridden by a store count", (t) => {
     path: archivedFile,
     stem: "kit_mechanism-cut_v1",
   });
+});
+
+test("a store-only reading holds its count at or below the store's section total", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.store(
+    store([
+      goal({ id: "over", status: "active", planPath: "over_v1.md", chapterCount: 15, sectionCount: 11 }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const reading = live(queue?.readings.get("over"));
+  assert.deepEqual([reading.completed, reading.sections], [11, 11], "as an overridden file reading is");
 });
 
 test("an active entry whose plan has no file reads the store alone, and opens nothing for it", (t) => {

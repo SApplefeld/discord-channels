@@ -823,8 +823,9 @@ function personaLabel(group: BoardPersona, index: number, now: number): string {
  *
  * A plan document declaring no sections draws no fraction, as a swept plan's bullet does: `0/0` is
  * what a doc with no `## Sections of Work` block yields, and a fraction of nothing measures nothing.
- * A reading with no total and at least one finished section draws the count of those alone, which is
- * what a reading taken from the worker's store before it knows the plan's total carries.
+ * In this view a reading with no total and at least one finished section draws the count of those
+ * alone, which is what a reading taken from the worker's store before it knows the plan's total
+ * carries. The project view never meets one, since a parsed plan's count never exceeds its total.
  *
  * `next:` draws on the entry in flight alone. It is the sentence saying what is happening right now,
  * and on an entry nobody is working it would be the sentence saying what was happening when the

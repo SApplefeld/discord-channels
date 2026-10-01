@@ -934,9 +934,8 @@ guarded, because whoever can plant the link in the persona's tree can plant the 
 can open the share themselves. What a crafted name can reach is a plan-shaped file, drawn under the
 store's own title as a section count and, on the entry in flight, its next step. The operator sized
 that risk as small, since the card posts to a private server seen only by them. So the guard is kept
-because it is nearly free, and it carries no raised review on security grounds alone.
-
-The store contributes three progress fields as well, and none of them is ever used as a path. Each
+because it is nearly free, and it carries no raised review on security grounds alone. The store
+contributes three progress fields as well, and none of them is ever used as a path. Each
 entry's `chapterCount` and `sectionCount` are kept only where the store wrote a finite, whole,
 non-negative number. Its `nextSection` is kept only where it is a string, whitespace-collapsed and
 held to the 400 characters a plan document's own `Next:` value takes, and it is escaped on the card
