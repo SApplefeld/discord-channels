@@ -236,9 +236,9 @@ function reason(value: string | undefined): string | null {
 /**
  * The entry that draws as running, as an index into the drawn entries, or -1 when none does.
  *
- * The document decides it, not the store: the entry whose plan document says `In Progress` and moved
- * last is the one a worker is on, and a plan document moves when its Chapter or its status is
- * written. Two entries joined to one document are one document, whatever the two stats behind them
+ * The document decides it, save the one case below: the entry whose plan document says
+ * `In Progress` and moved last is the one a worker is on, and a plan document moves when its Chapter
+ * or its status is written. Two entries joined to one document are one document, whatever the two stats behind them
  * read, so they tie and the earlier entry in queue order takes the word. Within one tick the reader
  * stats each entry rather than each file, so a document saved between two of those stats would
  * otherwise hand one file two modification times and let the later entry outrank the earlier one for
@@ -247,6 +247,11 @@ function reason(value: string | undefined): string | null {
  * A document is identified by the path it was read from, which the join builds under the persona's
  * own working folder, so two entries naming one file carry one path. Its instant is the newest any
  * entry read it at, which is the freshest observation of the same file.
+ *
+ * A reading the store overrode is the one place the store's time counts. Its worker is in a linked
+ * worktree, so the file under the working folder stays where the worktree was cut, and the store's
+ * `turnedAtMs`, rewritten at every turn end, is the time that says the worker is still on it. Such a
+ * reading's instant is the later of the two. The blocked rule never reads `turnedAtMs`.
  *
  * With no such document anywhere in the queue, the plugin's own `activeGoalId` is the only thing
  * left that says which entry is being worked, and it draws only when the entry it names is still
@@ -265,7 +270,9 @@ function inFlight(
     if (words[index] !== null) continue;
     const reading = readings.get(entry.id);
     if (!started(reading)) continue;
-    const at = touchedAt(reading.mtimeMs);
+    const turned =
+      reading.turnedAtMs === undefined ? Number.NEGATIVE_INFINITY : touchedAt(reading.turnedAtMs);
+    const at = Math.max(touchedAt(reading.mtimeMs), turned);
     open.push({ at, index, path: reading.path });
     const held = newest.get(reading.path);
     if (held === undefined || at > held) newest.set(reading.path, at);

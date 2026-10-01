@@ -166,13 +166,15 @@ export type QueueEntry = {
  * A parsed reading's counts and next step are the store's own where the entry's `chapterCount` is
  * above the count the file gave, and an active entry whose plan is in none of the four places reads
  * a reading built from the store alone. That one carries `fromStore: true`, and a parse carries no
- * such field. `preferNewer` and `storeOnly` below state the two rules.
+ * such field. A parse the store overrode carries `turnedAtMs`, the store file's modification time,
+ * beside its own. `preferNewer` and `storeOnly` below state the two rules.
  */
 export type QueuePlanReading =
   | ({
       readonly archived: false;
       readonly heldSince: number | null;
       readonly fromStore?: true;
+      readonly turnedAtMs?: number;
     } & PlanReading)
   | {
       readonly archived: true;
@@ -810,12 +812,21 @@ const STORE_ACTIVE = "active";
  * Chapter the worker has passed. Where the file's count is equal or higher, the file is returned
  * unchanged: a Chapter written under `workdir` after the worker's last turn is the newer reading.
  *
- * An archived reading is returned unchanged too, because the card has already called that entry done.
- * The reading keeps its own path, stat and `heldSince`, a held parse's included, so the in-flight and
- * blocked rules still age it by the document it came from.
+ * An archived reading is returned unchanged too, because the card has already called that entry done,
+ * and so is a reading `storeOnly` built, which already holds the store's figures.
+ *
+ * The reading keeps its own path, stat and `heldSince`, a held parse's included, so the blocked rule
+ * still ages it by the document it came from. It also carries `turnedAtMs`, the store file's own
+ * modification time, which the in-flight rule weighs beside the file's: the store is rewritten at
+ * every turn end, so it says the worker is taking turns on this entry even while the file under
+ * `workdir` stays where the worktree was cut.
  */
-function preferNewer(reading: QueuePlanReading, entry: QueueEntry): QueuePlanReading {
-  if (reading.archived) return reading;
+function preferNewer(
+  reading: QueuePlanReading,
+  entry: QueueEntry,
+  storeMtimeMs: number | null,
+): QueuePlanReading {
+  if (reading.archived || reading.fromStore === true) return reading;
   const count = entry.chapterCount;
   if (count === undefined || count <= reading.completed) return reading;
   const sections =
@@ -825,6 +836,7 @@ function preferNewer(reading: QueuePlanReading, entry: QueueEntry): QueuePlanRea
     sections,
     completed: sections > 0 ? Math.min(count, sections) : count,
     next: entry.nextSection ?? null,
+    ...(storeMtimeMs === null ? {} : { turnedAtMs: storeMtimeMs }),
   };
 }
 
@@ -948,7 +960,9 @@ export function createQueueReader(options: QueueReaderOptions = {}): QueueReader
             read,
             absent,
           );
-          if (reading !== null) readings.set(entry.id, preferNewer(reading, entry));
+          if (reading !== null) {
+            readings.set(entry.id, preferNewer(reading, entry, state.store.held?.stat.mtimeMs ?? null));
+          }
         }
         // Only the documents this tick actually joined to are held, so a queue that drops an entry
         // drops its parse with it rather than keeping it for as long as the broker runs. A failure

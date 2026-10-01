@@ -1584,6 +1584,36 @@ test("a store-only reading held over a torn store carries the store's hold insta
   assert.equal(reading.heldSince, 9_000, "the reading is as old as the store it came from");
 });
 
+test("an overridden reading takes the word from a parked plan touched after its stale file", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const hour = 60 * 60 * 1_000;
+  const now = Date.now();
+  const worktreeFile = work.file(["docs", "plans"], WORKTREE_PLAN, elevenSectionDoc());
+  const parkedFile = work.file(["docs", "plans"], "parked_v1.md", elevenSectionDoc());
+  utimesSync(worktreeFile, (now - 3 * hour) / 1_000, (now - 3 * hour) / 1_000);
+  utimesSync(parkedFile, (now - 2 * hour) / 1_000, (now - 2 * hour) / 1_000);
+  work.store(
+    store([
+      goal({ id: "parked", planPath: "parked_v1.md" }),
+      goal({ id: "worktree", status: "active", planPath: WORKTREE_PLAN, chapterCount: 9 }),
+    ]),
+  );
+  const storeAt = now - hour;
+  utimesSync(path.join(work.dir, STORE_FILE_NAME), storeAt / 1_000, storeAt / 1_000);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.ok(queue !== undefined);
+  const status = personaStatus(queue, initialEventState(), now);
+  const word = (id: string): string | undefined =>
+    status.entries.find((entry) => entry.id === id)?.word;
+  assert.equal(word("worktree"), "in flight", "the store says the worker took a turn after the parked file moved");
+  assert.notEqual(word("parked"), "in flight");
+
+  // The block rule still ages the overridden reading by its own file, so the reading keeps that stat.
+  assert.equal(live(queue.readings.get("worktree")).mtimeMs, statSync(worktreeFile).mtimeMs);
+});
+
 test("a store-only reading draws as in flight, and a store write never clears its block", (t) => {
   const work = workdir();
   t.after(work.cleanup);
