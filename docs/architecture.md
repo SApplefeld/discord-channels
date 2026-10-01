@@ -721,7 +721,7 @@ The persona view draws one group per enabled persona, in roster order, ahead of 
 group. `roster.ts` reads the roster with a 64 KiB cap and keeps at most 16 personas. `queues.ts`
 reads each persona's store and heartbeat under its `workdir`, with a 2 MiB cap and at most 200
 entries each, and joins each entry to a plan document, taking the worker's own Chapter count from
-its store where that is ahead of the file's or no file is found for the entry the worker is on. `status.ts` is
+its store where that is ahead of the file's or no file is found for an active entry. `status.ts` is
 one pure function that turns those readings into a word per entry, the group's done and total
 counts, and the worker's state. It reads no file and no clock, and its output carries no store
 status string. That is why the persona plugin's own words, such as `paused`, never reach the card:
@@ -779,7 +779,7 @@ moving. The blocked marker is set by a `goal-blocked` event and cleared by a new
 time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
 timestamp would pin the marker permanently. A persona entry drawn from its store alone is the
 exception: the store is rewritten every turn, so its marker clears only on the goal completing, the
-store ceasing to say the worker is on the entry, or the store dropping its Chapter count.
+entry leaving the store's active status, or the store dropping its Chapter count.
 
 Order is decided at the card and nowhere else. The sweep lists a root's plans by name, and that
 listing is what the per-root cap is defined against, so it stays name-ordered and the renderer sorts

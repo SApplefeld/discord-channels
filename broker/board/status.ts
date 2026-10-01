@@ -23,7 +23,7 @@ import { span } from "../discord/render.ts";
 import { blockedAt, eventIndex } from "./card.ts";
 import { comparablePath, touchedAt } from "./events.ts";
 import type { BoardEvent, EventReaderState } from "./events.ts";
-import { MAX_ROUNDS_REACHED, queueKey } from "./queues.ts";
+import { queueKey } from "./queues.ts";
 import type { PersonaQueue, QueueEntry, QueuePlanReading } from "./queues.ts";
 
 /**
@@ -89,6 +89,25 @@ const ABANDONED = "abandoned";
 const COMPLETE = "complete";
 const BLOCKED = "blocked";
 const PAUSED = "paused";
+
+/**
+ * The one block reason that is not a block.
+ *
+ * The plugin's controller writes this on an entry whose worker has used its round budget for the
+ * moment, which is ordinary running and not a stop. Both live workers carried it while working
+ * normally on the day this card was designed. An entry wearing it falls through the blocked rule and
+ * is judged by the later rules like any other, and the string itself never leaves this module: it is
+ * the plugin's bookkeeping, and on a card it reads as a worker that has hit a wall.
+ *
+ * Compared on the trimmed and case-folded value, the way every store string here is compared,
+ * because a reason differing from this one by a trailing space or a capital is the same bookkeeping
+ * and drawing it as a block is the misreading this whole module exists to remove.
+ *
+ * The comparison is on the whole value rather than a prefix, which is the spec's word. So a reason
+ * that merely opens with this string, one carrying a round count after it, is a block by that rule.
+ * `reason` below is what keeps the string itself off the card in that case.
+ */
+const MAX_ROUNDS_REACHED = "Max rounds reached";
 
 /** The plan status that means a document has been started, compared case-insensitively on the
  * trimmed value. It is the one status the in-flight and parked rules read, and `./plans.ts` holds
@@ -156,8 +175,8 @@ function heldRoot(latest: ReadonlyMap<string, BoardEvent>, workdir: string): str
  * A reading taken from the store alone never clears a block by its modification time. That time is
  * the store file's, which the plugin rewrites at every turn end, the blocking turn's included, so it
  * says the worker took a turn and not that a Chapter landed. Such a block clears only on a
- * `goal-complete` for the pair, or once the store stops saying the worker is on the entry or drops
- * its `chapterCount`, either of which leaves it no reading. The in-flight rule still ages the reading
+ * `goal-complete` for the pair, or once the store stops calling the entry active or drops its
+ * `chapterCount`, either of which leaves it no reading. The in-flight rule still ages the reading
  * by the store, since there the question is whether the worker is taking turns.
  */
 function eventBlocked(
@@ -229,7 +248,7 @@ function reason(value: string | undefined): string | null {
  * own working folder, so two entries naming one file carry one path. Its instant is the newest any
  * entry read it at, which is the freshest observation of the same file.
  *
- * A reading the store overrode on an entry the worker is on is the one place the store's time
+ * A reading the store overrode on the entry it calls active is the one place the store's time
  * counts. Its worker is in a linked worktree, so the file under the working folder stays where the
  * worktree was cut, and the store's `turnedAtMs`, rewritten at every turn end, is the time that says
  * the worker is still on it. Such a reading's instant is the later of the two. The blocked rule never

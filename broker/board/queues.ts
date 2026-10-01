@@ -164,11 +164,10 @@ export type QueueEntry = {
  * parse this tick, so the card can say how old what it draws from that entry is.
  *
  * A parsed reading's counts and next step are the store's own where the entry's `chapterCount` is
- * above the count the file gave, and an entry the worker is on, by `workerOn`, whose plan is in none
- * of the four places reads a reading built from the store alone. That one carries `fromStore: true`,
- * and a parse carries no such field. A parse the store overrode on an entry the worker is on carries
- * `turnedAtMs`, the store file's modification time, beside its own. `preferNewer` and `storeOnly`
- * below state the two rules.
+ * above the count the file gave, and an active entry whose plan is in none of the four places reads
+ * a reading built from the store alone. That one carries `fromStore: true`, and a parse carries no
+ * such field. A parse the store overrode on the entry it calls active carries `turnedAtMs`, the store
+ * file's modification time, beside its own. `preferNewer` and `storeOnly` below state the two rules.
  */
 export type QueuePlanReading =
   | ({
@@ -796,44 +795,9 @@ function joinPlan(
   return absent();
 }
 
-/**
- * The one block reason that is not a block.
- *
- * The plugin's controller writes this on an entry whose worker has used its round budget for the
- * moment, which is ordinary running and not a stop. Both live workers carried it while working
- * normally on the day this card was designed. An entry wearing it falls through the blocked rule and
- * is judged by the later rules like any other, and the string itself never reaches the card: it is the
- * plugin's bookkeeping, and on a card it reads as a worker that has hit a wall.
- *
- * Compared on the trimmed and case-folded value, the way every store string here is compared,
- * because a reason differing from this one by a trailing space or a capital is the same bookkeeping
- * and drawing it as a block is the misreading this whole module exists to remove.
- *
- * The comparison is on the whole value rather than a prefix, which is the spec's word. So a reason
- * that merely opens with this string, one carrying a round count after it, is a block by that rule.
- * `reason` in `./status.ts` is what keeps the string itself off the card in that case.
- */
-export const MAX_ROUNDS_REACHED = "Max rounds reached";
-
 /** The store status that says the worker is on an entry, compared on the case-folded value. The
  * intake has already collapsed and trimmed it. */
 const STORE_ACTIVE = "active";
-
-/** The store status the plugin pairs with `MAX_ROUNDS_REACHED`. */
-const STORE_BLOCKED = "blocked";
-
-/**
- * Whether the store says the worker is on this entry: its status is `active`, or `blocked` with the
- * round-limit reason, which is ordinary running and not a stop.
- */
-function workerOn(entry: QueueEntry): boolean {
-  const status = entry.status?.toLowerCase();
-  if (status === STORE_ACTIVE) return true;
-  return (
-    status === STORE_BLOCKED &&
-    entry.blockedReason?.trim().toLowerCase() === MAX_ROUNDS_REACHED.toLowerCase()
-  );
-}
 
 /**
  * One file reading with the store's own figures in place of the file's, where the store's are newer.
@@ -852,11 +816,11 @@ function workerOn(entry: QueueEntry): boolean {
  * and so is a reading `storeOnly` built, which already holds the store's figures.
  *
  * The reading keeps its own path, stat and `heldSince`, a held parse's included, so the blocked rule
- * still ages it by the document it came from. Where `workerOn` says the worker is on the entry, it
- * also carries `turnedAtMs`, the store file's own modification time, which the in-flight rule weighs
+ * still ages it by the document it came from. Where the store calls the entry `active`, it also
+ * carries `turnedAtMs`, the store file's own modification time, which the in-flight rule weighs
  * beside the file's: the store is rewritten at every turn end, so it says the worker is taking turns
  * on this entry even while the file under `workdir` stays where the worktree was cut. Any other
- * entry goes without it, because a write made on the worked entry's turn says nothing of the rest.
+ * entry goes without it, because a write made on the active entry's turn says nothing of the rest.
  */
 function preferNewer(
   reading: QueuePlanReading,
@@ -873,7 +837,7 @@ function preferNewer(
     sections,
     completed: sections > 0 ? Math.min(count, sections) : count,
     next: entry.nextSection ?? null,
-    ...(storeMtimeMs === null || !workerOn(entry)
+    ...(storeMtimeMs === null || entry.status?.toLowerCase() !== STORE_ACTIVE
       ? {}
       : { turnedAtMs: storeMtimeMs }),
   };
@@ -883,8 +847,8 @@ function preferNewer(
  * The reading the store alone gives an entry whose plan is in none of the four places, or null when
  * the entry does not earn one.
  *
- * Only an entry `workerOn` says the worker is on, and that carries a `chapterCount`, earns one. The
- * store carries no document status of its own, and those are the store statuses that say the worker
+ * Only an entry the store calls `active` and that carries a `chapterCount` earns one. The store
+ * carries no document status of its own, and `active` is the one store status that says the worker
  * is on the entry, so the reading reads `In Progress` and draws as in flight. `sections` is the
  * store's `sectionCount` or 0, `completed` its `chapterCount` held at or below that total where
  * there is one, as `preferNewer` holds it, and `next` its `nextSection` or null.
@@ -902,7 +866,7 @@ function storeOnly(
   store: HeldFile<StoreReading>,
 ): QueuePlanReading | null {
   if (entry.chapterCount === undefined) return null;
-  if (!workerOn(entry)) return null;
+  if (entry.status?.toLowerCase() !== STORE_ACTIVE) return null;
   if (store.held === null) return null;
   const sections = entry.sectionCount ?? 0;
   return {

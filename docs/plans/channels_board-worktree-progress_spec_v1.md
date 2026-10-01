@@ -40,13 +40,12 @@ Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT 
 
 ## Standing Brief Amendments
 
-- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair, the store ceasing to say the worker is on the entry, or the store dropping its `chapterCount`, and the in-flight rule still ages the reading by the store.
+- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair, the entry leaving the store's `active` status, or the store dropping its `chapterCount`, and the in-flight rule still ages the reading by the store.
 - A store `sectionCount` of zero leaves the file's known section total in place, since a zero total is no newer reading of it.
 - A store-only reading carries the store's hold instant as its `heldSince`, so a torn store ages that line as it ages any held reading.
 - `docs/security-model.md` states the three fields' intake rule in a paragraph of its own under the first property, beside the lead paragraph's naming of them.
 - `docs/architecture.md` and `docs/operations.md` each state, in one sentence, when a store-only entry's blocked mark clears.
-- A file reading the store overrode on an entry the worker is on is aged for the in-flight rule by the later of its file's modification time and the store file's, and for the blocked rule by its file's alone, so a worktree worker's entry outranks a parked plan whose file was touched after the worktree was cut.
-- The store says the worker is on an entry when its status is `active`, or `blocked` with the reason `Max rounds reached`, which `status.ts` already treats as ordinary running; that one test keys both the store-only reading and the store's turn time, and widens the Assumption that named `active` alone.
+- A file reading the store overrode on the entry the store calls `active` is aged for the in-flight rule by the later of its file's modification time and the store file's, and for the blocked rule by its file's alone, so a worktree worker's entry outranks a parked plan whose file was touched after the worktree was cut.
 
 ## Sections of Work
 
