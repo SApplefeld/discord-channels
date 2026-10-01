@@ -1,6 +1,6 @@
 # A new machine launches without editing the wrapper
 
-Status: In Progress
+Status: Complete
 Commit model: Branch-and-PR
 
 ## Goal
@@ -39,6 +39,15 @@ Acceptance:
 - With it set to anything else, the wrapper throws naming the two accepted values, and `claude` is
   never called.
 - `docs/install.md` no longer tells anyone to edit the wrapper, and documents the variable.
+
+## Standing Brief Amendments
+
+- The installer may change printed advice that names the wrapper's flag choice, as long as no step
+  it runs or file it writes changes.
+- `docs/security-model.md` records `CHANNEL_LAUNCH_FLAG` as a route choice among its environment
+  control surfaces.
+- A `CHANNEL_LAUNCH_FLAG` value is matched after surrounding spaces are trimmed, and a blank value
+  reads as unset.
 
 ## Sections of Work
 
@@ -80,5 +89,20 @@ Review Findings: none raised against this section's own delta; it is the fix for
 Stamps: none surfaced
 Gate: the Section 1 targeted run above covers this delta (install/Install-All.test.ts and install/Install-Host.test.ts included): 52/52/0, exit 0.
 Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: kit-size reports no measured corpus in this repository.
+
+### Chapter 3 - 2026-10-01
+Completed: finishing
+Implemented By: main session
+Metrics: review rounds 1 (finishing adversarial with performance and security folded in, plus the goal read), closed claim-exit; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 4 declared, 0 asked); advisory: 0 findings; NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: "A machine that is not SCOTT, NEO or ASR launches wrapped sessions with no edit to any file in the checkout, so its broker checkout stays clean and `Repair-Broker.ps1 -Pull` keeps updating it."; The launch wrapper now starts every machine with the plain channel flag unless that machine's own user environment variable, CHANNEL_LAUNCH_FLAG, asks for the development flag, and it refuses any other value rather than guessing; the hard-coded list of three machine names is gone, so a client machine needs no edit to the code and keeps receiving updates, and the installer, install guide and threat model all describe the variable instead of the list; Refinements during the run: Section 2 appended from Section 1's review to fix two installer sentences that still pointed at the removed list; the Intent's "no change to the installer" narrowed to the installer's behavior to admit those sentences; three extras declared by the goal read and recorded in Standing Brief Amendments (installer advice text, the threat-model sentence, trimming of surrounding spaces); the environment variable chosen over a broker.env key because the installer drops unknown broker.env keys on rewrite; Operator-pending: none.
+Decisions / Surprises: Finishing Minor pass: the refusal message and docstring now say the match happens after trimming; the plain-route launch test was retired as a duplicate of the outside-the-fleet test, since the wrapper reads no machine name, and its comment moved there; the refusal test no longer pins the list's comma; the threat-model sentence moved to its own paragraph. QA was self-run in the main thread (the full suite and the acceptance bullets, each pinned by a launch-line test) rather than dispatched to qa-verifier, and docs curation was done by hand in Sections 1 and 2 rather than by docs-curator: the change touched four documents, each already reviewed in its section and again by the finishing pass.
+Failed approaches: none
+Assumptions: none beyond Chapter 1's
+Review Findings: review: finishing adversarial at fable, Agent tool, frontmatter effort (recorded as lower-effort than the high this pass names); verdict APPROVED, 0 Critical, 0 Major, 5 Minor. goal read at fable, Agent tool: 4 built-but-unasked (0 refused, 4 declared, 0 asked), 0 asked-but-unbuilt. Minors: 4 fixed in the close pass, 0 upgraded, 1 left: docs/operator-checks.md:165-167 says SCOTT keeps the development flag, already untrue at the base ref and outside this effort.
+Stamps: none surfaced
+Gate: whole gate at finishing, `npm test` on branch plans/launch-flag-per-machine at 0cc2ca9, 2026-10-01 ~09:30 EDT, clean tree: 2349 tests / 2348 pass / 0 fail / 1 skipped, exit 0 from its own marker, 64.9 s; the last recorded whole gate (PR #34 close) was 2346 / 2345 / 0 / 1. After the Minor pass, wrapper lane 16/16/0, exit 0 (one duplicate retired: retire class duplicate, its route still pinned by the outside-the-fleet test). Handoff gate, `npm test` over the final tree (Minor pass and archive uncommitted, origin/main not ahead), 2026-10-01 ~09:45 EDT: 2348 / 2347 / 0 / 1 skipped, exit 0 from its own marker, 59.5 s; the one fewer test is the retired duplicate.
+Next: none
 Commit Model: Branch-and-PR
 Delta: kit-size reports no measured corpus in this repository.

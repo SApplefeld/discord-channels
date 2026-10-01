@@ -84,9 +84,10 @@ $script:SessionStartHook = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\s
 Returns the channel flag this machine launches with.
 
 .DESCRIPTION
-CHANNEL_LAUNCH_FLAG, when set, must name one of the two flags exactly. Any other value throws rather
-than falling back: a misspelt flag that quietly became --channels would launch a host meant for the
-development route onto a channel its missing plugin refuses, the silent failure described above.
+CHANNEL_LAUNCH_FLAG, when set, must name one of the two flags exactly once surrounding spaces are
+trimmed, case included. Any other value throws rather than falling back: a misspelt flag that
+quietly became --channels would launch a host meant for the development route onto a channel its
+missing plugin refuses, the silent failure described above.
 Unset or blank, the machine takes --channels, the route every host runs.
 #>
 function Resolve-ChannelFlag {
@@ -96,8 +97,8 @@ function Resolve-ChannelFlag {
     $flag = $Value.Trim()
     if ($script:AllowedChannelFlags -cnotcontains $flag) {
         throw "Enter-ClaudeSession: CHANNEL_LAUNCH_FLAG is '$flag', which is not a channel flag. " +
-            "Set it to one of: $($script:AllowedChannelFlags -join ', ') (matched exactly, " +
-            "case included), or clear it to launch with $script:DefaultChannelFlag."
+            "Set it to one of: $($script:AllowedChannelFlags -join ', ') (matched exactly, case " +
+            "included, once surrounding spaces are trimmed), or clear it to launch with $script:DefaultChannelFlag."
     }
     return $flag
 }

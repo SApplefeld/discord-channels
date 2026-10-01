@@ -127,21 +127,6 @@ test("a host on the development flag registers the relay and passes its server e
   ]);
 });
 
-test("a host on the plain channel flag passes the plugin entry and no --mcp-config", (t) => {
-  // The plugin carries the same server. Registering it on the command line as well would start a
-  // second relay against the one session, so the entry travels alone.
-  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-launch-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-
-  const { args } = launchArgs(dir, undefined);
-  assert.deepEqual(args, [
-    "--name",
-    "probe-session",
-    "--channels",
-    "plugin:relay@sapplefeld-channels",
-  ]);
-});
-
 test("the relay registration is written on the plugin route too, since the shim reads it", (t) => {
   // plugins/relay/launch.mjs resolves the machine's live relay from this file. It is not passed to
   // `claude` on this route, and it still has to be on disk and current, or the plugin's channel
@@ -160,7 +145,9 @@ test("the relay registration is written on the plugin route too, since the shim 
 
 test("a machine outside the fleet launches on the plain channel flag with nothing configured", (t) => {
   // A client host must launch without an edit to this checkout: an edited checkout is a dirty tree,
-  // and Repair-Broker.ps1 -Pull refuses to update a dirty tree.
+  // and Repair-Broker.ps1 -Pull refuses to update a dirty tree. The plugin carries the relay's
+  // server, so the entry travels with no --mcp-config: registering it on the command line as well
+  // would start a second relay against the one session.
   const dir = mkdtempSync(path.join(os.tmpdir(), "channels-launch-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -197,7 +184,7 @@ test("a CHANNEL_LAUNCH_FLAG that is not a channel flag refuses the launch", (t) 
   // PowerShell wraps a thrown message across lines at the console width, so the tokens are read
   // from the stream with its whitespace collapsed.
   const stderr = run.stderr.replace(/\s+/g, " ");
-  for (const token of ["CHANNEL_LAUNCH_FLAG", "'--channel'", "--channels,", "--dangerously-load-development-channels"]) {
+  for (const token of ["CHANNEL_LAUNCH_FLAG", "'--channel'", "--channels", "--dangerously-load-development-channels"]) {
     assert.ok(stderr.includes(token), `the refusal does not name ${token}: ${run.stderr}`);
   }
   assert.equal(run.args, null, "claude was called despite the refusal");
