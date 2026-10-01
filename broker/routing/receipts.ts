@@ -19,6 +19,8 @@
 import type { Budget } from "../discord/budget.ts";
 import { createBudget } from "../discord/budget.ts";
 import type { CallOutcome, MessageReactions } from "../discord/transport.ts";
+import type { RepeatLogSurface } from "../repeat-log.ts";
+import { createRepeatLog } from "../repeat-log.ts";
 
 /**
  * The three stage emoji, and the warning a harness error episode swaps in over a still-unanswered
@@ -67,9 +69,20 @@ type Tracked = {
  */
 const MAX_TRACKED_PER_THREAD = 50;
 
-/** How long a run of reaction refusals is aggregated before its next log line, mirroring the
- * windowed refusal logging `gateway.ts`'s system-notice cleaner uses. */
+/** How long a run of reaction refusals is aggregated before its next log line. */
 const REFUSAL_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * The tracker's repeat log. Every refusal shares one key, so a window writes one line naming the
+ * first refusal's reason, and the next line the window admits carries the count of the rest.
+ */
+export const RECEIPTS_REPEAT_LOG: RepeatLogSurface<[reason: string]> = {
+  windowMs: REFUSAL_WINDOW_MS,
+  firstLine: (_key, reason) => `receipts: a reaction call was refused: ${reason}`,
+  countLine: (_key, suppressed) =>
+    `receipts: ${String(suppressed)} more reaction call(s) were refused in the last ` +
+    `${String(REFUSAL_WINDOW_MS / 60_000)} minutes`,
+};
 
 /**
  * How long a write will wait for a thread's paced-out budget to refill before it gives up on this
@@ -179,19 +192,10 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
   // `restore` or `forget`. A message delivered into one of these is painted ⚠️ straight away, since
   // a message queued during a long retry wait is the case the warning exists for.
   const episodes = new Set<string>();
-  let loggedAt: number | null = null;
-  let suppressed = 0;
+  const repeats = createRepeatLog(RECEIPTS_REPEAT_LOG, options.log, options.now);
 
   function reportRefusal(reason: string): void {
-    const at = options.now();
-    if (loggedAt !== null && at - loggedAt < REFUSAL_WINDOW_MS) {
-      suppressed += 1;
-      return;
-    }
-    const more = suppressed === 0 ? "" : ` (and ${String(suppressed)} more since the last line)`;
-    options.log(`receipts: a reaction call was refused: ${reason}${more}`);
-    loggedAt = at;
-    suppressed = 0;
+    repeats("refused", reason);
   }
 
   function budgetFor(threadId: string): Budget {

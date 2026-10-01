@@ -122,7 +122,7 @@ const REPEAT_WINDOW_MS = 60_000;
  */
 const MAX_REPEAT_KEYS = 64;
 
-const STATUS_REPEAT_LOG: RepeatLogSurface<[detail: string]> = {
+export const STATUS_REPEAT_LOG: RepeatLogSurface<[detail: string]> = {
   windowMs: REPEAT_WINDOW_MS,
   maxKeys: MAX_REPEAT_KEYS,
   firstLine: (reason, detail) => `status: ${reason} (${detail})`,

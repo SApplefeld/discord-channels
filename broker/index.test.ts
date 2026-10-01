@@ -2553,6 +2553,21 @@ test("a rebind with a null thread ID still clears the predecessor's item and pos
   assert.deepEqual(posts, [], "nowhere to post into yet");
 });
 
+test("a rebind restores the thread's receipts, since the departed session's episode can never close there", () => {
+  // The status reader closes an episode through the session's thread, and after a rebind the
+  // departed session has none, so the ⚠️ mark would stay on the thread for every later message.
+  const { post } = postSpy();
+  const restored: string[] = [];
+  const receipts = { restore: (threadId: string) => restored.push(threadId) };
+  const handler = rebindHandling({ inbox: null, receipts, post, now: () => 5_000, log: () => {} });
+
+  handler(REBIND_EVENT);
+  assert.deepEqual(restored, ["thread-9"]);
+
+  handler({ ...REBIND_EVENT, threadId: null });
+  assert.deepEqual(restored, ["thread-9"], "a rebind with no thread yet has no mark to clear");
+});
+
 test("a late flag for the departed session, carrying its reply's original instant, opens no item after the rebind", async (t) => {
   // The regression this clearing event would otherwise hide: a flag arriving late, the shape a
   // judge verdict on an earlier reply takes, must not reopen an ask the rebind already cleared.
@@ -2701,9 +2716,10 @@ test("startBroker wires the held buffers' restore: the attach, the file and the 
   assert.deepEqual(restoreWiringGaps(source.replace("inbound?.armRestored()", "void 0")), ["armed"]);
 });
 
-// The five receipt seams (outbound's pickedUp and answered, intake's pickup entry point, the
-// tailer's notePickup, and the surface's onRetired) all reach startBroker's own mutable `receipts`
-// and `threadFor` closures, which no test below reaches without a Discord login. This pins that
+// The receipt seams (outbound's pickedUp and answered, intake's pickup entry point and turn seam,
+// the inbound delivery, the tailer's notePickup, the surface's onRetired and the rebind handler)
+// all reach startBroker's own mutable `receipts` and `threadFor` closures, which no test below
+// reaches without a Discord login. This pins that
 // startBroker still makes each connection, read from the source the way `restoreWiringGaps` does.
 function receiptWiringGaps(source: string): string[] {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -2738,10 +2754,19 @@ function receiptWiringGaps(source: string): string[] {
   ) {
     gaps.push("turns");
   }
+  // A rebind restores the thread's receipts, since the departed session's episode can no longer
+  // close through it.
+  if (
+    !/onRebind:\s*rebindHandling\(\{\s*inbox,\s*receipts:\s*\{\s*restore:\s*\(threadId\)\s*=>\s*receipts\?\.restore\(threadId\)\s*\},/.test(
+      code,
+    )
+  ) {
+    gaps.push("rebind");
+  }
   return gaps;
 }
 
-test("startBroker wires every receipt seam: outbound, intake's pickup entry point, inbound, the tailer and the surface", () => {
+test("startBroker wires every receipt seam: outbound, intake, inbound, the tailer, the surface and the rebind", () => {
   const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.deepEqual(receiptWiringGaps(source), []);
   // Each check speaks when its own call is gone, so a green above is the calls being there.
@@ -2772,6 +2797,16 @@ test("startBroker wires every receipt seam: outbound, intake's pickup entry poin
   );
   assert.deepEqual(receiptWiringGaps(source.replace("receipts?.forget(threadId);", "")), ["surface"]);
   assert.deepEqual(receiptWiringGaps(source.replace("registry.noteTurnOpened(sessionId);", "")), ["turns"]);
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("receipts: { restore: (threadId) => receipts?.restore(threadId) },", "")),
+    ["rebind"],
+  );
+  // Handing over the tracker's value instead of the closure is a gap too: a tracker built after the
+  // surface would leave the handler holding null.
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("receipts: { restore: (threadId) => receipts?.restore(threadId) },", "receipts,")),
+    ["rebind"],
+  );
 });
 
 // The status reader's connections inside startBroker, which no test reaches without a Discord

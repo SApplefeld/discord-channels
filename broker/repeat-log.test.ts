@@ -1,18 +1,21 @@
 // The shared repeat logger. Two things carry the weight here: the counting core behaves the same
 // for every surface (the first line, the silent repeat, the count line on the window's close, the
-// sweep past a key cap, and a window that a throwing log cannot leave stale), and each of the nine
+// sweep past a key cap, and a window that a throwing log cannot leave stale), and each of the twelve
 // surfaces still writes its own text, window and cap, which operators and memory records grep for.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BOARD_CARD_REPEAT_LOG } from "./board/thread.ts";
 import { PINS_REPEAT_LOG } from "./discord/pins.ts";
+import { TYPING_REPEAT_LOG } from "./discord/typing.ts";
 import { JUDGE_REPEAT_LOG } from "./inbox/judge.ts";
 import { INBOX_CARD_REPEAT_LOG } from "./inbox/thread.ts";
 import { QUESTION_DESK_REPEAT_LOG } from "./question-desk.ts";
 import { createRepeatLog } from "./repeat-log.ts";
 import type { RepeatLogSurface } from "./repeat-log.ts";
 import { ROUTING_REPEAT_LOG } from "./routing/interactions.ts";
+import { RECEIPTS_REPEAT_LOG } from "./routing/receipts.ts";
 import { GATE_REPEAT_LOG } from "./routing/response-gate.ts";
+import { STATUS_REPEAT_LOG } from "./status-reader.ts";
 import { TAIL_REPEAT_LOG } from "./tail.ts";
 import { USAGE_CARD_REPEAT_LOG } from "./usage/thread.ts";
 
@@ -302,6 +305,42 @@ const PINS: SurfacePin[] = [
     count: "response gate: cause occurred 2 more time(s) in the last 60000ms",
     second: "response gate: cause thread=second",
   },
+  {
+    name: "typing keeper",
+    open: (log, now) => {
+      const repeats = createRepeatLog(TYPING_REPEAT_LOG, log, now);
+      return (key, detail) => repeats(key, detail);
+    },
+    windowMs: 300_000,
+    maxKeys: undefined,
+    first: "discord typing: cause (first)",
+    count: "discord typing: cause occurred 2 more time(s) in the last 5 minutes",
+    second: "discord typing: cause (second)",
+  },
+  {
+    name: "status reader",
+    open: (log, now) => {
+      const repeats = createRepeatLog(STATUS_REPEAT_LOG, log, now);
+      return (key, detail) => repeats(key, detail);
+    },
+    windowMs: 60_000,
+    maxKeys: 64,
+    first: "status: cause (first)",
+    count: "status: cause occurred 2 more time(s) in the last 60000ms",
+    second: "status: cause (second)",
+  },
+  {
+    name: "receipt tracker",
+    open: (log, now) => {
+      const repeats = createRepeatLog(RECEIPTS_REPEAT_LOG, log, now);
+      return (key, detail) => repeats(key, detail);
+    },
+    windowMs: 300_000,
+    maxKeys: undefined,
+    first: "receipts: a reaction call was refused: first",
+    count: "receipts: 2 more reaction call(s) were refused in the last 5 minutes",
+    second: "receipts: a reaction call was refused: second",
+  },
 ];
 
 for (const pin of PINS) {
@@ -335,6 +374,9 @@ test("each surface keeps its own key cap", () => {
     "board card": BOARD_CARD_REPEAT_LOG.maxKeys,
     "inbox card": INBOX_CARD_REPEAT_LOG.maxKeys,
     "response gate": GATE_REPEAT_LOG.maxKeys,
+    "typing keeper": TYPING_REPEAT_LOG.maxKeys,
+    "status reader": STATUS_REPEAT_LOG.maxKeys,
+    "receipt tracker": RECEIPTS_REPEAT_LOG.maxKeys,
   };
   assert.deepEqual(caps, Object.fromEntries(PINS.map((pin) => [pin.name, pin.maxKeys])));
 });

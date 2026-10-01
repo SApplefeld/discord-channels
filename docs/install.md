@@ -89,7 +89,9 @@ Two switches turn it off. `CHANNEL_MIRROR=off` in `broker.env` covers every sess
 else. A tool approval prompt from that session still carries the tool's actual input to Discord, as
 the paragraph above describes, because that is how the prompt is answerable at all. A session where
 the shell commands and file contents themselves are sensitive should not be answering approvals over
-the channel either.
+the channel either. An unmirrored session's thread also keeps its receipt reactions, its typing
+line and its harness error notices. The broker reads that session's transcript for those notices,
+and what it posts is fixed wording built from the error's numbers, never text from the transcript.
 
 **Neither switch keeps a session's reply-tool answers from the inbox judge.** The inbox judge is
 an optional classifier at TypeSafe, which the operator inbox uses once you name its key file under

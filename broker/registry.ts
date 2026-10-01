@@ -261,7 +261,7 @@ export type SessionRecord = {
    * When the open turn last showed activity, and null while no turn is open. A turn opens on the
    * session's credited `UserPromptSubmit` post (`noteTurnOpened`) or on a completed tool call of
    * the session's own main thread, and either one restamps this with now. A subagent's completed
-   * tool call restamps an open turn but never opens one: it carries the parent's session id, and a
+   * tool call neither opens a turn nor restamps one: it carries the parent's session id, and a
    * background agent working after `Stop` is not the session's turn. `Stop` sets it back to null.
    *
    * This is what the typing keeper gates on, rather than the derived `working` state, since

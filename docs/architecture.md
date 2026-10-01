@@ -70,9 +70,10 @@ Four pieces per host, plus an installer.
 - **Hooks** (`hooks/`). `SessionStart` is a `command` hook running `session-start.ps1`, which posts
   identity to the broker. `PostToolUse` and a `Stop` liveness tick are `http` hooks posting straight
   to the broker; the broker keeps a bounded, neutralized preview of the tool's input from
-  `PostToolUse` for the status card and each event's `transcript_path` for the tailer below, reads
-  whether a `PostToolUse` carries an `agent_id` (a subagent's call, which never opens or extends a
-  turn for the typing indicator), and drops the rest of the payload unread. `UserPromptSubmit` and a second `Stop` entry are the mirror:
+  `PostToolUse` for the status card and each event's `transcript_path` for the two transcript
+  readers below. It also reads whether a payload carries an `agent_id`, as a presence check: that
+  marks a subagent's event, which never opens, extends or closes a turn for the typing indicator. The
+  rest of the payload is dropped unread. `UserPromptSubmit` and a second `Stop` entry are the mirror:
   `http` hooks posting their whole payload, which already carries the console prompt and the turn's
   final assistant reply, to the content-bearing route. The transport split is fixed by observation:
   the `http` type never delivered `SessionStart`.
@@ -81,10 +82,13 @@ Four pieces per host, plus an installer.
   stream open to the broker for the life of the process.
 - **Broker** (`broker/`). The per-host daemon. It owns the bot token, one Discord gateway
   connection, the session registry, the thread bindings, every Discord surface (a session's thread
-  name, its status card, the messages written into it, the fleet usage, board and inbox cards' own
-  threads, and the channel's pin list), and a poll loop (`broker/tail.ts`) that tails each live
-  session's own transcript file for mid-turn narration. It runs as a scheduled task at system
-  startup, so an unattended reboot brings it back without waiting for anyone to sign in.
+  name, its status card, the messages written into it, the reactions on each person's message, the
+  typing indicator, the fleet usage, board and inbox cards' own threads, and the channel's pin
+  list), and two transcript poll loops. The tailer (`broker/tail.ts`) reads each live mirror-on
+  session's transcript for mid-turn narration. The status reader (`broker/status-reader.ts`) reads
+  every learned transcript, mirror-off included, for harness errors and channel pickups and
+  publishes no transcript text. The broker runs as a scheduled task at system startup, so an
+  unattended reboot brings it back without waiting for anyone to sign in.
 - **Installer** (`install/`). Provisions a host: configuration outside the repository, the hooks
   merged into the user-level settings file, hardened access control lists on the execution surface,
   and the scheduled task. The same directory holds the operator's repair path, `Repair-Broker.ps1`,
@@ -104,11 +108,14 @@ listener.
    moved by a `SessionStart`, a completed tool call, or an operator prompt, and by nothing else),
    the model and context figures the tailer reads off the transcript, the completion goal
    and the session's own title it reads the same way, and the roster of in-flight subagents and
-   background commands a `Stop` payload carries. Every credited post also teaches the transcript
-   tailer where that session's transcript file lives, without adding the path to the record itself.
+   background commands a `Stop` payload carries. Two more fields serve the thread activity signals
+   below: the instant the session's open turn last showed activity, and the line for an open
+   harness error episode. Every credited post also teaches the transcript tailer and the status
+   reader where that session's transcript file lives, without adding the path to the record itself.
    A `SessionStart` with `source: "clear"` supersedes the prior record for that token rather than
-   mutating it. `GET /sessions` publishes the registry for debugging, with the process token and the
-   goal withheld field by field and the transcript path never on the record to begin with.
+   mutating it. `GET /sessions` publishes the registry for debugging. The process token, the goal,
+   the turn's activity instant and the harness notice line are withheld field by field, and the
+   transcript path is never on the record to begin with.
 2. **Conversation, session to broker.** `POST /mirror` is the one content-bearing route, dedicated
    rather than folded into `/hook` so the larger ceiling and the log-suppression rule hold in one
    place. It takes a `UserPromptSubmit` or `Stop` payload under the same three identity headers plus
@@ -130,11 +137,13 @@ listener.
    a permission verdict or a held question's answer, and on its way through it clears the session's
    inbox item. Any admitted message not consumed is handed to the session bound to that thread,
    directly, or through the thread's buffer while the response gate is live ("The response gate"
+   below). Each message handed over takes the 📨 receipt reaction ("Thread activity signals"
    below).
 5. **Discord outbound.** Every five seconds the surface reconciles the registry against Discord:
    thread names, the starter-message card, any reply, mirrored message, or notice waiting to be
    written, the archiving of an exited session's thread, and, chained after that pass, the channel's
-   pin list. Mirror posts spend their own rate-limit budget rather than the one permission prompts
+   pin list. The same tick hands the typing keeper the threads whose session has a turn open.
+   Mirror posts spend their own rate-limit budget rather than the one permission prompts
    spend, so a reply arriving as twenty messages cannot starve the alert a parked session waits on.
    Posts are ordered per thread, so a turn's reply, the prompt after it, a mid-turn narration chunk,
    a mid-turn typed message, and a reply-tool call reach the thread in the order the broker received
@@ -146,15 +155,20 @@ listener.
    follows.
 
 The registry persists to a JSON file on every mutation, and the thread bindings persist beside it,
-so a restart rebinds existing threads rather than opening duplicates. Two fields do not
-survive that round trip, and for the same reason: a live reading restored from a snapshot would draw
-as current. The goal is never written at all, since only the card reads it and nothing restores it;
+so a restart rebinds existing threads rather than opening duplicates. Two transcript readings do
+not survive that round trip, and for the same reason: a live reading restored from a snapshot would
+draw as current. The goal is never written at all, since only the card reads it and nothing restores it;
 the context size is written and dropped on load, so a woken card carries the model without a figure
 beside it until the next transcript line reports one. The roster is the deliberate exception,
 restored with its first-sighting stamps, because the harness replaces it wholesale at the session's
 next `Stop` and dropping it would read a mid-fan-out restart as an idle session. The session's title
 is written and restored, on the opposite reasoning to the goal's: it is identity rather than intent,
 and a restart that dropped it would repaint a renamed thread back to its launch name.
+
+The two activity-signal fields are never written at all. Nothing on disk says whether a turn was
+open when the broker died, so a loaded record starts with no open turn and shows no typing until the
+next opening event. A harness error episode belongs to the running harness, and a restored one would
+draw a retry time long past.
 
 A restored record is weak evidence that its session survived the restart, because no relay pipe
 survives the broker process. When the listener binds, the relay hub (`openRestartWindows` in
@@ -263,9 +277,166 @@ one poll interval later; the prompt that opens the turn arrives the same two way
 what collapses each of those to one copy in the thread; it is described under "One copy of a
 turn's open and close" below, and it serves the reply tool's own near-duplicate as well.
 
-Reading a session's transcript at all is gated on an explicit mirror-on verdict seen for that session
-under the current broker process; see [`security-model.md`](security-model.md) for what that gate
-covers and why it fails in the direction it does.
+The tailer reads one more shape that posts nothing: a `queued_command` attachment whose origin
+names this relay's channel, which is a Discord message the harness injected mid-turn. It moves that
+message's receipt reaction to 👀 at the line's own timestamp, through the same pickup entry point
+the hook path uses ("Thread activity signals" below).
+
+The tailer's reading of a session's transcript is gated on an explicit mirror-on verdict seen for
+that session under the current broker process; see [`security-model.md`](security-model.md) for
+what that gate covers and why it fails in the direction it does. The status reader below is the one
+transcript reader that needs no verdict, and it publishes no transcript text.
+
+## Thread activity signals
+
+A person reading a session's thread can tell whether the session got their message, is working on
+it, has answered it, or is stuck on a harness error, without opening the status card. Three signals
+carry that, each drawn in the thread itself: a reaction on each person's message, Discord's typing
+indicator, and a fixed-wording notice for a harness error. All three are built only where Discord
+is configured, and none of them carries text from the conversation.
+
+**Receipt reactions** (`broker/routing/receipts.ts`). Each message a person sends in a session's
+thread carries one stage emoji at a time, and the emoji set is the exported `STAGE_EMOJI` constant.
+
+- 📨 **Delivered.** The inbound router handed the message to the session, directly or in a released
+  response-gate buffer. A message still at 📨 is queued behind a running turn and unread.
+- 👀 **Picked up.** A turn opened that carries the message. A pickup carries an instant, and it
+  moves every message at 📨 delivered at or before that instant, so a message delivered later stays
+  at 📨 behind the turn.
+- ✅ **Answered.** A reply reached the thread after the message was picked up.
+- ⚠️ **Warning.** The session has a harness error episode open and the message is not yet answered.
+
+Pickup has one session-keyed entry point (`pickupFor` in `broker/index.ts`), and four sources feed
+it. The intake credits a `UserPromptSubmit` post whose payload names the session the token holds,
+on all three of its branches: mirror-on, a `-NoMirror` session, and a host with mirroring off. On
+the two mirror-off branches the body is read for its `session_id` alone. The tailer credits a
+prompt it reads off the transcript, and the channel-origin queued line above, at the line's own
+timestamp. The status reader below credits the same queued line and a channel-origin turn-opening
+line, which covers a mirror-off session and a host with no tailer.
+
+An answer is attributed by instant rather than by when its post landed. The outbound router tells
+the tracker the instant a reply arrived at the broker, from a reply-tool answer that landed whole,
+from a turn-final reply mirror that landed, and from the two branches that drop a reply mirror as a
+duplicate already on the thread. Every message picked up at or before that instant moves to ✅ and
+leaves tracking. A pickup arriving late, at or before the thread's latest answered instant, goes
+straight to ✅. A mirror-off turn that ends without the reply tool posts no reply, so its messages
+stay at 👀 until the session's next reply answers them.
+
+A stage change adds the new emoji and, only once that add lands, removes every other emoji the
+tracker has seen land on the message. A refused add leaves the message as it stood, and a refused
+remove is tried again by the next stage change. Every write for one thread, across all its
+messages, runs through one serial queue and one rate budget, since Discord's reaction buckets are
+per channel. A write the budget cannot afford yet waits for the bucket's reset plus 100 ms, which
+covers the 50 ms offset discord.js folds into every reset. A wait past 5 seconds skips the write.
+Nothing is retried once attempted, and nothing here is awaited by delivery or posting. Refusals log
+one line, `receipts: a reaction call was refused: <reason>`, at most once per five minutes, with a
+count of the rest. A thread tracks at most 50 messages, and the oldest drops out still wearing its
+last reaction. Tracking is dropped when the surface retires the thread. The writes are `PUT` and
+`DELETE` on `/channels/{thread}/messages/{message}/reactions/{emoji}/@me`.
+
+**Typing indicator** (`broker/discord/typing.ts`). A thread shows Discord's "is typing" line while
+its session has a turn open. The gate is `typingWanted` in `broker/discord/state.ts`: a turn is
+open, it showed activity within `CHANNEL_DISCORD_IDLE_AFTER_MS`, and the session is not waiting on
+a person, blocked or exited.
+
+The open turn is one registry field, `turnActiveAt`. A credited `UserPromptSubmit` post opens it,
+through the intake's `turns.opened` seam and `noteTurnOpened`. A completed tool call of the
+session's own main thread opens or refreshes it, when the payload names the credited session. A
+`Stop` naming the session closes it. A payload carrying an `agent_id` is a subagent's, and it
+neither opens, refreshes nor closes the turn, so background agents running after a turn ends show
+no typing.
+
+The gate reads the open turn rather than the card's `working`, because `working` lasts
+`CHANNEL_DISCORD_IDLE_AFTER_MS` past a `Stop` and stays on indefinitely while a background roster
+is outstanding. The card itself is unchanged, so for up to two minutes after a turn ends it can read
+`working` while the thread shows no typing.
+
+Each surface refresh tick computes the typing set from that tick's views (`typingThreads` in
+`broker/discord/surface.ts`) and hands it to the keeper. A thread entering the set gets one call at
+once and one every 8 seconds, inside Discord's 10-second display window. Each thread carries its
+turn's deadline, the activity instant plus `CHANNEL_DISCORD_IDLE_AFTER_MS`, and the keeper sends
+nothing past it between ticks. A credited `Stop` releases the thread at once through the intake's
+`turns.closed` seam rather than at the next tick. A message the bot posts clears Discord's indicator
+at once. A session with no thread yet, or whose thread is abandoned or archived, is left out, and a
+thread the current tick creates joins on the next.
+
+The keeper holds one timer and one rate budget per thread. Three permanent or missing refusals in a
+row drop a thread until it leaves the set and comes back. A rejected token halts the keeper and stops
+the whole Discord refresh through the surface's own fatal handler, since discord.js discards a token
+after a 401. The keeper's log lines start `discord typing:` and repeat at most once per five minutes.
+The write is `POST /channels/{thread}/typing`, with no body.
+
+Three cases leave the indicator short of the turn. A turn that ends without a `Stop`, on an API
+error or an interrupt, keeps typing until its deadline passes. A main thread blocked longer than
+`CHANNEL_DISCORD_IDLE_AFTER_MS` on one call, a foreground agent included, pauses typing until its
+next event. A broker restarted mid-turn shows no typing until the session's next prompt or
+main-thread tool call.
+
+**Harness error notices** (`broker/status-reader.ts`). A session waiting out a rate limit or an API
+error cannot say so itself, because it cannot produce a turn. The status reader reads the harness's
+own error lines and posts a fixed-wording notice in the thread.
+
+The reader is the second transcript reader, built wherever Discord is configured and independent of
+the tailer. It polls on `CHANNEL_INTERIM_POLL_MS`, over every session the registry has not ended,
+stale ones included, whose transcript path a credited hook post taught it. It learns on its own
+intake seam, so it runs with `CHANNEL_INTERIM_MIRROR` off, with `CHANNEL_MIRROR` off, and for a
+`-NoMirror` session. A path whose filename stem is not the session id is refused, as the tailer
+refuses one. The first learn of a path baselines at the file's current end, so nothing already in
+the transcript is acted on. Each pass reads at most 256 KiB per session. A larger backlog is read
+from its newest 256 KiB, and the rest is skipped with a log line.
+
+The reader acts on four line shapes and skips everything else. A cheap substring prefilter runs
+before any parse.
+
+- A `system` line with subtype `api_error` opens or continues an error episode.
+- An `attachment` line recording a `queued_command` in `prompt` mode whose origin names this
+  relay's channel credits a pickup, a Discord message injected mid-turn.
+- A root `user` line whose origin names this relay's channel, and whose content holds no
+  `tool_result` block, credits a pickup and opens a new turn. That is a Discord message opening a
+  turn on an idle session.
+- While an episode is open, an `assistant` line, read for its type and its `isApiErrorMessage`
+  flag alone, closes the episode unless that flag is set.
+
+Every line must be non-sidechain and carry the session id the path was learned for. A pickup
+instant is capped at the present. From an error line the reader uses only the HTTP status, whether
+the line carried a `rateLimits` object, its `rateLimitType`, its `resetsAt`, its `retryInMs` and the
+line's own timestamp. It never reads the error's message, its request id or any free-text field.
+
+An episode is one run of error lines between two outputs, whatever their request ids. Each retry
+attempt carries a new request id, so a request id cannot key an episode. The first error line posts
+one notice and sets the card line. A later error line that renders differently, such as a later
+retry time, updates the card line and posts nothing. An unflagged `assistant` line posts
+`Resumed.` and clears the card line. A new turn closes an open episode without a post: a credited
+`UserPromptSubmit`, through the intake's `turns.opened` seam, or the reader's own channel
+turn-opening line. That turn's instant becomes the session's floor, and an error line stamped
+before it is ignored. A session that ends, or leaves the not-ended set, closes its episode without
+a post.
+
+`renderHarnessNotice` in `broker/discord/render.ts` composes the notice from those fields alone. A
+rate limit reads `Rate-limited (five-hour limit). Retrying at 1:16 PM, limit resets 3:00 AM.`, and
+any other error reads `API error (status 529). Retrying at 1:16 PM.`. The limit type is a lookup
+key into a fixed map, with `usage limit` for an unknown one, and is never drawn itself. A clause
+whose field is missing or invalid is dropped. Times are drawn in the broker host's local zone.
+
+The notice posts through the steering writer's `reply` route, which has no one-minute floor, so a
+`Resumed.` after a short retry wait is not dropped. A session's posts run one at a time, in order. A
+notice that lands ends the thread's narration block, as the steering writer's own notices do. One
+that does not land logs `broker: session <id>'s harness notice was not posted: rate limited` or
+`failed`, and is not retried. A session with no thread yet posts nothing.
+
+The episode reaches two more surfaces. The status card draws `⚠️ <notice>` under its field block,
+from the registry's `harnessNotice`, rendered from the latest error line, so it shows the current
+retry time while the thread keeps the opening notice. The card drops the line once the episode
+closes or the session reads exited. The receipt tracker swaps every tracked message in the thread to
+⚠️ when the episode opens, and paints ⚠️ on a message delivered while it stays open. Closing the
+episode paints each message's recorded stage back: 👀 once a turn picked it up, 📨 otherwise. A
+lineage rebind also restores the thread's receipts, since the departed session's episode can no
+longer close through that thread.
+
+The reader's own log lines start `status:`, carry a session id or a byte count, and repeat at most
+once a minute per cause. A caught read or parse error is discarded unread, since it can quote the
+line or the path. A broker restarted mid-wait learns no transcript path until the session's next
+hook post, so that episode posts no notice.
 
 ## Peer traffic between sessions
 
@@ -454,6 +625,10 @@ transcript. Its end is the unobservable half, since a goal that completes need n
 so the card drops the line the moment the session reads idle or exited rather than trying to detect
 one: a finished goal drawn indefinitely reads as current, which is worse than no goal line at all.
 
+An open harness error episode rides the card as one `⚠️` line under the field block. The status
+reader sets it rather than the tailer, so a mirror-off session shows it too. "Thread activity
+signals" above describes the episode.
+
 The session's in-flight work rides the same card, and it corrects a state rather than adding one. A
 session blocked on dispatched subagents fires no hooks at all, so hook-driven liveness called it
 idle at the moment it was most heavily worked. The harness reports its own table of in-flight
@@ -519,8 +694,10 @@ session's key instead of opening a second thread, guarded against a match with n
 against one this surface already gave up on after repeated permanent Discord refusals. The rebind posts
 one system-style line into the thread naming that the supervisor restarted, since a restart is neither
 the operator's turn nor the session's. The same rebind clears the departed session's own inbox item
-first, inside a guard that logs a failure and never stops the notice or the rebind. Nothing else
-about the thread's history or its rename cadence changes; and every session that never sets
+first, inside a guard that logs a failure and never stops the notice or the rebind. Where the
+thread is open it also restores the thread's receipt reactions, so a ⚠️ the departed session's
+error episode painted does not stay on later messages. Nothing else about the thread's history or
+its rename cadence changes; and every session that never sets
 `CHANNEL_LINEAGE` - which is every session but a supervisor's - takes no path this paragraph
 describes.
 
@@ -1021,14 +1198,16 @@ of these lands at its owner, and a new caller imports the owner rather than copy
   key. The first call of a key writes at once, and a repeat inside the window is counted. The count
   is written on the next call the window admits, just before that call's line. No timer runs, so a
   count whose key never recurs stays unwritten. The window is refreshed before either line is
-  written, so a log function that throws cannot leave it stale. Nine surfaces use it, each
-  exporting a `*_REPEAT_LOG` constant that fixes its window, key cap and exact text. The tailer, the
-  question desk and the interaction router run 60 second windows and sweep past 64 keys. The inbox
-  judge and the response gate run 60 seconds with no sweep, each handing its constant to the shared
-  Jev client, which builds the log. The pin keeper and the usage, board and inbox cards run 5
-  minutes with no sweep. `broker/repeat-log.test.ts` pins each surface's two lines verbatim, because
-  operators and memory records grep for them. The intake's refusal limiter and the router's drop
-  limiter keep local versions of the same counting.
+  written, so a log function that throws cannot leave it stale. Twelve surfaces use it, each with
+  an exported `*_REPEAT_LOG` constant that fixes its window, key cap and exact text. The tailer,
+  the status reader, the question desk and the interaction router run 60 second windows and sweep
+  past 64 keys. The inbox judge and the response gate run 60 seconds with no sweep, each handing its
+  constant to the shared Jev client, which builds the log. The pin keeper, the typing keeper, the
+  receipt tracker and the usage, board and inbox cards run 5 minutes with no sweep. The receipt
+  tracker logs every refusal under one key, so a window writes one line and counts the rest.
+  `broker/repeat-log.test.ts` pins every surface's two lines verbatim, because operators and memory
+  records grep for them. The intake's refusal limiter and the router's drop limiter keep local
+  versions of the same counting.
 - **The standing cards' thread binding** (`loadCardBinding` and `saveCardBinding` in
   `broker/card-binding.ts`). It persists a card's `{messageId, threadId}` as a versioned snapshot,
   written to a temp file and renamed over the target, so a restart edits the card it already owns.
@@ -1073,17 +1252,18 @@ Four, and each one fails in its own way.
 - **Claude Code's hook protocol.** The user-level settings file registers four events and five hooks:
   `SessionStart`, `PostToolUse`, and a `Stop` liveness tick post payloads the broker reads only as
   far as a session's identity and activity plus the two bounded fields above (a tool-input preview
-  and a transcript path) and the presence of an `agent_id`; the Stop tick's payload also carries the turn's final reply, which that
-  route drops unread. `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the
+  and a transcript path) and the presence of an `agent_id`; the Stop tick's payload also carries
+  the turn's final reply, which that route drops unread. `UserPromptSubmit` and a second `Stop` entry carry the console prompt and the
   turn's final assistant reply to the mirror, which keeps them, save for a background task's wake
   prompt, which mirrors as the one-line notice under the default `CHANNEL_TASK_NOTIFICATION`
   setting. All of them fail open: a broker that is down cannot slow or block a session.
 - **Claude Code's channel protocol.** The relay registers only from the interactive REPL, and only
   when `channelsEnabled` is on and the plugin is allowlisted. Claude Code refuses a channel whose
   negotiated protocol revision is at or past `2026-07-28`.
-- **Discord.** The REST API for thread creation, renames, and message writes, and the gateway for
-  inbound messages. Renames are the scarce resource, so the broker reads the rate-limit response
-  headers and drops a rename it cannot afford rather than queueing it.
+- **Discord.** The REST API for thread creation, renames, message writes, reactions and the typing
+  indicator, and the gateway for inbound messages. Renames are the scarce resource, so the broker
+  reads the rate-limit response headers and drops a rename it cannot afford rather than queueing
+  it. A reaction or typing call that fails is logged and dropped, and delivery never waits on one.
 - **TypeSafe's Jev.** The inbox judge and the response gate, through one client
   (`broker/jev/client.ts`), and the broker's one HTTP egress to a host other than Discord. The
   gate's calls are described under "The response gate". Each unmarked reply is posted to
@@ -1117,9 +1297,11 @@ A host running this has a Discord channel whose thread list is a live dashboard 
 that machine, a card in each thread carrying what that session is doing right now, the conversation
 itself mirrored into the thread turn by turn, mid-turn narration on a long turn, an alert when a
 session parks itself on a question and a way to answer it from the thread, a ⛔ title and one ping
-when a goal run stops on the operator, background-task wake-ups compressed to one line, and a path
-for sending it a message or approving its tool calls from a phone. The status path, the message path, and the mirror fail independently, which is what makes a
-dead message path visible instead of silent.
+when a goal run stops on the operator, background-task wake-ups compressed to one line, a reaction
+on each person's message saying where it stands, a typing indicator while a turn is open, a notice
+when a session is stuck on a harness error, and a path for sending it a message or approving its
+tool calls from a phone. The status path, the message path, and the mirror fail independently,
+which is what makes a dead message path visible instead of silent.
 
 Installing a host is [`install.md`](install.md). Running one is [`operations.md`](operations.md).
 What the design trusts and what it does not is [`security-model.md`](security-model.md).

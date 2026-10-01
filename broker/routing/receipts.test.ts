@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CallOutcome, MessageReactions, RateLimitObservation } from "../discord/transport.ts";
 import { NO_RATE_INFO } from "../discord/transport.ts";
-import { PACE_MARGIN_MS, STAGE_EMOJI, createReceiptTracker } from "./receipts.ts";
+import { PACE_MARGIN_MS, RECEIPTS_REPEAT_LOG, STAGE_EMOJI, createReceiptTracker } from "./receipts.ts";
 
 const HEALTHY: RateLimitObservation = { remaining: 4, resetAfterMs: 5_000, retryAfterMs: null };
 
@@ -143,6 +143,26 @@ for (const failure of [
     assert.match(log[0], /^receipts: a reaction call was refused: /);
   });
 }
+
+test("refusals log through the shared repeat logger: one line a window, the rest counted on the next", async () => {
+  const { reactions } = reactionsWith(() => ({ status: "failed", error: "HTTP 400", rate: NO_RATE_INFO }));
+  const { now, advance } = clock();
+  const log: string[] = [];
+  const tracker = createReceiptTracker({ reactions, log: (message) => log.push(message), now });
+
+  tracker.delivered("thread-1", "msg-1", now());
+  tracker.delivered("thread-1", "msg-2", now());
+  await settle();
+  assert.deepEqual(log, [RECEIPTS_REPEAT_LOG.firstLine("refused", "HTTP 400")]);
+
+  advance(RECEIPTS_REPEAT_LOG.windowMs);
+  tracker.delivered("thread-1", "msg-3", now());
+  await settle();
+  assert.deepEqual(log.slice(1), [
+    RECEIPTS_REPEAT_LOG.countLine("refused", 1),
+    RECEIPTS_REPEAT_LOG.firstLine("refused", "HTTP 400"),
+  ]);
+});
 
 /** A `sleep` that never really waits, recording every requested wait in order. */
 function fastSleep() {

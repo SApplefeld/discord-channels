@@ -396,11 +396,12 @@ seams only where Discord is configured, so a host without Discord reads no mirro
 
 The typing indicator is one more Discord write: `POST /channels/{thread}/typing`, with no body, on a
 thread id the broker itself holds. It runs only while a session's own main thread has a turn open
-with activity inside `idleAfterMs`. To tell a subagent's tool call from the main thread's, the hook
-intake reads whether a `PostToolUse` payload carries an `agent_id`, as a presence check. The value
-is never stored, logged or published. The turn's activity instant is never written to the state file
-and is withheld from `GET /sessions`. A `401` on the typing route halts the whole Discord refresh,
-the same as on any surface write, because discord.js discards a rejected token.
+with activity inside `idleAfterMs`. To tell a subagent's hook event from the main thread's, the hook
+intake reads whether a hook payload carries an `agent_id`, as a presence check. A subagent's
+`PostToolUse` then neither opens nor refreshes the turn, and a subagent's `Stop` does not close it.
+The value is never stored, logged or published. The turn's activity instant is never written to the
+state file and is withheld from `GET /sessions`. A `401` on the typing route halts the whole Discord
+refresh, the same as on any surface write, because discord.js discards a rejected token.
 
 **The status reader reads every learned transcript, mirror-off included, and publishes no text from
 any of them.** It is the one transcript reader that needs no mirror-on verdict, so it is held to a

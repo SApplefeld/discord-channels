@@ -131,11 +131,74 @@ is edited in a far looser bucket and carries the detail. The card opens with a h
 session and its state, in a five-state vocabulary that splits the title's `active` into `⚙ working`
 and `⏸ idle` and keeps `⏹ needs you`, `⛔ blocked` and `⚠ exited` as the title draws them, then a
 fenced block of fields (host, session, state, model, context size, a
-`From` row while the session is running below the model it opened with, and heartbeat), then one
-fenced block per thing the session has to say about itself: the goal it is working toward, the tool
-it last ran and what that tool was called with, and the subagents and background commands it is
-waiting on. A section with nothing to show is left out rather than drawn empty, so a quiet session
-is a short card.
+`From` row while the session is running below the model it opened with, and heartbeat), then a
+`⚠️` line while the session is stuck on a harness error, then one fenced block per thing the
+session has to say about itself: the goal it is working toward, the tool it last ran and what that
+tool was called with, and the subagents and background commands it is waiting on. A section with
+nothing to show is left out rather than drawn empty, so a quiet session is a short card.
+
+## Thread activity signals
+
+Three signals in the thread itself say where your message stands and whether the session is
+working, so you rarely need the card. They are a reaction on each message you send, Discord's
+"is typing" line, and a one-line notice when the session is stuck on a harness error. All three
+run whenever Discord is configured, for mirror-off sessions too, and none of them has a setting of
+its own. [`architecture.md`](architecture.md), "Thread activity signals", has the mechanics.
+
+**The reaction on your message** moves through one stage at a time:
+
+- 📨 means the session has your message but has not started a turn that reads it. A message still at
+  📨 while the session works is queued behind the running turn.
+- 👀 means a turn that carries your message has started.
+- ✅ means the session replied in the thread after picking your message up.
+- ⚠️ means the session is in a harness error wait. Your message gets its stage back when the wait
+  ends.
+
+Each person's messages carry their own reactions. A mirror-off session that ends a turn without
+the reply tool leaves your message at 👀 until its next reply, since nothing was posted to answer
+it. The bot needs Add Reactions ([`install.md`](install.md)). A refused reaction is dropped,
+never retried, and never delays delivery, and the log carries `receipts: a reaction call was
+refused: <reason>` at most once per five minutes with a count of the rest.
+
+**The typing line** runs while the session has a turn open, from the prompt that opens it to its
+`Stop`. It stops at once on the `Stop`, and a message the bot posts clears it too. It does not
+follow the card: the card reads `working` for two minutes after a turn ends
+(`CHANNEL_DISCORD_IDLE_AFTER_MS`) and for as long as background agents run, while the typing line
+has stopped. A turn that dies on an API error or an interrupt sends no `Stop`, so its typing runs
+until two minutes past the turn's last prompt or tool call. A single tool call longer than that, a foreground
+agent included, pauses typing until the next one. A broker restarted mid-turn shows no typing until
+the next prompt or tool call. The keeper's log lines start `discord typing:`, and `discord typing:
+the thread's typing call was refused N times in a row` means it has stopped trying that thread
+until the turn ends and a new one opens.
+
+**A harness error notice** reads like `Rate-limited (five-hour limit). Retrying at 1:16 PM, limit
+resets 3:00 AM.` or `API error (status 529). Retrying at 1:16 PM.`, with times in the broker host's
+own zone. It is posted once per error wait, however many retries the wait takes, and `Resumed.`
+follows when the session produces output again. The card's `⚠️` line carries the latest retry time
+while the thread keeps the first notice. A new prompt ends the wait without a `Resumed.`, since an
+interrupted turn writes no output to resume with. Nothing from the error's own message is ever
+posted. The notice reaches the thread within one transcript poll of the error
+(`CHANNEL_INTERIM_POLL_MS`, 20 seconds by default). A broker restarted during a wait posts no
+notice for it, because it learns the transcript's location only at the session's next hook.
+
+Six log lines belong to the notices, each naming a session id or a byte count and never
+transcript text:
+
+- `broker: session <id>'s harness notice was not posted: rate limited` or `... failed`: the notice
+  or its `Resumed.` did not land and is not retried. The next error wait posts afresh.
+- `status: session <id>'s transcript outgrew one status pass (...)`: more than 256 KiB grew between
+  two polls; the newest 256 KiB were read and the rest skipped.
+- `status: session <id>'s transcript shrank below the held offset (...)`: the file was replaced or
+  truncated, and the reader resumes from its new end.
+- `status: session <id>'s status pass failed (...)`: the file could not be read this pass; the next
+  pass tries again.
+- `status: session <id> was taught a transcript path whose filename is not its own session id
+  (...)`: the path is refused, as the tailer refuses it, and the reader keeps the session's prior
+  path. A session with no prior path gets no notices.
+- `broker: a status pass failed; the error detail is withheld, it can carry content`: a whole pass
+  was rejected, which normal operation should never produce.
+
+Each `status:` line repeats at most once a minute, with a count of the rest.
 
 ## The channel's pins, and threads that put themselves away
 
@@ -185,10 +248,12 @@ each change and only the settled name is painted. A session already reading `nee
 skips the dwell and repaints on the next pass.
 
 Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never
-follows a rename, because the broker reads nothing from that session's transcript, and the name is
+follows a rename, because the tailer never reads that session's transcript, and the name is
 transcript content. That is the flag working as intended rather than a fault, and its thread keeps
 the launch name for the session's life. The switch stops two things: the mirror posts that
-session's hooks send, and the broker's reading of its transcript. It does not reach the reply tool,
+session's hooks send, and the tailer's reading of its transcript. The status reader still reads
+that transcript for harness errors and channel pickups, and publishes only fixed wording and
+reactions ("Thread activity signals" below). The switch does not reach the reply tool either,
 whose answers take another route to the thread. "The fleet inbox card" below says where those
 answers go. The switch is advisory besides: a process holding the session's token can post
 without the off header, as [`security-model.md`](security-model.md) explains.
@@ -720,7 +785,7 @@ render a genuine downgrade unmarked; whoever could do that already writes the wh
 a report rather than an authority.
 
 Both the model line and the context size exist only for sessions with mirroring on, because the
-tailer is the only reader and it never opens a suppressed session's transcript.
+tailer is the only reader of those lines and it never opens a suppressed session's transcript.
 
 ## What a session is waiting on
 
@@ -818,7 +883,7 @@ Two knobs govern it, both in `broker.env`:
 | Setting | Default | What it decides |
 |---|---|---|
 | `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed at all, which is what carries mid-turn narration, a message typed at the console mid-turn, the open-question alert, and the recovery of a turn-opening prompt whose mirror hook was lost; also gated by `CHANNEL_MIRROR`, so the host-wide switch turns off everything below it too |
-| `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; refuses below 1 s or above 5 min |
+| `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript, and how often the status reader polls every learned one for harness errors whatever `CHANNEL_INTERIM_MIRROR` says; refuses below 1 s or above 5 min |
 
 Turning `CHANNEL_INTERIM_MIRROR` off silences what the tailer carries, mid-turn narration,
 mid-turn typed messages, the open-question alert, and the turn-opening prompt recovery among it.
@@ -840,7 +905,9 @@ survives an interim-off host, because the record the mirror compares against is 
 tool rather than by the tailer, and it exists whenever `CHANNEL_MIRROR` is on. A session launched
 with `-NoMirror` narrates nothing, carries none of the messages typed into it, and raises no
 question alert, for the same reason its prompts and replies do not mirror: the tailer is never
-armed for it.
+armed for it. The thread activity signals above keep running in both cases, because the status
+reader needs neither the tailer nor a mirror-on verdict. With the tailer off, that reader is what
+moves a message injected mid-turn to 👀.
 
 **The log carries `tail:` lines**, each naming a session ID, a count, or a byte offset and never any
 transcript text:
@@ -1111,16 +1178,16 @@ refused by name rather than guessed at.
 | `CHANNEL_DISCORD_CHANNEL` | unset | The channel threads are opened in |
 | `CHANNEL_ALLOWED_USER_ID` | unset | One Discord user allowed to steer this host, as an operator |
 | `CHANNEL_SENDERS` | unset | The host's roster, comma-separated `<id>:operator` and `<id>:participant` entries, admitted alongside `CHANNEL_ALLOWED_USER_ID`. An install run keeps a key it was not given, so dropping an ID is an edit to `broker.env` and a restart |
-| `CHANNEL_DISCORD_REFRESH_MS` | 5 s | How often the surfaces are reconciled |
+| `CHANNEL_DISCORD_REFRESH_MS` | 5 s | How often the surfaces are reconciled, the set of threads showing the typing line included |
 | `CHANNEL_DISCORD_DWELL_MS` | 60 s | How long a state must hold before a rename is spent on it |
-| `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working` |
+| `CHANNEL_DISCORD_IDLE_AFTER_MS` | 2 min | Silence after which a thread reads `idle` rather than `working`, and how long an open turn with no prompt or main-thread tool call keeps the typing line |
 | `CHANNEL_DISCORD_EXITED_AFTER_MS` | 4 h | Silence after which a stale session is presumed dead and reads `exited` |
 | `CHANNEL_DISCORD_ARCHIVE_ON_END` | on | Whether an ended session's thread is archived, so the channel reads as what is running; an archived thread stays readable and a post revives it |
 | `CHANNEL_MIRROR` | on | Whether console prompts and turn replies are mirrored into the thread |
 | `CHANNEL_MIRROR_MAX_BYTES` | 256 KB | Largest mirror post accepted; a larger one is dropped |
 | `CHANNEL_TASK_NOTIFICATION` | brief | How a background task's wake prompt reaches the thread: `brief` posts the one-line 📨 notice, `full` mirrors the whole injected report, `off` posts nothing |
 | `CHANNEL_INTERIM_MIRROR` | on | Whether the transcript is tailed, which carries mid-turn narration, mid-turn typed messages, open-question alerts, and the recovery of a turn-opening prompt whose mirror hook was lost; also gated by `CHANNEL_MIRROR` |
-| `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript; bounded 1 s to 5 min |
+| `CHANNEL_INTERIM_POLL_MS` | 20 s | How often the tailer polls each live session's transcript, and how often the status reader polls every learned transcript for harness errors and channel pickups, with or without the tailer; bounded 1 s to 5 min |
 | `CHANNEL_PEER_MESSAGES` | full | How much of a message this session exchanges with another Claude session reaches the thread, in both directions: `full` draws each message whole under its own 📡 attribution, `brief` draws one line per message, `off` posts none of it. Every drawn body line is small grey subtext whichever setting is in force, and under `full` a body past 2,000 code points is collapsed behind a spoiler under one teaser line. Volume only; attribution and register are not knobs |
 | `CHANNEL_USAGE_CARD` | off | Whether the Fleet: Usage thread and its card exist on this host |
 | `CHANNEL_USAGE_CARD_REFRESH_MS` | 60 s | How often the fleet card is re-read and re-rendered; bounded 5 s to 1 h |
@@ -1233,6 +1300,12 @@ its 12-prompt minute and the prompt was dropped. Or the session has no thread ye
 nowhere to go. Or the request ID fell outside the alphabet a verdict can name, which is a Claude Code
 internal this project is coupled to: the log line names that cause specifically, so a future alphabet
 change is diagnosable rather than silent.
+
+**A message sits at 📨 with no typing line.** The session has your message and no open turn has
+read it. With no ⚠️ on the message and no notice in the thread, the session is most likely in a long
+tool call or parked at the console, and the card's tool block says which. A message that gets no
+reaction at all points at the bot's Add Reactions permission, and the log carries the `receipts:`
+refusal line.
 
 **Messages reach a session but its answers read wrong.** The relay holds its pipe on a
 first-claim-wins basis and every reply must present a key issued only down that pipe, so a second

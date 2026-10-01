@@ -857,10 +857,15 @@ export function inboxWiring(options: {
  * The clear runs whether or not the thread is open yet, because the rebind happened either way. The
  * post is skipped on a null thread ID, since there is nowhere to post into and the very next pass
  * opens the thread.
+ * The thread's receipts are restored too. The status reader closes an error episode through the
+ * session's thread, and the departed session no longer has one, so its ⚠️ mark would otherwise stay
+ * on the thread for every later message.
  */
 export function rebindHandling(options: {
   /** Null when `CHANNEL_INBOX_CARD` is off, which leaves the clear a no-op. */
   inbox: Pick<Inbox, "clearEnded"> | null;
+  /** Absent for a caller with no receipt tracker, which leaves the restore a no-op. */
+  receipts?: Pick<ReceiptTracker, "restore"> | null;
   post: (input: { threadId: string; text: string }) => Promise<CallOutcome<{ messageId: string | null }>>;
   now: () => number;
   log: (message: string) => void;
@@ -876,6 +881,7 @@ export function rebindHandling(options: {
       }
     }
     if (event.threadId === null) return;
+    options.receipts?.restore(event.threadId);
     void options.post({ threadId: event.threadId, text: renderRestartNotice(event.lineage) });
   };
 }
@@ -1597,6 +1603,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // courtesy line, not state anything depends on.
       onRebind: rebindHandling({
         inbox,
+        receipts: { restore: (threadId) => receipts?.restore(threadId) },
         post: (input) => messenger.postToThread(input),
         now: Date.now,
         // A failed clear leaves an ask stuck on the card, so it logs at the level the inbox's
