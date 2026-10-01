@@ -112,6 +112,15 @@ export type Surface = {
    * operator's to remove. That is the price of leaving their own pins alone.
    */
   knownPins: () => readonly string[];
+  /**
+   * The threads of the sessions whose derived state is `working`, for the typing keeper.
+   *
+   * Read the same way `livePins` is, from what the last pass derived rather than from the view the
+   * next one will fold in: a session's thread only enters this set once a pass has actually called
+   * it `working`. An entry with no thread yet, one abandoned, or one archived is left out, since none
+   * of those can show a typing indicator at all.
+   */
+  workingThreads: () => readonly string[];
 };
 
 type ThreadState = {
@@ -729,6 +738,16 @@ export function createSurface(options: SurfaceOptions): Surface {
         live.push(entry.messageId);
       }
       return live;
+    },
+
+    workingThreads: () => {
+      const working: string[] = [];
+      for (const entry of threads.values()) {
+        if (entry.threadId === null || entry.abandoned || entry.archived) continue;
+        if (entry.desired !== "working") continue;
+        working.push(entry.threadId);
+      }
+      return working;
     },
 
     knownPins: () => {

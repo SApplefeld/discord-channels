@@ -222,6 +222,21 @@ test("the reaction routes are PUT and DELETE on the same path, the emoji percent
   );
 });
 
+test("the typing route is a POST on the thread with no body", async () => {
+  // Confirms the route a thread's typing indicator rides, the same shape every other no-body write
+  // here takes (listPins, pin, unpin): nothing is sent and nothing is read back.
+  const calls: { route: string; method: string; body: unknown }[] = [];
+  const request: RawRequest = async (input) => {
+    calls.push({ route: input.route, method: input.method, body: input.body });
+    return respond(null);
+  };
+  const transport = createDiscordTransport({ channelId: CHANNEL, request });
+
+  await transport.sendTyping({ threadId: "thread-9" });
+
+  assert.deepEqual(calls, [{ route: "/channels/thread-9/typing", method: "POST", body: undefined }]);
+});
+
 test("deleting a message is the message route, not the pin route, and carries no body", async () => {
   // The two DELETEs differ by one path segment and mean entirely different things: one takes a pin
   // off, the other removes the message. Pointed at the pin route this would leave every notice in

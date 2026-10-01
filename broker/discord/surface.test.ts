@@ -1440,6 +1440,33 @@ test("the pin list reads the cards of the sessions that are running, and only af
   );
 });
 
+test("working threads are the threads of the sessions whose derived state is working", async () => {
+  // Pins Section 2's typing-keeper input: `workingThreads` is read the same way `livePins` is, after
+  // a pass rather than before one, and only a thread whose derived state is `working` right now is
+  // in it.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+
+  await surface.tick([view()]);
+  assert.deepEqual(
+    surface.workingThreads(),
+    ["thread-1"],
+    "a freshly-seen session's state is working, so its thread is in the set",
+  );
+
+  // No hook arrives for longer than idleAfterMs: the state desk's own window drops the derived
+  // state to idle, and the typing indicator has to stop with it.
+  time.advance(IDLE_AFTER_MS + 1);
+  await surface.tick([view({ lastHookAt: START })]);
+  assert.deepEqual(surface.workingThreads(), [], "an idle session's thread drops out of the set");
+
+  // The session exits outright.
+  time.advance(EXITED_AFTER_MS + 1);
+  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+  assert.deepEqual(surface.workingThreads(), [], "an exited session's thread stays out of the set");
+});
+
 test("a card is kept current even while its thread cannot be opened", async () => {
   const time = clock();
   const calls = recorder();

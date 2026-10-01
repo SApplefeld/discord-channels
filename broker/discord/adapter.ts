@@ -11,6 +11,7 @@ import type {
   MessageReactions,
   RateLimitObservation,
   ThreadMessenger,
+  ThreadTyping,
 } from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
 
@@ -279,7 +280,7 @@ export type AdapterOptions = {
 
 export function createDiscordTransport(
   options: AdapterOptions,
-): DiscordTransport & ThreadMessenger & ChannelPins & MessageReactions {
+): DiscordTransport & ThreadMessenger & ChannelPins & MessageReactions & ThreadTyping {
   const { channelId, request } = options;
 
   async function write(
@@ -458,6 +459,13 @@ export function createDiscordTransport(
         "DELETE",
       );
       return removed.status === "ok" ? { status: "ok", value: null, rate: removed.rate } : removed;
+    },
+
+    // The typing indicator. A thread is a channel, so this is the same route a direct-message
+    // client calls; it carries no body and nothing is read back from it.
+    sendTyping: async ({ threadId }): Promise<CallOutcome<null>> => {
+      const sent = await write(`/channels/${threadId}/typing`, "POST");
+      return sent.status === "ok" ? { status: "ok", value: null, rate: sent.rate } : sent;
     },
 
     // The message route rather than the pin one: this removes the message itself, and the only

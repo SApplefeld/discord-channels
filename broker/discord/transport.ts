@@ -178,6 +178,18 @@ export type MessageReactions = {
 };
 
 /**
+ * The one write that shows this bot's "is typing..." indicator in a thread.
+ *
+ * Its own surface, next to `MessageReactions`, because `POST .../typing` is a third route on the
+ * thread no other surface here uses: a keeper calling it on a timer must not share a bucket with the
+ * reactions a reply cycles through on the same message.
+ */
+export type ThreadTyping = {
+  /** Shows the indicator for Discord's own ten-second window; no body, nothing read back. */
+  sendTyping: (input: { threadId: string }) => Promise<CallOutcome<null>>;
+};
+
+/**
  * The interaction callback: how a component press is answered.
  *
  * Its own surface beside `ThreadMessenger`, and its own rate bucket at every caller, because

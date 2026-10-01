@@ -21,6 +21,8 @@ import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { createPinKeeper } from "./discord/pins.ts";
+import { createTypingKeeper } from "./discord/typing.ts";
+import type { TypingKeeper } from "./discord/typing.ts";
 import {
   displayName,
   renderModelChange,
@@ -1434,6 +1436,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;
+  // The typing keeper's own timers run outside `refresh`, one per working thread rather than one for
+  // the whole reconcile pass, so clearing `refresh` alone leaves them running: every site that tears
+  // `refresh` down also calls `typingKeeper?.stop()`.
+  let typingKeeper: TypingKeeper | null = null;
   // What the fleet card needs from Discord, filled in below only when a channel exists. It is one
   // of the two conditions the card is built under, and the card is built after this block rather
   // than inside it so that both conditions are decided in one place the tests can drive.
@@ -1451,6 +1457,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const stopRefresh = (): void => {
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
+      typingKeeper?.stop();
     };
     // One HTTP client for every Discord write this broker makes, the message routes and the
     // interaction callback alike. Sharing the client shares no budget: each surface holds its own
@@ -1517,6 +1524,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
+    // The typing indicator, driven by the same surface pass as the pin list: it reconciles against
+    // whatever the pass just derived as `working`, so the two can never disagree.
+    typingKeeper = createTypingKeeper({
+      typing: transport,
+      now: Date.now,
+      log: note,
+      describe,
+    });
     refresh = setInterval(() => {
       // A rejection here would be fatal to the process under Node 24, taking the hook intake down
       // with the Discord surface, and the intake is the half that has to keep running. The pass is
@@ -1545,13 +1560,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
         // spends no Discord call here at all.
-        .then(() =>
-          pinKeeper.reconcile({
+        .then(() => {
+          // Synchronous and never thrown out of a timer's own closure, so it rides ahead of the pin
+          // keeper's awaited call rather than needing a `Promise.all` leg of its own.
+          typingKeeper?.reconcile(surface.workingThreads());
+          return pinKeeper.reconcile({
             permanent: permanentCards(),
             live: surface.livePins(),
             known: surface.knownPins(),
-          }),
-        );
+          });
+        });
       inFlight = Promise.all([blockedPass, surfacePass])
         .then(() => undefined)
         .catch((error: unknown) => {
@@ -1825,6 +1843,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       tailTimer = null;
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
+      typingKeeper?.stop();
       // The gateway logs in before the listener binds, so a port conflict would otherwise leave a
       // connected bot behind in a process that is about to throw: the bot would show online, and a
       // second broker starting later would have two of them reading the same channel.
@@ -1975,6 +1994,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     clearInterval(heartbeat);
     if (tailTimer !== null) clearInterval(tailTimer);
     if (refresh !== null) clearInterval(refresh);
+    typingKeeper?.stop();
     // A held buffer goes down in the same synchronous block, before the first await below: its
     // age-cap timer must not fire into pipes about to be torn down, and a broker asked to stop
     // does not wait on an age cap. What was held stays in the buffers file, which the close does
