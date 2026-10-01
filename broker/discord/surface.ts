@@ -79,11 +79,14 @@ export type SurfaceOptions = {
   /** Called once when Discord rejects the credential, which no retry can fix. */
   onFatal?: (message: string) => void;
   /**
-   * Called once a session's thread state is fully retired and its entry is dropped: the one point
-   * every session's end reaches, whatever ended it. The receipt tracker's forget seam hangs off
-   * this, so a thread's stage tracking never outlives the session it was tracking messages for.
-   * Not called for a rebind, which hands the same thread to a new session id rather than retiring
-   * it.
+   * Called with a thread id this surface has stopped tracking, from two places in a tick: when a
+   * session no longer in the views has its entry dropped, once `retire` lets it go, and when
+   * Discord reports the thread or its card message missing and the binding is cleared so the next
+   * pass opens a fresh thread. A session that has ended but still arrives in the views keeps its
+   * entry, so this is not reached at every session's end. The receipt tracker's forget seam hangs
+   * off this, so a thread's stage tracking never outlives the thread it was tracking messages in.
+   * Not called for a rebind, which hands the same thread to a new session id rather than
+   * retiring it.
    */
   onRetired?: (threadId: string) => void;
 };

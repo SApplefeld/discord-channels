@@ -590,6 +590,13 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     threadId: string,
     deliveries: readonly BufferDelivery[],
   ): Promise<void> {
+    // Read once for the whole batch, and before the writes: every message this call hands over
+    // lands in the pipe in the same back-to-back pass below, so they are delivered at the same
+    // instant as far as a stage reaction is concerned, and the tailer places a message injected
+    // mid-turn against its transcript line's own timestamp, written as the harness injects what
+    // the pipe just carried. An instant read after the write could sit past that timestamp, and
+    // the message would then look delivered after its own injection.
+    const deliveredAt = now();
     const outcomes = deliveries.map((delivery) => ({
       delivery,
       written: options.relays.deliver(
@@ -597,10 +604,6 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         bufferedEvent(threadId, delivery.messages, delivery.restoredAt),
       ),
     }));
-    // Read once for the whole batch: every message this call hands over lands in the pipe in the
-    // same back-to-back pass above, so they are delivered at the same instant as far as a stage
-    // reaction is concerned.
-    const deliveredAt = now();
     // Every written message is registered delivered here, ahead of this function's first await:
     // a pickup racing this call in the gap an awaited notice or cut announcement opens must see
     // every message this batch wrote as already delivered, not the ones a still-running loop
@@ -960,6 +963,10 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         // take a later message first. The pipe's outcome is never read: live admission does not
         // read it either. What the gate decides is journaled by the gate and reaches nothing else.
         gate?.admit(message.threadId, record.sessionId, buffered, addressed);
+        // Read before the pipe write, on `handOverBuffers`'s reasoning: the tailer compares this
+        // instant with the transcript line the harness writes as it injects the message, and a
+        // read after the write could sit past that line's own timestamp.
+        const deliveredAt = now();
         const delivered = await handOver(
           record,
           message.threadId,
@@ -967,7 +974,6 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
           1,
         );
         if (!delivered) return;
-        const deliveredAt = now();
         options.receipts?.delivered(message.threadId, message.messageId, deliveredAt);
         if (operator) {
           toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);

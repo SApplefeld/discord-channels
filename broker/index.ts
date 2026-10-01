@@ -1144,7 +1144,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // Discord block below, once the transport it paints reactions through exists.
     receipts: {
       pickedUp: (threadId, at) => receipts?.pickedUp(threadId, at),
-      answered: (threadId) => receipts?.answered(threadId),
+      answered: (threadId, at) => receipts?.answered(threadId, at),
     },
   });
   // The steering writer's notices and permission alerts land in threads without passing the

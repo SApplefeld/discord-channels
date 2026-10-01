@@ -2437,8 +2437,18 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
         }
         if (item.kind === "pickup") {
           // No await, no post: this item exists only to move a stage reaction, so there is nothing
-          // here for a suppress landing mid-batch to interrupt, and no error a delivery could throw.
-          if (item.at !== null) options.notePickup?.(sessionId, item.at);
+          // here for a suppress landing mid-batch to interrupt. The callback is a caller's, held
+          // to its own try/catch like the model, fallback, goal and title notes above and for the
+          // same reason: a throw escaping here would abandon every item behind it in this batch,
+          // whose bytes are already past the offset and cannot be read again.
+          try {
+            if (item.at !== null) options.notePickup?.(sessionId, item.at);
+          } catch {
+            repeats(
+              `session ${sessionId}'s pickup could not be recorded`,
+              "the credit is dropped; the error detail is withheld, it can carry content",
+            );
+          }
           continue;
         }
         // What is left is the assistant's own narration. The assignment is the check: a kind added

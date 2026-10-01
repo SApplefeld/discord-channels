@@ -1425,6 +1425,42 @@ test("a Discord message injected mid-turn advances pickup, with the line's own t
   assert.deepEqual(peers, [], "a channel-origin line is never drawn as a peer message");
 });
 
+test("a pickup note that throws costs its own credit and not the narration behind it", async (t) => {
+  // The pickup branch runs a caller's callback like the model, fallback, goal and title branches
+  // do, and a throw out of it would otherwise abandon every item behind it in this batch, whose
+  // bytes are already past the offset and cannot be read again.
+  const file = transcriptFile(t);
+  const { tailer, posts, logs } = harness({
+    notePickup: () => {
+      throw new Error("SECRET-pickup-note-failure");
+    },
+  });
+  tailer.learn(SESSION, file);
+  tailer.allow(SESSION);
+  await tailer.poll();
+
+  appendFileSync(
+    file,
+    queuedPrompt("<channel:Ann> please check on this", SESSION, {
+      attachment: {
+        type: "queued_command",
+        commandMode: "prompt",
+        origin: { kind: "channel", server: "channel-relay" },
+        prompt: "<channel:Ann> please check on this",
+      },
+    }) + assistantText("still narrates"),
+    "utf8",
+  );
+  await tailer.poll();
+
+  assert.deepEqual(posts, ["still narrates"]);
+  assert.equal(logs.length, 1);
+  for (const entry of logs) {
+    assert.doesNotMatch(entry, /SECRET-pickup-note-failure/, `the log withholds the error detail: ${entry}`);
+    assert.doesNotMatch(entry, /please check on this/, `the log withholds the line's own text: ${entry}`);
+  }
+});
+
 test("a channel-kind origin from a server other than this relay's own yields no pickup", async (t) => {
   // `origin.kind: "channel"` names only which MCP tool queued the line; any server can register a
   // tool under that name, so the pickup reading must also check `origin.server` names this relay's

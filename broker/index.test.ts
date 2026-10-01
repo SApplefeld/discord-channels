@@ -2707,7 +2707,7 @@ function receiptWiringGaps(source: string): string[] {
   if (!/pickedUp:\s*\(threadId,\s*at\)\s*=>\s*receipts\?\.pickedUp\(threadId,\s*at\)/.test(code)) {
     gaps.push("outbound-pickedUp");
   }
-  if (!/answered:\s*\(threadId\)\s*=>\s*receipts\?\.answered\(threadId\)/.test(code)) {
+  if (!/answered:\s*\(threadId,\s*at\)\s*=>\s*receipts\?\.answered\(threadId,\s*at\)/.test(code)) {
     gaps.push("outbound-answered");
   }
   if (
@@ -2736,7 +2736,7 @@ test("startBroker wires every receipt seam: outbound, intake's pickup entry poin
     ["outbound-pickedUp"],
   );
   assert.deepEqual(
-    receiptWiringGaps(source.replace("answered: (threadId) => receipts?.answered(threadId)", "void 0")),
+    receiptWiringGaps(source.replace("answered: (threadId, at) => receipts?.answered(threadId, at)", "void 0")),
     ["outbound-answered"],
   );
   assert.deepEqual(
@@ -2835,7 +2835,7 @@ test("one message rides delivered, picked up and answered when the inbound route
     mirrorWriter: writer,
     receipts: {
       pickedUp: (threadId, at) => tracker.pickedUp(threadId, at),
-      answered: (threadId) => tracker.answered(threadId),
+      answered: (threadId, at) => tracker.answered(threadId, at),
     },
     now: () => 1_000,
     sleep: async () => {},

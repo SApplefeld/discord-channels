@@ -440,6 +440,47 @@ test("a failing reaction transport never stops the message it is painting from b
   assert.equal(log.length, 1, "the refusal is logged once, never propagated");
 });
 
+test("a message is registered delivered as of the instant before its pipe write, never after it", async () => {
+  // The tailer places a mid-turn injected message against its transcript line's own timestamp,
+  // which the harness writes as it injects the message the pipe just carried. An instant read
+  // after the write can sit past that timestamp, and the message would then look delivered after
+  // its own injection and never be credited as picked up. The clock here moves on every pipe
+  // write, so an instant read before the write is told apart from one read after it.
+  let sent: RelayEvent[] = [];
+  const marked: Array<{ messageId: string; at: number }> = [];
+  const built = harness({
+    now: () => 1_000 + sent.length * 100,
+    receipts: { delivered: (_threadId, messageId, at) => marked.push({ messageId, at }) },
+  });
+  sent = built.sent;
+
+  await built.router.deliver(message({ messageId: "message-a" }));
+
+  assert.equal(sent.length, 1, "the pipe took the message");
+  assert.deepEqual(marked, [{ messageId: "message-a", at: 1_000 }]);
+});
+
+test("a released buffer's messages are registered delivered as of the instant before their pipe write", async () => {
+  // The buffered path's own read of the same instant, on the reasoning of the direct path above.
+  let sent: RelayEvent[] = [];
+  const marked: Array<{ messageId: string; at: number }> = [];
+  const built = harness({
+    gate: { maxMessages: 50 },
+    now: () => 1_000 + sent.length * 100,
+    receipts: { delivered: (_threadId, messageId, at) => marked.push({ messageId, at }) },
+  });
+  sent = built.sent;
+
+  await built.router.deliver(message({ messageId: "1" }));
+  await built.router.deliver(message({ messageId: "2", mentionsBot: true }));
+
+  assert.ok(sent.length > 0, "the mention released the held buffer down the pipe");
+  assert.deepEqual(marked, [
+    { messageId: "1", at: 1_000 },
+    { messageId: "2", at: 1_000 },
+  ]);
+});
+
 test("every message a released buffer hands over is registered delivered before the batch's first awaited post", async () => {
   // A pickup racing a buffered delivery must see every message that batch just wrote as delivered,
   // not just the ones a still-running loop over the batch has reached so far. Two over-length
