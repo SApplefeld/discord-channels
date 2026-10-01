@@ -175,9 +175,9 @@ function heldRoot(latest: ReadonlyMap<string, BoardEvent>, workdir: string): str
  * A reading taken from the store alone never clears a block by its modification time. That time is
  * the store file's, which the plugin rewrites at every turn end, the blocking turn's included, so it
  * says the worker took a turn and not that a Chapter landed. Such a block clears only on a
- * `goal-complete` for the pair, or once the store stops calling the entry active, which leaves it no
- * reading. The in-flight rule still ages the reading by the store, since there the
- * question is whether the worker is taking turns.
+ * `goal-complete` for the pair, or once the store stops calling the entry active, which leaves it
+ * no reading. The in-flight rule still ages the reading by the store, since there the question is
+ * whether the worker is taking turns.
  */
 function eventBlocked(
   reading: QueuePlanReading | undefined,

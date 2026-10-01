@@ -905,8 +905,10 @@ exists.
 
 **The board card reads foreign files and sends none of their paths.** It opens plan documents under
 the operator's configured project roots, the kit's goal event stream, the fleet roster, and each
-roster persona's store and heartbeat, all written by other programs. It renders their content into
-the channel where approvals are answered. Four properties bound what that content can do.
+roster persona's store and heartbeat, all written by other programs. From each store it reads three
+progress fields, `chapterCount`, `sectionCount` and `nextSection`, each held to the intake rule
+stated under the first property, and none of them is ever used as a path. It renders their content
+into the channel where approvals are answered. Four properties bound what that content can do.
 
 The first is that a path comes only from configuration, with one bounded exception. The configured
 roots (`CHANNEL_BOARD_PROJECTS`) and the roster's path (`CHANNEL_BOARD_ROSTER`) are path inputs,
@@ -934,8 +936,9 @@ guarded, because whoever can plant the link in the persona's tree can plant the 
 can open the share themselves. What a crafted name can reach is a plan-shaped file, drawn under the
 store's own title as a section count and, on the entry in flight, its next step. The operator sized
 that risk as small, since the card posts to a private server seen only by them. So the guard is kept
-because it is nearly free, and it carries no raised review on security grounds alone. The store
-contributes three progress fields as well, and none of them is ever used as a path. Each
+because it is nearly free, and it carries no raised review on security grounds alone.
+
+The store contributes three progress fields as well, and none of them is ever used as a path. Each
 entry's `chapterCount` and `sectionCount` are kept only where the store wrote a finite, whole,
 non-negative number. Its `nextSection` is kept only where it is a string, whitespace-collapsed and
 held to the 400 characters a plan document's own `Next:` value takes, and it is escaped on the card
