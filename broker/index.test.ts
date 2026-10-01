@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import {
   CONTINUATION_POST_PACE_MS,
@@ -42,7 +43,15 @@ import type { AskedQuestion } from "./discord/render.ts";
 import type { SessionRecord } from "./registry.ts";
 import { createQuestionDesk } from "./question-desk.ts";
 import { NO_RATE_INFO } from "./discord/transport.ts";
-import type { CallOutcome, DiscordTransport } from "./discord/transport.ts";
+import type { CallOutcome, DiscordTransport, MessageReactions, ThreadMessenger } from "./discord/transport.ts";
+import { createHandler as createIntakeHandler } from "./intake.ts";
+import { createInboundRouter } from "./routing/inbound.ts";
+import { createOutboundRouter } from "./routing/outbound.ts";
+import { createReceiptTracker, STAGE_EMOJI } from "./routing/receipts.ts";
+import { createRelayHub } from "./routing/relays.ts";
+import { createThreadWriter } from "./routing/writer.ts";
+import { createSenderGate } from "./security/senders.ts";
+import type { PermissionDesk } from "./security/permission.ts";
 import {
   MAX_CONTINUATION_MESSAGES,
   renderQuestionPrompt,
@@ -609,6 +618,8 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
   };
   const halted: SessionRecord = {
@@ -2350,6 +2361,8 @@ test("startBroker's inbox restores beside the registry, clears on an operator pr
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
   });
   saveSessions(stateFile, [
@@ -2540,6 +2553,21 @@ test("a rebind with a null thread ID still clears the predecessor's item and pos
   assert.deepEqual(posts, [], "nowhere to post into yet");
 });
 
+test("a rebind restores the thread's receipts, since the departed session's episode can never close there", () => {
+  // The status reader closes an episode through the session's thread, and after a rebind the
+  // departed session has none, so the ⚠️ mark would stay on the thread for every later message.
+  const { post } = postSpy();
+  const restored: string[] = [];
+  const receipts = { restore: (threadId: string) => restored.push(threadId) };
+  const handler = rebindHandling({ inbox: null, receipts, post, now: () => 5_000, log: () => {} });
+
+  handler(REBIND_EVENT);
+  assert.deepEqual(restored, ["thread-9"]);
+
+  handler({ ...REBIND_EVENT, threadId: null });
+  assert.deepEqual(restored, ["thread-9"], "a rebind with no thread yet has no mark to clear");
+});
+
 test("a late flag for the departed session, carrying its reply's original instant, opens no item after the rebind", async (t) => {
   // The regression this clearing event would otherwise hide: a flag arriving late, the shape a
   // judge verdict on an earlier reply takes, must not reopen an ask the rebind already cleared.
@@ -2686,4 +2714,433 @@ test("startBroker wires the held buffers' restore: the attach, the file and the 
   assert.deepEqual(restoreWiringGaps(source.replace("inbound?.relayAttached(", "void (")), ["attach"]);
   assert.deepEqual(restoreWiringGaps(source.replace(/buffers:\s*\{/, "kept: {")), ["file"]);
   assert.deepEqual(restoreWiringGaps(source.replace("inbound?.armRestored()", "void 0")), ["armed"]);
+});
+
+// The receipt seams (outbound's pickedUp and answered, intake's pickup entry point and turn seam,
+// the inbound delivery, the tailer's notePickup, the surface's onRetired and the rebind handler)
+// all reach startBroker's own mutable `receipts` and `threadFor` closures, which no test below
+// reaches without a Discord login. This pins that
+// startBroker still makes each connection, read from the source the way `restoreWiringGaps` does.
+function receiptWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  if (!/pickedUp:\s*\(threadId,\s*at\)\s*=>\s*receipts\?\.pickedUp\(threadId,\s*at\)/.test(code)) {
+    gaps.push("outbound-pickedUp");
+  }
+  if (!/answered:\s*\(threadId,\s*at\)\s*=>\s*receipts\?\.answered\(threadId,\s*at\)/.test(code)) {
+    gaps.push("outbound-answered");
+  }
+  if (
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*receipts:\s*\{\s*pickedUp:\s*pickupFor\s*\}\s*\}/.test(code)
+  ) {
+    gaps.push("intake");
+  }
+  if (!/delivered:\s*\(threadId,\s*messageId,\s*at\)\s*=>\s*receipts\?\.delivered\(threadId,\s*messageId,\s*at\)/.test(code)) {
+    gaps.push("inbound");
+  }
+  // Scoped to the tailer's own options: the status reader wires the same call, and an unscoped
+  // match would let either one stand in for the other.
+  const tailer = /createTranscriptTailer\(\{([\s\S]*?)\n    \}\);/.exec(code)?.[1] ?? "";
+  if (!/notePickup:\s*\(sessionId,\s*at\)\s*=>\s*pickupFor\(sessionId,\s*at\)/.test(tailer)) {
+    gaps.push("tailer");
+  }
+  if (!/onRetired:\s*\(threadId\)\s*=>\s*\{[^}]*receipts\?\.forget\(threadId\);/.test(code)) {
+    gaps.push("surface");
+  }
+  if (
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{\s*opened:\s*\(sessionId: string\)\s*=>\s*\{\s*registry\.noteTurnOpened\(sessionId\);/.test(
+      code,
+    )
+  ) {
+    gaps.push("turns");
+  }
+  // A rebind restores the thread's receipts, since the departed session's episode can no longer
+  // close through it.
+  if (
+    !/onRebind:\s*rebindHandling\(\{\s*inbox,\s*receipts:\s*\{\s*restore:\s*\(threadId\)\s*=>\s*receipts\?\.restore\(threadId\)\s*\},/.test(
+      code,
+    )
+  ) {
+    gaps.push("rebind");
+  }
+  return gaps;
+}
+
+test("startBroker wires every receipt seam: outbound, intake, inbound, the tailer, the surface and the rebind", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(receiptWiringGaps(source), []);
+  // Each check speaks when its own call is gone, so a green above is the calls being there.
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("pickedUp: (threadId, at) => receipts?.pickedUp(threadId, at)", "void 0")),
+    ["outbound-pickedUp"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("answered: (threadId, at) => receipts?.answered(threadId, at)", "void 0")),
+    ["outbound-answered"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("...(discord === null ? {} : { receipts: { pickedUp: pickupFor } }),", "")),
+    ["intake"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(
+      source.replace(
+        "delivered: (threadId, messageId, at) => receipts?.delivered(threadId, messageId, at)",
+        "void 0",
+      ),
+    ),
+    ["inbound"],
+  );
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("notePickup: (sessionId, at) => pickupFor(sessionId, at)", "void 0")),
+    ["tailer"],
+  );
+  assert.deepEqual(receiptWiringGaps(source.replace("receipts?.forget(threadId);", "")), ["surface"]);
+  assert.deepEqual(receiptWiringGaps(source.replace("registry.noteTurnOpened(sessionId);", "")), ["turns"]);
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("receipts: { restore: (threadId) => receipts?.restore(threadId) },", "")),
+    ["rebind"],
+  );
+  // Handing over the tracker's value instead of the closure is a gap too: a tracker built after the
+  // surface would leave the handler holding null.
+  assert.deepEqual(
+    receiptWiringGaps(source.replace("receipts: { restore: (threadId) => receipts?.restore(threadId) },", "receipts,")),
+    ["rebind"],
+  );
+});
+
+// The status reader's connections inside startBroker, which no test reaches without a Discord
+// login: built behind the Discord gate and not the tailer's, reading every session not ended, its
+// pickups through the one session-keyed entry point, its notices through the thread's steering
+// writer with a refused post logged, its episodes into the card line and the ⚠️ swap, its path seam
+// into the intake, a credited prompt's new turn closing any open episode, and its
+// own poll timer, cleared at both teardown sites, with its pass and its post chains awaited at
+// shutdown. Read from the source the way `receiptWiringGaps` reads its
+// seams.
+function statusWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  if (!/if \(discord !== null\) \{\s*const reader = createStatusReader\(\{/.test(code)) gaps.push("build");
+  const reader = /const reader = createStatusReader\(\{([\s\S]*?)\n    \}\);/.exec(code)?.[1] ?? "";
+  // Every session not ended, stale included: a session waiting out a retry fires no hooks and goes
+  // stale, and its episode must outlive that.
+  if (
+    !/currentSessions:\s*\(\)\s*=>\s*registry\s*\.list\(\)\s*\.filter\(\(record\) => record\.state !== "ended"\)/.test(reader)
+  ) {
+    gaps.push("sessions");
+  }
+  if (!/notePickup:\s*\(sessionId,\s*at\)\s*=>\s*pickupFor\(sessionId,\s*at\)/.test(reader)) gaps.push("pickup");
+  if (
+    !/notice:\s*async \(sessionId, text\) => \{\s*const threadId = threadFor\(sessionId\);\s*if \(threadId === null\) return;\s*const posted = await steeringWriter\.reply\(threadId, text\);/.test(
+      reader,
+    )
+  ) {
+    gaps.push("notice");
+  }
+  // A notice the writer's budget refuses resolves rather than rejects, so only this line records it.
+  if (!/if \(posted\.status !== "ok"\) \{\s*note\(/.test(reader)) gaps.push("notice-dropped");
+  // A notice bypasses the outbound router, so a landed one ends the thread's narration block, as the
+  // steering writer's own notice and alert verbs do.
+  if (!/if \(posted\.status === "ok"\) outbound\.endNarration\(threadId\);/.test(reader)) gaps.push("narration");
+  if (!/registry\.noteHarnessNotice\(sessionId, open === null \? null : open\.text\)/.test(reader)) gaps.push("card");
+  if (
+    !/if \(open === null\) receipts\?\.restore\(threadId\);\s*else receipts\?\.warn\(threadId\);/.test(reader)
+  ) {
+    gaps.push("receipts");
+  }
+  if (!/\.\.\.\(status === null \? \{\} : \{ status: \{ learn: status\.learn \} \}\)/.test(code)) gaps.push("intake");
+  // A credited prompt opens a new turn, which closes any episode the last turn left open.
+  if (!/opened:\s*\(sessionId: string\)\s*=>\s*\{[^}]*status\?\.turnOpened\(sessionId, Date\.now\(\)\);/.test(code)) {
+    gaps.push("turn");
+  }
+  if (!/statusTimer = setInterval\(\(\) => \{\s*statusInFlight = reader\.poll\(\)/.test(code)) gaps.push("timer");
+  if (!/const failedToBind = \(error: Error\): void => \{[^}]*clearInterval\(statusTimer\);/.test(code)) {
+    gaps.push("stop-failed-to-bind");
+  }
+  if (!/async function stop\(\): Promise<void> \{[^}]*clearInterval\(statusTimer\);/.test(code)) {
+    gaps.push("stop-shutdown");
+  }
+  if (!/await tailInFlight;\s*await statusInFlight;/.test(code)) gaps.push("drain");
+  if (!/await statusInFlight;\s*await status\?\.drain\(\);/.test(code)) gaps.push("post-drain");
+  return gaps;
+}
+
+test("startBroker wires the status reader: built with Discord, its pickups, notices, episodes, intake seam and timer", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(statusWiringGaps(source), []);
+  // Each check speaks when its own call is gone, so a green above is the calls being there.
+  assert.deepEqual(
+    statusWiringGaps(source.replace(/if \(discord !== null\) \{(\s*const reader)/, "if (tailing) {$1")),
+    ["build"],
+  );
+  const readerBlock = /const reader = createStatusReader\(\{[\s\S]*?\n {4}\}\);/.exec(source)?.[0] ?? "";
+  assert.notEqual(readerBlock, "", "the precondition: the reader block is found");
+  const withoutInReader = (needle: string): string =>
+    source.replace(readerBlock, readerBlock.replace(needle, "void 0"));
+  assert.deepEqual(statusWiringGaps(withoutInReader('.filter((record) => record.state !== "ended")')), ["sessions"]);
+  // A revert to reading live sessions alone is a gap.
+  assert.deepEqual(
+    statusWiringGaps(
+      source.replace(
+        readerBlock,
+        readerBlock.replace('record.state !== "ended"', 'record.state === "live"'),
+      ),
+    ),
+    ["sessions"],
+  );
+  assert.deepEqual(statusWiringGaps(withoutInReader("notePickup: (sessionId, at) => pickupFor(sessionId, at)")), [
+    "pickup",
+  ]);
+  assert.deepEqual(statusWiringGaps(withoutInReader("const posted = await steeringWriter.reply(threadId, text);")), [
+    "notice",
+  ]);
+  assert.deepEqual(statusWiringGaps(withoutInReader('if (posted.status !== "ok") {')), ["notice-dropped"]);
+  assert.deepEqual(statusWiringGaps(withoutInReader('if (posted.status === "ok") outbound.endNarration(threadId);')), [
+    "narration",
+  ]);
+  assert.deepEqual(
+    statusWiringGaps(withoutInReader("registry.noteHarnessNotice(sessionId, open === null ? null : open.text)")),
+    ["card"],
+  );
+  assert.deepEqual(statusWiringGaps(withoutInReader("receipts?.warn(threadId);")), ["receipts"]);
+  assert.deepEqual(
+    statusWiringGaps(source.replace("...(status === null ? {} : { status: { learn: status.learn } }),", "")),
+    ["intake"],
+  );
+  assert.deepEqual(statusWiringGaps(source.replace("statusInFlight = reader.poll()", "void reader.poll()")), [
+    "timer",
+  ]);
+  assert.deepEqual(
+    statusWiringGaps(source.replace(/(const failedToBind[\s\S]*?)if \(statusTimer !== null\) clearInterval\(statusTimer\);/, "$1")),
+    ["stop-failed-to-bind"],
+  );
+  assert.deepEqual(
+    statusWiringGaps(source.replace(/(async function stop\(\)[\s\S]*?)if \(statusTimer !== null\) clearInterval\(statusTimer\);/, "$1")),
+    ["stop-shutdown"],
+  );
+  assert.deepEqual(statusWiringGaps(source.replace("await statusInFlight;", "")), ["drain", "post-drain"]);
+  assert.deepEqual(statusWiringGaps(source.replace("await status?.drain();", "")), ["post-drain"]);
+  assert.deepEqual(statusWiringGaps(source.replace("status?.turnOpened(sessionId, Date.now());", "")), ["turn"]);
+});
+
+// The typing keeper's connections inside startBroker, which no test reaches without a Discord
+// login: the reconcile on every refresh tick over that tick's own views, the stop at each of the
+// three sites that tear the refresh down, the release a credited Stop reaches through the intake's
+// `turns.closed` seam, and the forget on a retired thread. Read from the source the way
+// `receiptWiringGaps` reads its seams.
+function typingWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  const tick = /refresh = setInterval\(\(\) => \{([\s\S]*?)\}, discord\.refreshIntervalMs\)/.exec(code)?.[1] ?? "";
+  // The reconcile is a statement of the tick itself, never inside the pass's `.then`, and it reads
+  // the same views the pass is handed.
+  if (
+    !/\.tick\(views\)/.test(tick) ||
+    !/\n\s*typingKeeper\?\.reconcile\(surface\.typingThreads\(views,\s*Date\.now\(\)\)\);/.test(tick) ||
+    /\.then\([^;]*typingKeeper/.test(tick)
+  ) {
+    gaps.push("reconcile");
+  }
+  if (!/const stopRefresh = \(\): void => \{[^}]*typingKeeper\?\.stop\(\);/.test(code)) {
+    gaps.push("stop-refresh");
+  }
+  if (!/const failedToBind = \(error: Error\): void => \{[^}]*typingKeeper\?\.stop\(\);/.test(code)) {
+    gaps.push("stop-failed-to-bind");
+  }
+  if (!/async function stop\(\): Promise<void> \{[^}]*typingKeeper\?\.stop\(\);/.test(code)) {
+    gaps.push("stop-shutdown");
+  }
+  if (
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{[\s\S]*?closed:\s*\(sessionId: string\)\s*=>\s*\{\s*const threadId = threadFor\(sessionId\);\s*if \(threadId !== null\) typingKeeper\?\.release\(threadId\);\s*\}/.test(
+      code,
+    )
+  ) {
+    gaps.push("turns-closed");
+  }
+  if (!/onRetired:\s*\(threadId\)\s*=>\s*\{[^}]*typingKeeper\?\.forget\(threadId\);/.test(code)) {
+    gaps.push("retired");
+  }
+  return gaps;
+}
+
+test("startBroker wires the typing keeper: reconcile per tick, every stop site, release on Stop, forget on retire", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(typingWiringGaps(source), []);
+  // Each check speaks when its own call is gone or moved, so a green above is the calls being there.
+  assert.deepEqual(
+    typingWiringGaps(source.replace("typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));", "")),
+    ["reconcile"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(
+      source
+        .replace("typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));", "")
+        .replace(
+          /\.then\(\(\) =>\s*pinKeeper\.reconcile\(/,
+          ".then(() => {\n typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));\n return pinKeeper.reconcile(",
+        ),
+    ),
+    ["reconcile"],
+    "a reconcile moved inside the pass's continuation is not one that runs on every tick",
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace(/(const stopRefresh[\s\S]*?)typingKeeper\?\.stop\(\);/, "$1")),
+    ["stop-refresh"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace(/(const failedToBind[\s\S]*?)typingKeeper\?\.stop\(\);/, "$1")),
+    ["stop-failed-to-bind"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace(/(async function stop\(\)[\s\S]*?)typingKeeper\?\.stop\(\);/, "$1")),
+    ["stop-shutdown"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace("if (threadId !== null) typingKeeper?.release(threadId);", "")),
+    ["turns-closed"],
+  );
+  assert.deepEqual(typingWiringGaps(source.replace("typingKeeper?.forget(threadId);", "")), ["retired"]);
+});
+
+test("one message rides delivered, picked up and answered when the inbound router, the intake handler and the outbound router are each built directly against one shared receipt tracker, the level a fake reaches with no live discord login", async () => {
+  // Only a broker actually configured to reach Discord builds this wiring inside startBroker
+  // (threadFor's own closure, the mutable receipts binding, onRetired's forget), and reaching that
+  // means a real Discord login. This drives the same three seams startBroker wires, at the level
+  // each one is already tested at: the routers and the intake handler, built directly and pointed
+  // at one shared tracker, on a fake reaction transport.
+  const THREAD_ID = "900000000000000009";
+  const SESSION_TOKEN = "5f0c2e4a-0000-4000-8000-0000000000aa";
+  const OPERATOR_ID = "700000000000000009";
+
+  const calls: Array<{ kind: "add" | "remove"; messageId: string; emoji: string }> = [];
+  const reactions: MessageReactions = {
+    addReaction: async (input) => {
+      calls.push({ kind: "add", messageId: input.messageId, emoji: input.emoji });
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+    removeReaction: async (input) => {
+      calls.push({ kind: "remove", messageId: input.messageId, emoji: input.emoji });
+      return { status: "ok", value: null, rate: NO_RATE_INFO };
+    },
+  };
+  const tracker = createReceiptTracker({ reactions, log: () => {}, now: () => 1_000 });
+
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  registry.apply({
+    event: "SessionStart",
+    processToken: SESSION_TOKEN,
+    sessionName: "neo-warden",
+    lineage: null,
+    sessionId: "session-wired",
+    source: "startup",
+    toolName: null,
+    toolInput: null,
+    transcriptPath: null,
+    backgroundTasks: null,
+  });
+
+  const relays = createRelayHub({ registry, graceMs: 10_000, now: () => 1_000 });
+  relays.attach(SESSION_TOKEN, { send: () => true, close: () => {} });
+
+  const messenger: ThreadMessenger = {
+    postToThread: async () => ({ status: "ok", value: { messageId: null }, rate: NO_RATE_INFO }),
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const writer = createThreadWriter({ messenger, now: () => 1_000 });
+  const permissions: PermissionDesk = {
+    request: async () => true,
+    resolve: () => true,
+    reportUnknownVerdict: async () => {},
+    turnEnded: () => {},
+    sweepEnded: () => {},
+    settled: () => Promise.resolve(),
+    waiting: () => new Set<string>(),
+  };
+  const threadFor = (sessionId: string): string | null => (sessionId === "session-wired" ? THREAD_ID : null);
+
+  const inbound = createInboundRouter({
+    registry,
+    relays,
+    gate: createSenderGate([{ id: OPERATOR_ID, class: "operator" }]),
+    permissions,
+    questions: { answerTyped: () => false },
+    threadFor,
+    writer,
+    receipts: { delivered: (threadId, messageId, at) => tracker.delivered(threadId, messageId, at) },
+    now: () => 1_000,
+  });
+  const outbound = createOutboundRouter({
+    registry,
+    threadFor,
+    mirrorWriter: writer,
+    receipts: {
+      pickedUp: (threadId, at) => tracker.pickedUp(threadId, at),
+      answered: (threadId, at) => tracker.answered(threadId, at),
+    },
+    now: () => 1_000,
+    sleep: async () => {},
+  });
+  await inbound.deliver({
+    threadId: THREAD_ID,
+    messageId: "910000000000000009",
+    senderId: OPERATOR_ID,
+    author: "Ann",
+    fromBot: false,
+    fromSelf: false,
+    mentionsBot: false,
+    repliesToBot: false,
+    text: "please run the migration",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [["add", STAGE_EMOJI.delivered]],
+  );
+
+  const server = createServer(
+    createIntakeHandler({
+      registry,
+      maxBodyBytes: 4_096,
+      mirror: { enabled: true, maxBytes: 4_096, deliver: async () => null },
+      now: () => 1_000,
+      receipts: { pickedUp: (sessionId, at) => tracker.pickedUp(threadFor(sessionId) ?? "", at) },
+    }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    await fetch(`http://127.0.0.1:${port}/mirror`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-channel-hook-event": "UserPromptSubmit",
+        "x-channel-process-token": SESSION_TOKEN,
+      },
+      body: JSON.stringify({ prompt: "go", session_id: "session-wired" }),
+    });
+  } finally {
+    server.close();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.pickedUp],
+      ["remove", STAGE_EMOJI.delivered],
+    ],
+  );
+
+  await outbound.reply(SESSION_TOKEN, "the migration is done");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    calls.map((call) => [call.kind, call.emoji]),
+    [
+      ["add", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.pickedUp],
+      ["remove", STAGE_EMOJI.delivered],
+      ["add", STAGE_EMOJI.answered],
+      ["remove", STAGE_EMOJI.pickedUp],
+    ],
+  );
 });

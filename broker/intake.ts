@@ -433,6 +433,12 @@ export function parseIntake(
       // other event says nothing about the roster and leaves it exactly as the last turn reported
       // it, which is what null means here.
       backgroundTasks: event === "Stop" ? backgroundTasks(fields) : null,
+      // Presence only: a subagent's hook event carries the parent's session id with its own
+      // identity in `agent_id`, and the registry needs to know which of the two spoke, never who
+      // the subagent is. Any present, non-null value counts, whatever its shape, so a value of an
+      // unexpected type fails toward no typing rather than toward opening a turn. The value itself
+      // is dropped here, never logged or stored.
+      fromSubagent: fields["agent_id"] !== undefined && fields["agent_id"] !== null,
     },
   };
 }
@@ -492,6 +498,39 @@ async function readCappedBody(
   }
   if (over) return { droppedBytes: size, destroyed: false };
   return { body: Buffer.concat(chunks).toString("utf8") };
+}
+
+/**
+ * Reads a mirror-route body far enough to learn the `session_id` it names, for pickup credit
+ * alone: nothing else in the payload is read here. Used on the two mirror paths that would
+ * otherwise credit a stage reaction on the process token alone, which every process a wrapped
+ * session spawns inherits: a subprocess of an older turn could then advance a message the current
+ * turn never picked up. `sessionId` is null on anything that is not a usable session id: an
+ * over-cap body, a parse failure, a non-object payload, or a payload naming none, all fail closed
+ * the same way this route's own body reader does. Nothing here is logged; a parse failure embeds
+ * source text the way JSON.parse's own message does elsewhere on this route. `destroyed` mirrors
+ * `readCappedBody`'s own drain-cut signal: the connection is already gone, so a caller must not
+ * write a response to it either.
+ */
+async function creditedSessionId(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<{ sessionId: string | null; destroyed: boolean }> {
+  const read = await readCappedBody(request, maxBytes);
+  if (!("body" in read)) return { sessionId: null, destroyed: read.destroyed };
+  let payload: unknown;
+  try {
+    payload = JSON.parse(read.body);
+  } catch {
+    return { sessionId: null, destroyed: false };
+  }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return { sessionId: null, destroyed: false };
+  }
+  return {
+    sessionId: payloadString(payload as Record<string, unknown>, "session_id"),
+    destroyed: false,
+  };
 }
 
 export type HandlerOptions = {
@@ -578,17 +617,47 @@ export type HandlerOptions = {
       sessionId: string | null,
     ) => Promise<unknown>;
   };
+  /**
+   * The receipt tracker's picked-up stage, told from the `UserPromptSubmit` mapping alone, never
+   * `Stop`: that hook fires at the start of every turn, mirror-on or off, which is what makes it
+   * the one signal that reaches a mirror-off session too. Optional for the reason every other
+   * seam here is: with nothing wired, no stage reaction is ever painted.
+   */
+  receipts?: { pickedUp: (sessionId: string, at: number) => void };
+  /**
+   * The open turn's two edges, for the typing keeper alone, so the broker wires it only where
+   * Discord is configured, as it does `receipts`.
+   *
+   * `opened` is told from the same credited `UserPromptSubmit` post as `receipts.pickedUp`, at the
+   * same three call sites and under the same evidence gate. The credited-session-id read runs
+   * whenever either seam is present, and each one wired is called.
+   *
+   * `closed` is told from a credited `Stop` whose payload names the very session it was credited
+   * to, the gate `permissions.turnEnded` is called under, after the registry has already closed the
+   * turn. It lets the keeper stop that thread's indicator at once instead of at the next refresh.
+   */
+  turns?: { opened: (sessionId: string) => void; closed: (sessionId: string) => void };
+  /**
+   * The status reader's one seam: where a credited session's transcript lives, taught from the same
+   * credited post and under the same gate as `tail.learn`, and independent of it. The reader runs
+   * for every session whose path it has been taught, mirror-on or mirror-off, and whether or not the
+   * tailer exists on this host, so it needs its own seam rather than riding the tailer's. Optional
+   * for the reason every other seam here is: the broker wires it only where Discord is configured.
+   */
+  status?: { learn: (sessionId: string, path: string) => void };
 };
 
 /**
  * What `GET /sessions` publishes. The process token is withheld: it is the join key a hook post is
  * authenticated by, so anything that can read one can forge session traffic. The goal is withheld
  * too: it is operator prose off the transcript, held for one display surface, and a debugging route
- * that anything on this machine can read is not that surface. The title, unlike the goal, is
- * published on purpose: it is session identity of the same class as `name`, which this route
- * already publishes, not operator prose held for one display surface.
+ * that anything on this machine can read is not that surface. The open-turn stamp is withheld the
+ * same way: it is held for the typing keeper alone, and no consumer of this route reads it. The
+ * harness notice is withheld too: it is held for the card alone. The
+ * title, unlike the goal, is published on purpose: it is session identity of the same class as
+ * `name`, which this route already publishes, not operator prose held for one display surface.
  */
-export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal">;
+export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal" | "turnActiveAt" | "harnessNotice">;
 
 export function redact(record: SessionRecord): PublicSessionRecord {
   // Field by field rather than by deleting from a copy, so a field added to SessionRecord has to
@@ -681,8 +750,35 @@ export function createHandler(
     // Off means accepted, drained, and dropped: the hooks are installed machine-wide and keep
     // posting whether or not the operator wants content mirrored, so the off switch has to be
     // quiet at the socket rather than refusing anything.
+    //
+    // A broker-wide-off host still owes pickup: with the mirror off, this route never reaches the
+    // /hook UserPromptSubmit-firing logic either (there is none; pickup lives here), so without
+    // this a message on such a host never advances past 📨 at all. Read only when a receipts or
+    // turns seam is wired and this is the turn-opening event, and credit only when the payload
+    // names the very session the token holds, the same evidence bar the mirror-on path below uses.
+    // No log lines on this path: it is deliberately quiet at the socket, on or off.
     if (!options.mirror.enabled) {
-      request.resume();
+      if (
+        mapping.kind === "prompt" &&
+        (options.receipts !== undefined || options.turns !== undefined)
+      ) {
+        const processToken = header(request, "x-channel-process-token");
+        const holder = processToken !== null ? options.registry.current(processToken) : null;
+        if (holder !== null) {
+          const credited = await creditedSessionId(request, options.mirror.maxBytes);
+          // The connection is already gone: there is no response to write, mirroring the
+          // mirror-on path's own drain-cut handling below.
+          if (credited.destroyed) return;
+          if (credited.sessionId !== null && credited.sessionId === holder.sessionId) {
+            options.receipts?.pickedUp(holder.sessionId, now());
+            options.turns?.opened(holder.sessionId);
+          }
+        } else {
+          request.resume();
+        }
+      } else {
+        request.resume();
+      }
       send(response, 202, { ignored: true });
       return;
     }
@@ -732,7 +828,6 @@ export function createHandler(
     // only a value in FLAG_FALSE turns this one post off.
     const sessionMirror = header(request, "x-channel-mirror");
     if (sessionMirror !== null && FLAG_FALSE.includes(sessionMirror.toLowerCase())) {
-      request.resume();
       // The same switch covers the transcript tailer: a session that opted out of having its
       // content mirrored must not have its mid-turn transcript text published either, and the
       // header only ever arrives on this route. UserPromptSubmit fires at the start of every
@@ -742,6 +837,28 @@ export function createHandler(
       // a session the operator suppressed and a mirror that is silently broken both read as total
       // silence in the log, with no way to tell which is happening.
       refusals.warn("mirror post suppressed by session switch", `session=${holder.sessionId}`);
+      // The one pickup signal a mirror-off session ever produces: this hook fires at the start of
+      // every turn regardless of mirroring. Every process a wrapped session spawns inherits its
+      // process token, so the token alone is not evidence this post is the current turn speaking;
+      // the body is read, past the point above where every other branch of it drains unread,
+      // and pickup is credited only when the payload names the very session the token holds, the
+      // same bar the mirror-on path below uses. A body that fails to parse, or names no session,
+      // credits nothing and logs nothing: a parse failure embeds source text.
+      if (
+        mapping.kind === "prompt" &&
+        (options.receipts !== undefined || options.turns !== undefined)
+      ) {
+        const credited = await creditedSessionId(request, options.mirror.maxBytes);
+        // The connection is already gone: there is no response to write, mirroring the
+        // mirror-on path's own drain-cut handling below.
+        if (credited.destroyed) return;
+        if (credited.sessionId !== null && credited.sessionId === holder.sessionId) {
+          options.receipts?.pickedUp(holder.sessionId, now());
+          options.turns?.opened(holder.sessionId);
+        }
+      } else {
+        request.resume();
+      }
       send(response, 202, { ignored: true });
       return;
     }
@@ -805,6 +922,17 @@ export function createHandler(
     // every process a wrapped session spawns inherits the token, so a post that names another
     // session, or names none, is not this session speaking and is not its verdict to give.
     if (sessionId !== null && sessionId === holder.sessionId) options.tail?.allow(holder.sessionId);
+
+    // The same pickup signal as the suppressed branch above, for a mirror-on session: this post is
+    // still the `UserPromptSubmit` hook firing at the start of a turn, told once per post so a
+    // turn opening while other messages sit queued behind it advances all of them together. Gated
+    // on the same evidence bar as the allow call just above, and for the same reason: every process
+    // a wrapped session spawns inherits the token, so a straggler naming another session, or none,
+    // must not advance a message this turn never picked up.
+    if (mapping.kind === "prompt" && sessionId !== null && sessionId === holder.sessionId) {
+      options.receipts?.pickedUp(holder.sessionId, now());
+      options.turns?.opened(holder.sessionId);
+    }
 
     // Extracted raw rather than through payloadString: clean() caps at MAX_FIELD_LENGTH, and a
     // mirrored reply is exactly the string that must survive whole. Rendering safety belongs to
@@ -980,8 +1108,14 @@ export function createHandler(
       // session's open prompt on a straggler. A `Stop` that arrives without a session id therefore
       // clears nothing and leaves the entry for the ended-session sweep, which is the direction
       // this surface fails in.
+      // The typing keeper's release rides the same gate, and the registry closes the turn on the
+      // same bar, so a straggler's `Stop` credited on the token alone neither cuts the indicator
+      // nor closes the turn the session is running now. Both also pass over a subagent's `Stop`,
+      // which ends the subagent rather than the turn; releasing on it would only have the next
+      // reconcile restart the indicator for the turn still open.
       if (parsed.intake.event === "Stop" && parsed.intake.sessionId === record.sessionId) {
         options.permissions?.turnEnded(record.sessionId, arrivedAt);
+        if (parsed.intake.fromSubagent !== true) options.turns?.closed(record.sessionId);
       }
       // Learned only from a post the registry credited to a record: an unwatched, forged, or
       // unroutable post must not aim the tailer at a file of its choosing under a session it does
@@ -989,6 +1123,11 @@ export function createHandler(
       // re-learns it from the very next hook post.
       if (options.tail !== undefined && parsed.intake.transcriptPath !== null) {
         options.tail.learn(record.sessionId, parsed.intake.transcriptPath);
+      }
+      // The status reader learns on the same credited-post bar, and on its own seam, so a host with
+      // no tailer still reads harness error lines and mid-turn pickups.
+      if (options.status !== undefined && parsed.intake.transcriptPath !== null) {
+        options.status.learn(record.sessionId, parsed.intake.transcriptPath);
       }
       // The emission-time question alert, from a credited PreToolUse post alone. The question
       // hook carries the per-session mirror switch because its payload is conversation text, and

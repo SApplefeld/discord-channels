@@ -488,7 +488,8 @@ and none carries a date of its own. An item added from here on carries `(parked 
   client sandbox plan's finishing security review). `npm audit` exits 1 on `plans/client-sandbox` at
   dfd1b5e with one high and three moderate packages, all transitive: the high is `fast-uri`, the
   moderates `hono`, `ip-address` and `qs`. Neither plan adds a dependency, so the fix is its own
-  change, gated on the whole suite.
+  change, gated on the whole suite. The Session Activity Signals plan's reviews read the same four
+  under `@modelcontextprotocol/sdk` 1.30.0 on 2026-09-30; confirm the SDK pin holds after the fix.
 
 - Walk `sliceCodePoints` in `broker/sanitize.ts` up to its limit instead of spreading the whole
   string (parked 2026-09-21, surfaced by the operator inbox plan's section 2 performance review). It
@@ -630,6 +631,42 @@ and none carries a date of its own. An item added from here on carries `(parked 
   operations variable table runs to about 430 words; its restore timing and re-classing belong in a
   titled runbook section beside the threshold procedure. Each is prose, older than or placed on
   purpose by the plan.
+
+- Receipt reactions retry a hopeless refusal (parked 2026-09-30, same source). The tracker in
+  `broker/routing/receipts.ts` ignores the `permanent` flag the adapter's classifier sets, so a bot
+  missing Add Reactions is refused again on every stage change. The load is bounded far below
+  Discord's invalid-request budget by the inbound ceiling, which is why it was left; a per-thread
+  latch like the pin cleaner's is the fix if that ceiling ever rises.
+- Close a turn on `StopFailure` (parked 2026-09-30, from the Session Activity Signals plan's section 2
+  reviews). Claude Code fires `StopFailure` instead of `Stop` when an API error ends a turn, and
+  `hooks/settings-fragment.json` does not register it. The typing indicator therefore keeps showing
+  for up to `idleAfterMs` (120 s by default) after a turn dies on a rate limit or auth error, which
+  the plan accepts. Registering the event and routing it to the same turn close a `Stop` takes would
+  end that window. It changes the installed hooks fragment, which every host must re-apply, so it
+  was not done inside that plan.
+
+- Bound the status reader's notice volume per thread (parked 2026-09-30, from the Session Activity
+  Signals plan's section 3 security review). The reader posts one notice when an error episode opens
+  and one "Resumed." when output returns, on the writer's unfloored reply route. A process that can
+  write a session's transcript can alternate `api_error` and `assistant` lines to mint one post per
+  pair, against the create-message budget the session's replies and the permission prompt share.
+  The posts carry no mention, so they reach no phone. The model-change notice already has a
+  per-thread window for the phone-reaching version of this risk (`docs/security-model.md`, "A model
+  change is the third mention-bearing write"). A window of the same shape on episode opens would
+  close the gap. It was not done in that plan because the spec names no such guard.
+- Warn a thread that appears mid-episode (parked 2026-10-01, from the Session Activity Signals
+  plan's finishing reviews). The status reader reports an open episode only when its rendered line
+  changes, so a thread the session gains while an episode is open never gets the ⚠️ swap. Two
+  paths reach this: a successor session that hits an error before the surface's first pass for it,
+  and a thread reopened after Discord reports it missing. Pending messages show 📨 until the next
+  retry line renders differently, which rate-limit lines do on every attempt, so the gap heals on
+  its own. The fix is the reader re-reporting an open episode when its session's thread first
+  appears.
+- A subagent's `Stop` clears an open permission prompt (parked 2026-10-01, same source). In
+  `broker/intake.ts`, the `Stop` branch calls `permissions.turnEnded` without the `fromSubagent`
+  gate the turn close and the typing release use. A background agent finishing while the main
+  thread waits on a permission prompt clears that prompt's open items. The line predates that
+  plan. Gating it on `fromSubagent !== true` is the fix, once a test pins the prompt surviving.
 
 ## Snapshots
 

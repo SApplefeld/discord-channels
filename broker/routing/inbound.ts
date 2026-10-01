@@ -216,6 +216,13 @@ export type InboundRouterOptions = {
   /** Injected so a test drives the rate ceiling without sleeping. */
   now?: () => number;
   log?: (message: string) => void;
+  /**
+   * The receipt tracker's delivered stage, told once a message is actually handed to a session:
+   * on the direct path, right after the pipe takes it, and on the response-gate path, once for
+   * each message a released buffer hands over. Optional so a Discord-less broker and every
+   * existing test keep working with no reactions painted at all.
+   */
+  receipts?: { delivered: (threadId: string, messageId: string, at: number) => void };
 };
 
 export type InboundRouter = {
@@ -583,6 +590,13 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
     threadId: string,
     deliveries: readonly BufferDelivery[],
   ): Promise<void> {
+    // Read once for the whole batch, and before the writes: every message this call hands over
+    // lands in the pipe in the same back-to-back pass below, so they are delivered at the same
+    // instant as far as a stage reaction is concerned, and the tailer places a message injected
+    // mid-turn against its transcript line's own timestamp, written as the harness injects what
+    // the pipe just carried. An instant read after the write could sit past that timestamp, and
+    // the message would then look delivered after its own injection.
+    const deliveredAt = now();
     const outcomes = deliveries.map((delivery) => ({
       delivery,
       written: options.relays.deliver(
@@ -590,6 +604,16 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         bufferedEvent(threadId, delivery.messages, delivery.restoredAt),
       ),
     }));
+    // Every written message is registered delivered here, ahead of this function's first await:
+    // a pickup racing this call in the gap an awaited notice or cut announcement opens must see
+    // every message this batch wrote as already delivered, not the ones a still-running loop
+    // below has merely reached so far.
+    for (const { delivery, written } of outcomes) {
+      if (!written) continue;
+      for (const message of delivery.messages) {
+        options.receipts?.delivered(threadId, message.id, deliveredAt);
+      }
+    }
     for (const { delivery, written } of outcomes) {
       if (!written) {
         log(`routing: session ${record.sessionId} has no relay attached, rejecting in-thread`);
@@ -939,6 +963,10 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
         // take a later message first. The pipe's outcome is never read: live admission does not
         // read it either. What the gate decides is journaled by the gate and reaches nothing else.
         gate?.admit(message.threadId, record.sessionId, buffered, addressed);
+        // Read before the pipe write, on `handOverBuffers`'s reasoning: the tailer compares this
+        // instant with the transcript line the harness writes as it injects the message, and a
+        // read after the write could sit past that line's own timestamp.
+        const deliveredAt = now();
         const delivered = await handOver(
           record,
           message.threadId,
@@ -946,7 +974,7 @@ export function createInboundRouter(options: InboundRouterOptions): InboundRoute
           1,
         );
         if (!delivered) return;
-        const deliveredAt = now();
+        options.receipts?.delivered(message.threadId, message.messageId, deliveredAt);
         if (operator) {
           toInbox((inbox) => inbox.clear(record.sessionId, deliveredAt), record.sessionId);
         }

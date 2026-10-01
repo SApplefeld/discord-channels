@@ -627,6 +627,17 @@ export type TranscriptTailerOptions = {
    */
   deliverQuestion: (sessionId: string, questions: readonly AskedQuestion[]) => Promise<ReplyResult>;
   /**
+   * Told of a `pickup` item: a Discord message injected mid-turn, with the transcript line's own
+   * instant. Nothing here posts anything; it exists only to advance a message's receipt reaction,
+   * never to draw content. This reader only ever runs against a mirror-on session's transcript,
+   * since the tailer reads no other kind, so this is the mirror-on half of pickup credit; the
+   * intake handler's own credit on the `UserPromptSubmit` mirror post is the other. Both halves
+   * are wired to the same session-keyed pickup entry point in startBroker, so neither seam resolves
+   * a session to its thread on its own. Optional so a caller not wiring receipts, and every
+   * existing test, keep working unchanged.
+   */
+  notePickup?: (sessionId: string, at: number) => void;
+  /**
    * Reports that an ask reached its resolution line, which Claude Code writes when the picker
    * closes: the question has been answered at the console. The question desk's seam, where it flips
    * a thread message that has been telling the operator to answer there. Called for every question
@@ -836,7 +847,15 @@ export type TailItem =
   | { kind: "model"; reading: ModelReading }
   | { kind: "fallback"; fallback: ModelFallback }
   | { kind: "goal"; goal: string | null }
-  | { kind: "title"; title: string };
+  | { kind: "title"; title: string }
+  /**
+   * A Discord message injected mid-turn: a `queued_command` line whose origin is the channel
+   * itself rather than a human typing at the console or a peer session. It carries no text at
+   * all, only the line's own instant, because this item exists solely to advance a message's
+   * receipt reaction to picked-up; the message itself already reached the thread when the broker
+   * delivered it, so nothing here is drawn a second time.
+   */
+  | { kind: "pickup"; at: number | null };
 
 /**
  * One peer message off the transcript, in either direction: a message another session sent this one
@@ -1026,7 +1045,7 @@ function goalCommand(text: string): string | null | undefined {
  * missing or unparseable field yields null and the caller falls back to read time, which is the
  * behaviour every path here had before the field was read at all. Nothing is published from it.
  */
-function lineInstant(record: Record<string, unknown>): number | null {
+export function lineInstant(record: Record<string, unknown>): number | null {
   const stamp = record["timestamp"];
   if (typeof stamp !== "string") return null;
   const at = Date.parse(stamp);
@@ -1550,6 +1569,16 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
 };
 
 /**
+ * The names this repo's own MCP channel server registers under, either of which names a
+ * `queued_command` line's `origin.kind: "channel"` as this relay's own injection rather than some
+ * other MCP server's. `channel-relay` is the manually-configured entry (wrapper/Enter-ClaudeSession.ps1
+ * `$script:ChannelServerName`), and `plugin:relay:channel-relay` is the same server under the
+ * plugin-provided route (plugins/relay/.claude-plugin/plugin.json `server`, prefixed the way Claude
+ * Code names a plugin-installed MCP server).
+ */
+export const CHANNEL_RELAY_SERVER_NAMES: readonly string[] = ["channel-relay", "plugin:relay:channel-relay"];
+
+/**
  * What one transcript line contributes, decided by an allowlist and never a denylist. Five line
  * shapes yield anything, and all must first not be a sidechain and must name in `sessionId` the
  * session this transcript was learned for.
@@ -1592,6 +1621,16 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * `origin.kind` `channel` is the harness's injection of a message the operator posted in the
  * thread itself, and a `prompt` that is an object rather than a string carries pasted image
  * references rather than prose.
+ *
+ * A line yields a pickup item when it is that same `queued_command` attachment shape, its
+ * `origin.kind` is `channel`, and its `origin.server` names this repo's own relay
+ * (`CHANNEL_RELAY_SERVER_NAMES`): a message posted straight into the thread, injected mid-turn,
+ * that was already drawn once on delivery. `kind` alone names only which MCP tool queued the line,
+ * and any server can register a tool under that name, so the server check is what keeps a foreign
+ * or misconfigured server's own "channel" line from being read as this relay's. What this yields is
+ * not narration, since posting it again would put the same message on the thread twice, but the
+ * transcript line's own instant, which is what lets the message's receipt reaction advance past 📨
+ * the same way a console-typed line's does.
  *
  * A `user` line yields a goal when its content carries the console-command markup and the command
  * named in it is `/goal`. One command by allowlist, never a sweep: a command's arguments are
@@ -1775,7 +1814,23 @@ export function lineItems(line: string, sessionId: string): TailItem[] {
     if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return [];
     const peer = peerDelivery(origin);
     if (peer !== null) return [{ kind: "peer-in", name: peer.name, body: peer.body }];
-    if ((origin as Record<string, unknown>)["kind"] !== "human") return [];
+    const originFields = origin as Record<string, unknown>;
+    const originKind = originFields["kind"];
+    // A message someone posted straight into the thread, injected mid-turn: it was already drawn
+    // once, on delivery, so nothing here posts it again. What it still owes is the pickup this
+    // turn gives it, the same signal a human's queued line gives through the ordinary prompt item
+    // below, so a Discord-originated message advances past 📨 exactly as a console-typed one does.
+    // Gated on `origin.server` naming this repo's own relay, never on `kind` alone: `channel` names
+    // only which MCP tool queued the line, and any server can register a tool under that name, so a
+    // foreign or misconfigured server's own "channel" line must not be read as this relay's.
+    if (
+      originKind === "channel" &&
+      typeof originFields["server"] === "string" &&
+      CHANNEL_RELAY_SERVER_NAMES.includes(originFields["server"])
+    ) {
+      return [{ kind: "pickup", at: lineInstant(record) }];
+    }
+    if (originKind !== "human") return [];
     const prompt = fields["prompt"];
     if (typeof prompt !== "string" || prompt === "") return [];
     return [{ kind: "prompt", text: prompt, source: "queued", at: lineInstant(record) }];
@@ -1804,7 +1859,7 @@ export function questionDigest(questions: readonly AskedQuestion[]): string {
  * transcript is named `<session-id>.jsonl`, the measured invariant `learn()` pins taught paths
  * to.
  */
-function taughtStem(path: string): string {
+export function taughtStem(path: string): string {
   const base = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
   return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
 }
@@ -1814,7 +1869,7 @@ function taughtStem(path: string): string {
  * beside the bytes so the caller can decide what the bytes mean (a shrink, an overrun) from the
  * same observation it read them under, rather than from a second stat the file may have outgrown.
  */
-async function readSlice(path: string, offset: number, maxBytes: number): Promise<TranscriptSlice> {
+export async function readSlice(path: string, offset: number, maxBytes: number): Promise<TranscriptSlice> {
   const handle = await open(path, "r");
   try {
     const { size } = await handle.stat();
@@ -2377,6 +2432,22 @@ export function createTranscriptTailer(options: TranscriptTailerOptions): Transc
               "the message is dropped; the error detail is withheld, it can carry content",
             );
             if (!stillValid()) return;
+          }
+          continue;
+        }
+        if (item.kind === "pickup") {
+          // No await, no post: this item exists only to move a stage reaction, so there is nothing
+          // here for a suppress landing mid-batch to interrupt. The callback is a caller's, held
+          // to its own try/catch like the model, fallback, goal and title notes above and for the
+          // same reason: a throw escaping here would abandon every item behind it in this batch,
+          // whose bytes are already past the offset and cannot be read again.
+          try {
+            if (item.at !== null) options.notePickup?.(sessionId, item.at);
+          } catch {
+            repeats(
+              `session ${sessionId}'s pickup could not be recorded`,
+              "the credit is dropped; the error detail is withheld, it can carry content",
+            );
           }
           continue;
         }

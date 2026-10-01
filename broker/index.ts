@@ -21,6 +21,8 @@ import { loadDiscordConfig } from "./discord/config.ts";
 import { createDiscordTransport, createInteractionResponder } from "./discord/adapter.ts";
 import { createSurface } from "./discord/surface.ts";
 import { createPinKeeper } from "./discord/pins.ts";
+import { createTypingKeeper } from "./discord/typing.ts";
+import type { TypingKeeper } from "./discord/typing.ts";
 import {
   displayName,
   renderModelChange,
@@ -79,6 +81,8 @@ import {
   questionDigest,
 } from "./tail.ts";
 import type { TranscriptTailer } from "./tail.ts";
+import { createStatusReader } from "./status-reader.ts";
+import type { StatusReader } from "./status-reader.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
 import type { InboundInbox, InboundRouter } from "./routing/inbound.ts";
@@ -86,6 +90,8 @@ import { createResponseGateJournal } from "./routing/response-gate.ts";
 import { createInteractionRouter } from "./routing/interactions.ts";
 import { createOutboundRouter } from "./routing/outbound.ts";
 import type { OutboundInbox, ReplyResult } from "./routing/outbound.ts";
+import { createReceiptTracker } from "./routing/receipts.ts";
+import type { ReceiptTracker } from "./routing/receipts.ts";
 import { createRelayRoutes } from "./routing/http.ts";
 import { createThreadWriter } from "./routing/writer.ts";
 import type { ThreadWriter } from "./routing/writer.ts";
@@ -851,10 +857,15 @@ export function inboxWiring(options: {
  * The clear runs whether or not the thread is open yet, because the rebind happened either way. The
  * post is skipped on a null thread ID, since there is nowhere to post into and the very next pass
  * opens the thread.
+ * The thread's receipts are restored too. The status reader closes an error episode through the
+ * session's thread, and the departed session no longer has one, so its ⚠️ mark would otherwise stay
+ * on the thread for every later message.
  */
 export function rebindHandling(options: {
   /** Null when `CHANNEL_INBOX_CARD` is off, which leaves the clear a no-op. */
   inbox: Pick<Inbox, "clearEnded"> | null;
+  /** Absent for a caller with no receipt tracker, which leaves the restore a no-op. */
+  receipts?: Pick<ReceiptTracker, "restore"> | null;
   post: (input: { threadId: string; text: string }) => Promise<CallOutcome<{ messageId: string | null }>>;
   now: () => number;
   log: (message: string) => void;
@@ -870,6 +881,7 @@ export function rebindHandling(options: {
       }
     }
     if (event.threadId === null) return;
+    options.receipts?.restore(event.threadId);
     void options.post({ threadId: event.threadId, text: renderRestartNotice(event.lineage) });
   };
 }
@@ -1031,6 +1043,20 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     onAttach: (processToken) => inbound?.relayAttached(processToken),
   });
   let threadFor: (sessionId: string) => string | null = () => null;
+  // The receipt tracker, mutable for the reason `threadFor` is: it needs the Discord transport,
+  // built inside the Discord block below, and every seam that reaches it is wired before that
+  // block runs. A host with no Discord builds one nowhere, and every call through the closures
+  // below is a no-op, which is what a broker with no reactions to paint has always done.
+  let receipts: ReceiptTracker | null = null;
+  // The one session-keyed pickup entry point, so the intake handler's `UserPromptSubmit` credit
+  // and the tailer's own `notePickup` seam resolve a session to its thread and reach the tracker
+  // through one path rather than two closures that could drift. Reads `threadFor` and `receipts`
+  // through the closure for the reason both are mutable: this is defined before the Discord block
+  // below builds either.
+  function pickupFor(sessionId: string, at: number): void {
+    const threadId = threadFor(sessionId);
+    if (threadId !== null) receipts?.pickedUp(threadId, at);
+  }
   // The fleet usage card's own message, for the channel's pin list. Mutable for the reason
   // `threadFor` is: the card is built after the Discord block below, because it is built under two
   // conditions decided in one place, and the pin reconcile that reads this runs on the surface's
@@ -1124,6 +1150,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
     ...(echo === null ? {} : { echo }),
     ...(inbox === null ? {} : { inbox }),
+    // Read through the closure for the reason `threadFor` is: the tracker is built inside the
+    // Discord block below, once the transport it paints reactions through exists.
+    receipts: {
+      pickedUp: (threadId, at) => receipts?.pickedUp(threadId, at),
+      answered: (threadId, at) => receipts?.answered(threadId, at),
+    },
   });
   // The steering writer's notices and permission alerts land in threads without passing the
   // outbound router, so a successful post tells the router directly that the thread's narration
@@ -1211,6 +1243,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliverPrompt: (sessionId, text, source, at) =>
         outbound.interimPrompt(sessionId, text, source, at),
       deliverPeer: (sessionId, traffic) => outbound.peer(sessionId, traffic),
+      // A Discord message injected mid-turn: no post, just the pickup stage, through the one
+      // session-keyed pickup entry point the intake handler's own credit also calls.
+      notePickup: (sessionId, at) => pickupFor(sessionId, at),
       // The release wrapper above. The delivery is read through a closure rather than passed
       // directly, because `deliverQuestion` is replaced further down once Discord's surfaces
       // exist, and the tailer is constructed before that.
@@ -1307,6 +1342,76 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     log: note,
   });
 
+  // Read here, ahead of the intake handler below, so the handler can decide at construction
+  // whether the receipts seam is worth wiring at all: a broker this reads as unconfigured for
+  // never builds a tracker, and every pickup credit through it would otherwise read and parse a
+  // mirror-off prompt body for a seam that can never do anything with what it finds.
+  const discord = loadDiscordConfig(process.env, {
+    staleAfterMs: config.staleAfterMs,
+    // A half-configured Discord is the one shape that looks identical to a working one from every
+    // other signal: the broker starts, the registry fills, the status cards would tick. Saying so
+    // once at startup is the difference between a typo and an afternoon.
+    warn: (message) => {
+      console.warn(message);
+      logger.warn(message);
+    },
+  });
+
+  // The status reader, built wherever Discord is configured and independent of the tailer: it reads
+  // every learned transcript, mirror-off included, for harness error lines and channel pickups,
+  // and publishes only fixed wording and receipt state (see broker/status-reader.ts). With the
+  // tailer off on this host, it is the only source of a mid-turn pickup credit.
+  let status: StatusReader | null = null;
+  let statusTimer: NodeJS.Timeout | null = null;
+  let statusInFlight: Promise<void> = Promise.resolve();
+  if (discord !== null) {
+    const reader = createStatusReader({
+      // Stale sessions included: a session waiting out a long retry fires no hooks and goes stale,
+      // and dropping it would clear its card line and ⚠️ without ever saying "Resumed.".
+      currentSessions: () =>
+        registry
+          .list()
+          .filter((record) => record.state !== "ended")
+          .map((record) => record.sessionId),
+      // The unfloored route: `notice` drops a second post inside a minute, which would swallow the
+      // "Resumed." that follows a short retry wait. The reader posts once per episode and once per
+      // recovery, so the floor has nothing left to collapse.
+      // A post the writer's budget refuses resolves rather than rejects, so it is logged here, with
+      // the session id and the outcome's status alone. Not retried: the next episode posts afresh.
+      notice: async (sessionId, text) => {
+        const threadId = threadFor(sessionId);
+        if (threadId === null) return;
+        const posted = await steeringWriter.reply(threadId, text);
+        // The notice bypasses the outbound router, so a landed one ends the thread's narration block
+        // here, as the steering writer's own notice and alert verbs do: a dropped gateway would
+        // otherwise lose the echo that clears it and leave new narration editing a message above it.
+        if (posted.status === "ok") outbound.endNarration(threadId);
+        if (posted.status !== "ok") {
+          note(
+            `broker: session ${sessionId}'s harness notice was not posted: ` +
+              (posted.status === "rate-limited" ? "rate limited" : "failed"),
+          );
+        }
+      },
+      notePickup: (sessionId, at) => pickupFor(sessionId, at),
+      // The card line and the ⚠️ swap on the session's still-unanswered messages, both cleared when
+      // the episode closes.
+      episode: (sessionId, open) => {
+        registry.noteHarnessNotice(sessionId, open === null ? null : open.text);
+        const threadId = threadFor(sessionId);
+        if (threadId === null) return;
+        if (open === null) receipts?.restore(threadId);
+        else receipts?.warn(threadId);
+      },
+      log: note,
+    });
+    status = reader;
+    statusTimer = setInterval(() => {
+      statusInFlight = reader.poll().catch(() => {
+        note("broker: a status pass failed; the error detail is withheld, it can carry content");
+      });
+    }, config.interimPollMs);
+  }
   const hooks = createHandler({
     registry,
     // Floored at the mirror route's ceiling: both routes receive the same Stop payload, and only
@@ -1331,6 +1436,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
             question: tail.question,
           },
         }),
+    // The status reader learns on its own seam, so a host with no tailer still teaches it paths.
+    ...(status === null ? {} : { status: { learn: status.learn } }),
     // The hold seam. A qualifying question post's response is held open here rather than answered,
     // so the answer can ride back from the thread through the components the alert grows; every
     // post the desk refuses, and every gate ahead of it, is answered immediately exactly as a
@@ -1350,6 +1457,33 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       deliver: (processToken, kind, text, sessionId) =>
         outbound.mirror(processToken, kind, text, sessionId),
     },
+    // Wired only when Discord is actually configured: with no receipts tracker ever built on this
+    // host, `pickupFor` can only ever be a no-op, and wiring the seam anyway would have the
+    // suppressed and broker-wide-off branches below read and parse every mirror-off prompt body
+    // for a credit that can never land anywhere.
+    ...(discord === null ? {} : { receipts: { pickedUp: pickupFor } }),
+    // Behind the same gate as receipts and for the same reason: the open-turn stamp's one reader is
+    // the typing keeper, which exists only with Discord, so on any other host this seam would have
+    // the mirror-off branches read every prompt body for a stamp nothing reads. `closed` reaches
+    // the keeper through the mutable `typingKeeper` and `threadFor` closures, both filled in by the
+    // Discord block below before the listener binds, so no hook can arrive ahead of them.
+    ...(discord === null
+      ? {}
+      : {
+          turns: {
+            opened: (sessionId: string) => {
+              registry.noteTurnOpened(sessionId);
+              // Any credited prompt submission closes an open error episode, a queued message injected
+              // mid-turn included: an interrupted or abandoned failing turn writes no output line, and
+              // an injection lands only at a tool boundary, after output has already closed it.
+              status?.turnOpened(sessionId, Date.now());
+            },
+            closed: (sessionId: string) => {
+              const threadId = threadFor(sessionId);
+              if (threadId !== null) typingKeeper?.release(threadId);
+            },
+          },
+        }),
   });
   const server = createServer((request, response) => {
     // The relay routes answer first and report whether they took the request; everything else,
@@ -1386,19 +1520,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   // registry and its intake, which is what a local debugging run and every test wants. The refresh
   // timer lives here for the same reason the sweep does, so the surface itself is drivable by an
   // injected clock.
-  const discord = loadDiscordConfig(process.env, {
-    staleAfterMs: config.staleAfterMs,
-    // A half-configured Discord is the one shape that looks identical to a working one from every
-    // other signal: the broker starts, the registry fills, the status cards would tick. Saying so
-    // once at startup is the difference between a typo and an afternoon.
-    warn: (message) => {
-      console.warn(message);
-      logger.warn(message);
-    },
-  });
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;
+  // The typing keeper's own timers run outside `refresh`, one per typing thread rather than one for
+  // the whole reconcile pass, so clearing `refresh` alone leaves them running. Every site that tears
+  // `refresh` down calls `typingKeeper?.stop()`, which also latches the keeper, so a late `release`
+  // or `reconcile` can never restart timers `stop()` just cleared.
+  let typingKeeper: TypingKeeper | null = null;
   // What the fleet card needs from Discord, filled in below only when a channel exists. It is one
   // of the two conditions the card is built under, and the card is built after this block rather
   // than inside it so that both conditions are decided in one place the tests can drive.
@@ -1416,6 +1545,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const stopRefresh = (): void => {
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
+      typingKeeper?.stop();
+    };
+    // Shared by the surface and the typing keeper: either one can be the caller that first learns
+    // the credential was rejected, since discord.js discards the token after a 401 and the typing
+    // keeper's own timers run independently of the surface pass. Whichever notices, the whole
+    // Discord refresh stops the same way.
+    const onFatal = (message: string): void => {
+      console.error(message);
+      logger.error(message);
+      stopRefresh();
     };
     // One HTTP client for every Discord write this broker makes, the message routes and the
     // interaction callback alike. Sharing the client shares no budget: each surface holds its own
@@ -1423,6 +1562,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     const request = createRestRequest(discord.token);
     const transport = createDiscordTransport({ channelId: discord.channelId, request });
     messenger = transport;
+    // The receipt tracker, built once the transport it paints reactions through exists. Every seam
+    // wired above this point reaches it through the mutable `receipts` closure, which starts
+    // answering as soon as this assignment runs.
+    receipts = createReceiptTracker({ reactions: transport, log: note, now: Date.now, describe });
     const surface = createSurface({
       transport,
       now: Date.now,
@@ -1431,6 +1574,12 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       exitedAfterMs: discord.exitedAfterMs,
       archiveOnEnd: discord.archiveOnEnd,
       bindings: loadBindings(bindingsFile),
+      // The one point every session's end reaches, whatever ended it: forgets the thread's receipt
+      // tracking and its typing budget so neither outlives the session.
+      onRetired: (threadId) => {
+        receipts?.forget(threadId);
+        typingKeeper?.forget(threadId);
+      },
       onBind: (bindings) => {
         try {
           saveBindings(bindingsFile, bindings);
@@ -1444,11 +1593,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
         console.log(message);
         logger.info(message);
       },
-      onFatal: (message) => {
-        console.error(message);
-        logger.error(message);
-        stopRefresh();
-      },
+      onFatal,
       // Item 3: the reconciler itself never posts (see ThreadMessenger's own comment on why), so
       // this is the caller that turns a rebind into the one-line notice the thread gets and clears
       // the departed session's inbox item, guarded so neither a failure in the clear nor a missing
@@ -1458,6 +1603,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // courtesy line, not state anything depends on.
       onRebind: rebindHandling({
         inbox,
+        receipts: { restore: (threadId) => receipts?.restore(threadId) },
         post: (input) => messenger.postToThread(input),
         now: Date.now,
         // A failed clear leaves an ask stuck on the card, so it logs at the level the inbox's
@@ -1475,6 +1621,16 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
+    // The typing indicator, reconciled on every refresh tick against the turn gate (`typingWanted`
+    // in discord/state.ts) over this tick's views, and released at once by a credited `Stop`
+    // through the intake's `turns.closed` seam above.
+    typingKeeper = createTypingKeeper({
+      typing: transport,
+      now: Date.now,
+      log: note,
+      describe,
+      onFatal,
+    });
     refresh = setInterval(() => {
       // A rejection here would be fatal to the process under Node 24, taking the hook intake down
       // with the Discord surface, and the intake is the half that has to keep running. The pass is
@@ -1489,17 +1645,14 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // Recomputed each pass rather than pushed, so a prompt answered between ticks stops showing
       // as waiting without anything having to remember to clear it.
       const waiting = permissions.waiting();
+      const views = registry.list().map((record) =>
+        toView(record, {
+          needsAttention: waiting.has(record.sessionId),
+          blocked: standingBlocked(record),
+        }),
+      );
       const surfacePass = surface
-        .tick(
-          registry
-            .list()
-            .map((record) =>
-              toView(record, {
-                needsAttention: waiting.has(record.sessionId),
-                blocked: standingBlocked(record),
-              }),
-            ),
-        )
+        .tick(views)
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
         // spends no Discord call here at all.
@@ -1510,6 +1663,13 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
             known: surface.knownPins(),
           }),
         );
+      // On every tick, whatever the pass does: the typing set reads this tick's views, not what a
+      // pass derived, so a declined, slow, or rejected pass cannot hold the indicator on past a
+      // turn's end. Called while this tick's pass is still awaiting Discord, so a thread that pass
+      // creates is not yet recorded, and its session enters the set on the next tick. Each thread
+      // carries its turn's deadline, which the keeper honors between ticks. Synchronous and never
+      // thrown out of the keeper, so it needs no leg of its own.
+      typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));
       inFlight = Promise.all([blockedPass, surfacePass])
         .then(() => undefined)
         .catch((error: unknown) => {
@@ -1721,6 +1881,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       },
       now: Date.now,
       log: note,
+      receipts: { delivered: (threadId, messageId, at) => receipts?.delivered(threadId, messageId, at) },
     });
     inbound = router;
     if (config.responseGate === "live") {
@@ -1780,8 +1941,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       clearInterval(heartbeat);
       if (tailTimer !== null) clearInterval(tailTimer);
       tailTimer = null;
+      if (statusTimer !== null) clearInterval(statusTimer);
+      statusTimer = null;
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
+      typingKeeper?.stop();
       // The gateway logs in before the listener binds, so a port conflict would otherwise leave a
       // connected bot behind in a process that is about to throw: the bot would show online, and a
       // second broker starting later would have two of them reading the same channel.
@@ -1931,7 +2095,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     clearInterval(sweep);
     clearInterval(heartbeat);
     if (tailTimer !== null) clearInterval(tailTimer);
+    if (statusTimer !== null) clearInterval(statusTimer);
     if (refresh !== null) clearInterval(refresh);
+    typingKeeper?.stop();
     // A held buffer goes down in the same synchronous block, before the first await below: its
     // age-cap timer must not fire into pipes about to be torn down, and a broker asked to stop
     // does not wait on an age cap. What was held stays in the buffers file, which the close does
@@ -1952,6 +2118,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // for the same reason: shutdown must not race a read still holding a file handle.
     await inFlight;
     await tailInFlight;
+    await statusInFlight;
+    // The status reader's notices are posted off its pass, so they are awaited apart from it. Not
+    // bounded here, as the card drains below are not: each post is one Discord call.
+    await status?.drain();
     // The card's pass may still be waiting on a Discord edit, and its binding write follows that
     // call's return.
     if (cardDrain !== null) await cardDrain;

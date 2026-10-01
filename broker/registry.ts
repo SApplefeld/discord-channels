@@ -258,6 +258,31 @@ export type SessionRecord = {
    */
   goal: string | null;
   /**
+   * When the open turn last showed activity, and null while no turn is open. A turn opens on the
+   * session's credited `UserPromptSubmit` post (`noteTurnOpened`) or on a completed tool call of
+   * the session's own main thread, and either one restamps this with now. A subagent's completed
+   * tool call neither opens a turn nor restamps one: it carries the parent's session id, and a
+   * background agent working after `Stop` is not the session's turn. `Stop` sets it back to null.
+   *
+   * This is what the typing keeper gates on, rather than the derived `working` state, since
+   * `working` lasts `idleAfterMs` past a `Stop` and indefinitely while a background roster is
+   * outstanding. A turn that never sends its `Stop` (interrupted, or stalled in a retry wait) ages
+   * out of the gate once this is older than `idleAfterMs`. Never persisted: a restarted broker has
+   * no way to know whether a turn was open at the moment it died, so a loaded record starts with
+   * this null, which treats the turn as closed until the next opening event.
+   */
+  turnActiveAt: number | null;
+  /**
+   * The fixed-wording line for an open harness error episode, rendered from its latest error line,
+   * and null while no episode is open. The thread is posted only the episode's opening line. Set
+   * and cleared by the status reader through `noteHarnessNotice` and drawn on the card under the
+   * state. Composed from structured fields alone, never from the
+   * error's own text. Never persisted, never logged and never published on `GET /sessions`: an
+   * episode is a fact about the running harness, and one restored after a restart would draw a
+   * retry time that has long passed.
+   */
+  harnessNotice: string | null;
+  /**
    * The session's own title, as a `custom-title` transcript line last set it: written at launch by
    * `--name` and again by any in-session `/rename`, and null for a session neither has touched.
    * Distinct from `name`, which is the launch label the hook header carries on every post and never
@@ -297,6 +322,13 @@ export type HookIntake = {
    * about it. Null leaves the roster standing; an empty array clears it.
    */
   backgroundTasks: readonly BackgroundTaskReading[] | null;
+  /**
+   * True when the payload carried an `agent_id`, which marks a subagent's hook event: it arrives
+   * under the parent's session id, with the subagent's identity in that separate field. Only the
+   * presence is kept, never the value. Absent reads as false, the session's own main thread, which
+   * is what every intake not built from a hook payload is.
+   */
+  fromSubagent?: boolean;
 };
 
 export type RegistryOptions = {
@@ -405,6 +437,18 @@ export type Registry = {
    * transcript, so it lives where the card can read it and nowhere else.
    */
   noteGoal: (sessionId: string, goal: string | null) => SessionRecord | null;
+  /**
+   * Opens the turn for a session, stamping `turnActiveAt` with now, told from a credited
+   * `UserPromptSubmit` post reaching the registry through /mirror rather than as a hook event.
+   * Returns the record it touched, and null when nothing unended holds that ID.
+   */
+  noteTurnOpened: (sessionId: string) => SessionRecord | null;
+  /**
+   * Sets the card's harness notice line for a session while a harness error episode is open, or
+   * clears it with null when the episode closes. Returns the record it wrote, and null when nothing
+   * unended holds that ID, the same refusal `noteGoal` gives. Never logged and never persisted.
+   */
+  noteHarnessNotice: (sessionId: string, text: string | null) => SessionRecord | null;
   /**
    * Records the title a `custom-title` transcript line named, whether written by a launch `--name`
    * or an in-session `/rename`. Returns the record it wrote, and null when nothing unended holds
@@ -627,6 +671,8 @@ export function createRegistry(options: RegistryOptions): Registry {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
+      turnActiveAt: null,
+      harnessNotice: null,
       title: null,
     };
     sessions.set(sessionId, record);
@@ -698,6 +744,15 @@ export function createRegistry(options: RegistryOptions): Registry {
 
     if (intake.event === "PostToolUse") {
       record.toolCount += 1;
+      // A main-thread tool call is one of the two events a turn opens on, the other being a credited
+      // `UserPromptSubmit` post through `noteTurnOpened`, and each one restamps the turn's activity.
+      // It counts only on the bar `Stop` uses to close a turn: a payload naming the very session it
+      // was credited to, since a token-only post may be a straggler from a session that token used
+      // to run. A subagent's call neither opens a turn nor refreshes one. It carries the parent's
+      // session id, so a background agent still working after a turn ended without a `Stop` would
+      // otherwise hold the thread typing for as long as it runs. Stamped whether or not this call
+      // carried a usable name, the same as toolCount above.
+      if (intake.sessionId === record.sessionId && intake.fromSubagent !== true) record.turnActiveAt = now();
       // The name and the preview move together, under the one guard, because the card renders them
       // as one line describing one call. Set apart, an event carrying an input but no usable name
       // would leave the previous call's name beside this one's input, and the card would assert a
@@ -709,6 +764,12 @@ export function createRegistry(options: RegistryOptions): Registry {
       }
     } else if (intake.event === "Stop") {
       record.turnCount += 1;
+      // The turn this Stop closes, on the bar the intake's own Stop handling uses: a payload naming
+      // the very session it was credited to. The token-only route credits a Stop to whatever
+      // session holds the token, so a straggler from a session that token used to run must not
+      // close the turn running now. A subagent's Stop, which carries an `agent_id`, ends the
+      // subagent and not the turn, the same as its tool calls never open one.
+      if (intake.sessionId === record.sessionId && intake.fromSubagent !== true) record.turnActiveAt = null;
       // An empty report is as load-bearing as a populated one: a session that has finished its
       // agents reports an empty table, and a roster only replaced when there is something to
       // replace it with would hold that session at working for the rest of its life. Null is the
@@ -878,6 +939,21 @@ export function createRegistry(options: RegistryOptions): Registry {
     return null;
   }
 
+  /**
+   * Opens the turn for a session, told from a credited `UserPromptSubmit` post. That credit arrives
+   * through /mirror rather than as a registry hook event, so `apply`'s own PostToolUse/Stop pair
+   * cannot see it, and this is the one other place a turn opens from. Returns the record it touched,
+   * and null when nothing unended holds that ID, the same refusal `noteGoal` gives.
+   */
+  function noteTurnOpened(sessionId: string): SessionRecord | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    record.turnActiveAt = now();
+    // Not persisted on its own account, the same reasoning the goal field holds: this stamp is not
+    // liveness, so it moves no `lastHookAt` and reaches no snapshot write of its own.
+    return record;
+  }
+
   function noteGoal(sessionId: string, goal: string | null): SessionRecord | null {
     const record = reading(sessionId);
     if (record === null) return null;
@@ -886,6 +962,15 @@ export function createRegistry(options: RegistryOptions): Registry {
     // Not persisted on its own account, the same reasoning the context size holds: what the snapshot
     // is for is surviving a restart, and a goal restored from one would draw as current on a card
     // long after the session that set it stopped working toward it.
+    return record;
+  }
+
+  function noteHarnessNotice(sessionId: string, text: string | null): SessionRecord | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    record.harnessNotice = text;
+    // Not persisted on its own account, the same reasoning the goal field holds: a notice restored
+    // after a restart would draw a retry time long past on a card nothing would ever clear.
     return record;
   }
 
@@ -1012,6 +1097,8 @@ export function createRegistry(options: RegistryOptions): Registry {
     noteModel,
     noteFallback,
     noteGoal,
+    noteTurnOpened,
+    noteHarnessNotice,
     noteTitle,
     dueModelChanges,
     sweep,

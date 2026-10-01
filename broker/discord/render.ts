@@ -844,6 +844,105 @@ export function renderTaskNotice(text: string): string {
 }
 
 /**
+ * The structured fields of one harness `api_error` transcript line, as the status reader validated
+ * them. Every field is a number or a flag, apart from `rateLimitType`, which is only ever looked up
+ * in `HARNESS_LIMIT_PHRASES` and never drawn itself. Null marks a field the line did not carry or
+ * carried in a shape the reader refused, and a null field drops its clause from the notice.
+ */
+export type HarnessErrorFields = {
+  /** True when the line carried a `rateLimits` object, which is what makes the error a rate limit. */
+  rateLimited: boolean;
+  /** The raw `rateLimits.rateLimitType`, a lookup key only. */
+  rateLimitType: string | null;
+  /** An HTTP status, an integer from 100 to 599. */
+  status: number | null;
+  /** When the harness retries, in epoch milliseconds: the line's own timestamp plus `retryInMs`. */
+  retryAt: number | null;
+  /** When the rate limit resets, in epoch milliseconds. */
+  resetsAt: number | null;
+};
+
+/** The line a harness error episode closes with, once the session produces output again. */
+export const HARNESS_RESUMED = "Resumed.";
+
+/**
+ * What each known `rateLimitType` reads as. A fixed map rather than a transform of the value,
+ * because the value comes off a transcript line: an unknown one reads as `HARNESS_LIMIT_FALLBACK`
+ * and is never echoed, so no character of it can reach the thread or the card.
+ */
+const HARNESS_LIMIT_PHRASES: Readonly<Record<string, string>> = {
+  five_hour: "five-hour limit",
+  seven_day: "seven-day limit",
+  seven_day_overage_included: "seven-day limit",
+};
+
+/** What an unknown or missing `rateLimitType` reads as. */
+const HARNESS_LIMIT_FALLBACK = "usage limit";
+
+/**
+ * A clock time as `1:16 PM`, in `timeZone` when given and the broker host's own zone otherwise.
+ * Composed from the formatter's parts rather than taken whole, because the whole string separates
+ * the day period with a narrow no-break space on current ICU builds, which reads as a different
+ * character in a phone's search and copy.
+ */
+function clockTime(ms: number, timeZone: string | undefined): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone,
+  }).formatToParts(new Date(ms));
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("hour")}:${part("minute")} ${part("dayPeriod")}`;
+}
+
+/** True for a number a `Date` can draw. */
+function drawableInstant(ms: number | null): ms is number {
+  return ms !== null && Number.isFinite(ms) && Math.abs(ms) <= 8.64e15;
+}
+
+/**
+ * The thread notice for a harness error, in fixed wording built from structured fields alone. A
+ * rate limit reads `Rate-limited (five-hour limit). Retrying at 1:16 PM, limit resets 3:00 AM.`, and
+ * any other error reads `API error (status 529). Retrying at 1:16 PM.`. A clause whose field is
+ * missing or invalid is dropped rather than drawn with a placeholder.
+ *
+ * Every character of the output is either written here or is a digit of a validated number: the
+ * error's own message text is never an input, and the limit type is a lookup key, never a value. So
+ * no escape is needed, and nothing a session or an upstream service wrote can reach the thread
+ * through this line. The fields are re-checked here as well as at the read, so a caller handing in
+ * an unvalidated number still cannot draw one.
+ *
+ * Times are the broker host's local zone unless `timeZone` names another; the operator reads them
+ * against the clock on the machine the sessions run on.
+ */
+export function renderHarnessNotice(fields: HarnessErrorFields, timeZone?: string): string {
+  const status =
+    fields.status !== null && Number.isInteger(fields.status) && fields.status >= 100 && fields.status <= 599
+      ? fields.status
+      : null;
+  const clauses: string[] = [];
+  if (drawableInstant(fields.retryAt)) clauses.push(`retrying at ${clockTime(fields.retryAt, timeZone)}`);
+  let head: string;
+  if (fields.rateLimited) {
+    const phrase =
+      fields.rateLimitType !== null && Object.hasOwn(HARNESS_LIMIT_PHRASES, fields.rateLimitType)
+        ? HARNESS_LIMIT_PHRASES[fields.rateLimitType]
+        : HARNESS_LIMIT_FALLBACK;
+    head = `Rate-limited (${phrase}).`;
+    if (drawableInstant(fields.resetsAt)) {
+      clauses.push(`limit resets ${clockTime(fields.resetsAt, timeZone)}`);
+    }
+  } else {
+    head = status === null ? "API error." : `API error (status ${String(status)}).`;
+  }
+  if (clauses.length === 0) return head;
+  const tail = clauses.join(", ");
+  return `${head} ${tail.charAt(0).toUpperCase()}${tail.slice(1)}.`;
+}
+
+/**
  * Room for the untrusted parts of a question notice: the question itself, its header, and each
  * option label. Cut here, before the message is assembled, for `renderPermissionRequest`'s
  * reason: no single field may crowd out the mention and the line saying a question is open. The
@@ -2669,6 +2768,22 @@ function goalLines(view: SessionView, state: SurfaceState): string[] {
   return goal === "" ? [] : [GOAL_HEADER, fenced([goal])];
 }
 
+/** Room for the harness notice line on the card, well past any notice `renderHarnessNotice` composes. */
+const MAX_CARD_HARNESS_NOTICE_LENGTH = 200;
+
+/**
+ * The card's harness notice: the open harness error episode's line, rendered from its latest error
+ * line (the thread is told only the opening one), drawn under the field block that carries the
+ * state, and nothing at all once the episode closes or the session has exited. Outside a fence so
+ * it wraps at phone width, and escaped like every other field drawn outside one, although the only
+ * writer composes it from fixed wording.
+ */
+function harnessNoticeLines(view: SessionView, state: SurfaceState): string[] {
+  if (view.harnessNotice === null || state === "exited") return [];
+  const notice = inertField(view.harnessNotice, MAX_CARD_HARNESS_NOTICE_LENGTH);
+  return notice === "" ? [] : [`⚠️ ${notice}`];
+}
+
 /**
  * A duration in the compact form the cards share: `44m`, `3h 44m`, `4d 6h`. Two units at most,
  * because the third never changes a decision and a card is read at a glance on a phone, and a space
@@ -2919,6 +3034,9 @@ export function renderBlockedAlert(input: {
  * what lets a session stop. The failure that avoids is a card carrying a finished goal indefinitely,
  * which is worse than no goal line at all, because it reads as current.
  *
+ * While a harness error episode is open, its notice line sits directly under the field block, so
+ * the state and the reason the session is not moving are read together.
+ *
  * The title is where the card gives way when it runs long, since every line of every block is
  * already inside the width bound: the name is the one field a session sizes for itself. Past that,
  * the roster gives way, entry by entry from the newest end, until the whole message is inside the
@@ -2960,6 +3078,7 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
   // which goal is running rather than every clause of it, and neutralized as every other
   // transcript-sourced field is. A goal that neutralizes to nothing draws no block.
   const goal = goalLines(view, state);
+  const notice = harnessNoticeLines(view, state);
   const title = (name: string): string => `${GLYPHS[state]} **${name}** ${SEPARATOR} ${label}`;
   const heading = (name: string): string =>
     `${TITLE_HEADING} ${GLYPHS[state]} ${name} ${SEPARATOR} ${label}`;
@@ -2967,6 +3086,7 @@ export function renderCard(view: SessionView, state: SurfaceState, now: number):
     const roster = rosterLines(tasks, now, count);
     const body = [
       fields,
+      ...notice,
       ...goal,
       ...(tool.length === 0 ? [] : [TOOL_HEADER, fenced(tool)]),
       ...(roster.length === 0 ? [] : [TASKS_HEADER, fenced(roster)]),

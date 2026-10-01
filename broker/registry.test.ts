@@ -738,8 +738,8 @@ test("an event naming an unknown or mismatched session is dropped", () => {
 });
 
 test("an event with no session ID still routes by process token", () => {
-  // Whether session_id rides on a PostToolUse payload is unconfirmed, so the guard above has to be
-  // opportunistic and this path has to keep working untouched.
+  // A real PostToolUse payload carries session_id, but a post without one is still a credited event
+  // for the token's holder, so the guard above stays opportunistic and this path keeps working.
   const time = clock();
   const sessions = registry(time.now);
   sessions.apply(sessionStart("session-a", "startup"));
@@ -968,11 +968,14 @@ test("relayClosed ends only the session it names, held by the token that names i
 });
 
 /** A registry holding one live session, with the mutation count the persistence seam would spend. */
-function withSession(): { registry: Registry; sessionId: string; writes: () => number } {
+function withSession(
+  time?: ReturnType<typeof clock>,
+): { registry: Registry; sessionId: string; writes: () => number } {
   let writes = 0;
   const registry = createRegistry({
     host: "NEO",
     staleAfterMs: 60_000,
+    ...(time === undefined ? {} : { now: time.now }),
     onMutate: () => {
       writes += 1;
     },
@@ -1112,6 +1115,126 @@ test("a goal for a session the registry does not hold unended changes nothing", 
 
   assert.equal(registry.list()[0].goal, null);
   assert.equal(registry.list().length, 1, "no record is conjured for a session that never announced");
+});
+
+test("a fresh session starts with its turn closed", () => {
+  const { registry, sessionId } = withSession();
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null);
+});
+
+test("a main-thread tool call opens the turn and restamps it, and Stop closes it", () => {
+  // A turn opens on a completed tool call of the session's own main thread, each one restamps the
+  // activity, and Stop closes it.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+
+  registry.apply(postToolUse("Bash", TOKEN, sessionId));
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "a completed tool call opens it");
+
+  time.advance(5_000);
+  registry.apply(postToolUse("Read", TOKEN, sessionId));
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "the next one restamps it");
+
+  registry.apply({ ...stop(), sessionId });
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "Stop closes it");
+});
+
+test("only a main-thread Stop naming the session closes its turn", () => {
+  // The token-only route credits a Stop with no session id to whatever session holds the token, so
+  // such a Stop may be a straggler from a session that token used to run. And a subagent's Stop
+  // ends the subagent, not the turn. Neither may close the turn the session is running now.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+  registry.apply(postToolUse("Bash", TOKEN, sessionId));
+  const opened = time.now();
+
+  registry.apply(stop());
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, opened, "a token-only Stop leaves the turn open");
+
+  registry.apply({ ...stop(), sessionId, fromSubagent: true });
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, opened, "a subagent's Stop leaves it open");
+
+  registry.apply({ ...stop(), sessionId });
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "a Stop naming the session closes it");
+});
+
+test("a subagent's tool call neither opens a turn nor refreshes an open one", () => {
+  // A subagent's PostToolUse carries the parent's session id. It leaves a closed turn closed, so a
+  // background agent working after Stop shows no typing. It leaves an open turn's stamp exactly as
+  // it was, so a turn that ended without a Stop still goes quiet on its main thread's last call.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+  const fromSubagent = { ...postToolUse("Bash", TOKEN, sessionId), fromSubagent: true };
+
+  registry.apply(fromSubagent);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "no turn open: a subagent call opens none");
+
+  registry.apply(postToolUse("Bash", TOKEN, sessionId));
+  const opened = time.now();
+  time.advance(5_000);
+  registry.apply(fromSubagent);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, opened, "an open turn's stamp is left as it was");
+
+  registry.apply({ ...stop(), sessionId });
+  time.advance(5_000);
+  registry.apply(fromSubagent);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "after Stop a background agent's call reopens nothing");
+});
+
+test("only a main-thread tool call naming the session opens or refreshes its turn", () => {
+  // The token-only route credits a post with no session id to whatever session holds the token, so
+  // such a post may be a straggler from a session that token used to run. It counts toward the
+  // session's tool tally but neither opens the turn running now nor keeps it fresh.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+
+  registry.apply(postToolUse("Bash"));
+  assert.equal(byId(registry.list(), sessionId).toolCount, 1, "the post is credited to the session");
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "a token-only post opens no turn");
+
+  registry.apply(postToolUse("Bash", TOKEN, sessionId));
+  const opened = time.now();
+  time.advance(5_000);
+  registry.apply(postToolUse("Read"));
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, opened, "nor refreshes an open one");
+});
+
+test("noteTurnOpened opens the turn for an unended session, told from a credited UserPromptSubmit", () => {
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+  time.advance(10 * 60 * 1000);
+
+  const touched = registry.noteTurnOpened(sessionId);
+  assert.ok(touched);
+  assert.equal(touched.sessionId, sessionId);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "stamped with the prompt's arrival");
+});
+
+test("noteTurnOpened refuses a session the registry does not hold unended", () => {
+  const { registry, sessionId } = withSession();
+  registry.apply(postToolUse("Bash", TOKEN, sessionId));
+  const stamped = registry.list()[0].turnActiveAt;
+  assert.notEqual(stamped, null, "the precondition: a turn is open");
+  registry.relayClosed(TOKEN, sessionId);
+
+  assert.equal(registry.noteTurnOpened(sessionId), null, "an ended record cannot be re-opened");
+  assert.equal(registry.noteTurnOpened("no-such-session"), null);
+  assert.equal(registry.list()[0].turnActiveAt, stamped, "the ended record's stamp is left exactly as it was");
+});
+
+test("noteHarnessNotice sets and clears the card line on an unended session, and refuses an ended one", () => {
+  const { registry, sessionId } = withSession();
+  const touched = registry.noteHarnessNotice(sessionId, "API error (status 529).");
+  assert.ok(touched);
+  assert.equal(byId(registry.list(), sessionId).harnessNotice, "API error (status 529).");
+  registry.noteHarnessNotice(sessionId, null);
+  assert.equal(byId(registry.list(), sessionId).harnessNotice, null, "the episode's close clears it");
+
+  registry.noteHarnessNotice(sessionId, "API error.");
+  registry.relayClosed(TOKEN, sessionId);
+  assert.equal(registry.noteHarnessNotice(sessionId, null), null, "an ended record is not written");
+  assert.equal(registry.noteHarnessNotice("no-such-session", "API error."), null);
+  assert.equal(registry.list()[0].harnessNotice, "API error.", "the ended record is left exactly as it was");
 });
 
 test("a title is held on the record it names, replaced by the next one, and stamps no engagement", () => {

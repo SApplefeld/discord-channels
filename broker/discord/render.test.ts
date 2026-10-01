@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   GLYPHS,
+  HARNESS_RESUMED,
   MAX_BLOCK_WIDTH,
   MAX_CARD_LENGTH,
   MAX_MESSAGE_LENGTH,
@@ -22,6 +23,7 @@ import {
   renderAnswer,
   renderBlockedAlert,
   renderCard,
+  renderHarnessNotice,
   renderMirror,
   renderModelChange,
   renderPeerIn,
@@ -69,6 +71,8 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
     lineage: null,
     startedAt: NOW,
@@ -718,6 +722,8 @@ test("the tool line carries what the tool was called with, from the record throu
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
   };
 
@@ -848,6 +854,8 @@ test("neither the view nor the card can carry the process token", () => {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
   };
 
@@ -4046,4 +4054,68 @@ test("a description at the cap keeps every roster row inside the block width", (
 
   const tasks = tasksOf(card);
   for (const line of tasks) assert.ok([...line].length <= MAX_BLOCK_WIDTH, line);
+});
+
+test("a harness notice is fixed wording from structured fields, in the zone it is told, with a missing field's clause dropped", () => {
+  const retryAt = Date.UTC(2026, 8, 30, 13, 16);
+  const resetsAt = Date.UTC(2026, 9, 1, 3, 0);
+  assert.equal(
+    renderHarnessNotice(
+      { rateLimited: true, rateLimitType: "five_hour", status: 429, retryAt, resetsAt },
+      "UTC",
+    ),
+    "Rate-limited (five-hour limit). Retrying at 1:16 PM, limit resets 3:00 AM.",
+  );
+  assert.equal(
+    renderHarnessNotice({ rateLimited: true, rateLimitType: "seven_day_overage_included", status: 429, retryAt: null, resetsAt }, "UTC"),
+    "Rate-limited (seven-day limit). Limit resets 3:00 AM.",
+  );
+  assert.equal(
+    renderHarnessNotice({ rateLimited: false, rateLimitType: null, status: 529, retryAt, resetsAt: null }, "UTC"),
+    "API error (status 529). Retrying at 1:16 PM.",
+  );
+  assert.equal(
+    renderHarnessNotice({ rateLimited: false, rateLimitType: null, status: null, retryAt: null, resetsAt: null }, "UTC"),
+    "API error.",
+  );
+  // A status outside the HTTP range, a fractional one and an instant no Date can draw are dropped,
+  // never drawn.
+  assert.equal(
+    renderHarnessNotice({ rateLimited: false, rateLimitType: null, status: 4_290, retryAt: Number.NaN, resetsAt: null }, "UTC"),
+    "API error.",
+  );
+  assert.equal(
+    renderHarnessNotice({ rateLimited: false, rateLimitType: null, status: 429.5, retryAt: 1e300, resetsAt: null }, "UTC"),
+    "API error.",
+  );
+  assert.equal(HARNESS_RESUMED, "Resumed.");
+});
+
+test("a harness notice never echoes an unknown limit type, so no character a transcript carried reaches it", () => {
+  const planted = "<@424242> **PLANTEDBOLD** @everyone https://planted.example/x";
+  const notice = renderHarnessNotice({ rateLimited: true, rateLimitType: planted, status: 429, retryAt: null, resetsAt: null }, "UTC");
+  assert.equal(notice, "Rate-limited (usage limit).");
+  // A prototype key is not a known limit type either.
+  assert.equal(
+    renderHarnessNotice({ rateLimited: true, rateLimitType: "constructor", status: 429, retryAt: null, resetsAt: null }, "UTC"),
+    "Rate-limited (usage limit).",
+  );
+  // The output alphabet is the fixed wording's own: letters, digits and the punctuation it writes.
+  // No markdown, chip or mention syntax can appear, which is why the notice needs no escape.
+  assert.match(notice, /^[A-Za-z0-9 ().,:-]+$/);
+});
+
+test("the card carries the harness notice under the state while an episode is open, and drops it when it closes or the session exits", () => {
+  const text = "Rate-limited (five-hour limit). Retrying at 1:16 PM, limit resets 3:00 AM.";
+  const open = renderCard(view({ harnessNotice: text, goal: "ship the pin reconcile" }), "working", NOW);
+  const lines = open.split("\n");
+  const fieldsEnd = lines.indexOf("```", 3);
+  assert.equal(lines[fieldsEnd + 1], `⚠️ ${inertText(text)}`, "the line sits directly under the field block");
+  assert.deepEqual(blocksOf(open).order, ["### Goal", "### Tool"], "and the blocks below it are unchanged");
+  assert.ok(open.length <= MAX_CARD_LENGTH);
+
+  const closed = renderCard(view({ harnessNotice: null, goal: "ship the pin reconcile" }), "working", NOW);
+  assert.ok(!closed.includes("⚠️"), "a closed episode leaves no line behind");
+  assert.ok(!renderCard(view({ harnessNotice: text }), "exited", NOW).includes("⚠️"), "an exited card draws none");
+  assert.ok(renderCard(view({ harnessNotice: text }), "idle", NOW).includes("⚠️"), "an idle card stuck in a retry wait still does");
 });

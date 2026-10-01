@@ -106,6 +106,72 @@ test("a reply is posted to the thread bound to the session holding the process t
   ]);
 });
 
+/**
+ * A messenger whose every post moves the test's clock, so an instant read before the post is
+ * told apart from one read after it, and the posts it answered in order.
+ */
+function slowWriter(clock: { advance: (ms: number) => void }) {
+  const posts: string[] = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      clock.advance(5_000);
+      return { status: "ok", value: { messageId: "msg-1" }, rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  return { writer: createThreadWriter({ messenger, now: () => 1_000 }), posts };
+}
+
+function ticking(start = 1_000) {
+  let value = start;
+  return {
+    now: () => value,
+    advance: (ms: number) => {
+      value += ms;
+    },
+  };
+}
+
+test("a reply tool post that lands tells the receipt tracker the thread is answered, as of the reply's arrival", async () => {
+  // The instant handed over is the reply's arrival at the broker, read before its post is
+  // awaited, never the instant the post landed: the tracker attributes the answer to the turn
+  // that produced it by that instant, and a post can land after the next turn has opened.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const clock = ticking();
+  const { writer } = slowWriter(clock);
+  const answered: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    now: clock.now,
+    receipts: { pickedUp: () => {}, answered: (threadId, at) => answered.push({ threadId, at }) },
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, "the migration is done"), { status: "sent" });
+  assert.deepEqual(answered, [{ threadId: THREAD, at: 1_000 }]);
+  assert.equal(clock.now(), 6_000, "the post took time, which the instant handed over must not include");
+});
+
+test("a reply tool post that fails to land never tells the receipt tracker anything was answered", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter({ status: "failed", error: "HTTP 500", rate: NO_RATE_INFO });
+  const answered: string[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: () => {}, answered: (threadId) => answered.push(threadId) },
+  });
+
+  await router.reply(TOKEN, "the migration is done");
+
+  assert.deepEqual(answered, []);
+});
+
 test("a reply tool post says who wrote it, in a line of its own", async () => {
   // Posted bare, it reads as a continuation of whatever sits above it in the thread, which is a
   // mirrored prompt or a mirrored reply as often as not.
@@ -972,6 +1038,40 @@ test("an interim chunk cannot land between the messages of a split reply", async
   assert.deepEqual(landed, [...messages, renderMirror("interim", "narration racing the reply")[0]]);
 });
 
+test("a transcript-read prompt tells the receipt tracker pickup, with the line's own timestamp", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const picked: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: (threadId, at) => picked.push({ threadId, at }), answered: () => {} },
+  });
+
+  await router.interimPrompt("session-a", "check the migration order too", "queued", 12_345);
+
+  assert.deepEqual(picked, [{ threadId: THREAD, at: 12_345 }]);
+});
+
+test("a transcript-read prompt with no readable timestamp tells the receipt tracker nothing", async () => {
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const picked: unknown[] = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: (threadId, at) => picked.push({ threadId, at }), answered: () => {} },
+  });
+
+  await router.interimPrompt("session-a", "check the migration order too", "queued", null);
+
+  assert.deepEqual(picked, []);
+});
+
 test("a queued prompt posts under the operator's attribution, indistinguishable from a mirrored one", async () => {
   // A message typed at the console mid-turn reaches this router off the transcript rather than off
   // a hook, and the thread must not be able to tell the two apart: one rendering, one attribution.
@@ -1707,6 +1807,146 @@ test("a mirrored reply records its digest whether it posts or is skipped", async
   echo.noteInterim("session-a", "narrated first");
   await router.mirror(TOKEN, "reply", "narrated first", "session-a");
   assert.equal(echo.isEcho("session-a", "narrated first"), true, "a skipped reply is still recorded");
+});
+
+test("a mirrored reply the tailer already narrated still tells the receipt tracker the thread is answered", async () => {
+  // The tailer's narration already carries this reply on the thread, so the mirror is dropped
+  // rather than posted again, but every message waiting on this turn is still owed its ✅: without
+  // this, a turn whose final reply the tailer narrated first would leave those messages at 👀
+  // forever, since this branch returns before the ordinary answered() call below it ever runs.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer } = fakeWriter();
+  const echo = createEchoMemory();
+  const answered: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    now: () => 1_000,
+    receipts: { pickedUp: () => {}, answered: (threadId, at) => answered.push({ threadId, at }) },
+  });
+
+  echo.noteInterim("session-a", "narrated first");
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "narrated first", "session-a"), { status: "sent" });
+
+  assert.deepEqual(answered, [{ threadId: THREAD, at: 1_000 }], "told with the mirror's own arrival instant");
+});
+
+test("a mirrored reply matching the answer the reply tool already posted still tells the receipt tracker the thread is answered", async () => {
+  // The other dedup branch: the reply tool posted this text mid-turn and already told the tracker
+  // as of its own arrival, but the Stop mirror is the turn's end, and a message picked up between
+  // the reply tool's post and this mirror's arrival is answered by this turn too. Told with the
+  // mirror's own arrival instant, which the tracker attributes by.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const clock = ticking();
+  const { writer, posts } = slowWriter(clock);
+  const echo = createEchoMemory();
+  const answered: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    echo,
+    now: clock.now,
+    receipts: { pickedUp: () => {}, answered: (threadId, at) => answered.push({ threadId, at }) },
+  });
+
+  assert.deepEqual(await router.reply(TOKEN, "the migration is done"), { status: "sent" });
+  assert.deepEqual(answered, [{ threadId: THREAD, at: 1_000 }]);
+  assert.deepEqual(
+    await router.mirror(TOKEN, "reply", "the migration is done", "session-a"),
+    { status: "sent" },
+  );
+  assert.equal(posts.length, 1, "the mirror was deduplicated against the reply tool's post");
+  assert.deepEqual(answered, [
+    { threadId: THREAD, at: 1_000 },
+    { threadId: THREAD, at: 6_000 },
+  ]);
+});
+
+test("a mirrored reply that posts tells the receipt tracker the thread is answered, as of the mirror's arrival", async () => {
+  // The Stop mirror's ordinary path. The instant handed over is read before the post is awaited:
+  // the Stop hook is answered before delivery, so the next turn can open and credit pickup while
+  // this post is still landing, and the tracker must attribute the answer to the turn that
+  // produced it, not to whatever was picked up by the time the post landed.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const clock = ticking();
+  const { writer, posts } = slowWriter(clock);
+  const answered: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    now: clock.now,
+    receipts: { pickedUp: () => {}, answered: (threadId, at) => answered.push({ threadId, at }) },
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", "the closing words", "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1);
+  assert.deepEqual(answered, [{ threadId: THREAD, at: 1_000 }]);
+  assert.equal(clock.now(), 6_000, "the post took time, which the instant handed over must not include");
+});
+
+test("a mirrored reply that lands on its deferred retry tells the receipt tracker as of its first arrival", async () => {
+  // The retry path: the first run landed nothing, the tailer had deferred to the claim, so the
+  // run goes again once. The reply arrived at the broker once, before the first run, and that is
+  // the instant the tracker is told, not the retry's own.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const clock = ticking();
+  const echo = createEchoMemory();
+  const reply = "the closing words, refused once";
+  const posts: string[] = [];
+  const messenger: ThreadMessenger = {
+    postToThread: async (input) => {
+      posts.push(input.text);
+      clock.advance(5_000);
+      if (posts.length > 1) return { status: "ok", value: { messageId: "msg-2" }, rate: NO_RATE_INFO };
+      // The tailer's poll landing inside the first run: it finds the claim and skips the chunk,
+      // which is what makes the run go again once this first attempt lands nothing.
+      echo.isEcho("session-a", reply);
+      return { status: "failed", error: "HTTP 500", rate: NO_RATE_INFO };
+    },
+    editInThread: async () => ({ status: "ok", value: null, rate: NO_RATE_INFO }),
+  };
+  const answered: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: createThreadWriter({ messenger, now: () => 1_000 }),
+    echo,
+    now: clock.now,
+    receipts: { pickedUp: () => {}, answered: (threadId, at) => answered.push({ threadId, at }) },
+    log: () => {},
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "reply", reply, "session-a"), { status: "sent" });
+  assert.equal(posts.length, 2, "the run went again exactly once");
+  assert.deepEqual(answered, [{ threadId: THREAD, at: 1_000 }]);
+  assert.equal(clock.now(), 11_000, "two posts took time, which the instant handed over must not include");
+});
+
+test("the control: a mirrored prompt that posts never tells the receipt tracker anything was answered", async () => {
+  // A prompt-kind mirror is the operator's own words on their way back to the thread, not the
+  // session's reply: nothing it carries answers a message.
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  announce(registry, "session-a");
+  const { writer, posts } = fakeWriter();
+  const answered: Array<{ threadId: string; at: number }> = [];
+  const router = routerFor({
+    registry,
+    threadFor: () => THREAD,
+    mirrorWriter: writer,
+    receipts: { pickedUp: () => {}, answered: (threadId, at) => answered.push({ threadId, at }) },
+  });
+
+  assert.deepEqual(await router.mirror(TOKEN, "prompt", "please run it", "session-a"), { status: "sent" });
+  assert.equal(posts.length, 1, "the prompt mirror itself still posts");
+  assert.deepEqual(answered, []);
 });
 
 test("an invisible character cannot hide a reply from the interim dedup", async () => {

@@ -6,9 +6,10 @@ of truth for one effort's intent and state, and a fresh or post-compaction sessi
 No plan is open.
 
 The most recently archived plan is
-[`../archive/plans/channels_client-sandbox_spec_v1.md`](../archive/plans/channels_client-sandbox_spec_v1.md),
-delivered: several Discord accounts per host, each an operator or a participant, and a response gate
-that holds a shared thread's messages until a reply is expected.
+[`../archive/plans/channels_session-activity-signals_spec_v1.md`](../archive/plans/channels_session-activity-signals_spec_v1.md),
+delivered: a reaction on each person's message saying where it stands, Discord's typing line while a
+session's turn is open, and a fixed-wording notice when a session hits a harness rate limit or API
+error.
 
 Everything delivered, shelved or declined is in
 [`../archive/plans/`](../archive/plans/), listed newest first in [`../README.md`](../README.md).

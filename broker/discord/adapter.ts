@@ -8,8 +8,10 @@ import type {
   ChannelPins,
   DiscordTransport,
   InteractionResponder,
+  MessageReactions,
   RateLimitObservation,
   ThreadMessenger,
+  ThreadTyping,
 } from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
 
@@ -278,7 +280,7 @@ export type AdapterOptions = {
 
 export function createDiscordTransport(
   options: AdapterOptions,
-): DiscordTransport & ThreadMessenger & ChannelPins {
+): DiscordTransport & ThreadMessenger & ChannelPins & MessageReactions & ThreadTyping {
   const { channelId, request } = options;
 
   async function write(
@@ -437,6 +439,33 @@ export function createDiscordTransport(
       return unpinned.status === "ok"
         ? { status: "ok", value: null, rate: unpinned.rate }
         : unpinned;
+    },
+
+    // The reaction routes, one PUT and one DELETE on the same path: Discord names this bot's own
+    // reaction as `@me`, so adding and removing never need this bot's user id. The emoji rides
+    // percent-encoded in the path, which is where a raw unicode character such as an emoji has to
+    // go on this route; Discord accepts no other form there.
+    addReaction: async ({ threadId, messageId, emoji }): Promise<CallOutcome<null>> => {
+      const added = await write(
+        `/channels/${threadId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+        "PUT",
+      );
+      return added.status === "ok" ? { status: "ok", value: null, rate: added.rate } : added;
+    },
+
+    removeReaction: async ({ threadId, messageId, emoji }): Promise<CallOutcome<null>> => {
+      const removed = await write(
+        `/channels/${threadId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+        "DELETE",
+      );
+      return removed.status === "ok" ? { status: "ok", value: null, rate: removed.rate } : removed;
+    },
+
+    // The typing indicator. A thread is a channel, so this is the same route a direct-message
+    // client calls; it carries no body and nothing is read back from it.
+    sendTyping: async ({ threadId }): Promise<CallOutcome<null>> => {
+      const sent = await write(`/channels/${threadId}/typing`, "POST");
+      return sent.status === "ok" ? { status: "ok", value: null, rate: sent.rate } : sent;
     },
 
     // The message route rather than the pin one: this removes the message itself, and the only

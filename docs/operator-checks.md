@@ -1,12 +1,14 @@
 # Operator checks
 
-Six checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what it
-proves, its result, the exact steps, and what the answer settled.
+Seven checks that need a human at a terminal, a phone, or an Administrator prompt. Each states what
+it proves, its result, the exact steps, and what the answer settled.
 
-**Five of the six have been run and passed**, A through D on 2026-08-06 and E on
+**Five of the seven have been run and passed**, A through D on 2026-08-06 and E on
 2026-08-07; check F, the side-by-side watch of a long turn with the console beside the thread, has
 not yet been run and covers the coalesced surface, the one-copy close of a turn, and whether the
-thread carries everything the console carried. The procedures are kept because they are
+thread carries everything the console carried. Check G, the thread activity signals, is half run:
+the receipt reactions and the typing line passed on a live thread, and the harness error notice
+waits on a real rate limit. The procedures are kept because they are
 also how to re-check a new host: none of these results is inferable from the code, and two of them
 would change the design if a future host answered differently.
 
@@ -375,3 +377,42 @@ Write the outcome of each step here the way checks A through E record theirs. St
 can change the design; steps 1, 8, and 9 are the fidelity watch, and any of the three failing
 reopens the work rather than being recorded as an accepted cost. The rest confirm the wiring and the
 switches.
+
+## G. Do the thread activity signals show on a live thread?
+
+**Result: receipts and typing passed; the harness notice is not yet run.** On a live thread the
+receipt reactions moved on the operator's message, the typing line showed during a turn, and a
+reply the bot posted cleared the typing line at once. A real thread has not yet received a harness
+error notice, because that needs a real rate limit or API error.
+
+**Why it needs a human.** The tests drive the reaction, typing and notice writes against a fake
+transport. What they cannot reach is how Discord draws them: whether a reaction swap reads as one
+mark on a phone, how long the typing line lingers, and whether a posted message clears it.
+
+**What it proves.** That a person reading the thread can tell, without the card, whether the
+session has their message, is working on it, has answered it, or is stuck on a harness error.
+
+### Steps
+
+1. From a wrapped session sitting idle, type a message into its thread. **Pass:** the message shows
+   📨, then 👀 within a second or two as the turn opens, and the typing line appears.
+2. While that turn runs a few tool calls, type a second message. **Pass:** it stays at 📨 until the
+   harness injects it at a tool boundary, then shows 👀 within one transcript poll
+   (`CHANNEL_INTERIM_POLL_MS`) of the injection.
+3. Let the turn finish with a reply in the thread. **Pass:** both messages show ✅, and the typing
+   line is gone within a few seconds of the reply. **Fail:** typing that runs on for about two
+   minutes after the reply, which means the turn gate is reading the card's `working` state or the
+   `Stop` release is not wired.
+4. Repeat steps 1 and 3 on a session launched with `Enter-ClaudeSession -NoMirror`, ending the turn
+   with the reply tool. **Pass:** the same reactions and typing line, and no prompt or reply text
+   mirrored.
+5. When a session next hits a rate limit or an API error, read its thread. **Pass:** one notice in
+   the fixed form `Rate-limited (...). Retrying at ...` or `API error (status n). ...`, pending
+   messages showing ⚠️, the card carrying a `⚠️` line, and one `Resumed.` when the session produces
+   output again, after which the messages get their stage back. **Fail:** one notice per retry, any
+   text beyond the fixed form, or ⚠️ left standing after `Resumed.`.
+
+### Recording the result
+
+Write the outcome of each step here. Step 5 is the half still open, and a fail there on a mirror-off
+session is the one that matters most, since that is the case the notices exist for.

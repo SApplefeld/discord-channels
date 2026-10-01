@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveSurfaceState, toView } from "./state.ts";
+import { deriveSurfaceState, toView, typingWanted } from "./state.ts";
 import type { SessionView } from "./state.ts";
-import type { SessionRecord } from "../registry.ts";
+import { createRegistry } from "../registry.ts";
+import type { HookIntake, SessionRecord } from "../registry.ts";
 
 const NOW = 1_000_000;
 const IDLE_AFTER_MS = 120_000;
@@ -22,6 +23,8 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
     lineage: null,
     turnCount: 0,
@@ -208,6 +211,8 @@ const RECORD: SessionRecord = {
   downgrade: null,
   backgroundTasks: [],
   goal: null,
+  turnActiveAt: null,
+  harnessNotice: null,
   title: null,
 };
 
@@ -242,4 +247,116 @@ test("the two signals waiting on a person are threaded onto the view independent
     { attention: halted.needsAttention, blocked: halted.blocked },
     { attention: false, blocked: true },
   );
+});
+
+/** A registry holding one session announced at `start`, on a clock the test moves by hand. */
+function liveRegistry(start: number) {
+  let clock = start;
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 10 * 60 * 1000, now: () => clock });
+  const hook = (event: HookIntake["event"], extra: Partial<HookIntake> = {}): void => {
+    registry.apply({
+      event,
+      processToken: "token",
+      sessionName: null,
+      lineage: null,
+      sessionId: "session-a",
+      source: event === "SessionStart" ? "startup" : null,
+      toolName: event === "PostToolUse" ? "Bash" : null,
+      toolInput: null,
+      transcriptPath: null,
+      backgroundTasks: null,
+      ...extra,
+    });
+  };
+  hook("SessionStart");
+  return {
+    registry,
+    hook,
+    advance: (ms: number) => {
+      clock += ms;
+    },
+    now: () => clock,
+    wanted: (): boolean => {
+      const shown = toView(registry.list()[0] as SessionRecord);
+      return typingWanted(shown, deriveSurfaceState(shown, clock, WINDOWS), clock, IDLE_AFTER_MS);
+    },
+  };
+}
+
+test("a credited prompt to a session idle past idleAfterMs wants typing at once", () => {
+  // The prompt moves no liveness field, so the session still derives idle, and typing is wanted
+  // from the open turn alone without requiring `working`.
+  const session = liveRegistry(NOW);
+  session.advance(IDLE_AFTER_MS * 5);
+  const before = toView(session.registry.list()[0] as SessionRecord);
+  assert.equal(deriveSurfaceState(before, session.now(), WINDOWS), "idle", "the precondition: idle");
+  assert.equal(session.wanted(), false);
+
+  session.registry.noteTurnOpened("session-a");
+
+  const after = toView(session.registry.list()[0] as SessionRecord);
+  assert.equal(deriveSurfaceState(after, session.now(), WINDOWS), "idle", "still idle by the hook clock");
+  assert.equal(session.wanted(), true, "and typing is wanted from the prompt alone");
+});
+
+test("a turn that stalls with a roster outstanding stops wanting typing past idleAfterMs", () => {
+  // A roster outstanding holds the derived state at working for as long as it stands, so for a turn
+  // that stalls or ends without a Stop, only the activity window can end the indicator.
+  const session = liveRegistry(NOW);
+  session.hook("Stop", {
+    backgroundTasks: [{ id: "task-a", kind: "subagent", description: null, agentType: null }],
+  });
+  session.hook("PostToolUse");
+  assert.equal(session.wanted(), true, "a main-thread tool call opens a turn");
+
+  session.advance(IDLE_AFTER_MS);
+  assert.equal(session.wanted(), true, "still wanted at exactly idleAfterMs since the last activity");
+
+  session.advance(1);
+  const shown = toView(session.registry.list()[0] as SessionRecord);
+  assert.equal(deriveSurfaceState(shown, session.now(), WINDOWS), "working", "the roster holds working");
+  assert.equal(session.wanted(), false, "but the stalled turn no longer wants typing");
+});
+
+test("after a Stop, background agents' tool calls want no typing though the card reads working", () => {
+  // A Stop closes the turn while the outstanding roster holds the card at working, and a background
+  // agent's tool call afterwards, which carries the parent's session id, reopens nothing.
+  const session = liveRegistry(NOW);
+  session.hook("PostToolUse");
+  session.hook("Stop", {
+    backgroundTasks: [{ id: "task-a", kind: "subagent", description: null, agentType: null }],
+  });
+  session.advance(1_000);
+  session.hook("PostToolUse", { fromSubagent: true });
+
+  const shown = toView(session.registry.list()[0] as SessionRecord);
+  assert.equal(deriveSurfaceState(shown, session.now(), WINDOWS), "working", "the card reads working");
+  assert.equal(session.wanted(), false, "no typing is wanted");
+});
+
+test("a turn ended without a Stop stops wanting typing past idleAfterMs, though subagents keep calling tools", () => {
+  // An API error or an Esc interrupt ends a turn without a Stop, and background agents may work on.
+  // Their tool calls carry the parent's session id but are not the turn's activity, so the turn
+  // goes quiet idleAfterMs after its main thread's last call.
+  const session = liveRegistry(NOW);
+  session.hook("PostToolUse");
+  assert.equal(session.wanted(), true, "a main-thread tool call opens a turn");
+
+  for (let elapsed = 0; elapsed <= IDLE_AFTER_MS; elapsed += IDLE_AFTER_MS / 4) {
+    session.hook("PostToolUse", { fromSubagent: true });
+    session.advance(IDLE_AFTER_MS / 4);
+  }
+
+  assert.ok(session.now() > NOW + IDLE_AFTER_MS, "the precondition: past idleAfterMs since the turn opened");
+  assert.equal(session.wanted(), false, "the subagents' calls did not keep the turn typing");
+});
+
+test("typingWanted excludes a session waiting on a person, blocked, or exited, whatever its turn", () => {
+  for (const state of ["needs you", "blocked", "exited"] as const) {
+    assert.equal(typingWanted(view({ turnActiveAt: NOW }), state, NOW, IDLE_AFTER_MS), false, state);
+  }
+  for (const state of ["working", "idle"] as const) {
+    assert.equal(typingWanted(view({ turnActiveAt: NOW }), state, NOW, IDLE_AFTER_MS), true, state);
+  }
+  assert.equal(typingWanted(view({ turnActiveAt: null }), "working", NOW, IDLE_AFTER_MS), false, "no open turn");
 });

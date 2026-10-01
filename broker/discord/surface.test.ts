@@ -111,6 +111,8 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
+    turnActiveAt: null,
+    harnessNotice: null,
     title: null,
     lineage: null,
     turnCount: 1,
@@ -931,6 +933,29 @@ test("a message Discord says is gone takes its binding with it and is rebuilt", 
   assert.equal(calls.posts.length, 2, "and the rebuild happens once, not once per pass");
 });
 
+test("a message Discord says is gone retires the old thread id before a new one opens", async () => {
+  // The receipt tracker's forget seam hangs off onRetired, keyed by thread id. Without this call
+  // here, a dead thread's stage tracking would never be told to stop: the old id is gone for good
+  // once a fresh thread opens under a new one, and nothing else ever names it again.
+  const time = clock();
+  const calls = recorder();
+  const retired: string[] = [];
+  const surface = surfaceWith(time, calls, { onRetired: (threadId) => retired.push(threadId) });
+
+  await surface.tick([view()]);
+  assert.equal(surface.threadFor("session-a"), "thread-1");
+  calls.nextEdit = {
+    status: "failed",
+    error: "HTTP 404",
+    rate: { remaining: 5, resetAfterMs: 1_000, retryAfterMs: null },
+    permanent: true,
+    missing: true,
+  };
+  await surface.tick([view({ lastTool: "Read" })]);
+
+  assert.deepEqual(retired, ["thread-1"]);
+});
+
 const GONE: CallOutcome<never> = {
   status: "failed",
   error: "HTTP 404",
@@ -1414,6 +1439,79 @@ test("the pin list reads the cards of the sessions that are running, and only af
     [...surface.knownPins()].sort(),
     ["message-1"],
     "the exited session's own card, and no card whose binding is gone",
+  );
+});
+
+test("typing threads read the views handed in, not what the last pass derived", async () => {
+  // The typing keeper's set is computed from this tick's views at `now`, so a turn closing between
+  // passes leaves the set without waiting on a pass to run, and the surface contributes only the
+  // session-to-thread mapping.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls);
+  const open = view({ turnActiveAt: time.now() });
+  // Each thread carries its turn's deadline, so the keeper can stop at it between passes.
+  const typing = [{ threadId: "thread-1", until: time.now() + IDLE_AFTER_MS }];
+
+  assert.deepEqual(surface.typingThreads([open], time.now()), [], "no thread exists before the first pass");
+
+  await surface.tick([open]);
+  assert.deepEqual(surface.typingThreads([open], time.now()), typing, "an open turn's thread is in the set");
+
+  // No pass runs between these reads: the closed turn arrives only in the views handed in.
+  assert.deepEqual(
+    surface.typingThreads([view({ turnActiveAt: null })], time.now()),
+    [],
+    "a turn closed after the last pass leaves the set at once",
+  );
+
+  // The activity window is measured against the `now` passed in, under the surface's own idleAfterMs.
+  assert.deepEqual(
+    surface.typingThreads([open], time.now() + IDLE_AFTER_MS),
+    typing,
+    "a turn active exactly idleAfterMs ago is still in the set",
+  );
+  assert.deepEqual(
+    surface.typingThreads([open], time.now() + IDLE_AFTER_MS + 1),
+    [],
+    "a turn quiet past idleAfterMs leaves the set",
+  );
+
+  // A session the surface holds no entry for has no thread to type in.
+  assert.deepEqual(
+    surface.typingThreads([view({ sessionId: "session-unseen", turnActiveAt: time.now() })], time.now()),
+    [],
+    "a view with no entry is left out",
+  );
+});
+
+test("typing threads leave out an archived thread and a session waiting on a person", async () => {
+  // The surface and the gate each own an exclusion: an archived thread cannot show the indicator,
+  // and an open turn does not pull a needs-you or blocked session back in.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, { archiveOnEnd: true });
+
+  await surface.tick([view({ turnActiveAt: time.now() })]);
+  for (const signals of [{ needsAttention: true }, { blocked: true }]) {
+    assert.deepEqual(
+      surface.typingThreads([view({ turnActiveAt: time.now(), ...signals })], time.now()),
+      [],
+      `excluded with ${JSON.stringify(signals)}`,
+    );
+  }
+
+  // The session ends and its thread is archived by the pass that paints exited.
+  time.advance(1);
+  const ended = view({ lifecycle: "ended", endedAt: time.now(), turnActiveAt: time.now() });
+  await surface.tick([ended]);
+  assert.deepEqual(calls.archived, ["thread-1"], "the exited pass archives the thread");
+  // A view reporting a live open turn again, without a pass to unarchive it, still finds the
+  // entry archived.
+  assert.deepEqual(
+    surface.typingThreads([view({ turnActiveAt: time.now() })], time.now()),
+    [],
+    "an archived thread is left out",
   );
 });
 

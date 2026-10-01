@@ -14,9 +14,10 @@ import { createBudget } from "./budget.ts";
 import type { Budget } from "./budget.ts";
 import type { ThreadBinding } from "./bindings.ts";
 import { inertName, renderCard, threadName, titleState } from "./render.ts";
-import { deriveSurfaceState } from "./state.ts";
+import { deriveSurfaceState, typingDeadline, typingWanted } from "./state.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 import type { CallOutcome, DiscordTransport } from "./transport.ts";
+import type { TypingThread } from "./typing.ts";
 
 /**
  * States worth a rename the moment they appear. Both of them are waiting on a person, and damping
@@ -78,6 +79,17 @@ export type SurfaceOptions = {
   log?: (message: string) => void;
   /** Called once when Discord rejects the credential, which no retry can fix. */
   onFatal?: (message: string) => void;
+  /**
+   * Called with a thread id this surface has stopped tracking, from two places in a tick: when a
+   * session no longer in the views has its entry dropped, once `retire` lets it go, and when
+   * Discord reports the thread or its card message missing and the binding is cleared so the next
+   * pass opens a fresh thread. A session that has ended but still arrives in the views keeps its
+   * entry, so this is not reached at every session's end. The receipt tracker's forget seam hangs
+   * off this, so a thread's stage tracking never outlives the thread it was tracking messages in.
+   * Not called for a rebind, which hands the same thread to a new session id rather than
+   * retiring it.
+   */
+  onRetired?: (threadId: string) => void;
 };
 
 export type Surface = {
@@ -101,6 +113,19 @@ export type Surface = {
    * operator's to remove. That is the price of leaving their own pins alone.
    */
   knownPins: () => readonly string[];
+  /**
+   * The threads that should show the typing indicator right now, for the typing keeper: those whose
+   * session `typingWanted` accepts, with each state derived from `views` at `now` under the same
+   * thresholds a pass uses, and each paired with its session's `typingDeadline`.
+   *
+   * Reads the views it is handed rather than what the last pass derived, so a session's turn state
+   * does not wait on a pass completing. The thread does: the surface contributes only the thread,
+   * and a session with no thread yet, or whose entry is abandoned or archived, is left out, since
+   * none of those can show a typing indicator. A thread the pass running this tick creates is
+   * recorded only once that pass's creation call returns, so its session enters the set one tick
+   * after the thread appears.
+   */
+  typingThreads: (views: readonly SessionView[], now: number) => readonly TypingThread[];
 };
 
 type ThreadState = {
@@ -189,6 +214,9 @@ export function createSurface(options: SurfaceOptions): Surface {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
+      // A restored placeholder predates any registry record, so it carries no turn of its own.
+      turnActiveAt: null,
+      harnessNotice: null,
       title,
       needsAttention: false,
       blocked: false,
@@ -302,6 +330,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       // The object is gone: an operator deleted the message or the thread. The identifier is
       // dropped so the next pass builds a new one rather than calling a dead one forever. A
       // missing message takes its thread with it, since the thread hangs off that message.
+      const retiredThreadId = entry.threadId;
       if (named === "message") {
         entry.messageId = null;
         entry.renderedCard = null;
@@ -309,6 +338,10 @@ export function createSurface(options: SurfaceOptions): Surface {
       entry.threadId = null;
       entry.renderedName = null;
       entry.refusals = 0;
+      // The old thread id is gone for good, a fresh one is opened on the next pass, and nothing
+      // else tells the receipt tracker to stop tracking the dead thread's messages: without this,
+      // its stage tracking outlives the thread it was tracking reactions in.
+      if (retiredThreadId !== null) options.onRetired?.(retiredThreadId);
       bound();
       return;
     }
@@ -691,7 +724,10 @@ export function createSurface(options: SurfaceOptions): Surface {
           if (present.has(sessionId)) continue;
           if (!(await retire(entry))) continue;
           threads.delete(sessionId);
-          if (entry.threadId !== null) renameBudgets.delete(entry.threadId);
+          if (entry.threadId !== null) {
+            renameBudgets.delete(entry.threadId);
+            options.onRetired?.(entry.threadId);
+          }
           dropped = true;
         }
         if (dropped) bound();
@@ -710,6 +746,22 @@ export function createSurface(options: SurfaceOptions): Surface {
         live.push(entry.messageId);
       }
       return live;
+    },
+
+    typingThreads: (views, now) => {
+      const typing: TypingThread[] = [];
+      for (const view of views) {
+        const entry = threads.get(view.sessionId);
+        if (entry === undefined || entry.threadId === null || entry.abandoned || entry.archived) continue;
+        const state = deriveSurfaceState(view, now, {
+          idleAfterMs: options.idleAfterMs,
+          exitedAfterMs: options.exitedAfterMs,
+        });
+        if (!typingWanted(view, state, now, options.idleAfterMs)) continue;
+        const until = typingDeadline(view, options.idleAfterMs);
+        if (until !== null) typing.push({ threadId: entry.threadId, until });
+      }
+      return typing;
     },
 
     knownPins: () => {
