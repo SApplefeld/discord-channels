@@ -147,3 +147,13 @@ Gate: targeted lane 186/186, exit 0, tsc exit 0, at the same run as Chapter 1. T
 Next: finishing-work
 Commit Model: Branch-and-PR
 Delta: as Chapter 1's reading; kit-size measured no corpus in this repository.
+
+### Interim board 2 - 2026-10-01
+
+- Finishing pass, base ref 525c05e. QA (qa-verifier): PASS, full suite 2357/2356/0/1 skip exit 0, lint and tsc exit 0, every acceptance bullet verified.
+- Advisory (fable, Workflow high): security CLEAR, performance CLEAR. Dispositions: npm audit advisories covered by docs/backlog.md:486; the third store-only clearing route (a store write dropping chapterCount) and the rest go to the Minor pass.
+- Final adversarial (fable, Workflow high): one Major. Add-decision: in-flight rule ages an overridden reading by the later of file and store mtime, block rule keeps the file's; serves Goal sentence 1 and "the next step from the same source"; adds a mechanism (a second mtime on an overridden reading); about 10 lines plus one test; not building it can draw a worktree worker's entry as parked beside a later-touched parked plan, hiding its next step. Design stop: scope adjudicator first returned NEEDS_CONTEXT on a brief defect (the brief named `## Approach`, which its charter bars); corrected and re-dispatched once; ruled ask, conditioned on the Approach recording the file-stat choice and declare otherwise. The Approach records no such choice, so the orchestrator adopted declare; fixed in 0c06120 and added to the Standing Brief Amendments.
+- Goal read (scope adjudicator, fable, Agent tool): 4 built-but-unasked, all declared into the Standing Brief Amendments; 0 asked-but-unbuilt.
+- Live dispatches: fix-round adversarial over a6e78df..0c06120 (Workflow wf_0d83f72a-dd0, fable high).
+- Gate: targeted lane 187/187 exit 0, tsc exit 0, at 0c06120 on a clean tree, 2026-10-01 ~17:45 -04:00.
+- Next: adjudicate the fix round; Minor pass from .kit/scratch/board-worktree-progress/finishing/minors.md (fix: store-only block test's goal-complete leg, security-model's literal 400, the third clearing route in docs and the status.ts comment); docs curation; final Chapter, archive, whole gate; mark PR #36 ready and arm auto-merge.
