@@ -427,3 +427,161 @@ test("a call the thread's own budget cannot afford is skipped and logged, not se
     "the second refusal falls inside the same key's window as the first and is counted, not logged again",
   );
 });
+
+test("release clears a thread's timer at once, and no call follows it", async () => {
+  // Pins the acceptance line "after a `Stop`, no typing call is sent for that thread": a credited
+  // Stop releases the thread before any refresh runs, and the released timer's own stored callback,
+  // fired late the way a real interval can between `clearInterval` and the next turn, sends nothing.
+  const time = clock();
+  const timer = fakeTimer();
+  const typing = typingWith();
+  const keeper = createTypingKeeper({
+    typing: typing.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+  });
+
+  keeper.reconcile(["thread-1", "thread-2"]);
+  await flush();
+  keeper.release("thread-1");
+  assert.deepEqual(timer.cleared, [timer.timers[0]?.id], "only the released thread's timer is cleared");
+
+  time.advance(TYPING_PERIOD_MS);
+  timer.timers[0]?.callback();
+  timer.timers[1]?.callback();
+  await flush();
+  assert.deepEqual(typing.calls, ["thread-1", "thread-2", "thread-2"], "the released thread is sent nothing more");
+
+  // Not latched: a new turn reaching the next reconcile starts the thread again.
+  keeper.reconcile(["thread-1", "thread-2"]);
+  await flush();
+  assert.equal(timer.timers.length, 3, "a released thread restarts when its session opens a new turn");
+});
+
+/** A transport whose calls stay pending until the test resolves them, in order. */
+function pendingTyping() {
+  const calls: string[] = [];
+  const waiting: ((outcome: CallOutcome<null>) => void)[] = [];
+  const typing: ThreadTyping = {
+    sendTyping: ({ threadId }) => {
+      calls.push(threadId);
+      return new Promise((resolve) => waiting.push(resolve));
+    },
+  };
+  return { typing, calls, settle: (outcome: CallOutcome<null>) => waiting.shift()?.(outcome) };
+}
+
+test("a tick while the thread's previous call is still in flight sends nothing", async () => {
+  const time = clock();
+  const timer = fakeTimer();
+  const pending = pendingTyping();
+  const keeper = createTypingKeeper({
+    typing: pending.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+  });
+
+  keeper.reconcile(["thread-1"]);
+  await flush();
+  timer.timers[0]?.callback();
+  await flush();
+  assert.deepEqual(pending.calls, ["thread-1"], "the second tick finds the first call unanswered and skips");
+
+  pending.settle(ok());
+  await flush();
+  timer.timers[0]?.callback();
+  await flush();
+  assert.deepEqual(pending.calls, ["thread-1", "thread-1"], "once answered, the next tick calls again");
+});
+
+test("a refusal answered after its thread restarted never drops the new entry", async () => {
+  // An entry one refusal short of the cap makes a call, is released, and its thread restarts as a
+  // new entry before that call comes back permanent. The late refusal belongs to the old entry, so
+  // it must not drop the thread out from under the new one.
+  const time = clock();
+  const timer = fakeTimer();
+  const pending = pendingTyping();
+  const log: string[] = [];
+  const keeper = createTypingKeeper({
+    typing: pending.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+    log: (message) => log.push(message),
+  });
+  const forbidden: CallOutcome<null> = { status: "failed", error: "403 forbidden", rate: NO_RATE_INFO, permanent: true };
+
+  keeper.reconcile(["thread-1"]);
+  await flush();
+  for (let i = 1; i < MAX_THREAD_REFUSALS; i += 1) {
+    pending.settle(forbidden);
+    await flush();
+    timer.timers[0]?.callback();
+    await flush();
+  }
+  // The old entry now holds a cap-minus-one run and one call in flight.
+  keeper.release("thread-1");
+  keeper.reconcile(["thread-1"]);
+  await flush();
+  const restarted = timer.timers[1]?.id;
+  assert.ok(restarted !== undefined, "the thread restarted as a new entry");
+
+  pending.settle(forbidden);
+  await flush();
+
+  assert.ok(!timer.cleared.includes(restarted), "the new entry's timer is not cleared by the old entry's refusal");
+  assert.ok(!log.some((line) => /refused \d+ times in a row/.test(line)), log.join(" / "));
+});
+
+test("an accepted call resets the thread's run of refusals, so the cap counts consecutive ones", async () => {
+  const time = clock();
+  const timer = fakeTimer();
+  const typing = typingWith();
+  const log: string[] = [];
+  const keeper = createTypingKeeper({
+    typing: typing.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+    log: (message) => log.push(message),
+  });
+
+  typing.next = { status: "failed", error: "403 forbidden", rate: NO_RATE_INFO, permanent: true };
+  keeper.reconcile(["thread-1"]);
+  await flush();
+  // Refusals separated by an accepted call, up to the cap's worth in total but never consecutive.
+  for (let i = 1; i < MAX_THREAD_REFUSALS * 2; i += 1) {
+    if (i % 2 === 0) typing.next = { status: "failed", error: "403 forbidden", rate: NO_RATE_INFO, permanent: true };
+    timer.timers[0]?.callback();
+    await flush();
+  }
+
+  assert.deepEqual(timer.cleared, [], "interleaved refusals never reach the cap");
+  assert.ok(!log.some((line) => /refused \d+ times in a row/.test(line)), log.join(" / "));
+});
+
+test("forget clears a retired thread's timer and its budget", async () => {
+  // A retired thread's standing 429 block is forgotten with it: the same id coming back later gets
+  // a fresh bucket rather than one still blocked, which shows the budget map no longer holds it.
+  const time = clock();
+  const timer = fakeTimer();
+  const typing = typingWith();
+  typing.next = { status: "rate-limited", rate: { ...NO_RATE_INFO, retryAfterMs: 60_000 } };
+  const keeper = createTypingKeeper({
+    typing: typing.typing,
+    now: time.now,
+    setTimer: timer.setTimer,
+    clearTimer: timer.clearTimer,
+  });
+
+  keeper.reconcile(["thread-1"]);
+  await flush();
+  keeper.forget("thread-1");
+  assert.deepEqual(timer.cleared, [timer.timers[0]?.id], "the timer is cleared");
+
+  keeper.reconcile(["thread-1"]);
+  await flush();
+  assert.deepEqual(typing.calls, ["thread-1", "thread-1"], "a fresh budget affords the call at once");
+});

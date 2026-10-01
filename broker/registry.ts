@@ -258,15 +258,20 @@ export type SessionRecord = {
    */
   goal: string | null;
   /**
-   * True while a turn is open: set by a completed tool call (`PostToolUse`) or by the registry's own
-   * `noteTurnOpened` for a credited `UserPromptSubmit` post, and cleared by `Stop`. This is what the
-   * typing keeper gates on beside the derived `working` state, since `working` itself lasts
-   * `idleAfterMs` past a `Stop` and indefinitely while a background roster is outstanding, and the
-   * indicator must not run through either. Never persisted: a restarted broker has no way to know
-   * whether a turn was open at the moment it died, so a loaded record starts with this false, which
-   * treats the turn as closed until the next of the events above re-opens it.
+   * When the open turn last showed activity, and null while no turn is open. A turn opens on the
+   * session's credited `UserPromptSubmit` post (`noteTurnOpened`) or on a completed tool call of
+   * the session's own main thread, and either one restamps this with now. A subagent's completed
+   * tool call restamps an open turn but never opens one: it carries the parent's session id, and a
+   * background agent working after `Stop` is not the session's turn. `Stop` sets it back to null.
+   *
+   * This is what the typing keeper gates on, rather than the derived `working` state, since
+   * `working` lasts `idleAfterMs` past a `Stop` and indefinitely while a background roster is
+   * outstanding. A turn that never sends its `Stop` (interrupted, or stalled in a retry wait) ages
+   * out of the gate once this is older than `idleAfterMs`. Never persisted: a restarted broker has
+   * no way to know whether a turn was open at the moment it died, so a loaded record starts with
+   * this null, which treats the turn as closed until the next opening event.
    */
-  turnOpen: boolean;
+  turnActiveAt: number | null;
   /**
    * The session's own title, as a `custom-title` transcript line last set it: written at launch by
    * `--name` and again by any in-session `/rename`, and null for a session neither has touched.
@@ -307,6 +312,13 @@ export type HookIntake = {
    * about it. Null leaves the roster standing; an empty array clears it.
    */
   backgroundTasks: readonly BackgroundTaskReading[] | null;
+  /**
+   * True when the payload carried an `agent_id`, which marks a subagent's hook event: it arrives
+   * under the parent's session id, with the subagent's identity in that separate field. Only the
+   * presence is kept, never the value. Absent reads as false, the session's own main thread, which
+   * is what every intake not built from a hook payload is.
+   */
+  fromSubagent?: boolean;
 };
 
 export type RegistryOptions = {
@@ -416,9 +428,9 @@ export type Registry = {
    */
   noteGoal: (sessionId: string, goal: string | null) => SessionRecord | null;
   /**
-   * Opens the turn for a session, told from a credited `UserPromptSubmit` post reaching the registry
-   * through /mirror rather than as a hook event. Returns the record it touched, and null when
-   * nothing unended holds that ID.
+   * Opens the turn for a session, stamping `turnActiveAt` with now, told from a credited
+   * `UserPromptSubmit` post reaching the registry through /mirror rather than as a hook event.
+   * Returns the record it touched, and null when nothing unended holds that ID.
    */
   noteTurnOpened: (sessionId: string) => SessionRecord | null;
   /**
@@ -643,7 +655,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
-      turnOpen: false,
+      turnActiveAt: null,
       title: null,
     };
     sessions.set(sessionId, record);
@@ -715,10 +727,12 @@ export function createRegistry(options: RegistryOptions): Registry {
 
     if (intake.event === "PostToolUse") {
       record.toolCount += 1;
-      // A completed tool call is one of the two events a turn opens on, the other being a credited
-      // `UserPromptSubmit` post through `noteTurnOpened`. Set unconditionally, the same as toolCount
-      // above, whether or not this call carried a usable name.
-      record.turnOpen = true;
+      // A main-thread tool call is one of the two events a turn opens on, the other being a credited
+      // `UserPromptSubmit` post through `noteTurnOpened`. A subagent's call only keeps an open turn
+      // fresh: it carries the parent's session id, and a background agent still working after the
+      // session's `Stop` must not reopen the turn that `Stop` closed. Stamped whether or not this
+      // call carried a usable name, the same as toolCount above.
+      if (intake.fromSubagent !== true || record.turnActiveAt !== null) record.turnActiveAt = now();
       // The name and the preview move together, under the one guard, because the card renders them
       // as one line describing one call. Set apart, an event carrying an input but no usable name
       // would leave the previous call's name beside this one's input, and the card would assert a
@@ -733,8 +747,8 @@ export function createRegistry(options: RegistryOptions): Registry {
       // The turn this Stop closes. Set unconditionally, the same as turnCount above: a session that
       // never opened a turn by this registry's lights (its UserPromptSubmit arrived only through
       // /mirror and crediting failed) still has nothing open to clear, and the assignment costs
-      // nothing when it is already false.
-      record.turnOpen = false;
+      // nothing when it is already null.
+      record.turnActiveAt = null;
       // An empty report is as load-bearing as a populated one: a session that has finished its
       // agents reports an empty table, and a roster only replaced when there is something to
       // replace it with would hold that session at working for the rest of its life. Null is the
@@ -913,9 +927,9 @@ export function createRegistry(options: RegistryOptions): Registry {
   function noteTurnOpened(sessionId: string): SessionRecord | null {
     const record = reading(sessionId);
     if (record === null) return null;
-    record.turnOpen = true;
-    // Not persisted on its own account, the same reasoning the goal field holds: this flag is not
-    // liveness, so it rides no stamp and reaches no snapshot write of its own.
+    record.turnActiveAt = now();
+    // Not persisted on its own account, the same reasoning the goal field holds: this stamp is not
+    // liveness, so it moves no `lastHookAt` and reaches no snapshot write of its own.
     return record;
   }
 

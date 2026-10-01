@@ -14,7 +14,7 @@ import { createBudget } from "./budget.ts";
 import type { Budget } from "./budget.ts";
 import type { ThreadBinding } from "./bindings.ts";
 import { inertName, renderCard, threadName, titleState } from "./render.ts";
-import { deriveSurfaceState } from "./state.ts";
+import { deriveSurfaceState, typingWanted } from "./state.ts";
 import type { SessionView, SurfaceState } from "./state.ts";
 import type { CallOutcome, DiscordTransport } from "./transport.ts";
 
@@ -96,9 +96,7 @@ export type Surface = {
    * Reconciles every session against its thread. Safe to call on a timer.
    *
    * Resolves to whether the pass actually ran. False when a previous pass was still in flight or
-   * the credential has already been rejected: nothing about the surface's derived state changed,
-   * so a caller like the typing keeper should reconcile against nothing rather than restate what
-   * the last pass already derived.
+   * the credential has already been rejected: nothing about the surface's derived state changed.
    */
   tick: (views: SessionView[]) => Promise<boolean>;
   /** The thread bound to a session, for the message routing that arrives with the relay. */
@@ -120,19 +118,16 @@ export type Surface = {
    */
   knownPins: () => readonly string[];
   /**
-   * The threads of the sessions whose derived state is `working` and whose turn is open, for the
-   * typing keeper.
+   * The threads that should show the typing indicator right now, for the typing keeper: those whose
+   * session `typingWanted` accepts, with each state derived from `views` at `now` under the same
+   * thresholds a pass uses.
    *
-   * Read the same way `livePins` is, from what the last pass derived rather than from the view the
-   * next one will fold in: a session's thread only enters this set once a pass has actually called
-   * it `working` with a turn open. An entry with no thread yet, one abandoned, or one archived is
-   * left out, since none of those can show a typing indicator at all. The turn-open condition is
-   * what keeps this set from trailing `working` itself: `working` can read true for up to
-   * `idleAfterMs` after a `Stop` and indefinitely while a background roster is outstanding, and the
-   * indicator must stop with the turn rather than with either of those (Standing Brief Amendments,
-   * "Section 2, turn-open typing").
+   * Reads the views it is handed rather than what the last pass derived, so the answer does not
+   * wait on a pass completing, or on a pass running at all. The surface contributes only the
+   * thread: a session with no thread yet, or whose entry is abandoned or archived, is left out,
+   * since none of those can show a typing indicator.
    */
-  workingThreads: () => readonly string[];
+  typingThreads: (views: readonly SessionView[], now: number) => readonly string[];
 };
 
 type ThreadState = {
@@ -153,12 +148,6 @@ type ThreadState = {
    */
   desiredName: string | null;
   desiredSince: number;
-  /**
-   * What the last pass's view said about the open turn, recorded the same way `desired` is: so
-   * `workingThreads` reads what the last pass derived rather than the view the next one will fold
-   * in.
-   */
-  turnOpen: boolean;
   archived: boolean;
   /**
    * Set for a session that was already terminal the first time it was seen, which is what a
@@ -227,9 +216,8 @@ export function createSurface(options: SurfaceOptions): Surface {
       downgrade: null,
       backgroundTasks: [],
       goal: null,
-      // A restored placeholder predates any registry record, so it carries no turn of its own; the
-      // real view that replaces it on the session's first live pass sets this field from fact.
-      turnOpen: false,
+      // A restored placeholder predates any registry record, so it carries no turn of its own.
+      turnActiveAt: null,
       title,
       needsAttention: false,
       blocked: false,
@@ -257,9 +245,6 @@ export function createSurface(options: SurfaceOptions): Surface {
       renderedName: binding.title,
       renderedCard: null,
       desired: "working",
-      // A restored binding predates its session's first live pass, the same as the placeholder view
-      // it is paired with, so it carries no open turn either until that pass records a real one.
-      turnOpen: false,
       // Null, so the first pass stamps the dwell with whatever name it composes: a restart has no
       // idea what the session has been doing, and a fresh stamp is the conservative read.
       desiredName: null,
@@ -609,7 +594,6 @@ export function createSurface(options: SurfaceOptions): Surface {
         desired: state,
         desiredName: name,
         desiredSince: now,
-        turnOpen: view.turnOpen,
         archived: false,
         // A session first seen already exited never had a thread and is not getting one. Ended
         // only, for the reason open() holds abandonment to ended: the backstop's exited is a
@@ -631,7 +615,6 @@ export function createSurface(options: SurfaceOptions): Surface {
     const titleMoved = entry.sessionTitle !== sessionTitle;
     entry.sessionTitle = sessionTitle;
     entry.desired = state;
-    entry.turnOpen = view.turnOpen;
     // The dwell stamp: any change to the composed title restarts it, a title-state transition and
     // a session renaming itself alike, so refreshName's settled check below always measures how
     // long the name it is about to paint has held.
@@ -768,14 +751,18 @@ export function createSurface(options: SurfaceOptions): Surface {
       return live;
     },
 
-    workingThreads: () => {
-      const working: string[] = [];
-      for (const entry of threads.values()) {
-        if (entry.threadId === null || entry.abandoned || entry.archived) continue;
-        if (entry.desired !== "working" || !entry.turnOpen) continue;
-        working.push(entry.threadId);
+    typingThreads: (views, now) => {
+      const typing: string[] = [];
+      for (const view of views) {
+        const entry = threads.get(view.sessionId);
+        if (entry === undefined || entry.threadId === null || entry.abandoned || entry.archived) continue;
+        const state = deriveSurfaceState(view, now, {
+          idleAfterMs: options.idleAfterMs,
+          exitedAfterMs: options.exitedAfterMs,
+        });
+        if (typingWanted(view, state, now, options.idleAfterMs)) typing.push(entry.threadId);
       }
-      return working;
+      return typing;
     },
 
     knownPins: () => {

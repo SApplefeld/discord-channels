@@ -69,7 +69,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    turnOpen: true,
+    turnActiveAt: null,
     title: null,
     lineage: null,
     startedAt: NOW,
@@ -719,7 +719,7 @@ test("the tool line carries what the tool was called with, from the record throu
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    turnOpen: true,
+    turnActiveAt: null,
     title: null,
   };
 
@@ -850,7 +850,7 @@ test("neither the view nor the card can carry the process token", () => {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    turnOpen: true,
+    turnActiveAt: null,
     title: null,
   };
 

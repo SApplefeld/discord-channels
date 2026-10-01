@@ -39,12 +39,11 @@ export type SessionView = {
    */
   goal: string | null;
   /**
-   * True while a turn is open, mirroring `SessionRecord.turnOpen`. The typing keeper's input,
-   * `workingThreads`, gates on this beside the derived `working` state: `working` itself can read
-   * true for up to `idleAfterMs` after a `Stop` and indefinitely while a background roster is
-   * outstanding, and typing must stop with the turn rather than with either of those.
+   * When the open turn last showed activity, null while no turn is open, mirroring
+   * `SessionRecord.turnActiveAt`. Read by `typingWanted` alone; the card and the thread title never
+   * see it.
    */
-  turnOpen: boolean;
+  turnActiveAt: number | null;
   /**
    * The session's own title, as a `custom-title` transcript line last set it (launch `--name` or an
    * in-session `/rename`), and null for a session neither has touched. `displayName` prefers this
@@ -103,7 +102,7 @@ export function toView(record: SessionRecord, signals: ViewSignals = {}): Sessio
     downgrade: record.downgrade,
     backgroundTasks: record.backgroundTasks,
     goal: record.goal,
-    turnOpen: record.turnOpen,
+    turnActiveAt: record.turnActiveAt,
     title: record.title,
     needsAttention: signals.needsAttention ?? false,
     blocked: signals.blocked ?? false,
@@ -180,4 +179,29 @@ export function deriveSurfaceState(
   if (view.backgroundTasks.length > 0) return "working";
   if (view.lifecycle === "stale") return "idle";
   return now - view.lastHookAt <= thresholds.idleAfterMs ? "working" : "idle";
+}
+
+/**
+ * Whether a session's thread should show Discord's typing indicator: a turn is open, it has shown
+ * activity within `idleAfterMs`, and the session is not waiting on a person, blocked, or exited.
+ *
+ * Gated on the open turn rather than on the derived `working`, for three reasons. `working` lasts
+ * `idleAfterMs` past a `Stop` and indefinitely while a background roster is outstanding, and the
+ * indicator reads as "working on it right now", so it must stop with the turn. And a credited
+ * prompt to a long-idle session opens a turn without moving `lastHookAt`, so that session derives
+ * `idle` until its first tool call while it is in fact working on the message. The activity window
+ * is what ends a turn that never sends its `Stop`: an interrupted turn, or one stalled in a retry
+ * wait, stops typing `idleAfterMs` after its last opening or tool call.
+ *
+ * `state` is the session's derived state at `now`, passed in rather than derived here so a caller
+ * already holding it derives it once.
+ */
+export function typingWanted(
+  view: SessionView,
+  state: SurfaceState,
+  now: number,
+  idleAfterMs: number,
+): boolean {
+  if (view.turnActiveAt === null || now - view.turnActiveAt > idleAfterMs) return false;
+  return state !== "needs you" && state !== "blocked" && state !== "exited";
 }

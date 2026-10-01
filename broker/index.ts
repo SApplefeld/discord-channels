@@ -1397,12 +1397,24 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // suppressed and broker-wide-off branches below read and parse every mirror-off prompt body
     // for a credit that can never land anywhere.
     ...(discord === null ? {} : { receipts: { pickedUp: pickupFor } }),
-    // Behind the same gate as receipts and for the same reason: the open-turn flag's one reader is
+    // Behind the same gate as receipts and for the same reason: the open-turn stamp's one reader is
     // the typing keeper, which exists only with Discord, so on any other host this seam would have
-    // the mirror-off branches read every prompt body for a flag nothing reads.
+    // the mirror-off branches read every prompt body for a stamp nothing reads. `closed` reaches
+    // the keeper through the mutable `typingKeeper` and `threadFor` closures, both filled in by the
+    // Discord block below before the listener binds, so no hook can arrive ahead of them.
     ...(discord === null
       ? {}
-      : { turns: { opened: (sessionId: string) => { registry.noteTurnOpened(sessionId); } } }),
+      : {
+          turns: {
+            opened: (sessionId: string) => {
+              registry.noteTurnOpened(sessionId);
+            },
+            closed: (sessionId: string) => {
+              const threadId = threadFor(sessionId);
+              if (threadId !== null) typingKeeper?.release(threadId);
+            },
+          },
+        }),
   });
   const server = createServer((request, response) => {
     // The relay routes answer first and report whether they took the request; everything else,
@@ -1442,11 +1454,10 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
   let refresh: NodeJS.Timeout | null = null;
   let inFlight: Promise<void> = Promise.resolve();
   let gateway: MessageSource | null = null;
-  // The typing keeper's own timers run outside `refresh`, one per working thread rather than one for
+  // The typing keeper's own timers run outside `refresh`, one per typing thread rather than one for
   // the whole reconcile pass, so clearing `refresh` alone leaves them running. Every site that tears
-  // `refresh` down calls `typingKeeper?.stop()`, which also latches the keeper: a surface pass
-  // already in flight when `stop()` runs still resolves and still calls `reconcile`, and the latch
-  // is what keeps that call from restarting timers `stop()` just cleared.
+  // `refresh` down calls `typingKeeper?.stop()`, which also latches the keeper, so a late `release`
+  // or `reconcile` can never restart timers `stop()` just cleared.
   let typingKeeper: TypingKeeper | null = null;
   // What the fleet card needs from Discord, filled in below only when a channel exists. It is one
   // of the two conditions the card is built under, and the card is built after this block rather
@@ -1495,8 +1506,11 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       archiveOnEnd: discord.archiveOnEnd,
       bindings: loadBindings(bindingsFile),
       // The one point every session's end reaches, whatever ended it: forgets the thread's receipt
-      // tracking so it never outlives the session.
-      onRetired: (threadId) => receipts?.forget(threadId),
+      // tracking and its typing budget so neither outlives the session.
+      onRetired: (threadId) => {
+        receipts?.forget(threadId);
+        typingKeeper?.forget(threadId);
+      },
       onBind: (bindings) => {
         try {
           saveBindings(bindingsFile, bindings);
@@ -1537,8 +1551,9 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       now: Date.now,
       log: note,
     });
-    // The typing indicator, driven by the same surface pass as the pin list: it reconciles against
-    // whatever the pass just derived as `working`, so the two can never disagree.
+    // The typing indicator, reconciled on every refresh tick against the turn gate (`typingWanted`
+    // in discord/state.ts) over this tick's views, and released at once by a credited `Stop`
+    // through the intake's `turns.closed` seam above.
     typingKeeper = createTypingKeeper({
       typing: transport,
       now: Date.now,
@@ -1560,33 +1575,28 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       // Recomputed each pass rather than pushed, so a prompt answered between ticks stops showing
       // as waiting without anything having to remember to clear it.
       const waiting = permissions.waiting();
+      const views = registry.list().map((record) =>
+        toView(record, {
+          needsAttention: waiting.has(record.sessionId),
+          blocked: standingBlocked(record),
+        }),
+      );
       const surfacePass = surface
-        .tick(
-          registry
-            .list()
-            .map((record) =>
-              toView(record, {
-                needsAttention: waiting.has(record.sessionId),
-                blocked: standingBlocked(record),
-              }),
-            ),
-        )
+        .tick(views)
         // After the pass rather than beside it: what is live is what the pass has just derived, and
         // a session the registry dropped is driven to exited inside it. A pass that changes nothing
         // spends no Discord call here at all.
-        .then((ran) => {
-          // Synchronous and never thrown out of a timer's own closure, so it rides ahead of the pin
-          // keeper's awaited call rather than needing a `Promise.all` leg of its own. Gated on
-          // `ran`: a declined tick (an overlapping pass, or a credential already rejected) left the
-          // surface's derived state exactly where the last pass put it, so reconciling the typing
-          // keeper against it again would restate the last pass rather than drive this one.
-          if (ran) typingKeeper?.reconcile(surface.workingThreads());
-          return pinKeeper.reconcile({
+        .then(() =>
+          pinKeeper.reconcile({
             permanent: permanentCards(),
             live: surface.livePins(),
             known: surface.knownPins(),
-          });
-        });
+          }),
+        );
+      // On every tick, whatever the pass does: the typing set reads this tick's views, not what a
+      // pass derived, so a declined, slow, or rejected pass cannot hold the indicator on past a
+      // turn's end. Synchronous and never thrown out of the keeper, so it needs no leg of its own.
+      typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));
       inFlight = Promise.all([blockedPass, surfacePass])
         .then(() => undefined)
         .catch((error: unknown) => {

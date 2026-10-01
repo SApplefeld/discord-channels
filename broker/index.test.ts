@@ -618,7 +618,7 @@ test("the usage card's wiring draws this broker's own sessions, cache, and bindi
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    turnOpen: true,
+    turnActiveAt: null,
     title: null,
   };
   const halted: SessionRecord = {
@@ -2360,7 +2360,7 @@ test("startBroker's inbox restores beside the registry, clears on an operator pr
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    turnOpen: false,
+    turnActiveAt: null,
     title: null,
   });
   saveSessions(stateFile, [
@@ -2723,11 +2723,11 @@ function receiptWiringGaps(source: string): string[] {
   if (!/notePickup:\s*\(sessionId,\s*at\)\s*=>\s*pickupFor\(sessionId,\s*at\)/.test(code)) {
     gaps.push("tailer");
   }
-  if (!/onRetired:\s*\(threadId\)\s*=>\s*receipts\?\.forget\(threadId\)/.test(code)) {
+  if (!/onRetired:\s*\(threadId\)\s*=>\s*\{[^}]*receipts\?\.forget\(threadId\);/.test(code)) {
     gaps.push("surface");
   }
   if (
-    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{\s*opened:\s*\(sessionId: string\)\s*=>\s*\{\s*registry\.noteTurnOpened\(sessionId\);\s*\}\s*\}/.test(
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{\s*opened:\s*\(sessionId: string\)\s*=>\s*\{\s*registry\.noteTurnOpened\(sessionId\);\s*\}/.test(
       code,
     )
   ) {
@@ -2765,19 +2765,87 @@ test("startBroker wires every receipt seam: outbound, intake's pickup entry poin
     receiptWiringGaps(source.replace("notePickup: (sessionId, at) => pickupFor(sessionId, at)", "void 0")),
     ["tailer"],
   );
+  assert.deepEqual(receiptWiringGaps(source.replace("receipts?.forget(threadId);", "")), ["surface"]);
+  assert.deepEqual(receiptWiringGaps(source.replace("registry.noteTurnOpened(sessionId);", "")), ["turns"]);
+});
+
+// The typing keeper's connections inside startBroker, which no test reaches without a Discord
+// login: the reconcile on every refresh tick over that tick's own views, the stop at each of the
+// three sites that tear the refresh down, the release a credited Stop reaches through the intake's
+// `turns.closed` seam, and the forget on a retired thread. Read from the source the way
+// `receiptWiringGaps` reads its seams.
+function typingWiringGaps(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const gaps: string[] = [];
+  const tick = /refresh = setInterval\(\(\) => \{([\s\S]*?)\}, discord\.refreshIntervalMs\)/.exec(code)?.[1] ?? "";
+  // The reconcile is a statement of the tick itself, never inside the pass's `.then`, and it reads
+  // the same views the pass is handed.
+  if (
+    !/\.tick\(views\)/.test(tick) ||
+    !/\n\s*typingKeeper\?\.reconcile\(surface\.typingThreads\(views,\s*Date\.now\(\)\)\);/.test(tick) ||
+    /\.then\([^;]*typingKeeper/.test(tick)
+  ) {
+    gaps.push("reconcile");
+  }
+  if (!/const stopRefresh = \(\): void => \{[^}]*typingKeeper\?\.stop\(\);/.test(code)) {
+    gaps.push("stop-refresh");
+  }
+  if (!/const failedToBind = \(error: Error\): void => \{[^}]*typingKeeper\?\.stop\(\);/.test(code)) {
+    gaps.push("stop-failed-to-bind");
+  }
+  if (!/async function stop\(\): Promise<void> \{[^}]*typingKeeper\?\.stop\(\);/.test(code)) {
+    gaps.push("stop-shutdown");
+  }
+  if (
+    !/discord === null\s*\?\s*\{\}\s*:\s*\{\s*turns:\s*\{[\s\S]*?closed:\s*\(sessionId: string\)\s*=>\s*\{\s*const threadId = threadFor\(sessionId\);\s*if \(threadId !== null\) typingKeeper\?\.release\(threadId\);\s*\}/.test(
+      code,
+    )
+  ) {
+    gaps.push("turns-closed");
+  }
+  if (!/onRetired:\s*\(threadId\)\s*=>\s*\{[^}]*typingKeeper\?\.forget\(threadId\);/.test(code)) {
+    gaps.push("retired");
+  }
+  return gaps;
+}
+
+test("startBroker wires the typing keeper: reconcile per tick, every stop site, release on Stop, forget on retire", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.deepEqual(typingWiringGaps(source), []);
+  // Each check speaks when its own call is gone or moved, so a green above is the calls being there.
   assert.deepEqual(
-    receiptWiringGaps(source.replace("onRetired: (threadId) => receipts?.forget(threadId)", "void 0")),
-    ["surface"],
+    typingWiringGaps(source.replace("typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));", "")),
+    ["reconcile"],
   );
   assert.deepEqual(
-    receiptWiringGaps(
-      source.replace(
-        ": { turns: { opened: (sessionId: string) => { registry.noteTurnOpened(sessionId); } } }",
-        ": {}",
-      ),
+    typingWiringGaps(
+      source
+        .replace("typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));", "")
+        .replace(
+          /\.then\(\(\) =>\s*pinKeeper\.reconcile\(/,
+          ".then(() => {\n typingKeeper?.reconcile(surface.typingThreads(views, Date.now()));\n return pinKeeper.reconcile(",
+        ),
     ),
-    ["turns"],
+    ["reconcile"],
+    "a reconcile moved inside the pass's continuation is not one that runs on every tick",
   );
+  assert.deepEqual(
+    typingWiringGaps(source.replace(/(const stopRefresh[\s\S]*?)typingKeeper\?\.stop\(\);/, "$1")),
+    ["stop-refresh"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace(/(const failedToBind[\s\S]*?)typingKeeper\?\.stop\(\);/, "$1")),
+    ["stop-failed-to-bind"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace(/(async function stop\(\)[\s\S]*?)typingKeeper\?\.stop\(\);/, "$1")),
+    ["stop-shutdown"],
+  );
+  assert.deepEqual(
+    typingWiringGaps(source.replace("if (threadId !== null) typingKeeper?.release(threadId);", "")),
+    ["turns-closed"],
+  );
+  assert.deepEqual(typingWiringGaps(source.replace("typingKeeper?.forget(threadId);", "")), ["retired"]);
 });
 
 test("one message rides delivered, picked up and answered when the inbound router, the intake handler and the outbound router are each built directly against one shared receipt tracker, the level a fake reaches with no live discord login", async () => {

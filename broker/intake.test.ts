@@ -7,6 +7,7 @@ import { request as httpRequest } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHandler, isAllowedHost, isLoopback, parseIntake } from "./intake.ts";
 import { createRegistry } from "./registry.ts";
+import { createTypingKeeper } from "./discord/typing.ts";
 import type { Registry } from "./registry.ts";
 import { startBroker } from "./index.ts";
 import type { BrokerConfig } from "./config.ts";
@@ -1073,7 +1074,7 @@ test("turns.opened fires on all three pickup paths, each with no receipts seam w
   // One handler per path, receipts absent from every one of them, proves the call does not ride on
   // receipts being present.
   const opened: string[] = [];
-  const turns = { opened: (sessionId: string) => opened.push(sessionId) };
+  const turns = { opened: (sessionId: string) => opened.push(sessionId), closed: () => {} };
 
   // The mirror-on path.
   {
@@ -1127,11 +1128,109 @@ test("turns.opened fires on all three pickup paths, each with no receipts seam w
   assert.deepEqual(opened, ["session-a", "session-a", "session-a"]);
 });
 
+test("a credited Stop releases the session's typing thread before any refresh runs", async () => {
+  // Pins the acceptance line "after a `Stop`, no typing call is sent for that thread": the intake
+  // calls turns.closed on a credited Stop, wired here the way startBroker wires it (thread lookup,
+  // then the keeper's release), so the thread's timer is cleared inside the hook post itself, with
+  // no refresh tick and no reconcile anywhere in this test.
+  const timers: { id: number; callback: () => void }[] = [];
+  const cleared: number[] = [];
+  const sent: string[] = [];
+  const keeper = createTypingKeeper({
+    typing: {
+      sendTyping: async ({ threadId }) => {
+        sent.push(threadId);
+        return { status: "ok", value: null, rate: { remaining: 4, resetAfterMs: 5_000, retryAfterMs: null } };
+      },
+    },
+    now: () => 5_000,
+    setTimer: (callback) => {
+      timers.push({ id: timers.length + 1, callback });
+      return timers.length as unknown as NodeJS.Timeout;
+    },
+    clearTimer: (timer) => cleared.push(timer as unknown as number),
+  });
+  const threads = new Map([["session-a", "thread-a"]]);
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror: fakeMirror().mirror,
+    turns: {
+      opened: (sessionId) => {
+        registry.noteTurnOpened(sessionId);
+      },
+      closed: (sessionId) => {
+        const threadId = threads.get(sessionId) ?? null;
+        if (threadId !== null) keeper.release(threadId);
+      },
+    },
+  });
+  announce(registry);
+  keeper.reconcile(["thread-a"]);
+  await settled();
+  assert.deepEqual(sent, ["thread-a"], "the thread is typing");
+
+  // A Stop credited on the token alone names no session, so it releases nothing.
+  await call(handle, fakeRequest("127.0.0.1", { headers: hookHeaders("Stop"), body: "{}" }));
+  assert.deepEqual(cleared, [], "a Stop naming no session leaves the indicator to the next reconcile");
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("Stop"), body: JSON.stringify({ session_id: "session-a" }) }),
+  );
+  assert.deepEqual(cleared, [1], "the credited Stop cleared the thread's timer");
+  assert.equal(registry.list()[0]?.turnActiveAt, null, "and the registry's turn is closed");
+
+  timers[0]?.callback();
+  await settled();
+  assert.deepEqual(sent, ["thread-a"], "a late tick of the released timer sends nothing");
+});
+
+test("a subagent's PostToolUse after Stop leaves the turn closed, read off the payload's agent_id", async () => {
+  // Pins the parse end to end: the intake marks a payload carrying `agent_id` as a subagent's, and
+  // the registry refuses to open a turn on it. A main-thread PostToolUse is the control.
+  const { registry, handle } = harness();
+  announce(registry);
+  const post = (body: Record<string, unknown>) =>
+    call(handle, fakeRequest("127.0.0.1", { headers: hookHeaders("PostToolUse"), body: JSON.stringify(body) }));
+
+  await post({ session_id: "session-a", tool_name: "Bash", agent_id: "a1b2c3", agent_type: "general-purpose" });
+  assert.equal(registry.list()[0]?.turnActiveAt, null, "a subagent's call opens no turn");
+
+  await post({ session_id: "session-a", tool_name: "Bash" });
+  assert.notEqual(registry.list()[0]?.turnActiveAt, null, "the main thread's call opens one");
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", { headers: hookHeaders("Stop"), body: JSON.stringify({ session_id: "session-a" }) }),
+  );
+  await post({ session_id: "session-a", tool_name: "Bash", agent_id: "a1b2c3", agent_type: "general-purpose" });
+  assert.equal(registry.list()[0]?.turnActiveAt, null, "after Stop, a background agent's call reopens nothing");
+});
+
+test("the agent_id value is neither stored on the record nor published", async () => {
+  const { registry, handle } = harness();
+  announce(registry);
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: JSON.stringify({ session_id: "session-a", tool_name: "Bash", agent_id: "agent-marker-7f3e" }),
+    }),
+  );
+  assert.ok(!JSON.stringify(registry.list()).includes("agent-marker-7f3e"), "not on the record");
+  const published = await call(handle, fakeRequest("127.0.0.1", { method: "GET", url: "/sessions" }));
+  const text = JSON.stringify(published.body);
+  assert.ok(!text.includes("agent-marker-7f3e"), "not on GET /sessions");
+  assert.ok(!text.includes("turnActiveAt"), "and the open-turn stamp is withheld from GET /sessions");
+});
+
 test("turns.opened is not called for a straggler whose session_id does not match the token holder", async () => {
   // The same straggler gate `receipts.pickedUp` is credited through: a subprocess of an older turn
   // holds the same process token but is not the session speaking now.
   const opened: string[] = [];
-  const turns = { opened: (sessionId: string) => opened.push(sessionId) };
+  const turns = { opened: (sessionId: string) => opened.push(sessionId), closed: () => {} };
   const { mirror } = fakeMirror();
   const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
   const handle = createHandler({ registry, maxBodyBytes: 1024, mirror, turns });

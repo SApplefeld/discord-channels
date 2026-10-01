@@ -111,9 +111,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    // True by default so every existing test, written before the typing keeper's turn-open gate
-    // existed, still exercises a working session with an open turn unless it overrides this.
-    turnOpen: true,
+    turnActiveAt: null,
     title: null,
     lineage: null,
     turnCount: 1,
@@ -1444,78 +1442,74 @@ test("the pin list reads the cards of the sessions that are running, and only af
   );
 });
 
-test("working threads are the threads of the sessions whose derived state is working", async () => {
-  // Pins Section 2's typing-keeper input: `workingThreads` is read the same way `livePins` is, after
-  // a pass rather than before one, and only a thread whose derived state is `working` right now is
-  // in it.
+test("typing threads read the views handed in, not what the last pass derived", async () => {
+  // Pins Section 2's live input: the keeper's set is computed from this tick's views at `now`, so a
+  // turn closing between passes leaves the set without waiting on a pass to run, and the surface
+  // contributes only the session-to-thread mapping.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
+  const open = view({ turnActiveAt: time.now() });
 
-  await surface.tick([view()]);
+  assert.deepEqual(surface.typingThreads([open], time.now()), [], "no thread exists before the first pass");
+
+  await surface.tick([open]);
+  assert.deepEqual(surface.typingThreads([open], time.now()), ["thread-1"], "an open turn's thread is in the set");
+
+  // No pass runs between these reads: the closed turn arrives only in the views handed in.
   assert.deepEqual(
-    surface.workingThreads(),
-    ["thread-1"],
-    "a freshly-seen session's state is working, so its thread is in the set",
+    surface.typingThreads([view({ turnActiveAt: null })], time.now()),
+    [],
+    "a turn closed after the last pass leaves the set at once",
   );
 
-  // No hook arrives for longer than idleAfterMs: the state desk's own window drops the derived
-  // state to idle, and the typing indicator has to stop with it.
-  time.advance(IDLE_AFTER_MS + 1);
-  await surface.tick([view({ lastHookAt: START })]);
-  assert.deepEqual(surface.workingThreads(), [], "an idle session's thread drops out of the set");
+  // The activity window is measured against the `now` passed in, under the surface's own idleAfterMs.
+  assert.deepEqual(
+    surface.typingThreads([open], time.now() + IDLE_AFTER_MS),
+    ["thread-1"],
+    "a turn active exactly idleAfterMs ago is still in the set",
+  );
+  assert.deepEqual(
+    surface.typingThreads([open], time.now() + IDLE_AFTER_MS + 1),
+    [],
+    "a turn quiet past idleAfterMs leaves the set",
+  );
 
-  // The session exits outright.
-  time.advance(EXITED_AFTER_MS + 1);
-  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
-  assert.deepEqual(surface.workingThreads(), [], "an exited session's thread stays out of the set");
+  // A session the surface holds no entry for has no thread to type in.
+  assert.deepEqual(
+    surface.typingThreads([view({ sessionId: "session-unseen", turnActiveAt: time.now() })], time.now()),
+    [],
+    "a view with no entry is left out",
+  );
 });
 
-test("working threads also require the open-turn flag the view carries, not `working` alone", async () => {
-  // Pins Section 2's turn-open typing (Standing Brief Amendments): the keeper types only while a
-  // turn is open, because `working` alone can read true for up to idleAfterMs past a Stop and
-  // indefinitely while a background roster is outstanding, and the indicator must stop with the
-  // turn rather than with either of those.
+test("typing threads leave out an archived thread and a session waiting on a person", async () => {
+  // Pins the exclusions the surface and the gate each own: an archived thread cannot show the
+  // indicator, and an open turn does not pull a needs-you or blocked session back in.
   const time = clock();
   const calls = recorder();
-  const surface = surfaceWith(time, calls);
+  const surface = surfaceWith(time, calls, { archiveOnEnd: true });
 
-  const working = async (built: Partial<SessionView>) => {
-    await surface.tick([view(built)]);
-    return surface.workingThreads();
-  };
+  await surface.tick([view({ turnActiveAt: time.now() })]);
+  for (const signals of [{ needsAttention: true }, { blocked: true }]) {
+    assert.deepEqual(
+      surface.typingThreads([view({ turnActiveAt: time.now(), ...signals })], time.now()),
+      [],
+      `excluded with ${JSON.stringify(signals)}`,
+    );
+  }
 
+  // The session ends and its thread is archived by the pass that paints exited.
+  time.advance(1);
+  const ended = view({ lifecycle: "ended", endedAt: time.now(), turnActiveAt: time.now() });
+  await surface.tick([ended]);
+  assert.deepEqual(calls.archived, ["thread-1"], "the exited pass archives the thread");
+  // A view reporting a live open turn again, without a pass to unarchive it, still finds the
+  // entry archived.
   assert.deepEqual(
-    await working({ turnOpen: true }),
-    ["thread-1"],
-    "working with a turn open is in the set",
-  );
-
-  // The acceptance case: Stop closes the turn, but working's own idleAfterMs window has not
-  // elapsed, so the derived state is still working while the typing set already excludes it.
-  assert.deepEqual(
-    await working({ turnOpen: false }),
+    surface.typingThreads([view({ turnActiveAt: time.now() })], time.now()),
     [],
-    "working after Stop is excluded, though the derived state is unmoved",
-  );
-
-  // An outstanding background roster reads working whatever the hook clock says, with no turn open.
-  assert.deepEqual(
-    await working({
-      turnOpen: false,
-      backgroundTasks: [
-        { id: "task-a", kind: "subagent", description: null, agentType: null, since: time.now() },
-      ],
-    }),
-    [],
-    "a background roster with no open turn is excluded",
-  );
-
-  // needs-you outranks working in the derivation, so an open turn does not pull it back in.
-  assert.deepEqual(
-    await working({ turnOpen: true, needsAttention: true }),
-    [],
-    "needs-you with a turn open is excluded",
+    "an archived thread is left out",
   );
 });
 

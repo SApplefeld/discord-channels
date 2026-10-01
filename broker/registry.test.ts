@@ -968,11 +968,14 @@ test("relayClosed ends only the session it names, held by the token that names i
 });
 
 /** A registry holding one live session, with the mutation count the persistence seam would spend. */
-function withSession(): { registry: Registry; sessionId: string; writes: () => number } {
+function withSession(
+  time?: ReturnType<typeof clock>,
+): { registry: Registry; sessionId: string; writes: () => number } {
   let writes = 0;
   const registry = createRegistry({
     host: "NEO",
     staleAfterMs: 60_000,
+    ...(time === undefined ? {} : { now: time.now }),
     onMutate: () => {
       writes += 1;
     },
@@ -1116,38 +1119,72 @@ test("a goal for a session the registry does not hold unended changes nothing", 
 
 test("a fresh session starts with its turn closed", () => {
   const { registry, sessionId } = withSession();
-  assert.equal(byId(registry.list(), sessionId).turnOpen, false);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null);
 });
 
-test("a completed tool call opens the turn, and Stop closes it", () => {
+test("a main-thread tool call opens the turn and restamps it, and Stop closes it", () => {
   // Section 2's turn-open typing (Standing Brief Amendments): a turn opens on a completed tool call
-  // or a credited UserPromptSubmit, and closes on Stop. This pins the two hook-driven transitions.
-  const { registry, sessionId } = withSession();
+  // of the session's own main thread, each one restamps the activity, and Stop closes it.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
 
   registry.apply(postToolUse("Bash"));
-  assert.equal(byId(registry.list(), sessionId).turnOpen, true, "a completed tool call opens it");
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "a completed tool call opens it");
+
+  time.advance(5_000);
+  registry.apply(postToolUse("Read"));
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "the next one restamps it");
 
   registry.apply(stop());
-  assert.equal(byId(registry.list(), sessionId).turnOpen, false, "Stop closes it");
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "Stop closes it");
+});
+
+test("a subagent's tool call refreshes an open turn but never opens one", () => {
+  // Pins the acceptance line "a session with an outstanding background roster and no open turn
+  // shows no typing, including while its background agents make tool calls": a subagent's
+  // PostToolUse carries the parent's session id, so after Stop it must leave the turn closed.
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+  const fromSubagent = { ...postToolUse("Bash"), fromSubagent: true };
+
+  registry.apply(fromSubagent);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "no turn open: a subagent call opens none");
+
+  registry.apply(postToolUse("Bash"));
+  time.advance(5_000);
+  registry.apply(fromSubagent);
+  assert.equal(
+    byId(registry.list(), sessionId).turnActiveAt,
+    time.now(),
+    "an open turn is kept fresh by its subagents' calls",
+  );
+
+  registry.apply(stop());
+  time.advance(5_000);
+  registry.apply(fromSubagent);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, null, "after Stop a background agent's call reopens nothing");
 });
 
 test("noteTurnOpened opens the turn for an unended session, told from a credited UserPromptSubmit", () => {
-  const { registry, sessionId } = withSession();
+  const time = clock();
+  const { registry, sessionId } = withSession(time);
+  time.advance(10 * 60 * 1000);
 
   const touched = registry.noteTurnOpened(sessionId);
   assert.ok(touched);
   assert.equal(touched.sessionId, sessionId);
-  assert.equal(byId(registry.list(), sessionId).turnOpen, true);
+  assert.equal(byId(registry.list(), sessionId).turnActiveAt, time.now(), "stamped with the prompt's arrival");
 });
 
 test("noteTurnOpened refuses a session the registry does not hold unended", () => {
   const { registry, sessionId } = withSession();
   registry.apply(postToolUse("Bash"));
+  const stamped = registry.list()[0].turnActiveAt;
   registry.relayClosed(TOKEN, sessionId);
 
   assert.equal(registry.noteTurnOpened(sessionId), null, "an ended record cannot be re-opened");
   assert.equal(registry.noteTurnOpened("no-such-session"), null);
-  assert.equal(registry.list()[0].turnOpen, true, "the ended record's flag is left exactly as it was");
+  assert.equal(registry.list()[0].turnActiveAt, stamped, "the ended record's stamp is left exactly as it was");
 });
 
 test("a title is held on the record it names, replaced by the next one, and stamps no engagement", () => {

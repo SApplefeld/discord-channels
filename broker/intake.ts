@@ -433,6 +433,10 @@ export function parseIntake(
       // other event says nothing about the roster and leaves it exactly as the last turn reported
       // it, which is what null means here.
       backgroundTasks: event === "Stop" ? backgroundTasks(fields) : null,
+      // Presence only: a subagent's hook event carries the parent's session id with its own
+      // identity in `agent_id`, and the registry needs to know which of the two spoke, never who
+      // the subagent is. The value is read for its type and dropped here, never logged or stored.
+      fromSubagent: typeof fields["agent_id"] === "string" && fields["agent_id"] !== "",
     },
   };
 }
@@ -619,24 +623,30 @@ export type HandlerOptions = {
    */
   receipts?: { pickedUp: (sessionId: string, at: number) => void };
   /**
-   * Opens the registry's turn-open flag for a session, told from the same credited
-   * `UserPromptSubmit` post as `receipts.pickedUp` and at the same three call sites, under the same
-   * evidence gate. Its one reader is the typing keeper, so the broker wires it only where Discord
-   * is configured, as it does `receipts`. The credited-session-id read runs whenever either seam is
-   * present, and each one wired is called.
+   * The open turn's two edges, for the typing keeper alone, so the broker wires it only where
+   * Discord is configured, as it does `receipts`.
+   *
+   * `opened` is told from the same credited `UserPromptSubmit` post as `receipts.pickedUp`, at the
+   * same three call sites and under the same evidence gate. The credited-session-id read runs
+   * whenever either seam is present, and each one wired is called.
+   *
+   * `closed` is told from a credited `Stop` whose payload names the very session it was credited
+   * to, the gate `permissions.turnEnded` is called under, after the registry has already closed the
+   * turn. It lets the keeper stop that thread's indicator at once instead of at the next refresh.
    */
-  turns?: { opened: (sessionId: string) => void };
+  turns?: { opened: (sessionId: string) => void; closed: (sessionId: string) => void };
 };
 
 /**
  * What `GET /sessions` publishes. The process token is withheld: it is the join key a hook post is
  * authenticated by, so anything that can read one can forge session traffic. The goal is withheld
  * too: it is operator prose off the transcript, held for one display surface, and a debugging route
- * that anything on this machine can read is not that surface. The title, unlike the goal, is
- * published on purpose: it is session identity of the same class as `name`, which this route
- * already publishes, not operator prose held for one display surface.
+ * that anything on this machine can read is not that surface. The open-turn stamp is withheld the
+ * same way: it is held for the typing keeper alone, and no consumer of this route reads it. The
+ * title, unlike the goal, is published on purpose: it is session identity of the same class as
+ * `name`, which this route already publishes, not operator prose held for one display surface.
  */
-export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal">;
+export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal" | "turnActiveAt">;
 
 export function redact(record: SessionRecord): PublicSessionRecord {
   // Field by field rather than by deleting from a copy, so a field added to SessionRecord has to
@@ -692,9 +702,6 @@ export function redact(record: SessionRecord): PublicSessionRecord {
     // Published, unlike the goal: session identity of the same class as `name` above, not operator
     // prose held for one display surface.
     title: record.title,
-    // Whether a turn is open, session state of the same class as `turnCount` above and carrying no
-    // conversation content.
-    turnOpen: record.turnOpen,
   };
 }
 
@@ -735,10 +742,10 @@ export function createHandler(
     //
     // A broker-wide-off host still owes pickup: with the mirror off, this route never reaches the
     // /hook UserPromptSubmit-firing logic either (there is none; pickup lives here), so without
-    // this a message on such a host never advances past 📨 at all. Read only when a receipts seam
-    // is wired and this is the turn-opening event, and credit only when the payload names the very
-    // session the token holds, the same evidence bar the mirror-on path below uses. No log lines
-    // on this path: it is deliberately quiet at the socket, on or off.
+    // this a message on such a host never advances past 📨 at all. Read only when a receipts or
+    // turns seam is wired and this is the turn-opening event, and credit only when the payload
+    // names the very session the token holds, the same evidence bar the mirror-on path below uses.
+    // No log lines on this path: it is deliberately quiet at the socket, on or off.
     if (!options.mirror.enabled) {
       if (
         mapping.kind === "prompt" &&
@@ -1090,8 +1097,11 @@ export function createHandler(
       // session's open prompt on a straggler. A `Stop` that arrives without a session id therefore
       // clears nothing and leaves the entry for the ended-session sweep, which is the direction
       // this surface fails in.
+      // The typing keeper's release rides the same gate: a straggler's `Stop` credited on the token
+      // alone must not cut the indicator of the turn the session is running now.
       if (parsed.intake.event === "Stop" && parsed.intake.sessionId === record.sessionId) {
         options.permissions?.turnEnded(record.sessionId, arrivedAt);
+        options.turns?.closed(record.sessionId);
       }
       // Learned only from a post the registry credited to a record: an unwatched, forged, or
       // unroutable post must not aim the tailer at a file of its choosing under a session it does

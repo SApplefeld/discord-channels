@@ -39,10 +39,10 @@ function record(sessionId: string): SessionRecord {
     downgrade: null,
     backgroundTasks: [],
     goal: null,
-    // False, matching what every round-trip test here expects back: the field is never persisted,
-    // so a loaded record always carries false regardless of what was saved (see the dedicated test
-    // below, which saves true to show the load path resets it).
-    turnOpen: false,
+    // Null, matching what every round-trip test here expects back: the field is never persisted,
+    // so a loaded record always carries null regardless of what was saved (see the dedicated test
+    // below, which saves a stamp to show the load path resets it).
+    turnActiveAt: null,
     title: null,
   };
 }
@@ -496,18 +496,18 @@ test("a goal set on a record never reaches the bytes on disk", () => {
 });
 
 test("an open turn never reaches the bytes on disk, and a restored record always loads closed", () => {
-  // turnOpen is not a fact a restart can know: nothing on disk says whether a turn was open at the
-  // moment the broker died, so the field is excluded from the snapshot type entirely and the load
-  // path hands back false whatever a hand-edited file might say.
+  // turnActiveAt is not a fact a restart can know: nothing on disk says whether a turn was open at
+  // the moment the broker died, so the field is excluded from the snapshot type entirely and the
+  // load path hands back null whatever a hand-edited file might say.
   const { file, cleanup } = scratchFile();
   try {
-    saveSessions(file, [{ ...record("session-a"), turnOpen: true }]);
+    saveSessions(file, [{ ...record("session-a"), turnActiveAt: 1_234_567 }]);
 
     const bytes = readFileSync(file, "utf8");
-    assert.ok(!bytes.includes('"turnOpen"'), "the field itself is not written either");
+    assert.ok(!bytes.includes('"turnActiveAt"'), "the field itself is not written either");
 
     const loaded = loadSessions(file, { log: () => {} });
-    assert.equal(loaded[0]?.turnOpen, false, "a restarted broker treats the turn as closed");
+    assert.equal(loaded[0]?.turnActiveAt, null, "a restarted broker treats the turn as closed");
   } finally {
     cleanup();
   }
