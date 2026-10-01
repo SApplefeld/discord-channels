@@ -11,7 +11,9 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readPlanFile } from "./plans.ts";
+import { eventKey, initialEventState } from "./events.ts";
+import type { BoardEvent, BoardEventKind } from "./events.ts";
+import { MAX_INTAKE_NEXT_LENGTH, readPlanFile } from "./plans.ts";
 import type { PlanReading } from "./plans.ts";
 import {
   HEARTBEAT_FILE_NAME,
@@ -23,8 +25,9 @@ import {
   STORE_FILE_NAME,
   createQueueReader,
 } from "./queues.ts";
-import type { PlanStat, QueuePlanReading, QueueReaderOptions } from "./queues.ts";
+import type { PlanStat, QueueEntry, QueuePlanReading, QueueReaderOptions } from "./queues.ts";
 import type { RosterPersona } from "./roster.ts";
+import { personaStatus } from "./status.ts";
 
 // Everything a persona's store holds is written by that persona, so the join from a queue entry to a
 // plan document is a boundary rather than a lookup: the tests below pin which paths it tries, not
@@ -1309,4 +1312,389 @@ test("two personas hold their readings apart, and a persona leaving the roster d
   const [, returned] = reader.read([first.persona, other]);
   assert.deepEqual(returned?.entries, []);
   assert.equal(returned.heldSince, null);
+});
+
+// The store's own reading of a plan. The persona plugin counts Chapters in the copy of the plan the
+// worker writes, which for a worker in a linked worktree is not the copy under the working folder
+// the join reads. The cases below pin the three fields' intake, the rule that prefers the higher
+// count, and the reading the store alone gives a plan with no file under the folder.
+
+const WORKTREE_PLAN = "kit_mechanism-cut_v1.md";
+
+/** A plan doc with eleven sections, the first two closed, naming the third as next. */
+function elevenSectionDoc(status = "In Progress"): string {
+  const sections = Array.from({ length: 11 }, (_, index) => [
+    `### ${String(index + 1)}. Section ${String(index + 1)}`,
+    "",
+  ]).flat();
+  return [
+    "# A plan",
+    "",
+    `Status: ${status}`,
+    "",
+    "## Sections of Work",
+    "",
+    ...sections,
+    "## Chapters",
+    "",
+    "### Chapter 1",
+    "Completed: 1. Section 1",
+    "Next: 2. Section 2",
+    "",
+    "### Chapter 2",
+    "Completed: 2. Section 2",
+    "Next: 3. The executing-work skill",
+    "",
+  ].join("\n");
+}
+
+test("the store's chapter count, section count and next step arrive under the intake rules", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const goals = [
+    goal({ id: "whole", chapterCount: 9, sectionCount: 11, nextSection: "10. The charters" }),
+    goal({ id: "zero", chapterCount: 0, sectionCount: 0 }),
+    // Each below is refused by `countField`: a string is not a number, and a negative and a
+    // fraction are not non-negative integers, nor is a boolean or null. The entry keeps every
+    // other field.
+    goal({ id: "text", chapterCount: "9", sectionCount: "11" }),
+    goal({ id: "negative", chapterCount: -1, sectionCount: -11 }),
+    goal({ id: "fraction", chapterCount: 1.5, sectionCount: 10.5 }),
+    goal({ id: "boolean", chapterCount: true, sectionCount: false }),
+    goal({ id: "null", chapterCount: null, sectionCount: null }),
+    // Refused by `boundedField`, which takes a string alone.
+    goal({ id: "untyped-next", nextSection: 10 }),
+    goal({ id: "spread", nextSection: `\n\n  ${"n".repeat(300)}\n\t` }),
+    goal({ id: "wide", nextSection: "w".repeat(MAX_INTAKE_NEXT_LENGTH + 500) }),
+  ];
+  // `1e999` is the one way a JSON file holds an infinity: it parses to `Infinity`, and
+  // `JSON.stringify` cannot write one, so that goal is spliced into the text. `countField` refuses
+  // both signs of it.
+  const text = JSON.stringify(store(goals)).replace(
+    '"id":"text"',
+    '"id":"infinite","title":"A queued plan","chapterCount":1e999,"sectionCount":-1e999},{"id":"text"',
+  );
+  work.storeText(text);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const entry = (id: string): QueueEntry => {
+    const found = queue?.entries.find((held) => held.id === id);
+    assert.ok(found !== undefined, `${id} must survive intake`);
+    return found;
+  };
+
+  const whole = entry("whole");
+  assert.equal(whole.chapterCount, 9);
+  assert.equal(whole.sectionCount, 11);
+  assert.equal(whole.nextSection, "10. The charters");
+  assert.equal(entry("zero").chapterCount, 0, "zero is a count");
+  assert.equal(entry("zero").sectionCount, 0);
+
+  for (const id of ["infinite", "text", "negative", "fraction", "boolean", "null"]) {
+    const refused = entry(id);
+    assert.equal(refused.chapterCount, undefined, `${id}: chapterCount is dropped`);
+    assert.equal(refused.sectionCount, undefined, `${id}: sectionCount is dropped`);
+    assert.equal(refused.title, "A queued plan", `${id}: the entry keeps its other fields`);
+  }
+
+  assert.equal(entry("untyped-next").nextSection, undefined, "a next step that is no string drops");
+  assert.equal(entry("spread").nextSection, "n".repeat(300), "whitespace collapses and trims");
+  assert.equal(
+    entry("wide").nextSection,
+    "w".repeat(MAX_INTAKE_NEXT_LENGTH),
+    "the plan file's own Next: bound holds",
+  );
+  assert.equal(entry("text").nextSection, undefined, "a field the store left out stays out");
+});
+
+test("a store count above the file's replaces the file's count and drops its stale next step", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const file = work.file(["docs", "plans"], WORKTREE_PLAN, elevenSectionDoc());
+  const named = { planPath: `docs/plans/${WORKTREE_PLAN}` };
+  work.store(
+    store([
+      goal({ id: "count", ...named, chapterCount: 9 }),
+      goal({ id: "next", ...named, chapterCount: 9, nextSection: "10. The charters" }),
+      goal({ id: "total", ...named, chapterCount: 9, sectionCount: 12 }),
+      goal({ id: "over", ...named, chapterCount: 15 }),
+      goal({ id: "untotalled", ...named, chapterCount: 9, sectionCount: 0 }),
+      goal({ id: "equal", ...named, chapterCount: 2, nextSection: "never drawn" }),
+      goal({ id: "lower", ...named, chapterCount: 1, sectionCount: 4 }),
+      goal({ id: "none", ...named }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const at = (id: string): PlanReading => live(queue?.readings.get(id));
+
+  assert.deepEqual(
+    [at("count").completed, at("count").sections, at("count").next],
+    [9, 11, null],
+    "the file's next step names a Chapter the worker has passed",
+  );
+  assert.equal(at("next").next, "10. The charters");
+  assert.equal(at("total").sections, 12);
+  assert.equal(at("total").completed, 9);
+  assert.equal(at("over").completed, 11, "held at the section total");
+  assert.deepEqual(
+    [at("untotalled").completed, at("untotalled").sections],
+    [9, 11],
+    "a store total of zero is no total, so the file's known one stands",
+  );
+
+  for (const id of ["equal", "lower", "none"]) {
+    const unchanged = at(id);
+    assert.equal(unchanged.completed, 2, `${id}: the file wins at an equal or higher count`);
+    assert.equal(unchanged.sections, 11, `${id}: and keeps its own section total`);
+    assert.equal(unchanged.next, "3. The executing-work skill", `${id}: and its own next step`);
+  }
+
+  // An overridden reading is still the file's document: its path and stat are the file's, so the
+  // in-flight and blocked rules age it by the file, and it is no store-only reading.
+  const count = queue?.readings.get("count");
+  assert.ok(count !== undefined && !count.archived);
+  assert.equal(count.path, file);
+  assert.equal(count.mtimeMs, statSync(file).mtimeMs);
+  assert.equal(count.heldSince, null);
+  assert.equal(count.fromStore, undefined);
+});
+
+test("an archived reading is never overridden by a store count", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const archivedFile = work.file(["docs", "archive"], WORKTREE_PLAN, elevenSectionDoc("Complete"));
+  work.store(
+    store([
+      goal({
+        planPath: WORKTREE_PLAN,
+        status: "active",
+        chapterCount: 9,
+        sectionCount: 11,
+        nextSection: "10. The charters",
+      }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.deepEqual(queue?.readings.get("goal-1"), {
+    archived: true,
+    root: work.dir,
+    path: archivedFile,
+    stem: "kit_mechanism-cut_v1",
+  });
+});
+
+test("a store-only reading holds its count at or below the store's section total", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.store(
+    store([
+      goal({ id: "over", status: "active", planPath: "over_v1.md", chapterCount: 15, sectionCount: 11 }),
+    ]),
+  );
+
+  const [queue] = createQueueReader().read([work.persona]);
+  const reading = live(queue?.readings.get("over"));
+  assert.deepEqual([reading.completed, reading.sections], [11, 11], "as an overridden file reading is");
+});
+
+test("an active entry whose plan has no file reads the store alone, and opens nothing for it", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.store(
+    store([
+      goal({
+        id: "worktree",
+        status: "active",
+        planPath: `D:\\wt\\docs\\plans\\${WORKTREE_PLAN}`,
+        chapterCount: 9,
+        sectionCount: 11,
+      }),
+      goal({ id: "paused", status: "paused", planPath: "paused_v1.md", chapterCount: 9 }),
+      goal({ id: "uncounted", status: "active", planPath: "uncounted_v1.md", sectionCount: 11 }),
+      goal({ id: "second", status: " ACTIVE ", planPath: "second_v1.md", chapterCount: 3 }),
+    ]),
+  );
+  const storeStat = statSync(path.join(work.dir, STORE_FILE_NAME));
+
+  const seam = seams();
+  const [queue] = createQueueReader(seam.options).read([work.persona]);
+  const reading = queue?.readings.get("worktree");
+  assert.ok(reading !== undefined && !reading.archived, "the active entry reads the store");
+  assert.equal(reading.fromStore, true);
+  assert.equal(reading.status, "In Progress");
+  assert.equal(reading.terminal, false);
+  assert.equal(reading.completed, 9);
+  assert.equal(reading.sections, 11);
+  assert.equal(reading.next, null);
+  assert.equal(reading.root, work.dir);
+  assert.equal(reading.stem, "kit_mechanism-cut_v1");
+  assert.equal(reading.mtimeMs, storeStat.mtimeMs, "the store file's own modification time");
+  assert.equal(reading.sizeBytes, storeStat.size);
+  assert.equal(reading.heldSince, null);
+  assert.equal(
+    reading.path,
+    places(work.dir, WORKTREE_PLAN)[0],
+    "a path per plan, so two store-only plans are two documents to the in-flight rule",
+  );
+
+  // Refused by `storeOnly`'s status test, then by its count test.
+  assert.equal(queue?.readings.has("paused"), false, "a paused entry reads nothing");
+  assert.equal(queue?.readings.has("uncounted"), false, "an entry with no count reads nothing");
+  const second = live(queue?.readings.get("second"));
+  assert.equal(second.sections, 0, "no section count is zero sections");
+  assert.notEqual(second.path, reading.path);
+
+  // The join's own four stats per name are the whole of the I/O: nothing is stat'd or opened for
+  // the store-only reading, and nothing outside the working folder is touched.
+  assert.deepEqual(seam.statted, [
+    ...places(work.dir, WORKTREE_PLAN),
+    ...places(work.dir, "paused_v1.md"),
+    ...places(work.dir, "uncounted_v1.md"),
+    ...places(work.dir, "second_v1.md"),
+  ]);
+  assert.deepEqual(seam.opened, []);
+});
+
+test("a plan file that is there and fails to parse is a file found, not a store-only plan", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.file(["docs", "plans"], WORKTREE_PLAN, "# no status header\n\n## Sections of Work\n");
+  work.store(store([goal({ status: "active", planPath: WORKTREE_PLAN, chapterCount: 9 })]));
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.equal(queue?.readings.has("goal-1"), false);
+});
+
+test("a store-only reading held over a torn store carries the store's hold instant", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  work.store(store([goal({ status: "active", planPath: WORKTREE_PLAN, chapterCount: 9 })]));
+  let clock = 5_000;
+  const reader = createQueueReader({ now: () => clock });
+  assert.equal(live(reader.read([work.persona])[0]?.readings.get("goal-1")).completed, 9);
+
+  clock = 9_000;
+  work.storeText('{"dev-plugin": {"goals": [{"id": "goal-1", "titl');
+  const [held] = reader.read([work.persona]);
+  const reading = held?.readings.get("goal-1");
+  assert.ok(reading !== undefined && !reading.archived);
+  assert.equal(held.heldSince, 9_000);
+  assert.equal(reading.heldSince, 9_000, "the reading is as old as the store it came from");
+});
+
+test("an overridden reading takes the word from a parked plan touched after its stale file", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const hour = 60 * 60 * 1_000;
+  const now = Date.now();
+  const worktreeFile = work.file(["docs", "plans"], WORKTREE_PLAN, elevenSectionDoc());
+  const parkedFile = work.file(["docs", "plans"], "parked_v1.md", elevenSectionDoc());
+  utimesSync(worktreeFile, (now - 3 * hour) / 1_000, (now - 3 * hour) / 1_000);
+  utimesSync(parkedFile, (now - 2 * hour) / 1_000, (now - 2 * hour) / 1_000);
+  work.store(
+    store([
+      goal({ id: "parked", planPath: "parked_v1.md" }),
+      goal({ id: "worktree", status: "active", planPath: WORKTREE_PLAN, chapterCount: 9 }),
+    ]),
+  );
+  const storeAt = now - hour;
+  utimesSync(path.join(work.dir, STORE_FILE_NAME), storeAt / 1_000, storeAt / 1_000);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.ok(queue !== undefined);
+  const status = personaStatus(queue, initialEventState(), now);
+  const word = (id: string): string | undefined =>
+    status.entries.find((entry) => entry.id === id)?.word;
+  assert.equal(word("worktree"), "in flight", "the store says the worker took a turn after the parked file moved");
+  assert.notEqual(word("parked"), "in flight");
+
+  // The block rule still ages the overridden reading by its own file, so the reading keeps that stat.
+  assert.equal(live(queue.readings.get("worktree")).mtimeMs, statSync(worktreeFile).mtimeMs);
+  const blocked = initialEventState();
+  const event: BoardEvent = {
+    root: work.dir,
+    plan: `docs/plans/${WORKTREE_PLAN}`,
+    event: "goal-blocked",
+    ts: new Date(now - 1.5 * hour).toISOString(),
+    session: null,
+    detail: null,
+  };
+  blocked.latest.set(eventKey(event.root, event.plan), event);
+  assert.equal(
+    personaStatus(queue, blocked, now).entries.find((entry) => entry.id === "worktree")?.word,
+    "blocked",
+    "a block newer than the file stands though the store moved after it",
+  );
+});
+
+test("only the entry the store calls active takes the store's turn time", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const hour = 60 * 60 * 1_000;
+  const now = Date.now();
+  const pausedFile = work.file(["docs", "plans"], "paused_v1.md", elevenSectionDoc());
+  const activeFile = work.file(["docs", "plans"], WORKTREE_PLAN, elevenSectionDoc());
+  utimesSync(pausedFile, (now - 3 * hour) / 1_000, (now - 3 * hour) / 1_000);
+  utimesSync(activeFile, (now - 2 * hour) / 1_000, (now - 2 * hour) / 1_000);
+  work.store(
+    store([
+      goal({ id: "paused", status: "paused", planPath: "paused_v1.md", chapterCount: 9 }),
+      goal({ id: "active", status: "active", planPath: WORKTREE_PLAN }),
+    ]),
+  );
+  const storeAt = now - hour;
+  utimesSync(path.join(work.dir, STORE_FILE_NAME), storeAt / 1_000, storeAt / 1_000);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.ok(queue !== undefined);
+  assert.equal(live(queue.readings.get("paused")).completed, 9, "the store still overrides the count");
+  const status = personaStatus(queue, initialEventState(), now);
+  const word = (id: string): string | undefined =>
+    status.entries.find((entry) => entry.id === id)?.word;
+  assert.equal(word("active"), "in flight", "a paused entry's retained count lends it no turn");
+  assert.notEqual(word("paused"), "in flight");
+});
+
+test("a store-only reading draws as in flight, and a store write never clears its block", (t) => {
+  const work = workdir();
+  t.after(work.cleanup);
+  const hour = 60 * 60 * 1_000;
+  const now = Date.now();
+  work.store(
+    store([goal({ status: "active", planPath: WORKTREE_PLAN, chapterCount: 9, sectionCount: 11 })]),
+  );
+  const storeAt = now - 2 * hour;
+  utimesSync(path.join(work.dir, STORE_FILE_NAME), storeAt / 1_000, storeAt / 1_000);
+
+  const [queue] = createQueueReader().read([work.persona]);
+  assert.ok(queue !== undefined);
+  const reading = live(queue.readings.get("goal-1"));
+  assert.equal(Math.round(reading.mtimeMs / 1_000), Math.round(storeAt / 1_000));
+
+  const word = (eventAt: number | null, kind: BoardEventKind = "goal-blocked"): string | undefined => {
+    const state = initialEventState();
+    if (eventAt !== null) {
+      const event: BoardEvent = {
+        root: work.dir,
+        plan: `docs/plans/${WORKTREE_PLAN}`,
+        event: kind,
+        ts: new Date(eventAt).toISOString(),
+        session: null,
+        detail: null,
+      };
+      state.latest.set(eventKey(event.root, event.plan), event);
+    }
+    return personaStatus(queue, state, now).entries[0]?.word;
+  };
+
+  assert.equal(word(null), "in flight", "the store-only reading's status satisfies started");
+  assert.equal(word(now - hour), "blocked", "a block newer than the store stands");
+  assert.equal(
+    word(now - 3 * hour),
+    "blocked",
+    "the store is rewritten every turn, the blocking one included, so its write says no Chapter landed",
+  );
+  assert.notEqual(word(now - hour, "goal-complete"), "blocked", "a goal-complete for the pair clears it");
 });

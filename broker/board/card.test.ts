@@ -1242,6 +1242,28 @@ test("an entry whose plan declares no sections draws its word alone", () => {
   assert.deepEqual(groups(body)[0]?.lines, ["- **unsectioned**", "  - up next"]);
 });
 
+test("an entry counting chapters out of no known total draws the count alone, singular at one", () => {
+  const drawn = (sections: number, completed: number): readonly string[] | undefined =>
+    groups(
+      card({
+        personas: [
+          persona({
+            name: "dev-plugin",
+            total: 1,
+            entries: [
+              entry({ title: "worktree", word: "in flight", reading: { sections, completed, next: null, heldSince: null } }),
+            ],
+          }),
+        ],
+      }),
+    )[0]?.lines;
+
+  assert.deepEqual(drawn(0, 9), ["- **worktree**", "  - in progress · 9 chapters"]);
+  assert.deepEqual(drawn(0, 1), ["- **worktree**", "  - in progress · 1 chapter"]);
+  assert.deepEqual(drawn(0, 0), ["- **worktree**", "  - in progress"]);
+  assert.deepEqual(drawn(11, 9), ["- **worktree**", "  - in progress · 9/11"]);
+});
+
 test("a reason draws on a blocked entry and nowhere else", () => {
   const body = card({
     personas: [

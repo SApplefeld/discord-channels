@@ -171,6 +171,14 @@ function heldRoot(latest: ReadonlyMap<string, BoardEvent>, workdir: string): str
  * root spelling the events are keyed under. An entry with no parsed plan reading takes no event,
  * because the rule reads the document's own modification time to decide whether a block has since
  * cleared and an archived entry carries none. Such an entry is already done anyway.
+ *
+ * A reading taken from the store alone never clears a block by its modification time. That time is
+ * the store file's, which the plugin rewrites at every turn end, the blocking turn's included, so it
+ * says the worker took a turn and not that a Chapter landed. Such a block clears only on a
+ * `goal-complete` for the pair, or once the entry stops drawing from the store alone: the store stops
+ * calling it active or drops its `chapterCount`, or a file for its plan appears in one of the four
+ * places and its own time decides. The in-flight rule still ages the reading by the store, since
+ * there the question is whether the worker is taking turns.
  */
 function eventBlocked(
   reading: QueuePlanReading | undefined,
@@ -179,7 +187,8 @@ function eventBlocked(
   now: number,
 ): boolean {
   if (root === null || reading === undefined || reading.archived) return false;
-  return blockedAt({ reading: { ...reading, root }, heldSince: null }, events, now) !== null;
+  const mtimeMs = reading.fromStore === true ? Number.NEGATIVE_INFINITY : reading.mtimeMs;
+  return blockedAt({ reading: { ...reading, root, mtimeMs }, heldSince: null }, events, now) !== null;
 }
 
 /**
@@ -228,17 +237,23 @@ function reason(value: string | undefined): string | null {
 /**
  * The entry that draws as running, as an index into the drawn entries, or -1 when none does.
  *
- * The document decides it, not the store: the entry whose plan document says `In Progress` and moved
- * last is the one a worker is on, and a plan document moves when its Chapter or its status is
- * written. Two entries joined to one document are one document, whatever the two stats behind them
- * read, so they tie and the earlier entry in queue order takes the word. Within one tick the reader
- * stats each entry rather than each file, so a document saved between two of those stats would
- * otherwise hand one file two modification times and let the later entry outrank the earlier one for
- * the same work.
+ * The document decides it, save the one case below: the entry whose plan document says
+ * `In Progress` and moved last is the one a worker is on, and a plan document moves when its Chapter
+ * or its status is written. Two entries joined to one document are one document, whatever the two
+ * stats behind them read, so they tie and the earlier entry in queue order takes the word. Within one
+ * tick the reader stats each entry rather than each file, so a document saved between two of those
+ * stats would otherwise hand one file two modification times and let the later entry outrank the
+ * earlier one for the same work.
  *
  * A document is identified by the path it was read from, which the join builds under the persona's
  * own working folder, so two entries naming one file carry one path. Its instant is the newest any
  * entry read it at, which is the freshest observation of the same file.
+ *
+ * The store's time counts in two places. A reading from the store alone carries it as its own
+ * `mtimeMs`. A reading the store overrode on the entry it calls active carries it as `turnedAtMs`:
+ * its worker is in a linked worktree, so the file under the working folder stays where the worktree
+ * was cut, and the store's time, rewritten at every turn end, says the worker is still on it. Such a
+ * reading's instant is the later of the two. The blocked rule never reads `turnedAtMs`.
  *
  * With no such document anywhere in the queue, the plugin's own `activeGoalId` is the only thing
  * left that says which entry is being worked, and it draws only when the entry it names is still
@@ -257,7 +272,9 @@ function inFlight(
     if (words[index] !== null) continue;
     const reading = readings.get(entry.id);
     if (!started(reading)) continue;
-    const at = touchedAt(reading.mtimeMs);
+    const turned =
+      reading.turnedAtMs === undefined ? Number.NEGATIVE_INFINITY : touchedAt(reading.turnedAtMs);
+    const at = Math.max(touchedAt(reading.mtimeMs), turned);
     open.push({ at, index, path: reading.path });
     const held = newest.get(reading.path);
     if (held === undefined || at > held) newest.set(reading.path, at);
