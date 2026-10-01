@@ -285,6 +285,11 @@ anything that can set `CHANNEL_SESSION_MIRROR` for a session influences whether 
 mirrored, and anything that can set `CHANNEL_MIRROR` in the broker's own environment influences the
 host.
 
+`CHANNEL_LAUNCH_FLAG` is a route choice rather than a privacy surface. Anything that can set the
+operator's copy chooses whether the wrapper loads the relay through the managed allowlist or through
+the development flag, a choice between two routes on the execution chain below rather than a new
+one.
+
 No key stronger than the token is available to close this. The mirror hooks are `http` hooks whose
 only credential is an environment variable Claude Code interpolates into a header, and any variable
 the wrapper set would be inherited by exactly the subprocesses this describes.

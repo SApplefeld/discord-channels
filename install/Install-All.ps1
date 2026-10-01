@@ -391,8 +391,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Host ""
     Write-Host "If the thread never appears, the Discord side is the usual cause; re-check step 1"
     Write-Host "of docs/install.md: Message Content Intent enabled on the bot, the bot invited with"
-    Write-Host "thread permissions, and the channel private to you and the bot. If this host's"
-    Write-Host "entry in wrapper\Enter-ClaudeSession.ps1's channel-flag table still carries the"
-    Write-Host "development flag, run docs/install.md's per-host checklist before moving it to"
-    Write-Host "--channels."
+    Write-Host "thread permissions, and the channel private to you and the bot. If this host sets"
+    Write-Host "CHANNEL_LAUNCH_FLAG to the development flag, run docs/install.md's per-host checklist"
+    Write-Host "before clearing it."
 }

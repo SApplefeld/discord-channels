@@ -28,19 +28,21 @@ const WRAPPER_PATH = path.join(WRAPPER_DIR, "Enter-ClaudeSession.ps1");
 const PROBE_TIMEOUT_MS = 30_000;
 
 /**
- * Runs Enter-ClaudeSession on a host carrying the given channel flag and returns the argument list
- * the shadowed `claude` was called with. The flag is written into the host table after the
- * dot-source, so the probe pins each route's launch line regardless of which flag any host's
- * table entry carries in the checkout.
+ * Runs Enter-ClaudeSession with CHANNEL_LAUNCH_FLAG set to the given value, or unset where it is
+ * undefined, on a machine named `hostName`, and returns what the shadowed `claude` was called with.
+ * `args` is null when `claude` was never called; `status` and `stderr` are the probe's own.
  */
-function launchArgs(directory: string, flag: string): { args: string[]; stateRoot: string } {
-  const outPath = path.join(directory, `args-${flag.replace(/[^a-z]/g, "")}.txt`);
+function runLaunch(
+  directory: string,
+  flag: string | undefined,
+  hostName = "NEO",
+): { args: string[] | null; stateRoot: string; status: number | null; stderr: string } {
+  const outPath = path.join(directory, "args.txt");
   const stateRoot = path.join(directory, "localappdata");
-  const scriptPath = path.join(directory, `probe-${flag.replace(/[^a-z]/g, "")}.ps1`);
+  const scriptPath = path.join(directory, "probe.ps1");
 
   const lines = [
     `. "${WRAPPER_PATH}"`,
-    `$script:ChannelFlagByHost['NEO'] = '${flag}'`,
     `function Assert-InstalledHookPath { param([string]$SettingsPath) }`,
     `function Assert-InstalledMirrorSwitch { param([string]$SettingsPath) }`,
     `function Assert-HookScriptProtected { }`,
@@ -60,9 +62,17 @@ function launchArgs(directory: string, flag: string): { args: string[]; stateRoo
   delete env.CHANNEL_SESSION;
   delete env.CHANNEL_PROCESS_TOKEN;
   delete env.CHANNEL_SESSION_MIRROR;
-  // Resolve-ChannelHost throws on a COMPUTERNAME outside its known set, which the machine running
-  // this suite may or may not have; naming a known host keeps the probe independent of it.
-  env.CHANNEL_HOST_NAME = "NEO";
+  // Removed under every casing so the probe's own value, or its absence, is the only one the
+  // wrapper can see, whatever the machine running this suite has set.
+  for (const key of Object.keys(env)) {
+    const upper = key.toUpperCase();
+    if (upper === "CHANNEL_LAUNCH_FLAG" || upper === "CHANNEL_HOST_NAME" || upper === "COMPUTERNAME") {
+      delete env[key];
+    }
+  }
+  if (flag !== undefined) env.CHANNEL_LAUNCH_FLAG = flag;
+  env.CHANNEL_HOST_NAME = hostName;
+  env.COMPUTERNAME = hostName;
   // Removed under every casing before the override lands, so the probe cannot write a registration
   // into the operator's real state root on a host whose inherited spelling differs.
   for (const key of Object.keys(env)) {
@@ -81,8 +91,24 @@ function launchArgs(directory: string, flag: string): { args: string[]; stateRoo
     `PowerShell was killed after ${PROBE_TIMEOUT_MS}ms; the claude shadow likely did not intercept ` +
       "the launch and a real process hung",
   );
-  assert.equal(result.status, 0, `PowerShell exited ${result.status}: ${result.stderr}`);
-  return { args: readFileSync(outPath, "utf8").split("\n"), stateRoot };
+  return {
+    args: existsSync(outPath) ? readFileSync(outPath, "utf8").split("\n") : null,
+    stateRoot,
+    status: result.status,
+    stderr: result.stderr,
+  };
+}
+
+/** A launch that must succeed: asserts a clean exit and returns the argument list. */
+function launchArgs(
+  directory: string,
+  flag: string | undefined,
+  hostName?: string,
+): { args: string[]; stateRoot: string } {
+  const run = runLaunch(directory, flag, hostName);
+  assert.equal(run.status, 0, `PowerShell exited ${run.status}: ${run.stderr}`);
+  assert.ok(run.args, "the claude shadow was never called");
+  return { args: run.args, stateRoot: run.stateRoot };
 }
 
 test("a host on the development flag registers the relay and passes its server entry", (t) => {
@@ -101,21 +127,6 @@ test("a host on the development flag registers the relay and passes its server e
   ]);
 });
 
-test("a host on the plain channel flag passes the plugin entry and no --mcp-config", (t) => {
-  // The plugin carries the same server. Registering it on the command line as well would start a
-  // second relay against the one session, so the entry travels alone.
-  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-launch-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-
-  const { args } = launchArgs(dir, "--channels");
-  assert.deepEqual(args, [
-    "--name",
-    "probe-session",
-    "--channels",
-    "plugin:relay@sapplefeld-channels",
-  ]);
-});
-
 test("the relay registration is written on the plugin route too, since the shim reads it", (t) => {
   // plugins/relay/launch.mjs resolves the machine's live relay from this file. It is not passed to
   // `claude` on this route, and it still has to be on disk and current, or the plugin's channel
@@ -130,4 +141,51 @@ test("the relay registration is written on the plugin route too, since the shim 
     mcpServers: Record<string, { command: string; args: string[] }>;
   };
   assert.deepEqual(Object.keys(config.mcpServers), ["channel-relay"]);
+});
+
+test("a machine outside the fleet launches on the plain channel flag with nothing configured", (t) => {
+  // A client host must launch without an edit to this checkout: an edited checkout is a dirty tree,
+  // and Repair-Broker.ps1 -Pull refuses to update a dirty tree. The plugin carries the relay's
+  // server, so the entry travels with no --mcp-config: registering it on the command line as well
+  // would start a second relay against the one session.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-launch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const { args } = launchArgs(dir, undefined, "ACME-SANDBOX");
+  assert.deepEqual(args, [
+    "--name",
+    "probe-session",
+    "--channels",
+    "plugin:relay@sapplefeld-channels",
+  ]);
+});
+
+test("the plain channel flag named explicitly launches the same line as leaving it unset", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-launch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const { args } = launchArgs(dir, "--channels");
+  assert.deepEqual(args, [
+    "--name",
+    "probe-session",
+    "--channels",
+    "plugin:relay@sapplefeld-channels",
+  ]);
+});
+
+test("a CHANNEL_LAUNCH_FLAG that is not a channel flag refuses the launch", (t) => {
+  // A misspelt flag that fell back to --channels would launch a host meant for the development
+  // route onto a channel its missing plugin refuses, which looks healthy from every surface.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-launch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const run = runLaunch(dir, "--channel");
+  assert.notEqual(run.status, 0, "the wrapper launched on a misspelt flag");
+  // PowerShell wraps a thrown message across lines at the console width, so the tokens are read
+  // from the stream with its whitespace collapsed.
+  const stderr = run.stderr.replace(/\s+/g, " ");
+  for (const token of ["CHANNEL_LAUNCH_FLAG", "'--channel'", "--channels", "--dangerously-load-development-channels"]) {
+    assert.ok(stderr.includes(token), `the refusal does not name ${token}: ${run.stderr}`);
+  }
+  assert.equal(run.args, null, "claude was called despite the refusal");
 });

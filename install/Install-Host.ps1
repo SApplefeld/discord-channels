@@ -17,9 +17,8 @@ Does not register the scheduled task; run Register-BrokerTask.ps1 separately, fr
 session, once this has completed.
 
 .PARAMETER HostName
-The label this host's sessions carry on every surface. One of NEO, ASR, or SCOTT per the plan, but
-not restricted to those: an unrecognized value is still a valid CHANNEL_HOST_NAME, it just needs an
-entry in wrapper/Enter-ClaudeSession.ps1's channel-flag table to launch a session from.
+The label this host's sessions carry on every surface. Any name is valid: the launch wrapper does
+not read it, and picks its channel flag from the machine's CHANNEL_LAUNCH_FLAG variable instead.
 
 .PARAMETER ChannelId
 The Discord channel this host's threads are opened in. A snowflake (17-20 digits).

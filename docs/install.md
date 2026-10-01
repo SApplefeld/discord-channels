@@ -61,10 +61,11 @@ account.
 prompt, reply and tool approval in it, a participant included, because the roster governs who
 writes and never who reads. So a client's people must never share a channel, a server or a bot with
 your own fleet, or with another client's. Give each client a Discord server of their own, create a
-bot for it under step 1, and run a broker on a host that serves only that client's sessions. The
-launch wrapper picks each host's channel flag from its host table (`$script:ChannelFlagByHost` in
-`wrapper/Enter-ClaudeSession.ps1`) and refuses to launch on a machine the table does not name, so a
-client machine needs its own entry there before step 4.
+bot for it under step 1, and run a broker on a host that serves only that client's sessions. A
+client machine needs no edit to this checkout: the launch wrapper takes plain `--channels` on every
+machine unless that machine's own `CHANNEL_LAUNCH_FLAG` variable says otherwise, as
+[The launch dialog](#the-launch-dialog) describes. Keep the checkout unedited, because
+`Repair-Broker.ps1 -Pull` will not update a checkout with local changes.
 
 **The response gate is off until you turn it on.** With several people in one thread, a session
 would otherwise take a turn on every message. `CHANNEL_RESPONSE_GATE` holds a thread's messages and
@@ -147,9 +148,8 @@ malformed ID or port on disk naming the key. An argument you supply always wins,
 rebound to a different channel.
 
 Step 1 stays manual either way (it is Discord's web console), and a host still runs the per-host
-verification checklist under "The relay as a plugin" before its wrapper table entry moves to plain
-`--channels`. The sections below describe what the one command does, and remain the way to run any
-piece alone.
+verification checklist under "The relay as a plugin" on its first wrapped launch. The sections
+below describe what the one command does, and remain the way to run any piece alone.
 
 ## 2. Provision the host
 
@@ -359,16 +359,28 @@ The file this project needs:
 }
 ```
 
-The wrapper picks the flag from a table keyed by host name
-(`wrapper/Enter-ClaudeSession.ps1`, `$script:ChannelFlagByHost`), and that flag decides the rest of
-the launch line. On `--dangerously-load-development-channels` the wrapper passes the generated
-`--mcp-config` and the entry `server:channel-relay`. On plain `--channels` it passes
-`plugin:relay@sapplefeld-channels` and no `--mcp-config`, because the plugin carries the same
-server and registering it twice would run two relays against one session. Every host in the table
-carries plain `--channels`, because `Install-All.ps1` installs and allowlists the plugin and an
+The wrapper launches every machine with plain `--channels` unless the machine's
+`CHANNEL_LAUNCH_FLAG` environment variable names `--dangerously-load-development-channels`, and
+that flag decides the rest of the launch line. Any other value in the variable refuses the launch,
+so a misspelt flag never quietly falls back. On `--dangerously-load-development-channels` the
+wrapper passes the generated `--mcp-config` and the entry `server:channel-relay`. On plain
+`--channels` it passes `plugin:relay@sapplefeld-channels` and no `--mcp-config`, because the plugin
+carries the same server and registering it twice would run two relays against one session. Plain
+`--channels` is the default because `Install-All.ps1` installs and allowlists the plugin, and an
 installed plugin's relay loads in every session regardless of route, which makes the development
 flag beside it exactly that double registration. A new host runs the verification below on its
-first wrapped launch. Add a new host to that table rather than branching elsewhere.
+first wrapped launch.
+
+The variable lives in the machine's user environment, not in this checkout and not in
+`broker.env`. An edit to the checkout leaves it with local changes, which `Repair-Broker.ps1 -Pull`
+refuses to update. The installer rewrites `broker.env` keeping only the broker's own keys, so a flag
+written there would vanish on the next install. Set it, then open a fresh shell:
+
+```powershell
+[Environment]::SetEnvironmentVariable('CHANNEL_LAUNCH_FLAG', '--dangerously-load-development-channels', 'User')
+```
+
+Clear it with the same call and `$null` as the value.
 
 ## The relay as a plugin
 
@@ -417,10 +429,10 @@ edit removes it.
 plain `--channels` before its plugin is installed and allowlisted has its channel refused, and then
 the session starts, the hooks announce it, the thread opens and the card ticks, and messages typed
 into the thread reach nothing. That is the same shape as the `channelsEnabled` failure
-[`operations.md`](operations.md) describes. So verify a host before its table entry moves:
+[`operations.md`](operations.md) describes. So verify a host on its first wrapped launch:
 
 1. Install the marketplace and the plugin on that host, and write the managed-settings file above.
-2. Point that host's entry in `$script:ChannelFlagByHost` at `--channels` and launch through the
+2. Make sure that host's `CHANNEL_LAUNCH_FLAG` is unset or `--channels`, and launch through the
    wrapper, from a freshly dot-sourced shell. The wrapper is the only route worth testing: a
    session started without it carries no process token, so it gets no thread and there is nothing
    to answer.
@@ -434,6 +446,6 @@ into the thread reach nothing. That is the same shape as the `channelsEnabled` f
    `mcp__plugin_relay_channel-relay__reply`. A session that instead parks its reply on a permission
    prompt is showing you the rule name Claude Code built; if it is not the shipped rule, that
    observed name replaces the plugin-scoped one in the six places above.
-5. If any check fails, put the entry back on `--dangerously-load-development-channels` before
-   working on the host again, and expect the first reply there to raise a permission prompt: the
-   development route's rule is not installed.
+5. If any check fails, set that host's `CHANNEL_LAUNCH_FLAG` to
+   `--dangerously-load-development-channels` before working on the host again, and expect the first
+   reply there to raise a permission prompt: the development route's rule is not installed.
