@@ -730,7 +730,12 @@ means are listed in [`operations.md`](operations.md) under the persona view.
 
 The renderer is deterministic. No agent, no model call, and no token spend sit anywhere in the path
 between a plan file and the card, so what the card says is what the documents say, and a card that
-disagreed with the plan tree would be a bug rather than a judgment call.
+disagreed with the plan tree would be a bug rather than a judgment call. The persona view departs
+from the plan tree by design where a worker's store is ahead of it. Where the store counts more
+Chapters than the plan file under its `workdir`, or holds a count for an active entry whose plan
+has no file there, the card draws the store's figures. The plugin counts the copy of the plan the
+worker writes, a linked worktree's included, so the card follows that copy and not the stale one
+beside the store.
 
 The folder view reads two kinds of file. The first is `docs/plans/*.md` under each configured project
 root, parsed against the kit's frozen v1 plan-doc machine contract: the `Status` header, the sections
@@ -778,8 +783,10 @@ held marker whose age climbs, so the operator sees staleness instead of a plan t
 moving. The blocked marker is set by a `goal-blocked` event and cleared by a newer plan modification
 time or by the goal completing, with a stamp from the future taken as now, since otherwise one bad
 timestamp would pin the marker permanently. A persona entry drawn from its store alone is the
-exception: the store is rewritten every turn, so its marker clears only on the goal completing, the
-entry leaving the store's active status, or the store dropping its Chapter count.
+exception: the store is rewritten every turn, so its marker clears only on the goal completing or
+on the entry ceasing to draw from the store alone. That happens when the entry leaves the store's
+active status, when the store drops its Chapter count, or when a file for its plan appears in one of
+the four folders, which then decides the marker as any plan file does.
 
 Order is decided at the card and nowhere else. The sweep lists a root's plans by name, and that
 listing is what the per-root cap is defined against, so it stays name-ordered and the renderer sorts

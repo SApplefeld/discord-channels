@@ -175,9 +175,10 @@ function heldRoot(latest: ReadonlyMap<string, BoardEvent>, workdir: string): str
  * A reading taken from the store alone never clears a block by its modification time. That time is
  * the store file's, which the plugin rewrites at every turn end, the blocking turn's included, so it
  * says the worker took a turn and not that a Chapter landed. Such a block clears only on a
- * `goal-complete` for the pair, or once the store stops calling the entry active or drops its
- * `chapterCount`, either of which leaves it no reading. The in-flight rule still ages the reading
- * by the store, since there the question is whether the worker is taking turns.
+ * `goal-complete` for the pair, or once the entry stops drawing from the store alone: the store stops
+ * calling it active or drops its `chapterCount`, or a file for its plan appears in one of the four
+ * places and its own time decides. The in-flight rule still ages the reading by the store, since
+ * there the question is whether the worker is taking turns.
  */
 function eventBlocked(
   reading: QueuePlanReading | undefined,
@@ -248,11 +249,11 @@ function reason(value: string | undefined): string | null {
  * own working folder, so two entries naming one file carry one path. Its instant is the newest any
  * entry read it at, which is the freshest observation of the same file.
  *
- * A reading the store overrode on the entry it calls active is the one place the store's time
- * counts. Its worker is in a linked worktree, so the file under the working folder stays where the
- * worktree was cut, and the store's `turnedAtMs`, rewritten at every turn end, is the time that says
- * the worker is still on it. Such a reading's instant is the later of the two. The blocked rule never
- * reads `turnedAtMs`.
+ * The store's time counts in two places. A reading from the store alone carries it as its own
+ * `mtimeMs`. A reading the store overrode on the entry it calls active carries it as `turnedAtMs`:
+ * its worker is in a linked worktree, so the file under the working folder stays where the worktree
+ * was cut, and the store's time, rewritten at every turn end, says the worker is still on it. Such a
+ * reading's instant is the later of the two. The blocked rule never reads `turnedAtMs`.
  *
  * With no such document anywhere in the queue, the plugin's own `activeGoalId` is the only thing
  * left that says which entry is being worked, and it draws only when the entry it names is still

@@ -1,6 +1,6 @@
 # The board card draws a worker's plan progress from the worker's own store reading
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-01
 
@@ -40,7 +40,7 @@ Provenance: distilled by the ARCHITECT persona on 2026-10-01 from the ASSISTANT 
 
 ## Standing Brief Amendments
 
-- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair, the entry leaving the store's `active` status, or the store dropping its `chapterCount`, and the in-flight rule still ages the reading by the store.
+- A reading the store alone gives never clears a `goal-blocked` block by its modification time; it clears only on a `goal-complete` for the pair or the entry ceasing to draw from the store alone (the entry leaving the store's `active` status, the store dropping its `chapterCount`, or a file for its plan appearing in one of the four places, whose own time then decides), and the in-flight rule still ages the reading by the store.
 - A store `sectionCount` of zero leaves the file's known section total in place, since a zero total is no newer reading of it.
 - A store-only reading carries the store's hold instant as its `heldSince`, so a torn store ages that line as it ages any held reading.
 - `docs/security-model.md` states the three fields' intake rule in a paragraph of its own under the first property, beside the lead paragraph's naming of them.
@@ -97,6 +97,10 @@ Tests: the three count forms, and the cost bound holding.
 - assumed 2026-10-01 (default): the store-only reading takes the store file's modification time as its stat, so the in-flight rule ages it by the store; the blocked half was reversed by the operator's ruling of 2026-10-01 under Intent, and a store-only reading never clears a block by that time; reversal: one assignment.
 - assumed 2026-10-01 (default): the count-without-total form is `<n> chapters`; reversal: one template string. Swap menu: `chapter <n>`, `<n> done`.
 - assumed 2026-10-01 (default): the blind read and the plan review are skipped, since the spec is two sections over one module and one renderer form; the plugin's companion plan skipped them on the same ground.
+
+## Related plans
+
+- [`channels_board-worker-queues_spec_v1.md`](channels_board-worker-queues_spec_v1.md) built the queue reader and persona view this plan extends with the store's progress fields.
 
 ## Operator Verification
 
@@ -157,3 +161,19 @@ Delta: as Chapter 1's reading; kit-size measured no corpus in this repository.
 - Live dispatches: fix-round adversarial over a6e78df..0c06120 (Workflow wf_0d83f72a-dd0, fable high).
 - Gate: targeted lane 187/187 exit 0, tsc exit 0, at 0c06120 on a clean tree, 2026-10-01 ~17:45 -04:00.
 - Next: adjudicate the fix round; Minor pass from .kit/scratch/board-worktree-progress/finishing/minors.md (fix: store-only block test's goal-complete leg, security-model's literal 400, the third clearing route in docs and the status.ts comment); docs curation; final Chapter, archive, whole gate; mark PR #36 ready and arm auto-merge.
+
+### Chapter 3 - 2026-10-01
+Completed: finishing-work. Both sections pass their acceptance; the work is on PR #36 under Branch-and-PR.
+Implemented By: main session for every finishing fix
+Metrics: finishing review rounds 4 after the final adversarial (fix rounds 2, 3 and 4 over 0c06120, 81b725c and a2cec1b); provenance 1 fix-introduced Major fixed (round 2, turnedAtMs on every overridden entry), 1 Major refuted with receipts (round 3), 1 Major adopted as a revert (round 4); advisory: security CLEAR, performance CLEAR; NEEDS_CONTEXT 1 (scope adjudicator, brief defect); escalations 0; consults 0
+Decisions / Surprises: Base ref 525c05e (merge-base with main); the changeset sits inside the union of the sections' Files in scope plus the plan doc and docs indexes. Round 2 (fix round over 0c06120): Major, preferNewer stamped turnedAtMs on every overridden reading, so a paused entry with a stale file and a retained chapterCount took the in-flight word; fixed in 81b725c by stamping only the entry the store calls active. Round 3: Major, the round-limit status ("blocked", "Max rounds reached") as ordinary running, read from status.ts; widened in a2cec1b. Round 4 traced the plugin itself (D:gent_persona at ebbabc9): the only writer of that reason, hooks/index.ts:10247-10261, is guarded by !planEntry and calls activateNext in the same write, and chapterCount is written only on the plan holder (index.ts:10382-10384), so the widening changed nothing reachable and could tie a frozen holder with the newly active leaf on an older controller's store. Reverted in a5ef662; round 3's Major is recorded as refuted against the contract's owner. A fifth round was not run: the code at a5ef662 is 81b725c's plus comment rewraps, which round 3 reviewed. Docs curation: D1 (a fourth clearing route, a plan file appearing in one of the four folders) and D3 (the persona view departs from the plan tree by design) accepted as the curator wrote them in architecture.md and operations.md, with status.ts's comment and the amendment carrying D1; D2 (status.ts called the overridden reading "the one place the store's time counts" though a store-only reading carries it too) fixed in the comment; H1 added the Related plans section. Adjacent: docs/plans/README.md's "most recently archived" pointer was corrected in an earlier commit of this branch; this close rewrites the pointer anyway (undo: git revert of this commit's README hunk).
+Failed approaches: tried keying the store's turn time and store-only reading on a round-limited status too, failed because the plugin never round-limits a plan entry and moves the active mark in the same write, learned to read a status's meaning from the plugin that writes it rather than from a consumer of it.
+Assumptions:
+- assumed 2026-10-01 (default, finishing): the in-flight aging fix (0c06120) adopted under declare on the scope adjudicator's ask conditioned on an Approach choice the Approach does not record; reversal: git revert 0c06120 81b725c.
+Review Findings: final adversarial (fable, Workflow high): 1 Major fixed in 0c06120. Fix rounds (fable, Workflow high, adversarial-reviewer): round 2 1 Major fixed, 4 Minors fixed (blocked-rule pin, operations aging clause, status.ts rewrap, null arm now reachable); round 3 1 Major refuted by round 4's plugin trace, 2 Minors fixed (security-model names MAX_INTAKE_NEXT_LENGTH, rewraps); round 4 1 Major adopted as the revert, 4 Minors moot after it. Finishing Minor list: goal-complete leg added, literal 400 replaced, third and fourth clearing routes named; left as Chapter 1 records: transient-stat fall-through, unreachable store.held narrow, nextSection collapse walk, absent closure allocation.
+Stamps: adjudicated 0 new this chapter, stamped 0
+Gate: whole gate at the close tree over a5ef662: npm run lint exit 0; npm test 2359 tests, 2358 pass, 0 fail, 1 skipped, exit 0 (QA baseline 2357/2356/0/1). Contention: the process poll found a foreign node --test run (another repository's test/archive-chain.test.js suite, pid 6184) and the suite ran beside it rather than after it; both exits were 0. Targeted lane (queues, status, card, thread) 188/188 exit 0, tsc exit 0, at a5ef662. Tests added this chapter: "only the entry the store calls active takes the store's turn time" (red before 81b725c), the blocked-rule leg on the overridden reading, the goal-complete leg on the store-only block test. Spawning tests added: 0. Retired: the round-limit test with the a2cec1b revert.
+Recap: The Fleet: Board card now draws a worktree worker's plan progress from the Chapter count, section total and next step its plugin writes to the store, over the launch folder's stale file; an active entry with no file draws from the store alone; a store-only block clears only on goal-complete or the entry ceasing to draw from the store alone; and the store's turn time places the active entry in flight.
+Operator verification: see ## Operator Verification (one live board read across two section closes).
+Next: none
+Commit Model: Branch-and-PR
