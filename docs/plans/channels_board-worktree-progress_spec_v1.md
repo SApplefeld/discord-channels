@@ -96,3 +96,12 @@ Tests: the three count forms, and the cost bound holding.
 - None. The field names are fixed under Assumptions and shared with the plugin's plan.
 
 ## Chapters
+
+### Interim board 1 - 2026-10-01
+
+- Section 1: round 1 adjudicated, held on one operator decision. The blind reviewer's Major (orchestrator-traced: Goal sentence 1, new-requirement as it reverses the Assumption at line 86): a store-only reading's `mtimeMs` is the store file's, and `blockedAt` (`broker/board/card.ts:422`) clears an event-found block once that passes the event, so a store-only block clears at the next turn-end store write. Scope adjudicator ruled ask (fable, Agent tool); asked of the operator on the relay thread, expert ask to ARCHITECT, notice to STEWARD. Recommended form if approved: in `status.ts`'s event-block check, a `fromStore` reading passes `mtimeMs` negative infinity to `blockedAt`, leaving the in-flight rule on the store's mtime. The other Major (store `sectionCount` 0 erased the file's total) is fixed in 3c88669.
+- Section 2: round 1 adjudicated, Minors only; close pass done in 3c88669. Closes with section 1.
+- Live dispatches: none.
+- Gate: targeted lane (queues, status, card, thread tests) 186/186, exit 0, tsc exit 0, at 3c88669 on a clean tree, 2026-10-01 ~16:10 -04:00, no foreign runner on the box.
+- Rulings adopted: none yet.
+- Next: on the operator's answer, apply or record the ruling, re-run the lane, write Chapters 1 and 2, then finishing-work. PR #36 is open as a draft with auto-merge off.
