@@ -637,6 +637,14 @@ export type HandlerOptions = {
    * turn. It lets the keeper stop that thread's indicator at once instead of at the next refresh.
    */
   turns?: { opened: (sessionId: string) => void; closed: (sessionId: string) => void };
+  /**
+   * The status reader's one seam: where a credited session's transcript lives, taught from the same
+   * credited post and under the same gate as `tail.learn`, and independent of it. The reader runs
+   * for every session whose path it has been taught, mirror-on or mirror-off, and whether or not the
+   * tailer exists on this host, so it needs its own seam rather than riding the tailer's. Optional
+   * for the reason every other seam here is: the broker wires it only where Discord is configured.
+   */
+  status?: { learn: (sessionId: string, path: string) => void };
 };
 
 /**
@@ -645,10 +653,11 @@ export type HandlerOptions = {
  * too: it is operator prose off the transcript, held for one display surface, and a debugging route
  * that anything on this machine can read is not that surface. The open-turn stamp is withheld the
  * same way: it is held for the typing keeper alone, and no consumer of this route reads it. The
+ * harness notice is withheld too: it is held for the card alone. The
  * title, unlike the goal, is published on purpose: it is session identity of the same class as
  * `name`, which this route already publishes, not operator prose held for one display surface.
  */
-export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal" | "turnActiveAt">;
+export type PublicSessionRecord = Omit<SessionRecord, "processToken" | "goal" | "turnActiveAt" | "harnessNotice">;
 
 export function redact(record: SessionRecord): PublicSessionRecord {
   // Field by field rather than by deleting from a copy, so a field added to SessionRecord has to
@@ -1114,6 +1123,11 @@ export function createHandler(
       // re-learns it from the very next hook post.
       if (options.tail !== undefined && parsed.intake.transcriptPath !== null) {
         options.tail.learn(record.sessionId, parsed.intake.transcriptPath);
+      }
+      // The status reader learns on the same credited-post bar, and on its own seam, so a host with
+      // no tailer still reads harness error lines and mid-turn pickups.
+      if (options.status !== undefined && parsed.intake.transcriptPath !== null) {
+        options.status.learn(record.sessionId, parsed.intake.transcriptPath);
       }
       // The emission-time question alert, from a credited PreToolUse post alone. The question
       // hook carries the per-session mirror switch because its payload is conversation text, and

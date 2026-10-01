@@ -45,6 +45,12 @@ export type SessionView = {
    */
   turnActiveAt: number | null;
   /**
+   * The one fixed-wording line an open harness error episode posted to the thread, mirroring
+   * `SessionRecord.harnessNotice`, and null while no episode is open. Drawn on the card under the
+   * state.
+   */
+  harnessNotice: string | null;
+  /**
    * The session's own title, as a `custom-title` transcript line last set it (launch `--name` or an
    * in-session `/rename`), and null for a session neither has touched. `displayName` prefers this
    * over `name` when it is set.
@@ -103,6 +109,7 @@ export function toView(record: SessionRecord, signals: ViewSignals = {}): Sessio
     backgroundTasks: record.backgroundTasks,
     goal: record.goal,
     turnActiveAt: record.turnActiveAt,
+    harnessNotice: record.harnessNotice,
     title: record.title,
     needsAttention: signals.needsAttention ?? false,
     blocked: signals.blocked ?? false,

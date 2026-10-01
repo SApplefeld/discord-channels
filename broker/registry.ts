@@ -273,6 +273,15 @@ export type SessionRecord = {
    */
   turnActiveAt: number | null;
   /**
+   * The one fixed-wording line an open harness error episode posted to the session's thread, and
+   * null while no episode is open. Set and cleared by the status reader through `noteHarnessNotice`
+   * and drawn on the card under the state. Composed from structured fields alone, never from the
+   * error's own text. Never persisted, never logged and never published on `GET /sessions`: an
+   * episode is a fact about the running harness, and one restored after a restart would draw a
+   * retry time that has long passed.
+   */
+  harnessNotice: string | null;
+  /**
    * The session's own title, as a `custom-title` transcript line last set it: written at launch by
    * `--name` and again by any in-session `/rename`, and null for a session neither has touched.
    * Distinct from `name`, which is the launch label the hook header carries on every post and never
@@ -433,6 +442,12 @@ export type Registry = {
    * Returns the record it touched, and null when nothing unended holds that ID.
    */
   noteTurnOpened: (sessionId: string) => SessionRecord | null;
+  /**
+   * Sets the card's harness notice line for a session while a harness error episode is open, or
+   * clears it with null when the episode closes. Returns the record it wrote, and null when nothing
+   * unended holds that ID, the same refusal `noteGoal` gives. Never logged and never persisted.
+   */
+  noteHarnessNotice: (sessionId: string, text: string | null) => SessionRecord | null;
   /**
    * Records the title a `custom-title` transcript line named, whether written by a launch `--name`
    * or an in-session `/rename`. Returns the record it wrote, and null when nothing unended holds
@@ -656,6 +671,7 @@ export function createRegistry(options: RegistryOptions): Registry {
       backgroundTasks: [],
       goal: null,
       turnActiveAt: null,
+      harnessNotice: null,
       title: null,
     };
     sessions.set(sessionId, record);
@@ -948,6 +964,15 @@ export function createRegistry(options: RegistryOptions): Registry {
     return record;
   }
 
+  function noteHarnessNotice(sessionId: string, text: string | null): SessionRecord | null {
+    const record = reading(sessionId);
+    if (record === null) return null;
+    record.harnessNotice = text;
+    // Not persisted on its own account, the same reasoning the goal field holds: a notice restored
+    // after a restart would draw a retry time long past on a card nothing would ever clear.
+    return record;
+  }
+
   function noteTitle(sessionId: string, title: string): SessionRecord | null {
     const record = reading(sessionId);
     if (record === null) return null;
@@ -1072,6 +1097,7 @@ export function createRegistry(options: RegistryOptions): Registry {
     noteFallback,
     noteGoal,
     noteTurnOpened,
+    noteHarnessNotice,
     noteTitle,
     dueModelChanges,
     sweep,

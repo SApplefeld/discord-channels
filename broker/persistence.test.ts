@@ -43,6 +43,7 @@ function record(sessionId: string): SessionRecord {
     // so a loaded record always carries null regardless of what was saved (see the dedicated test
     // below, which saves a stamp to show the load path resets it).
     turnActiveAt: null,
+    harnessNotice: null,
     title: null,
   };
 }
@@ -490,6 +491,19 @@ test("a goal set on a record never reaches the bytes on disk", () => {
     const bytes = readFileSync(file, "utf8");
     assert.ok(!bytes.includes("ship the fidelity round"), bytes);
     assert.ok(!bytes.includes('"goal"'), "the field itself is not written either");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a harness notice never reaches the bytes on disk, and a restored record always loads without one", () => {
+  const { file, cleanup } = scratchFile();
+  try {
+    saveSessions(file, [{ ...record("session-a"), harnessNotice: "API error (status 529)." }]);
+    const bytes = readFileSync(file, "utf8");
+    assert.ok(!bytes.includes("harnessNotice") && !bytes.includes("API error"), "neither the field nor its text");
+    const loaded = loadSessions(file, { log: () => {} });
+    assert.equal(loaded[0]?.harnessNotice, null);
   } finally {
     cleanup();
   }

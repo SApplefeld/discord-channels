@@ -20,11 +20,15 @@ import type { Budget } from "../discord/budget.ts";
 import { createBudget } from "../discord/budget.ts";
 import type { CallOutcome, MessageReactions } from "../discord/transport.ts";
 
-/** The three stage emoji, in one place so the operator can swap any of them. */
+/**
+ * The three stage emoji, and the warning a harness error episode swaps in over a still-unanswered
+ * message, in one place so the operator can swap any of them.
+ */
 export const STAGE_EMOJI = {
   delivered: "📨",
   pickedUp: "👀",
   answered: "✅",
+  warning: "⚠️",
 } as const;
 
 /** One tracked message: when it was handed to the session, when a turn picked it up, and what is
@@ -48,6 +52,12 @@ type Tracked = {
    * remove was refused stays in the set and is tried again by the next transition that lands.
    */
   painted: Set<string>;
+  /**
+   * True while a harness error episode has this message showing ⚠️ in place of its stage. A pickup
+   * during the episode still records `pickedUpAt` but paints nothing, so the warning stays up until
+   * `restore` paints the recorded stage back; an answer moves the message to ✅ as it always does.
+   */
+  warned: boolean;
 };
 
 /**
@@ -118,6 +128,16 @@ export type ReceiptTracker = {
    * has opened and picked up a message this reply never saw.
    */
   answered: (threadId: string, at: number) => void;
+  /**
+   * The thread's session hit a harness error: every message still tracked, which is every one not
+   * yet answered, swaps its stage reaction to ⚠️. A message already warned is left as it stands.
+   */
+  warn: (threadId: string) => void;
+  /**
+   * The thread's harness error episode closed: every warned message gets its recorded stage back,
+   * 👀 when a turn has picked it up and 📨 otherwise.
+   */
+  restore: (threadId: string) => void;
   /** The thread's session ended or its thread was retired: drop its tracking. */
   forget: (threadId: string) => void;
 };
@@ -293,7 +313,13 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
   return {
     delivered(threadId, messageId, at) {
       const list = trackedFor(threadId);
-      const entry: Tracked = { messageId, deliveredAt: at, pickedUpAt: null, painted: new Set() };
+      const entry: Tracked = {
+        messageId,
+        deliveredAt: at,
+        pickedUpAt: null,
+        painted: new Set(),
+        warned: false,
+      };
       list.push(entry);
       if (list.length > MAX_TRACKED_PER_THREAD) list.shift();
       enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.delivered));
@@ -320,7 +346,8 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
         }
         entry.pickedUpAt = at;
         remaining.push(entry);
-        enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.pickedUp));
+        // A warned message keeps showing ⚠️ until its episode closes, and `restore` paints 👀 then.
+        if (!entry.warned) enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.pickedUp));
       }
       threads.set(threadId, remaining);
     },
@@ -347,6 +374,27 @@ export function createReceiptTracker(options: ReceiptTrackerOptions): ReceiptTra
         enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.answered));
       }
       threads.set(threadId, remaining);
+    },
+
+    warn(threadId) {
+      const list = threads.get(threadId);
+      if (list === undefined) return;
+      for (const entry of list) {
+        if (entry.warned) continue;
+        entry.warned = true;
+        enqueue(threadId, transition(threadId, entry, STAGE_EMOJI.warning));
+      }
+    },
+
+    restore(threadId) {
+      const list = threads.get(threadId);
+      if (list === undefined) return;
+      for (const entry of list) {
+        if (!entry.warned) continue;
+        entry.warned = false;
+        const stage = entry.pickedUpAt === null ? STAGE_EMOJI.delivered : STAGE_EMOJI.pickedUp;
+        enqueue(threadId, transition(threadId, entry, stage));
+      }
     },
 
     forget(threadId) {

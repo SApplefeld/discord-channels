@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { request as httpRequest } from "node:http";
@@ -14,6 +14,7 @@ import type { BrokerConfig } from "./config.ts";
 import type { AskedQuestion } from "./discord/render.ts";
 import { askedQuestions, createEchoMemory, createTranscriptTailer } from "./tail.ts";
 import { createQuestionDesk } from "./question-desk.ts";
+import { createStatusReader } from "./status-reader.ts";
 
 const TOKEN = "5f0c2e4a-0000-4000-8000-000000000001";
 
@@ -1258,6 +1259,16 @@ test("the agent_id value is neither stored on the record nor published", async (
   assert.ok(!text.includes("turnActiveAt"), "and the open-turn stamp is withheld from GET /sessions");
 });
 
+test("the harness notice is withheld from GET /sessions", async () => {
+  const { registry, handle } = harness();
+  announce(registry);
+  registry.noteHarnessNotice("session-a", "Rate-limited (five-hour limit).");
+  const published = await call(handle, fakeRequest("127.0.0.1", { method: "GET", url: "/sessions" }));
+  const text = JSON.stringify(published.body);
+  assert.ok(text.includes("session-a"), "the record itself is published");
+  assert.ok(!text.includes("harnessNotice") && !text.includes("Rate-limited"), "its notice is not");
+});
+
 test("turns.opened is not called for a straggler whose session_id does not match the token holder", async () => {
   // The same straggler gate `receipts.pickedUp` is credited through: a subprocess of an older turn
   // holds the same process token but is not the session speaking now.
@@ -2059,6 +2070,58 @@ test("the tailer learns a path only from a hook post the registry credited", asy
     { sessionId: "session-a", path: "C:\\t\\a.jsonl" },
     { sessionId: "session-a", path: "C:\\t\\a.jsonl" },
   ]);
+});
+
+test("with no tailer built, a credited post still teaches the status reader its path, and the reader reads it", async (t) => {
+  // The host shape with the interim mirror off: no `tail` seam at all. The status reader's own seam
+  // is what teaches it the path, so a harness error line in that transcript still reaches the thread.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "channels-intake-status-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "session-a.jsonl");
+  writeFileSync(file, "", "utf8");
+  const notices: string[] = [];
+  const reader = createStatusReader({
+    liveSessions: () => ["session-a"],
+    notice: async (_sessionId, text) => {
+      notices.push(text);
+    },
+    notePickup: () => {},
+    episode: () => {},
+  });
+  const registry = createRegistry({ host: "NEO", staleAfterMs: 60_000 });
+  const handle = createHandler({
+    registry,
+    maxBodyBytes: 1024,
+    mirror: fakeMirror().mirror,
+    status: { learn: reader.learn },
+  });
+
+  // An uncredited post teaches nothing, the same bar the tailer's seam holds.
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("PostToolUse"),
+      body: JSON.stringify({ session_id: "session-a", tool_name: "Bash", transcript_path: file }),
+    }),
+  );
+  await reader.poll();
+  appendFileSync(file, JSON.stringify({ type: "system", subtype: "api_error", sessionId: "session-a" }) + "\n", "utf8");
+  await reader.poll();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(notices, [], "no path was learned from an uncredited post");
+
+  await call(
+    handle,
+    fakeRequest("127.0.0.1", {
+      headers: hookHeaders("SessionStart"),
+      body: JSON.stringify({ session_id: "session-a", source: "startup", transcript_path: file }),
+    }),
+  );
+  await reader.poll();
+  appendFileSync(file, JSON.stringify({ type: "system", subtype: "api_error", sessionId: "session-a" }) + "\n", "utf8");
+  await reader.poll();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(notices, ["API error."], "the learned transcript is read with no tailer on this host");
 });
 
 test("every mirror post reaching a live session reports its verdict: allow on, suppress off", async () => {

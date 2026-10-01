@@ -138,6 +138,7 @@ function view(overrides: Partial<SessionView> = {}): SessionView {
     backgroundTasks: [],
     goal: null,
     turnActiveAt: null,
+    harnessNotice: null,
     title: null,
     lineage: null,
     turnCount: 1,

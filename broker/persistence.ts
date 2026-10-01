@@ -31,8 +31,10 @@ const FORMAT_VERSION = 1;
  * `turnActiveAt` is not a fact a restart can know: nothing on disk says whether a turn was open at
  * the moment the broker died, so it is never written and always starts null on load (see
  * `cleanRecord` below), the conservative read that treats a restart mid-turn as a closed one.
+ * The harness notice is withheld on the same reasoning: an error episode belongs to the running
+ * harness, and a restored one would draw a stale retry time.
  */
-type PersistedRecord = Omit<SessionRecord, "goal" | "turnActiveAt">;
+type PersistedRecord = Omit<SessionRecord, "goal" | "turnActiveAt" | "harnessNotice">;
 
 type Snapshot = {
   version: number;
@@ -238,6 +240,10 @@ function cleanRecord(record: SessionRecord): SessionRecord {
     // never carries it, and a restarted broker treats every loaded session's turn as closed until
     // the next main-thread PostToolUse or credited UserPromptSubmit opens one.
     turnActiveAt: null,
+    // Always null, never read from the file, for the reason the open-turn stamp is: a harness error
+    // episode is a fact about the running harness, and a restored notice would draw a retry time
+    // long past on a card nothing would clear.
+    harnessNotice: null,
     // Restored, unlike the goal: the title is the session's own identity, set by a launch `--name`
     // or an in-session `/rename`, rather than transient intent, so a restart should draw the name
     // the operator knows it by.

@@ -1222,6 +1222,21 @@ test("noteTurnOpened refuses a session the registry does not hold unended", () =
   assert.equal(registry.list()[0].turnActiveAt, stamped, "the ended record's stamp is left exactly as it was");
 });
 
+test("noteHarnessNotice sets and clears the card line on an unended session, and refuses an ended one", () => {
+  const { registry, sessionId } = withSession();
+  const touched = registry.noteHarnessNotice(sessionId, "API error (status 529).");
+  assert.ok(touched);
+  assert.equal(byId(registry.list(), sessionId).harnessNotice, "API error (status 529).");
+  registry.noteHarnessNotice(sessionId, null);
+  assert.equal(byId(registry.list(), sessionId).harnessNotice, null, "the episode's close clears it");
+
+  registry.noteHarnessNotice(sessionId, "API error.");
+  registry.relayClosed(TOKEN, sessionId);
+  assert.equal(registry.noteHarnessNotice(sessionId, null), null, "an ended record is not written");
+  assert.equal(registry.noteHarnessNotice("no-such-session", "API error."), null);
+  assert.equal(registry.list()[0].harnessNotice, "API error.", "the ended record is left exactly as it was");
+});
+
 test("a title is held on the record it names, replaced by the next one, and stamps no engagement", () => {
   const time = clock();
   const sessions = registry(time.now);

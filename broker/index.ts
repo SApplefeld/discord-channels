@@ -81,6 +81,8 @@ import {
   questionDigest,
 } from "./tail.ts";
 import type { TranscriptTailer } from "./tail.ts";
+import { createStatusReader } from "./status-reader.ts";
+import type { StatusReader } from "./status-reader.ts";
 import { createRelayHub } from "./routing/relays.ts";
 import { createInboundRouter } from "./routing/inbound.ts";
 import type { InboundInbox, InboundRouter } from "./routing/inbound.ts";
@@ -1349,6 +1351,46 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     },
   });
 
+  // The status reader, built wherever Discord is configured and independent of the tailer: it reads
+  // every learned transcript, mirror-off included, for harness error lines and channel pickups,
+  // and publishes only fixed wording and receipt state (see broker/status-reader.ts). With the
+  // tailer off on this host, it is the only source of a mid-turn pickup credit.
+  let status: StatusReader | null = null;
+  let statusTimer: NodeJS.Timeout | null = null;
+  let statusInFlight: Promise<void> = Promise.resolve();
+  if (discord !== null) {
+    const reader = createStatusReader({
+      liveSessions: () =>
+        registry
+          .list()
+          .filter((record) => record.state === "live")
+          .map((record) => record.sessionId),
+      // The unfloored route: `notice` drops a second post inside a minute, which would swallow the
+      // "Resumed." that follows a short retry wait. The reader posts once per episode and once per
+      // recovery, so the floor has nothing left to collapse.
+      notice: async (sessionId, text) => {
+        const threadId = threadFor(sessionId);
+        if (threadId !== null) await steeringWriter.reply(threadId, text);
+      },
+      notePickup: (sessionId, at) => pickupFor(sessionId, at),
+      // The card line and the ⚠️ swap on the session's still-unanswered messages, both cleared when
+      // the episode closes.
+      episode: (sessionId, open) => {
+        registry.noteHarnessNotice(sessionId, open === null ? null : open.text);
+        const threadId = threadFor(sessionId);
+        if (threadId === null) return;
+        if (open === null) receipts?.restore(threadId);
+        else receipts?.warn(threadId);
+      },
+      log: note,
+    });
+    status = reader;
+    statusTimer = setInterval(() => {
+      statusInFlight = reader.poll().catch(() => {
+        note("broker: a status pass failed; the error detail is withheld, it can carry content");
+      });
+    }, config.interimPollMs);
+  }
   const hooks = createHandler({
     registry,
     // Floored at the mirror route's ceiling: both routes receive the same Stop payload, and only
@@ -1373,6 +1415,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
             question: tail.question,
           },
         }),
+    // The status reader learns on its own seam, so a host with no tailer still teaches it paths.
+    ...(status === null ? {} : { status: { learn: status.learn } }),
     // The hold seam. A qualifying question post's response is held open here rather than answered,
     // so the answer can ride back from the thread through the components the alert grows; every
     // post the desk refuses, and every gate ahead of it, is answered immediately exactly as a
@@ -1871,6 +1915,8 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
       clearInterval(heartbeat);
       if (tailTimer !== null) clearInterval(tailTimer);
       tailTimer = null;
+      if (statusTimer !== null) clearInterval(statusTimer);
+      statusTimer = null;
       if (refresh !== null) clearInterval(refresh);
       refresh = null;
       typingKeeper?.stop();
@@ -2023,6 +2069,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     clearInterval(sweep);
     clearInterval(heartbeat);
     if (tailTimer !== null) clearInterval(tailTimer);
+    if (statusTimer !== null) clearInterval(statusTimer);
     if (refresh !== null) clearInterval(refresh);
     typingKeeper?.stop();
     // A held buffer goes down in the same synchronous block, before the first await below: its
@@ -2045,6 +2092,7 @@ export async function startBroker(config: BrokerConfig): Promise<Broker> {
     // for the same reason: shutdown must not race a read still holding a file handle.
     await inFlight;
     await tailInFlight;
+    await statusInFlight;
     // The card's pass may still be waiting on a Discord edit, and its binding write follows that
     // call's return.
     if (cardDrain !== null) await cardDrain;

@@ -1045,7 +1045,7 @@ function goalCommand(text: string): string | null | undefined {
  * missing or unparseable field yields null and the caller falls back to read time, which is the
  * behaviour every path here had before the field was read at all. Nothing is published from it.
  */
-function lineInstant(record: Record<string, unknown>): number | null {
+export function lineInstant(record: Record<string, unknown>): number | null {
   const stamp = record["timestamp"];
   if (typeof stamp !== "string") return null;
   const at = Date.parse(stamp);
@@ -1576,7 +1576,7 @@ const FALLBACK_CAUSES: Readonly<Record<string, ModelFallbackCause>> = {
  * plugin-provided route (plugins/relay/.claude-plugin/plugin.json `server`, prefixed the way Claude
  * Code names a plugin-installed MCP server).
  */
-const CHANNEL_RELAY_SERVER_NAMES: readonly string[] = ["channel-relay", "plugin:relay:channel-relay"];
+export const CHANNEL_RELAY_SERVER_NAMES: readonly string[] = ["channel-relay", "plugin:relay:channel-relay"];
 
 /**
  * What one transcript line contributes, decided by an allowlist and never a denylist. Five line
@@ -1859,7 +1859,7 @@ export function questionDigest(questions: readonly AskedQuestion[]): string {
  * transcript is named `<session-id>.jsonl`, the measured invariant `learn()` pins taught paths
  * to.
  */
-function taughtStem(path: string): string {
+export function taughtStem(path: string): string {
   const base = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
   return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
 }
@@ -1869,7 +1869,7 @@ function taughtStem(path: string): string {
  * beside the bytes so the caller can decide what the bytes mean (a shrink, an overrun) from the
  * same observation it read them under, rather than from a second stat the file may have outgrown.
  */
-async function readSlice(path: string, offset: number, maxBytes: number): Promise<TranscriptSlice> {
+export async function readSlice(path: string, offset: number, maxBytes: number): Promise<TranscriptSlice> {
   const handle = await open(path, "r");
   try {
     const { size } = await handle.stat();

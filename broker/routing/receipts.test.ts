@@ -750,3 +750,65 @@ test("forget keeps a thread's budget while its queue is still running, and drops
   assert.deepEqual(currentEmoji(calls, "msg-3"), new Set([STAGE_EMOJI.delivered]));
   assert.deepEqual(waits, [250 + PACE_MARGIN_MS], "a forgotten thread's drained queue took its budget with it");
 });
+
+test("a harness error swaps a pending message to ⚠️ and restore paints its recorded stage back, one stage emoji at a time", async () => {
+  const { calls, reactions } = reactionsWith();
+  const { now, advance } = clock();
+  const tracker = createReceiptTracker({ reactions, log: () => {}, now });
+
+  tracker.delivered("thread-1", "queued", now());
+  await settle();
+  advance(1_000);
+  tracker.warn("thread-1");
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "queued"), new Set([STAGE_EMOJI.warning]));
+
+  // A second warn inside the same episode paints nothing new.
+  const before = calls.length;
+  tracker.warn("thread-1");
+  await settle();
+  assert.equal(calls.length, before, "an already-warned message is left as it stands");
+
+  tracker.restore("thread-1");
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "queued"), new Set([STAGE_EMOJI.delivered]), "never picked up, so back to 📨");
+});
+
+test("a pickup during a harness error records the turn but keeps ⚠️ up until restore paints 👀, and an answer still reaches ✅", async () => {
+  const { calls, reactions } = reactionsWith();
+  const { now, advance } = clock();
+  const tracker = createReceiptTracker({ reactions, log: () => {}, now });
+
+  tracker.delivered("thread-1", "first", now());
+  tracker.delivered("thread-1", "second", now());
+  await settle();
+  advance(1_000);
+  tracker.warn("thread-1");
+  await settle();
+
+  advance(1_000);
+  tracker.pickedUp("thread-1", now());
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "first"), new Set([STAGE_EMOJI.warning]), "the warning stays up through a pickup");
+
+  tracker.restore("thread-1");
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "first"), new Set([STAGE_EMOJI.pickedUp]), "the recorded pickup is what comes back");
+  assert.deepEqual(currentEmoji(calls, "second"), new Set([STAGE_EMOJI.pickedUp]));
+
+  // An answer during a later episode moves a picked-up message to ✅ as it always does.
+  tracker.delivered("thread-1", "third", now());
+  await settle();
+  advance(1_000);
+  tracker.pickedUp("thread-1", now());
+  await settle();
+  tracker.warn("thread-1");
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "third"), new Set([STAGE_EMOJI.warning]));
+  tracker.answered("thread-1", now());
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "third"), new Set([STAGE_EMOJI.answered]));
+  tracker.restore("thread-1");
+  await settle();
+  assert.deepEqual(currentEmoji(calls, "third"), new Set([STAGE_EMOJI.answered]), "an answered message has left tracking");
+});

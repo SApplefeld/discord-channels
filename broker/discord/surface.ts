@@ -216,6 +216,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       goal: null,
       // A restored placeholder predates any registry record, so it carries no turn of its own.
       turnActiveAt: null,
+      harnessNotice: null,
       title,
       needsAttention: false,
       blocked: false,
