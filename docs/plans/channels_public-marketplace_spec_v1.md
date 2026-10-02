@@ -6,7 +6,7 @@ Created: 2026-10-02
 
 ## Dispatch Authorization
 
-The ARCHITECT persona wrote this plan on 2026-10-02 as the relay repository's instance of the public distribution design the kit repository's `claude-kit_public-marketplace_spec_v1.md` carries, on the operator's decisions of 2026-09-28 and his rulings of 2026-10-02. It has no precondition, since the relay keeps its name. The coordinator queues it for this repository's worker at once. The first publish waits on the kit's job seeding the public repository, under the kit plan's steps. While this repository is public, no commit, pull request, Chapter or brief on this plan spells any word on the banned list or the path of a file that leaks one.
+The ARCHITECT persona wrote this plan on 2026-10-02 as the relay repository's instance of the public distribution design the kit repository's `claude-kit_public-marketplace_spec_v1.md` carries, on the operator's decisions of 2026-09-28 and his rulings of 2026-10-02. It has no precondition, since the relay keeps its name. Section 1's scripts, tests and workflow wait on the kit plan's section 1 merging, since they are copies of it. The coordinator queues it for this repository's worker at once. The first publish waits on the kit's job seeding the public repository, under the kit plan's steps. While this repository is public, no commit, pull request, Chapter or brief on this plan spells any word on the banned list or the path of a file that leaks one.
 
 ## Goal
 
@@ -28,7 +28,7 @@ Provenance: written by the ARCHITECT persona, session 57239bb8, on 2026-10-02, w
 
 ## Approach
 
-**The job and the scripts.** `tools/publish/assemble.mjs` and `tools/publish/leak-gate.mjs` are the kit plan's two scripts, copied byte for byte from the kit repository's `tools/publish/` at the commit its plan landed, with a header line naming that origin. `tools/publish/allowlist.txt` is: `plugins/relay/**`, `broker/**`, `bridge/**`, `relay/**`, `hooks/**`, `install/**`, `wrapper/**`, `package.json`, `package-lock.json`, `tsconfig.json`, `docs/install.md`. The assembler's forbidden set keeps out every `.test.` file those globs would otherwise carry, 118 files under `broker/` among them, and `tools/`, so the allowlist can name whole directories. The one document named is the only path under `docs/` the set admits, by an explicit allow for that path in this repository's copy of the list, which the assembler honors as a literal path ahead of the set. The workflow runs the assembler with `--strip-version`, and the manifest at `plugins/relay/.claude-plugin/plugin.json` in the snapshot carries no `version`. `.github/workflows/publish.yml` is the kit's workflow with `relay` for the plugin, `plugins/relay` for the folder, `discord-channels` for the repository name in the commit title, and no seed step.
+**The job and the scripts.** `tools/publish/assemble.mjs` and `tools/publish/leak-gate.mjs` are the kit plan's two scripts, copied byte for byte from the kit repository's `tools/publish/` at the commit its plan landed, with a header line naming that origin. `tools/publish/allowlist.txt` is: `plugins/relay/**`, `broker/**`, `bridge/**`, `relay/**`, `hooks/**`, `install/**`, `wrapper/**`, `package.json`, `package-lock.json`, `tsconfig.json`, `docs/install.md`. The assembler's forbidden set keeps out every `.test.` file those globs would otherwise carry, 57 of the 118 files under `broker/` among them, and `tools/`, so the allowlist can name whole directories. The one document named is the only path under `docs/` the set admits, by an explicit allow for that path in this repository's copy of the list, which the assembler honors as a literal path ahead of the set. The workflow runs the assembler with `--strip-version`, and the manifest at `plugins/relay/.claude-plugin/plugin.json` in the snapshot carries no `version`. `.github/workflows/publish.yml` is the kit's workflow with `relay` for the plugin, `plugins/relay` for the folder, `discord-channels` for the repository name in the commit title, and no seed step.
 
 **The leak sweep, prerequisite (3).** The gate over the assembled snapshot, run locally with a temporary list the operator hands the worker on its thread, is the sweep the 2026-09-28 record asked for over the plugin folders. A hit is rewritten to a generic word before the section closes and recorded by path and line.
 
@@ -84,12 +84,20 @@ Status header changed from `Ready` to `In Progress` on taking the plan. The coor
 
 Section 1 is partly built. The two parts that depend on no kit artifact are on the branch: `tools/publish/allowlist.txt`, holding exactly the eleven lines the Approach names, and the `## Releases` section in `README.md`. Neither is reviewed yet. The section's one review round runs over the whole section once the scripts land.
 
-Section 1 waits on the kit. Its two scripts and its workflow are copied byte for byte from the kit repository's `tools/publish/` and `.github/workflows/publish.yml`. At 2026-10-02, the kit's `plans/public-marketplace` branch (36c35c60, draft PR #178) holds only its spec. The kit plan has a dispatch precondition: its grimoire rename must merge first. The worker asked the architect (record ARCHITECT-ee5bff81-37a5-48ac-a352-f3fe0b58a437-1) whether to park or build ahead, leaning toward parking.
+Section 1 waits on the kit. Its two scripts and its workflow are copied byte for byte from the kit repository's `tools/publish/` and `.github/workflows/publish.yml`. At 2026-10-02, the kit's `plans/public-marketplace` branch (36c35c60, draft PR #178) holds only its spec. The kit plan has a dispatch precondition: its grimoire rename must merge first. The worker asked the architect (record ARCHITECT-ee5bff81-37a5-48ac-a352-f3fe0b58a437-1) whether to park or build ahead.
 
-Spec fact correction, sent to the architect: `broker/` holds 118 tracked files, 57 of them `.test.` files, read with `git ls-tree` at 7208800. The Approach's "118 files under `broker/`" counts the whole directory.
+Ruling, the architect, 2026-10-02 (record DEV-DISCORD-57239bb8-86bf-43a8-85e2-365e2d444dbf-1): build the kit-independent parts now, then park. Writing the relay's own copies of the scripts is refused, because the `cmp` acceptance makes the kit's copy the source of truth. A second author would only buy a replace-and-recheck later, and the first publish waits on the kit's job seeding the public repository anyway.
+
+Parked items, all inside section 1: `tools/publish/assemble.mjs`, `tools/publish/leak-gate.mjs`, `tools/publish/assemble.test.ts`, `tools/publish/leak-gate.test.ts`, `.github/workflows/publish.yml`, and the leak sweep over the assembled snapshot. Dependency: the kit's `plans/public-marketplace` plan merging its section 1 to the kit's main, which lands `tools/publish/` and `.github/workflows/publish.yml` there. Resume when those files exist on the kit's main.
+
+Approval drift, on the architect's ruling above:
+- The Dispatch Authorization gains the sentence "Section 1's scripts, tests and workflow wait on the kit plan's section 1 merging, since they are copies of it." It follows the no-precondition sentence, which stands for queueing.
+- The Approach's "118 files under `broker/` among them" now reads "57 of the 118 files under `broker/` among them".
+
+Evidence for the count, from `git ls-tree -r --name-only origin/plans/public-marketplace` at 7208800, tracked files per allowlist path: `plugins/relay` 3, `broker` 118 (57 carrying `.test.`), `bridge` 22, `relay` 10, `hooks` 5, `install` 11, `wrapper` 5, and `package.json`, `package-lock.json`, `tsconfig.json` and `docs/install.md` 1 each.
 
 Operator inputs pending, asked on the worker's thread on 2026-10-02: a temporary banned-word list for the local leak sweep, and, before any publish, the public repository, the two secrets and Actions enabled.
 
 Gate baseline: not yet recorded. It is taken before the scripts' first edit.
 
-Next action: on the architect's answer or the kit scripts landing, copy the scripts and workflow, record the `npm test` baseline, and write the tests.
+Next action: once the kit's scripts and workflow are on the kit's main, copy the scripts and workflow, record the `npm test` baseline, and write the tests.
