@@ -45,4 +45,35 @@ catches it. `import-hygiene.test.ts` is the enforcement.
 Gates: `npm run lint` (`tsc --noEmit`) and `npm test` (`node --test`, which refuses to report green
 when it matched no test files).
 
+## Releases
+
+A release publishes the relay's runtime to the public marketplace repository `SApplefeld/plugins`,
+where it lives under `plugins/relay/`. A pushed tag cuts it, never a push to `main`:
+
+1. Tag the trunk commit to release with any name starting `publish-`, by convention
+   `publish-<YYYYMMDD>`, and push the tag.
+2. Read the run of the `publish` workflow in the Actions tab. A manual run of the same workflow
+   publishes the commit it is started on.
+
+The job copies only the paths in `tools/publish/allowlist.txt`, which are the plugin shim, the broker,
+the bridge, the channel server, the hooks, the wrapper, the install scripts, the three root package
+files and `docs/install.md`. It removes `version` from the published plugin manifest, so an install
+follows the public repository's commits. It then replaces the public `plugins/relay/` folder with
+one commit. It refuses to publish when:
+
+- the allowlist resolves no file,
+- a path it resolves is a test file or sits under `docs/`, `tools/` or another excluded zone, apart
+  from `docs/install.md`, which the list names by its literal path,
+- any file or path in the snapshot carries a word from the banned-word list.
+
+Two repository secrets drive it. `PUBLISH_DEPLOY_KEY` is the private half of the public repository's
+write deploy key, and `PUBLISH_BANNED_WORDS` is the banned-word list, one word per line. The list's
+content lives in that secret and in no repository. A hit names only the file and line, never the
+word.
+
+The public folder keeps this repository's root layout, so the install scripts' relative paths hold.
+The marketplace entry points at the shim two levels in, `plugins/relay/plugins/relay`. A host that
+installs `relay@applefeld` from the public marketplace sets up the broker from that folder's
+`install/` scripts, per the `docs/install.md` shipped beside them.
+
 Design and build plan: [`docs/archive/plans/sapplefeld-channels_spec_v1.md`](docs/archive/plans/sapplefeld-channels_spec_v1.md).

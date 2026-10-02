@@ -1,0 +1,11 @@
+plugins/relay/**
+broker/**
+bridge/**
+relay/**
+hooks/**
+install/**
+wrapper/**
+package.json
+package-lock.json
+tsconfig.json
+docs/install.md

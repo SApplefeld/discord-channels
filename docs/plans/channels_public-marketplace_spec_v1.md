@@ -1,6 +1,6 @@
 # The relay publishes its runtime tree to the public marketplace repository on a tag, with the plugin shim two levels in and no version
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 
@@ -77,3 +77,19 @@ Tests: the test-file exclusion over a directory glob, since the broker's tests c
 - `claude-kit_public-marketplace_spec_v1.md` in the kit repository: the design this plan instances.
 
 ## Chapters
+
+### Interim board 1 - 2026-10-02
+
+Status header changed from `Ready` to `In Progress` on taking the plan. The coordinator queued it as goal node plan-muqqpqbe-js1e.
+
+Section 1 is partly built. The two parts that depend on no kit artifact are on the branch: `tools/publish/allowlist.txt`, holding exactly the eleven lines the Approach names, and the `## Releases` section in `README.md`. Neither is reviewed yet. The section's one review round runs over the whole section once the scripts land.
+
+Section 1 waits on the kit. Its two scripts and its workflow are copied byte for byte from the kit repository's `tools/publish/` and `.github/workflows/publish.yml`. At 2026-10-02, the kit's `plans/public-marketplace` branch (36c35c60, draft PR #178) holds only its spec. The kit plan has a dispatch precondition: its grimoire rename must merge first. The worker asked the architect (record ARCHITECT-ee5bff81-37a5-48ac-a352-f3fe0b58a437-1) whether to park or build ahead, leaning toward parking.
+
+Spec fact correction, sent to the architect: `broker/` holds 118 tracked files, 57 of them `.test.` files, read with `git ls-tree` at 7208800. The Approach's "118 files under `broker/`" counts the whole directory.
+
+Operator inputs pending, asked on the worker's thread on 2026-10-02: a temporary banned-word list for the local leak sweep, and, before any publish, the public repository, the two secrets and Actions enabled.
+
+Gate baseline: not yet recorded. It is taken before the scripts' first edit.
+
+Next action: on the architect's answer or the kit scripts landing, copy the scripts and workflow, record the `npm test` baseline, and write the tests.
