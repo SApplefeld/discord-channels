@@ -29,7 +29,7 @@ All of it is built and installable.
 
 ## Plans
 
-No plan is open in [`plans/`](plans/). Everything delivered, shelved, declined or superseded is archived in [`archive/plans/`](archive/plans/) and listed below it, most recent first.
+One plan is open in [`plans/`](plans/): [`plans/channels_public-marketplace_spec_v1.md`](plans/channels_public-marketplace_spec_v1.md), Ready, one section, written 2026-10-02 by the ARCHITECT persona: the relay publishes its runtime tree to the public marketplace repository `SApplefeld/plugins` on a tag, with the plugin shim two levels in and no version, as the relay's instance of the design the kit repository's `claude-kit_public-marketplace_spec_v1.md` carries. Everything delivered, shelved, declined or superseded is archived in [`archive/plans/`](archive/plans/) and listed below it, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
