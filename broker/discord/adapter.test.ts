@@ -42,7 +42,7 @@ test("posting the card and opening the thread are separate calls", async () => {
 
   const opened = await transport.openThread({
     messageId: "message-42",
-    name: "⚙ neo-intake · working",
+    name: "neo-intake",
   });
   assert.deepEqual(opened.status === "ok" ? opened.value : null, { threadId: "thread-77" });
 
@@ -53,7 +53,7 @@ test("posting the card and opening the thread are separate calls", async () => {
       `POST /channels/${CHANNEL}/messages/message-42/threads`,
     ],
   );
-  assert.equal(sent[1].body.name, "⚙ neo-intake · working");
+  assert.equal(sent[1].body.name, "neo-intake");
   assert.equal(
     sent[1].body.auto_archive_duration,
     10080,
@@ -164,11 +164,11 @@ test("a rename patches the thread and carries nothing but the name", async () =>
   // a field the route does not define risks a refused rename in exchange for nothing.
   const { sent, transport } = transportWith(() => respond(null));
 
-  await transport.renameThread({ threadId: "thread-77", name: "⚠ neo-intake · exited" });
+  await transport.renameThread({ threadId: "thread-77", name: "⏹ neo-intake · needs you" });
 
   assert.equal(sent[0].route, "/channels/thread-77");
   assert.equal(sent[0].method, "PATCH");
-  assert.deepEqual(sent[0].body, { name: "⚠ neo-intake · exited" });
+  assert.deepEqual(sent[0].body, { name: "⏹ neo-intake · needs you" });
 });
 
 test("archiving patches the thread and is the only call that closes it", async () => {

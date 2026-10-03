@@ -152,7 +152,7 @@ test("a new session gets one thread, opened on the broker's own starter message"
 
   assert.equal(calls.posts.length, 1, "the starter message is posted once");
   assert.match(calls.posts[0], /^State {5}working$/m);
-  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "⚙ neo-intake · active" }]);
+  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "neo-intake" }]);
   assert.equal(surface.threadFor("session-a"), "thread-1");
   assert.equal(surface.threadFor("session-b"), null);
 });
@@ -170,7 +170,7 @@ test("a thread that could not be opened is retried on the message already posted
 
   assert.equal(calls.posts.length, 1, "the card is never posted twice");
   assert.equal(calls.opens.length, 2, "the thread is re-opened on the message that exists");
-  assert.deepEqual(calls.opens[1], { messageId: "message-1", name: "⚙ neo-intake · active" });
+  assert.deepEqual(calls.opens[1], { messageId: "message-1", name: "neo-intake" });
   assert.equal(surface.threadFor("session-a"), "thread-1");
 });
 
@@ -227,21 +227,21 @@ test("a rename the budget refuses is dropped, and the next state still renders",
   time.advance(DWELL_MS);
   calls.nextRename = refused(30_000);
   await surface.tick([renamed]);
-  assert.deepEqual(names(calls), ["⚙ neo-migrate · active"], "the refused attempt was made once");
+  assert.deepEqual(names(calls), ["neo-migrate"], "the refused attempt was made once");
 
   // Still inside the reported wait: nothing is retried and nothing is held.
   time.advance(10_000);
   await surface.tick([renamed]);
   assert.equal(calls.renames.length, 1, "a refused rename is not retried inside the wait");
 
-  // The session ends while the budget is still blocked, then the wait expires.
+  // The session starts waiting on the operator while the budget is still blocked, then the wait
+  // expires.
   time.advance(25_000);
-  const ended = view({ name: "neo-migrate", lifecycle: "ended", endedAt: time.now() });
-  await surface.tick([ended]);
+  await surface.tick([view({ name: "neo-migrate", needsAttention: true })]);
 
   assert.deepEqual(
     names(calls),
-    ["⚙ neo-migrate · active", "⚠ neo-migrate · exited"],
+    ["neo-migrate", `${TITLE_GLYPHS["needs you"]} neo-migrate · needs you`],
     "the dropped rename never lands after the state moved on",
   );
 });
@@ -265,14 +265,14 @@ test("an in-session /rename is a title change: the surface paints it after the d
   await surface.tick([renamed]);
   assert.deepEqual(
     names(calls),
-    ["⚙ Renamed by /rename · active"],
+    ["Renamed by /rename"],
     "the settled title is painted once the dwell has passed",
   );
 });
 
 test("a session falling quiet and picking up again costs no rename at all", async () => {
-  // Every rename writes a notice into the thread that nothing can remove, so working and idle are
-  // one title state: a session going quiet moves its card and leaves the thread list alone.
+  // Every rename writes a notice into the thread that nothing can remove, so working and idle both
+  // compose the resting title: a session going quiet moves its card and leaves the thread list alone.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -285,7 +285,7 @@ test("a session falling quiet and picking up again costs no rename at all", asyn
   await surface.tick([view({ lastHookAt: started })]);
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: started })]);
-  assert.deepEqual(names(calls), [], "the title says active either way");
+  assert.deepEqual(names(calls), [], "the title is the name alone either way");
   assert.ok(
     calls.cards.some((card) => /^State {5}idle$/m.test(card)),
     "and the card is where going quiet shows",
@@ -321,7 +321,7 @@ test("a fan-out draining costs no rename, since the count is a card fact", async
   time.advance(DWELL_MS + 1_000);
   let seen = time.now();
   await surface.tick([view({ lastHookAt: seen })]);
-  assert.deepEqual(names(calls), [], "the opened title already says active");
+  assert.deepEqual(names(calls), [], "the opened title is already the resting one");
 
   // A fan-out lands and then drains a step at a time, each step held past the dwell window.
   for (const count of [3, 2, 1, 0]) {
@@ -365,11 +365,15 @@ test("one thread's exhausted rename budget does not hold up another thread", asy
 
   time.advance(1_000);
   calls.nextRename = refused(60_000);
-  await surface.tick([{ ...first, lifecycle: "ended", endedAt: time.now() }, second]);
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"], "the first thread's rename is refused");
+  await surface.tick([{ ...first, needsAttention: true }, second]);
+  assert.deepEqual(
+    names(calls),
+    [`${TITLE_GLYPHS["needs you"]} neo-intake · needs you`],
+    "the first thread's rename is refused",
+  );
 
   await surface.tick([
-    { ...first, lifecycle: "ended", endedAt: time.now() },
+    { ...first, needsAttention: true },
     { ...second, needsAttention: true },
   ]);
 
@@ -379,16 +383,78 @@ test("one thread's exhausted rename budget does not hold up another thread", asy
   });
 });
 
-test("a session that ends is renamed without waiting out the dwell window", async () => {
+test("a supervised restart spends no rename: working, idle, exited, and the successor taking the thread", async () => {
+  // Every rename writes a notice into the thread that nothing can remove, and a supervised session
+  // exits and is replaced under the same lineage as a matter of routine. Working, idle and exited
+  // all compose the resting title, so the whole cycle is drawn on the card and the restart line.
   const time = clock();
   const calls = recorder();
-  const surface = surfaceWith(time, calls);
+  const surface = surfaceWith(time, calls, { archiveOnEnd: true });
+  const first = { sessionId: "session-a", lineage: "supervisor-1", startedAt: START };
 
-  await surface.tick([view()]);
+  await surface.tick([view({ ...first, lastHookAt: time.now() })]);
+
+  // Quiet long enough to render idle, held past the dwell, then gone.
+  const lastHook = time.now();
+  time.advance(IDLE_AFTER_MS + 1);
+  await surface.tick([view({ ...first, lastHookAt: lastHook })]);
+  time.advance(DWELL_MS);
+  await surface.tick([view({ ...first, lastHookAt: lastHook })]);
   time.advance(1_000);
-  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+  await surface.tick([view({ ...first, lastHookAt: lastHook, lifecycle: "ended", endedAt: time.now() })]);
+  assert.deepEqual(calls.archived, ["thread-1"], "the exit still archives the thread");
 
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
+  // The successor takes the thread over by lineage and works through more than a dwell window.
+  const second = { sessionId: "session-b", lineage: "supervisor-1", startedAt: START + 1 };
+  for (let pass = 0; pass < 3; pass += 1) {
+    time.advance(DWELL_MS);
+    await surface.tick([view({ ...second, lastHookAt: time.now() })]);
+  }
+  assert.equal(surface.threadFor("session-b"), "thread-1", "the successor answers to the same thread");
+
+  assert.deepEqual(names(calls), [], "no step of the cycle spends a rename");
+  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "neo-intake" }], "one thread, opened at rest");
+});
+
+test("a thread at rest that exits is archived with no rename before it", async () => {
+  // The archive waits for the exited title, and at rest that title is already painted, so both the
+  // reconcile path and the retire path close the thread on the first pass that sees the exit.
+  for (const exit of ["ended", "vanished"] as const) {
+    const time = clock();
+    const calls = recorder();
+    const surface = surfaceWith(time, calls, { archiveOnEnd: true });
+
+    await surface.tick([view()]);
+    time.advance(1_000);
+    await surface.tick(exit === "ended" ? [view({ lifecycle: "ended", endedAt: time.now() })] : []);
+
+    assert.deepEqual(calls.archived, ["thread-1"], `${exit}: archived on the exit pass`);
+    assert.deepEqual(names(calls), [], `${exit}: with no rename before it`);
+  }
+});
+
+test("a thread asking for an answer is cleared to the resting title at exit, without the dwell, then archived", async () => {
+  // A dead session cannot answer, so a title that asks for one is cleared at once. Exited is
+  // urgent, so the clearing rename does not wait out the dwell ahead of the archive.
+  for (const signal of [{ needsAttention: true }, { blocked: true }]) {
+    const time = clock();
+    const calls = recorder();
+    const surface = surfaceWith(time, calls, { archiveOnEnd: true });
+
+    await surface.tick([view()]);
+    time.advance(1_000);
+    await surface.tick([view(signal)]);
+    time.advance(DWELL_MS);
+    await surface.tick([view(signal)]);
+    const asking = names(calls);
+    assert.equal(asking.length, 1, `${JSON.stringify(signal)}: the asking title is painted`);
+
+    time.advance(1_000);
+    await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+
+    assert.deepEqual(names(calls), [...asking, "neo-intake"], `${JSON.stringify(signal)}: cleared at once`);
+    assert.deepEqual(calls.archived, ["thread-1"], `${JSON.stringify(signal)}: then archived`);
+  }
 });
 
 test("a session waiting on a person is renamed without waiting out the dwell window", async () => {
@@ -435,10 +501,10 @@ test("a block cleared before it settles costs no rename at all", async () => {
   time.advance(DWELL_MS);
   await surface.tick([view()]);
 
-  assert.deepEqual(names(calls), [], "the title never left active");
+  assert.deepEqual(names(calls), [], "the title never left the resting one");
 });
 
-test("a session that unblocks is renamed back to active, once that has settled too", async () => {
+test("a session that unblocks is renamed back to the resting title, once that has settled too", async () => {
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -463,7 +529,7 @@ test("a session that unblocks is renamed back to active, once that has settled t
   await surface.tick([view()]);
   assert.deepEqual(names(calls), [
     `${TITLE_GLYPHS.blocked} neo-intake · blocked`,
-    `${TITLE_GLYPHS.active} neo-intake · active`,
+    "neo-intake",
   ]);
 });
 
@@ -484,7 +550,7 @@ test("a startup pass archives a restored thread whose session already exited, ex
         archived: false,
         name: "neo-intake",
         sessionTitle: null,
-        title: "⚙ neo-intake · working",
+        title: "⚙ neo-intake · active",
         lineage: null,
         startedAt: 0,
       },
@@ -492,7 +558,7 @@ test("a startup pass archives a restored thread whose session already exited, ex
   });
 
   await surface.tick([]);
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"], "the final title lands first");
+  assert.deepEqual(names(calls), ["neo-intake"], "the resting title lands first");
   assert.deepEqual(calls.archived, ["thread-9"]);
 
   time.advance(1_000);
@@ -551,6 +617,36 @@ test("an archived thread is never renamed, whatever the session goes on to repor
   assert.equal(calls.renames.length, spent, "nothing is attempted against the archived thread");
 });
 
+test("an archived thread whose session departs is let go with its title as it stands", async () => {
+  // A thread archived under an older title keeps it: the resting title no longer matches what is
+  // painted there, and retiring the session must not spend a doomed rename on a closed thread.
+  const time = clock();
+  const calls = recorder();
+  const surface = surfaceWith(time, calls, {
+    archiveOnEnd: true,
+    bindings: [
+      {
+        sessionId: "session-a",
+        messageId: "message-9",
+        threadId: "thread-9",
+        archived: true,
+        name: "neo-intake",
+        sessionTitle: null,
+        title: "⚠ neo-intake · exited",
+        lineage: null,
+        startedAt: 0,
+      },
+    ],
+  });
+
+  await surface.tick([]);
+  time.advance(1_000);
+  await surface.tick([]);
+
+  assert.deepEqual(names(calls), [], "no rename is attempted against the archived thread");
+  assert.deepEqual(calls.archived, [], "and it is not archived a second time");
+});
+
 test("a thread revived by a post is not archived again until its session exits again", async () => {
   // Posting into an archived thread revives it on Discord's side, which is the whole reason
   // archiving is not deletion. The session behind it can then go back to working, and a surface
@@ -565,7 +661,7 @@ test("a thread revived by a post is not archived again until its session exits a
   assert.deepEqual(calls.archived, ["thread-1"]);
 
   const painted = calls.cards.length;
-  // A pass per dwell, so the rename back to a live title is settled by the time it is asked for.
+  // A pass per dwell, so any rename the revival composed would be settled by the time it is asked for.
   for (let pass = 0; pass < 3; pass += 1) {
     time.advance(DWELL_MS);
     await surface.tick([view({ lastHookAt: time.now(), turnCount: pass + 2 })]);
@@ -573,7 +669,7 @@ test("a thread revived by a post is not archived again until its session exits a
 
   assert.deepEqual(calls.archived, ["thread-1"], "the revived thread is left where the operator put it");
   assert.ok(calls.cards.length > painted, "and its card is maintained again rather than left frozen");
-  assert.equal(names(calls).at(-1), "⚙ neo-intake · active", "and its title follows it back");
+  assert.deepEqual(names(calls), [], "and its title, at rest before and after, is left alone");
 
   // The real exit, which is what the archive is for: it closes again rather than staying open
   // because an earlier presumption already spent the one archive the thread was ever going to get.
@@ -601,14 +697,15 @@ test("archiving, when configured, happens only after the exited name has landed"
   const calls = recorder();
   const surface = surfaceWith(time, calls, { archiveOnEnd: true });
 
-  await surface.tick([view()]);
+  await surface.tick([view({ needsAttention: true })]);
   time.advance(1_000);
   const ended = view({ lifecycle: "ended", endedAt: time.now() });
 
-  // The rename is refused, so the thread still claims to be working and must not be closed on it.
+  // The clearing rename is refused, so the thread still asks for an answer and must not be closed
+  // on it.
   calls.nextRename = refused(1_000);
   await surface.tick([ended]);
-  assert.deepEqual(calls.archived, [], "a thread is never archived still painted working");
+  assert.deepEqual(calls.archived, [], "a thread is never archived still asking for an answer");
 
   time.advance(2_000);
   await surface.tick([ended]);
@@ -676,12 +773,13 @@ test("a rename that fails outright is retried on the next pass", async () => {
 
   await surface.tick([view()]);
   time.advance(1_000);
-  const ended = view({ lifecycle: "ended", endedAt: time.now() });
+  const asking = view({ needsAttention: true });
   calls.nextRename = { status: "failed", error: "socket hang up", rate: NO_RATE_INFO };
-  await surface.tick([ended]);
-  await surface.tick([ended]);
+  await surface.tick([asking]);
+  await surface.tick([asking]);
 
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited", "⚠ neo-intake · exited"]);
+  const title = `${TITLE_GLYPHS["needs you"]} neo-intake · needs you`;
+  assert.deepEqual(names(calls), [title, title]);
 });
 
 test("a restored binding reattaches instead of opening a second thread", async () => {
@@ -764,7 +862,7 @@ test("a binding is reported for persistence as it is created and dropped", async
         archived: false,
         name: "neo-intake",
         sessionTitle: null,
-        title: "⚙ neo-intake · active",
+        title: "neo-intake",
         lineage: null,
         startedAt: START,
       },
@@ -818,7 +916,8 @@ test("a session that vanishes from the registry is driven to exited before it is
   time.advance(1_000);
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
+  assert.match(calls.cards.at(-1) ?? "", /^State {5}exited$/m, "the card is driven to exited");
+  assert.deepEqual(names(calls), [], "and the resting title it already carries is the exited one");
   assert.equal(surface.threadFor("session-a"), null, "and then it is forgotten");
 });
 
@@ -827,7 +926,8 @@ test("a vanished session whose final rename is refused is retried, not abandoned
   const calls = recorder();
   const surface = surfaceWith(time, calls);
 
-  await surface.tick([view()]);
+  // Opened asking for an answer, so leaving costs the rename that clears it.
+  await surface.tick([view({ needsAttention: true })]);
   time.advance(1_000);
   calls.nextRename = refused(5_000);
   await surface.tick([]);
@@ -836,13 +936,13 @@ test("a vanished session whose final rename is refused is retried, not abandoned
   time.advance(5_000);
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited", "⚠ neo-intake · exited"]);
+  assert.deepEqual(names(calls), ["neo-intake", "neo-intake"]);
   assert.equal(surface.threadFor("session-a"), null);
 });
 
 test("a retiring session has its card driven to exited, not just its title", async () => {
-  // A thread titled exited over a card that still says working with a frozen heartbeat is a
-  // thread contradicting itself.
+  // A thread whose session is over, under a card that still says working with a frozen heartbeat,
+  // is a thread contradicting itself.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -853,7 +953,7 @@ test("a retiring session has its card driven to exited, not just its title", asy
 
   assert.equal(calls.cards.length, 1, "the card is rewritten before the entry is let go");
   assert.match(calls.cards[0], /^State {5}exited$/m);
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
+  assert.deepEqual(names(calls), []);
   assert.equal(surface.threadFor("session-a"), null);
 });
 
@@ -864,7 +964,8 @@ test("a retiring session whose rename is permanently refused is let go, not retr
   const calls = recorder();
   const surface = surfaceWith(time, calls);
 
-  await surface.tick([view()]);
+  // Opened asking for an answer, so leaving costs the rename that clears it.
+  await surface.tick([view({ needsAttention: true })]);
   time.advance(1_000);
   calls.nextRename = {
     status: "failed",
@@ -873,11 +974,11 @@ test("a retiring session whose rename is permanently refused is let go, not retr
     permanent: true,
   };
   await surface.tick([]);
-  const spentOnce = calls.renames.length;
+  assert.equal(calls.renames.length, 1, "the clearing rename was attempted");
   await surface.tick([]);
 
   assert.equal(surface.threadFor("session-a"), null, "the entry is let go");
-  assert.equal(calls.renames.length, spentOnce, "and nothing is attempted after that");
+  assert.equal(calls.renames.length, 1, "and nothing is attempted after that");
 });
 
 test("a retiring session that never converges is let go after a bounded number of passes", async () => {
@@ -898,13 +999,15 @@ test("a retiring session that never converges is let go after a bounded number o
     archiveOnEnd: false,
   });
 
-  await surface.tick([view()]);
+  // Opened asking for an answer, so leaving costs the rename that clears it.
+  await surface.tick([view({ needsAttention: true })]);
   for (let pass = 0; pass < 8; pass += 1) {
     time.advance(1_000);
     await surface.tick([]);
   }
 
   assert.equal(surface.threadFor("session-a"), null);
+  assert.ok(calls.renames.length > 0, "the clearing rename was attempted");
   assert.ok(calls.renames.length <= 5, `${calls.renames.length} doomed renames`);
 });
 
@@ -1058,11 +1161,13 @@ test("a deleted thread for an exited session is not opened again", async () => {
   const calls = recorder();
   const surface = surfaceWith(time, calls);
 
-  await surface.tick([view()]);
+  // Opened asking for an answer, so the exit spends the clearing rename that finds the thread gone.
+  await surface.tick([view({ needsAttention: true })]);
   time.advance(1_000);
   const ended = view({ lifecycle: "ended", endedAt: time.now() });
   calls.nextRename = GONE;
   await surface.tick([ended]);
+  assert.equal(calls.nextRename, null, "the clearing rename ran and found the thread gone");
   await surface.tick([ended]);
   await surface.tick([ended]);
 
@@ -1142,8 +1247,9 @@ test("a deleted card for a stale session is rebuilt when it needs the operator, 
 
 test("a stale idle session whose thread is deleted does not reopen it, and its card stays maintained", async () => {
   // The card half of this rule is the decline test above; this is the thread half. A rename that
-  // 404s is how a deleted thread is reported, and a stale idle title reads the same `active` a
-  // working one does, so the thread opens under needs you and the rename to active finds it gone.
+  // 404s is how a deleted thread is reported, and a stale idle session composes the same resting
+  // title a working one does, so the thread opens under needs you and the rename to rest finds it
+  // gone.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls);
@@ -1186,13 +1292,15 @@ test("a dead session's surviving card is painted before its surface is let go", 
   const calls = recorder();
   const surface = surfaceWith(time, calls);
 
-  await surface.tick([view()]);
+  // Opened asking for an answer, so the exit spends the clearing rename that finds the thread gone.
+  await surface.tick([view({ needsAttention: true })]);
   time.advance(1_000);
   const ended = view({ lifecycle: "ended", endedAt: time.now() });
   // The exit tick: the final card edit is rate-limited and the thread turns out deleted.
   calls.nextEdit = refused(5_000);
   calls.nextRename = GONE;
   await surface.tick([ended]);
+  assert.equal(calls.nextRename, null, "the clearing rename ran and found the thread gone");
   // The edit budget is still blocked, so the paint cannot land; the entry must not be abandoned.
   await surface.tick([ended]);
   assert.equal(calls.opens.length, 1, "no thread is rebuilt for the dead session meanwhile");
@@ -1247,7 +1355,7 @@ test("a restored binding keeps the session name and the title the thread carries
         archived: false,
         name: "neo-intake",
         sessionTitle: null,
-        title: "⚠ neo-intake · exited",
+        title: "neo-intake",
         lineage: null,
         startedAt: 0,
       },
@@ -1257,7 +1365,7 @@ test("a restored binding keeps the session name and the title the thread carries
   // The session is gone from the registry, so this binding is retired on the first pass.
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), [], "a thread already titled exited is not repainted");
+  assert.deepEqual(names(calls), [], "a thread already at the resting title is not repainted");
   assert.equal(surface.threadFor("session-a"), null);
 });
 
@@ -1282,7 +1390,7 @@ test("a restored binding whose session is gone is titled with the name, not the 
 
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["⚠ neo-intake · exited"]);
+  assert.deepEqual(names(calls), ["neo-intake"]);
 });
 
 test("a restored binding whose session is gone composes its own title, not the launch name", async () => {
@@ -1310,13 +1418,13 @@ test("a restored binding whose session is gone composes its own title, not the l
 
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["⚠ Renamed by /rename · exited"]);
+  assert.deepEqual(names(calls), ["Renamed by /rename"]);
 });
 
 test("a thread carrying the previous title format is renamed once and then left alone", async () => {
-  // Threads restored from a run that titled them working or idle carry a name no state composes
-  // any more, so each is worth exactly one rename to the title it renders under now. After that the
-  // title holds across working and idle alike, which is the whole point of the coarser vocabulary.
+  // Threads restored from a run that titled them `⚙ <name> · active` carry a name no state composes
+  // any more, so each is worth exactly one rename to the resting title. After that the title holds
+  // across working, idle and exited alike, which is the whole point of the two-state vocabulary.
   const time = clock();
   const calls = recorder();
   const surface = surfaceWith(time, calls, {
@@ -1328,7 +1436,7 @@ test("a thread carrying the previous title format is renamed once and then left 
         archived: false,
         name: "neo-intake",
         sessionTitle: null,
-        title: "⚙ neo-intake · working",
+        title: "⚙ neo-intake · active",
         lineage: null,
         startedAt: 0,
       },
@@ -1340,16 +1448,20 @@ test("a thread carrying the previous title format is renamed once and then left 
 
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: time.now() })]);
-  assert.deepEqual(names(calls), ["⚙ neo-intake · active"]);
+  assert.deepEqual(names(calls), ["neo-intake"]);
 
-  // Still working, then quiet long enough to render idle: neither composes a different title.
+  // Still working, then quiet long enough to render idle, then ended: none composes a different
+  // title.
   time.advance(1_000);
   await surface.tick([view({ lastHookAt: time.now() })]);
   time.advance(IDLE_AFTER_MS + 1_000);
   await surface.tick([view({ lastHookAt: time.now() - IDLE_AFTER_MS - 1_000 })]);
-
   assert.match(calls.cards.at(-1) ?? "", /^State {5}idle$/m, "the card is the surface that flips");
-  assert.deepEqual(names(calls), ["⚙ neo-intake · active"], "one rename, and no more");
+  time.advance(1_000);
+  await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
+
+  assert.match(calls.cards.at(-1) ?? "", /^State {5}exited$/m, "the card reaches exited");
+  assert.deepEqual(names(calls), ["neo-intake"], "one rename, and no more");
 });
 
 test("a live view whose title is null does not repaint a restored thread back to the launch name, and the persisted binding keeps the restored title", async () => {
@@ -1387,7 +1499,7 @@ test("a live view whose title is null does not repaint a restored thread back to
 
   assert.deepEqual(
     names(calls),
-    ["⚙ Renamed Session · active"],
+    ["Renamed Session"],
     "the composed name is built from the restored title, not repainted back to the launch name",
   );
   assert.ok(
