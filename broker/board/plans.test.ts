@@ -159,8 +159,8 @@ test("a ## line ends the block only when whitespace and text follow the hashes",
   assert.equal(inside("##\tFoo"), 1, "a tab is whitespace to the engine's pattern too");
 });
 
-// The linear forms replace these quadratic ones, and the persona plugin's twin pins against this
-// card, so the two pairs must accept the same language. The old forms live here as the oracle.
+// The quadratic forms the linear ones must agree with, kept here as the oracle. The persona
+// plugin's copy of this reader uses the same linear forms, so both must accept this language.
 const OLD_BLOCK_HEADING = /^##\s+.+$/;
 const OLD_SECTION = /^###\s+(\d+)\.\s+(.*)$/;
 
@@ -189,9 +189,22 @@ function disagreements(line: string): number {
   return count;
 }
 
+// Every string up to length 6 over the characters that separate the two forms: the hash, the three
+// terminators that `\s` accepts and the dot refuses, other whitespace (space, tab, NBSP), NEL, which
+// neither accepts, and the characters that make a heading. Each is tried bare and after each prefix
+// that puts it where the patterns read. Neither form is given a `\n`, since `parsePlan` splits lines
+// on it before either pattern runs.
+const ALPHABET = ["#", " ", "\t", "\r", "\u2028", "\u2029", "\u0085", "\u00a0", "x", "1", "."];
+const PREFIXES = ["", "##", "###", "### 1."];
+const MAX_GENERATED_LENGTH = 6;
+let GENERATED_LINES = 0;
+for (let length = 0; length <= MAX_GENERATED_LENGTH; length += 1) {
+  GENERATED_LINES += ALPHABET.length ** length * PREFIXES.length;
+}
+
 test("the pattern sources are the exact linear forms, written with escaped terminators", () => {
-  // A live U+2028 in a regex literal is a module syntax error, and an editor can silently convert
-  // an escape into the live character, so the source text is pinned as written.
+  // The persona plugin's copy of this reader carries the same two forms, so the source text is
+  // pinned as written, terminators as escapes, to keep the two copies identical.
   assert.equal(
     BLOCK_HEADING.source,
     "^##(?:\\s[^\\r\\u2028\\u2029]|\\s*[\\r\\u2028\\u2029][^\\r\\u2028\\u2029])[^\\r\\u2028\\u2029]*$",
@@ -204,47 +217,38 @@ test("the pattern sources are the exact linear forms, written with escaped termi
   assert.equal(SECTION.flags, "");
 });
 
-test("the linear heading patterns accept the same lines as the quadratic forms", () => {
-  // Every string up to length 6 over the characters that separate the two forms: the hash, the
-  // three terminators the dot refuses, the whitespace the terminators share a class with (tab, NEL,
-  // NBSP, space), and the characters that make a heading. Each is tried bare and after each prefix
-  // that puts it in the position the patterns read.
-  const alphabet = ["#", " ", "\t", "\r", "\u2028", "\u2029", "\u0085", "\u00a0", "x", "1", "."];
-  const prefixes = ["", "##", "###", "### 1."];
-  const base = alphabet.length;
-  const maxLength = 6;
-  let total = 0;
-  for (let length = 0; length <= maxLength; length += 1) total += base ** length;
-
+test(`the linear heading patterns accept the same lines as the quadratic forms over ${GENERATED_LINES} generated lines`, () => {
+  const base = ALPHABET.length;
   let compared = 0;
   let differences = 0;
-  const digits = new Array<number>(maxLength).fill(0);
-  for (let length = 0; length <= maxLength; length += 1) {
+  for (let length = 0; length <= MAX_GENERATED_LENGTH; length += 1) {
     const count = base ** length;
     for (let index = 0; index < count; index += 1) {
       let rest = index;
       let text = "";
       for (let place = 0; place < length; place += 1) {
-        digits[place] = rest % base;
+        text += ALPHABET[rest % base];
         rest = Math.floor(rest / base);
-        text += alphabet[digits[place]];
       }
-      for (const prefix of prefixes) {
+      for (const prefix of PREFIXES) {
         differences += disagreements(prefix + text);
         compared += 1;
       }
     }
   }
 
-  assert.equal(compared, total * prefixes.length);
+  assert.equal(compared, GENERATED_LINES);
   assert.equal(differences, 0, `${differences} differences over ${compared} lines`);
 });
 
 test("long whitespace runs ending in a terminator get the same verdict from both forms", () => {
-  // The old forms take seconds on these by design, which is what the linear forms remove.
+  // The old block form backtracks quadratically on a long whitespace run ending in a terminator, and
+  // the old section form on such a run followed by text and a second terminator. The alternating
+  // runs and the trailing-text runs are the near misses beside them.
   for (const terminator of ["\r", "\u2028"]) {
     const runs = [
       " ".repeat(16000) + terminator,
+      " ".repeat(16000) + terminator + "x" + terminator,
       (" " + terminator).repeat(8000),
       (" " + terminator).repeat(8000) + "x",
     ];
@@ -258,17 +262,24 @@ test("long whitespace runs ending in a terminator get the same verdict from both
 });
 
 test("a section title is read whichever branch of the heading matched", () => {
-  // The title capture moved into two branches, so the count is checked through the public reader
-  // for a heading whose whitespace after the period holds a terminator. parsePlan exposes only the
-  // count, so the title itself is pinned by the equality tests above.
+  // The title capture is split across two branches, so a Chapter that closes a section by its title
+  // alone registers only when the reader takes the title from the branch that matched.
   const parsed = parsePlan(
-    plan({ sections: ["### 1. \r Title", "### 2.\u2028Title", "### 3. Title"].join("\n") }),
+    plan({
+      sections: ["### 1. \r Alpha", "### 2.\u2028Beta", "### 3. Gamma"].join("\n"),
+      chapters: [
+        "### Chapter 1",
+        "Completed: Alpha",
+        "### Chapter 2",
+        "Completed: Beta",
+        "### Chapter 3",
+        "Completed: Gamma",
+      ].join("\n"),
+    }),
   );
   assert.ok(parsed);
   assert.equal(parsed.sections, 3);
-  assert.deepEqual(newSection("### 1. \r Title"), { number: "1", title: "Title" });
-  assert.deepEqual(newSection("### 2.\u2028Title"), { number: "2", title: "Title" });
-  assert.deepEqual(newSection("### 3. Title"), { number: "3", title: "Title" });
+  assert.equal(parsed.completed, 3, "each title-only Completed: line closes its section");
 });
 
 test("only ### N. headings inside the block count as sections", () => {

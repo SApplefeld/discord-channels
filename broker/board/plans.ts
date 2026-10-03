@@ -223,7 +223,8 @@ const NEXT = /^Next:(.*)$/;
 // quadratically on a whitespace run that ends in one of them. This form accepts exactly the same
 // lines in linear time: the first branch takes one whitespace character and then a non-terminator,
 // and the second lets the whitespace run end at a terminator that the text then follows. The
-// terminators are escapes, never live characters.
+// terminators are escapes, never live characters. "The same lines" means lines without `\n`, which
+// `.` also refuses and these classes do not: `parsePlan` splits on `\n` before either pattern runs.
 export const BLOCK_HEADING = /^##(?:\s[^\r\u2028\u2029]|\s*[\r\u2028\u2029][^\r\u2028\u2029])[^\r\u2028\u2029]*$/;
 
 function isBlockHeading(line: string): boolean {
