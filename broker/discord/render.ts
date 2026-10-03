@@ -45,9 +45,10 @@ export const GLYPHS: Record<SurfaceState, string> = {
  *
  * Every rename writes a notice into the thread that nothing can remove, so the title is spent only
  * on a change the operator has to act on: a session halted on them. Working, idle and exited carry
- * no title state, and a thread in any of them is titled with the session's name alone, the
- * resting title. Liveness is read from the card, the typing line, the restart line and the archive
- * on exit, so a supervised session that exits and restarts writes no rename notice at all.
+ * no title state, and a thread in any of them carries the resting title: the resting mark, then the
+ * session's name. Liveness is read from the card, the typing line, the restart line, and the
+ * archive on exit where the host keeps it on, so a supervised session that exits and restarts
+ * writes no rename notice at all.
  *
  * Blocked earns a title state, and so earns a rename and its irremovable notice, because it is
  * precisely the halted-on-the-operator class the title exists to surface: a run that has stopped
@@ -65,6 +66,14 @@ export const TITLE_GLYPHS: Record<TitleState, string> = {
   "needs you": "⏹",
   blocked: "⛔",
 };
+
+/**
+ * The mark a resting title opens with. A session's own name is untrusted text, and a /rename can
+ * spell out a broker title down to the glyph, so every title the broker composes opens with a mark
+ * of its own: this one at rest, a state glyph when the thread asks for something. A name that
+ * begins with a state glyph therefore draws behind this mark, never as a broker title.
+ */
+export const RESTING_MARK = "•";
 
 /** The card's state as the thread list sees it, or null for a state the title does not name. */
 export function titleState(state: SurfaceState): TitleState | null {
@@ -1146,16 +1155,20 @@ function stateLabel(view: SessionView, state: SurfaceState): string {
 }
 
 /**
- * `<glyph> <session-name> <separator> <title state>` for a state the title names, and the session's
- * name alone, the resting title, for every other state.
+ * `<glyph> <session-name> <separator> <title state>` for a state the title names, and
+ * `<resting mark> <session-name>`, the resting title, for every other state. Every title opens with
+ * a broker-owned mark: the resting mark at rest, a state glyph when the thread asks for something.
  *
  * Working, idle and exited all compose the same resting title, so moving between them spends no
- * rename. The name is what gets shortened when the whole thing is too long: the glyph and the title
- * state are the parts a truncating list view must not eat.
+ * rename. The name is what gets shortened when the whole thing is too long: the mark, the glyph and
+ * the title state are the parts a truncating list view must not eat.
  */
 export function threadName(view: SessionView, state: SurfaceState): string {
   const title = titleState(state);
-  if (title === null) return fit(displayName(view), MAX_THREAD_NAME_LENGTH);
+  if (title === null) {
+    const mark = `${RESTING_MARK} `;
+    return `${mark}${fit(displayName(view), MAX_THREAD_NAME_LENGTH - mark.length)}`;
+  }
   const prefix = `${TITLE_GLYPHS[title]} `;
   const suffix = ` ${SEPARATOR} ${title}`;
   const room = MAX_THREAD_NAME_LENGTH - prefix.length - suffix.length;

@@ -42,7 +42,7 @@ test("posting the card and opening the thread are separate calls", async () => {
 
   const opened = await transport.openThread({
     messageId: "message-42",
-    name: "neo-intake",
+    name: "• neo-intake",
   });
   assert.deepEqual(opened.status === "ok" ? opened.value : null, { threadId: "thread-77" });
 
@@ -53,7 +53,7 @@ test("posting the card and opening the thread are separate calls", async () => {
       `POST /channels/${CHANNEL}/messages/message-42/threads`,
     ],
   );
-  assert.equal(sent[1].body.name, "neo-intake");
+  assert.equal(sent[1].body.name, "• neo-intake");
   assert.equal(
     sent[1].body.auto_archive_duration,
     10080,
