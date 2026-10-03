@@ -191,7 +191,7 @@ function disagreements(line: string): number {
 
 // Every string up to length 6 over the characters that separate the two forms: the hash, the three
 // terminators that `\s` accepts and the dot refuses, other whitespace (space, tab, NBSP), NEL, which
-// neither accepts, and the characters that make a heading. Each is tried bare and after each prefix
+// `\s` refuses and the dot accepts, and the characters that make a heading. Each is tried bare and after each prefix
 // that puts it where the patterns read. Neither form is given a `\n`, since `parsePlan` splits lines
 // on it before either pattern runs.
 const ALPHABET = ["#", " ", "\t", "\r", "\u2028", "\u2029", "\u0085", "\u00a0", "x", "1", "."];
@@ -244,7 +244,8 @@ test(`the linear heading patterns accept the same lines as the quadratic forms o
 test("long whitespace runs ending in a terminator get the same verdict from both forms", () => {
   // The old block form backtracks quadratically on a long whitespace run ending in a terminator, and
   // the old section form on such a run followed by text and a second terminator. The alternating
-  // runs and the trailing-text runs are the near misses beside them.
+  // runs and the trailing-text runs are the near misses beside them. The runs stay near 16,000
+  // characters because the oracle is quadratic: about 100 ms per shape here, minutes at the 256 KiB cap.
   for (const terminator of ["\r", "\u2028"]) {
     const runs = [
       " ".repeat(16000) + terminator,

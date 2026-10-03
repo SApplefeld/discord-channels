@@ -667,6 +667,13 @@ and none carries a date of its own. An item added from here on carries `(parked 
   gate the turn close and the typing release use. A background agent finishing while the main
   thread waits on a permission prompt clears that prompt's open items. The line predates that
   plan. Gating it on `fromSubagent !== true` is the fix, once a test pins the prompt surviving.
+- Four known-vulnerable transitive packages on the broker's production path (parked 2026-10-03,
+  from the plan reader linear patterns plan's finishing security review). `npm audit` exits 1 on
+  `fast-uri` 3.1.5 (high, through `ajv`), `hono` 4.13.0, `ip-address` 10.4.0 (through
+  `express-rate-limit`) and `qs` 6.15.3 (through `express`), all under `@modelcontextprotocol/sdk`
+  1.30.0. They predate that plan and sit outside its files. The broker binds loopback only, so
+  whether any advisory is reachable is not established. The fix is a dependency refresh with the
+  suite run over it.
 
 ## Snapshots
 
