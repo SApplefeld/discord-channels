@@ -71,7 +71,8 @@ export const TITLE_GLYPHS: Record<TitleState, string> = {
  * The mark a resting title opens with. A session's own name is untrusted text, and a /rename can
  * spell out a broker title down to the glyph, so every title the broker composes opens with a mark
  * of its own: this one at rest, a state glyph when the thread asks for something. A name that
- * begins with a state glyph therefore draws behind this mark, never as a broker title.
+ * begins with a state glyph therefore composes behind this mark, never as a broker title. One test
+ * pins the literal, and it is the only thing that has to change when the mark does.
  */
 export const RESTING_MARK = "•";
 

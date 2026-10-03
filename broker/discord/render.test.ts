@@ -220,9 +220,9 @@ test("the downgrade marker stands on every render, not only the one the change l
 test("a thread name is the resting mark and the name at rest, and glyph, name and state when it asks for the operator", () => {
   // Every rename writes a notice into the thread that nothing can remove, so working, idle and
   // exited all compose the one resting title and the difference between them is read off the card.
-  assert.equal(threadName(view(), "working"), "• neo-intake");
-  assert.equal(threadName(view(), "idle"), "• neo-intake");
-  assert.equal(threadName(view(), "exited"), "• neo-intake");
+  assert.equal(threadName(view(), "working"), `${RESTING_MARK} neo-intake`);
+  assert.equal(threadName(view(), "idle"), `${RESTING_MARK} neo-intake`);
+  assert.equal(threadName(view(), "exited"), `${RESTING_MARK} neo-intake`);
   assert.equal(threadName(view(), "needs you"), "⏹ neo-intake · needs you");
   assert.equal(threadName(view(), "blocked"), "⛔ neo-intake · blocked");
 });
@@ -242,7 +242,7 @@ test("a session title that itself begins with a state glyph composes with the re
   // as one: the broker's own mark opens every title it composes, ahead of anything the name says.
   const planted = view({ title: "⏹ deploy · needs you" });
   for (const state of ["working", "idle", "exited"] as const) {
-    assert.equal(threadName(planted, state), "• ⏹ deploy · needs you", state);
+    assert.equal(threadName(planted, state), `${RESTING_MARK} ⏹ deploy · needs you`, state);
   }
 });
 
@@ -273,19 +273,19 @@ test("an over-long name is truncated without eating the glyph or the state", () 
 test("a resting title is held to Discord's ceiling", () => {
   // The name is cut to the room the mark leaves, so the whole title fits and the mark survives.
   const room = MAX_THREAD_NAME_LENGTH - `${RESTING_MARK} `.length;
-  assert.equal(threadName(view({ name: "x".repeat(room) }), "working"), `• ${"x".repeat(room)}`);
+  assert.equal(threadName(view({ name: "x".repeat(room) }), "working"), `${RESTING_MARK} ${"x".repeat(room)}`);
   for (const length of [MAX_THREAD_NAME_LENGTH, MAX_THREAD_NAME_LENGTH + 1, 400]) {
     const name = threadName(view({ name: "x".repeat(length) }), "exited");
     assert.ok(name.length <= MAX_THREAD_NAME_LENGTH, `${length}: ${name.length} units`);
     assert.ok([...name].length <= MAX_THREAD_NAME_LENGTH, `${length}: ${[...name].length} code points`);
-    assert.ok(name.startsWith("• xxx"), name);
+    assert.ok(name.startsWith(`${RESTING_MARK} xxx`), name);
   }
 });
 
 test("a session with no name is still distinguishable in the list", () => {
   assert.equal(
     threadName(view({ name: null }), "idle"),
-    "• session 0f3c9d21",
+    `${RESTING_MARK} session 0f3c9d21`,
   );
 });
 
@@ -294,14 +294,14 @@ test("a name of invisible characters falls back rather than rendering an empty t
   // all, and Discord refuses an empty thread name.
   assert.equal(
     threadName(view({ name: "\u200b\u202e\u0000" }), "idle"),
-    "• session 0f3c9d21",
+    `${RESTING_MARK} session 0f3c9d21`,
   );
 });
 
 test("a thread name carries no bidi override or zero-width character", () => {
   const name = threadName(view({ name: "neo\u202eelbisrever\u200b" }), "working");
 
-  assert.equal(name, "• neoelbisrever");
+  assert.equal(name, `${RESTING_MARK} neoelbisrever`);
 });
 
 test("the session ID fallback is neutralized before it is cut", () => {
@@ -309,7 +309,7 @@ test("the session ID fallback is neutralized before it is cut", () => {
   // text can end in the middle of a bidi override.
   const name = threadName(view({ name: null, sessionId: "\u202e0f3c9d21-1111" }), "idle");
 
-  assert.equal(name, "• session 0f3c9d21");
+  assert.equal(name, `${RESTING_MARK} session 0f3c9d21`);
 });
 
 test("displayName prefers the title, falls back to the name, then to the session id", () => {
@@ -340,7 +340,7 @@ test("a title of nothing but invisible characters falls through to the name, not
 
 test("threadName composes a differing title, at rest and with the glyph and the state suffix", () => {
   const renamed = view({ title: "New Name", name: "old-name" });
-  assert.equal(threadName(renamed, "working"), "• New Name");
+  assert.equal(threadName(renamed, "working"), `${RESTING_MARK} New Name`);
   assert.equal(threadName(renamed, "needs you"), `${TITLE_GLYPHS["needs you"]} New Name · needs you`);
 });
 
@@ -3872,7 +3872,7 @@ test("a fan-out is counted on the card and left out of the title", () => {
   });
 
   assert.equal(value(renderCard(waiting, "working", NOW), "State"), "working · 3 tasks");
-  assert.equal(threadName(waiting, "working"), "• neo-intake");
+  assert.equal(threadName(waiting, "working"), `${RESTING_MARK} neo-intake`);
 });
 
 test("a session waiting on nothing carries no roster line and no count", () => {
@@ -3881,7 +3881,7 @@ test("a session waiting on nothing carries no roster line and no count", () => {
   assert.ok(!card.includes("Waiting"), card);
   assert.equal(value(card, "State"), "working");
   assert.ok(!/tasks?/.test(card), card);
-  assert.equal(threadName(view(), "working"), "• neo-intake");
+  assert.equal(threadName(view(), "working"), `${RESTING_MARK} neo-intake`);
 });
 
 test("an exited session's card carries no roster line", () => {
@@ -3891,7 +3891,7 @@ test("an exited session's card carries no roster line", () => {
   const card = renderCard(view({ backgroundTasks: [agent("S6")] }), "exited", NOW);
 
   assert.ok(!card.includes("Waiting"), card);
-  assert.equal(threadName(view({ backgroundTasks: [agent("S6")] }), "exited"), "• neo-intake");
+  assert.equal(threadName(view({ backgroundTasks: [agent("S6")] }), "exited"), `${RESTING_MARK} neo-intake`);
 });
 
 test("a fan-out past the card's cap is counted rather than dropped, and the card still fits", () => {

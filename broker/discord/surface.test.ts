@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createSurface } from "./surface.ts";
 import type { SurfaceOptions } from "./surface.ts";
 import type { ThreadBinding } from "./bindings.ts";
-import { TITLE_GLYPHS } from "./render.ts";
+import { RESTING_MARK, TITLE_GLYPHS } from "./render.ts";
 import type { SessionView } from "./state.ts";
 import type { CallOutcome, DiscordTransport, RateLimitObservation } from "./transport.ts";
 import { NO_RATE_INFO } from "./transport.ts";
@@ -152,7 +152,7 @@ test("a new session gets one thread, opened on the broker's own starter message"
 
   assert.equal(calls.posts.length, 1, "the starter message is posted once");
   assert.match(calls.posts[0], /^State {5}working$/m);
-  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "• neo-intake" }]);
+  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: `${RESTING_MARK} neo-intake` }]);
   assert.equal(surface.threadFor("session-a"), "thread-1");
   assert.equal(surface.threadFor("session-b"), null);
 });
@@ -170,7 +170,7 @@ test("a thread that could not be opened is retried on the message already posted
 
   assert.equal(calls.posts.length, 1, "the card is never posted twice");
   assert.equal(calls.opens.length, 2, "the thread is re-opened on the message that exists");
-  assert.deepEqual(calls.opens[1], { messageId: "message-1", name: "• neo-intake" });
+  assert.deepEqual(calls.opens[1], { messageId: "message-1", name: `${RESTING_MARK} neo-intake` });
   assert.equal(surface.threadFor("session-a"), "thread-1");
 });
 
@@ -227,7 +227,7 @@ test("a rename the budget refuses is dropped, and the next state still renders",
   time.advance(DWELL_MS);
   calls.nextRename = refused(30_000);
   await surface.tick([renamed]);
-  assert.deepEqual(names(calls), ["• neo-migrate"], "the refused attempt was made once");
+  assert.deepEqual(names(calls), [`${RESTING_MARK} neo-migrate`], "the refused attempt was made once");
 
   // Still inside the reported wait: nothing is retried and nothing is held.
   time.advance(10_000);
@@ -241,7 +241,7 @@ test("a rename the budget refuses is dropped, and the next state still renders",
 
   assert.deepEqual(
     names(calls),
-    ["• neo-migrate", `${TITLE_GLYPHS["needs you"]} neo-migrate · needs you`],
+    [`${RESTING_MARK} neo-migrate`, `${TITLE_GLYPHS["needs you"]} neo-migrate · needs you`],
     "the dropped rename never lands after the state moved on",
   );
 });
@@ -265,7 +265,7 @@ test("an in-session /rename is a title change: the surface paints it after the d
   await surface.tick([renamed]);
   assert.deepEqual(
     names(calls),
-    ["• Renamed by /rename"],
+    [`${RESTING_MARK} Renamed by /rename`],
     "the settled title is painted once the dwell has passed",
   );
 });
@@ -413,7 +413,7 @@ test("a supervised restart spends no rename: working, idle, exited, and the succ
   assert.equal(surface.threadFor("session-b"), "thread-1", "the successor answers to the same thread");
 
   assert.deepEqual(names(calls), [], "no step of the cycle spends a rename");
-  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: "• neo-intake" }], "one thread, opened at rest");
+  assert.deepEqual(calls.opens, [{ messageId: "message-1", name: `${RESTING_MARK} neo-intake` }], "one thread, opened at rest");
 });
 
 test("a thread at rest that exits is archived with no rename before it", async () => {
@@ -452,7 +452,7 @@ test("a thread asking for an answer is cleared to the resting title at exit, wit
     time.advance(1_000);
     await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
 
-    assert.deepEqual(names(calls), [...asking, "• neo-intake"], `${JSON.stringify(signal)}: cleared at once`);
+    assert.deepEqual(names(calls), [...asking, `${RESTING_MARK} neo-intake`], `${JSON.stringify(signal)}: cleared at once`);
     assert.deepEqual(calls.archived, ["thread-1"], `${JSON.stringify(signal)}: then archived`);
   }
 });
@@ -529,7 +529,7 @@ test("a session that unblocks is renamed back to the resting title, once that ha
   await surface.tick([view()]);
   assert.deepEqual(names(calls), [
     `${TITLE_GLYPHS.blocked} neo-intake · blocked`,
-    "• neo-intake",
+    `${RESTING_MARK} neo-intake`,
   ]);
 });
 
@@ -558,7 +558,7 @@ test("a startup pass archives a restored thread whose session already exited, ex
   });
 
   await surface.tick([]);
-  assert.deepEqual(names(calls), ["• neo-intake"], "the resting title lands first");
+  assert.deepEqual(names(calls), [`${RESTING_MARK} neo-intake`], "the resting title lands first");
   assert.deepEqual(calls.archived, ["thread-9"]);
 
   time.advance(1_000);
@@ -862,7 +862,7 @@ test("a binding is reported for persistence as it is created and dropped", async
         archived: false,
         name: "neo-intake",
         sessionTitle: null,
-        title: "• neo-intake",
+        title: `${RESTING_MARK} neo-intake`,
         lineage: null,
         startedAt: START,
       },
@@ -936,7 +936,7 @@ test("a vanished session whose final rename is refused is retried, not abandoned
   time.advance(5_000);
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["• neo-intake", "• neo-intake"]);
+  assert.deepEqual(names(calls), [`${RESTING_MARK} neo-intake`, `${RESTING_MARK} neo-intake`]);
   assert.equal(surface.threadFor("session-a"), null);
 });
 
@@ -1355,7 +1355,7 @@ test("a restored binding keeps the session name and the title the thread carries
         archived: false,
         name: "neo-intake",
         sessionTitle: null,
-        title: "• neo-intake",
+        title: `${RESTING_MARK} neo-intake`,
         lineage: null,
         startedAt: 0,
       },
@@ -1390,7 +1390,7 @@ test("a restored binding whose session is gone is titled with the name, not the 
 
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["• neo-intake"]);
+  assert.deepEqual(names(calls), [`${RESTING_MARK} neo-intake`]);
 });
 
 test("a restored binding whose session is gone composes its own title, not the launch name", async () => {
@@ -1418,7 +1418,7 @@ test("a restored binding whose session is gone composes its own title, not the l
 
   await surface.tick([]);
 
-  assert.deepEqual(names(calls), ["• Renamed by /rename"]);
+  assert.deepEqual(names(calls), [`${RESTING_MARK} Renamed by /rename`]);
 });
 
 test("a thread carrying the previous title format is renamed once and then left alone", async () => {
@@ -1448,7 +1448,7 @@ test("a thread carrying the previous title format is renamed once and then left 
 
   time.advance(DWELL_MS);
   await surface.tick([view({ lastHookAt: time.now() })]);
-  assert.deepEqual(names(calls), ["• neo-intake"]);
+  assert.deepEqual(names(calls), [`${RESTING_MARK} neo-intake`]);
 
   // Still working, then quiet long enough to render idle, then ended: none composes a different
   // title.
@@ -1461,7 +1461,7 @@ test("a thread carrying the previous title format is renamed once and then left 
   await surface.tick([view({ lifecycle: "ended", endedAt: time.now() })]);
 
   assert.match(calls.cards.at(-1) ?? "", /^State {5}exited$/m, "the card reaches exited");
-  assert.deepEqual(names(calls), ["• neo-intake"], "one rename, and no more");
+  assert.deepEqual(names(calls), [`${RESTING_MARK} neo-intake`], "one rename, and no more");
 });
 
 test("a live view whose title is null does not repaint a restored thread back to the launch name, and the persisted binding keeps the restored title", async () => {
@@ -1499,7 +1499,7 @@ test("a live view whose title is null does not repaint a restored thread back to
 
   assert.deepEqual(
     names(calls),
-    ["• Renamed Session"],
+    [`${RESTING_MARK} Renamed Session`],
     "the composed name is built from the restored title, not repainted back to the launch name",
   );
   assert.ok(
