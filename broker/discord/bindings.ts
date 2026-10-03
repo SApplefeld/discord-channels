@@ -32,7 +32,8 @@ export type ThreadBinding = {
    * same reason `name` is: a restart can outlive the registry record, and rebuilding a placeholder
    * view with no title would compose the launch name and repaint the thread back to it, spending a
    * rename to undo a rename the operator asked for. Not called `title`, which already names the
-   * fully composed thread title (glyph, name, state suffix) this field is one input to.
+   * fully composed thread title (the broker's leading mark, the name, and a state suffix when the
+   * thread asks for something) this field is one input to.
    */
   sessionTitle: string | null;
   /**

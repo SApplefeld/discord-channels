@@ -557,7 +557,7 @@ renames paints only the settled name, except in the two states that skip the dwe
 `needs you` and `exited`, where a title change rides the next pass. That exception is what puts the
 rename budget within reach of the title: in either state a value alternating on each pass is a
 rename attempt on each pass, and the archive refuses to run until the thread carries the composed
-exited name, so a bucket held empty leaves a thread frozen at a stale title and unarchived.
+resting title, so a bucket held empty leaves a thread frozen at a stale title and unarchived.
 Discord's own rename bucket is the ceiling underneath all of that: the broker holds no rename-rate
 number of its own and blocks only once a response reports the bucket exhausted, though a single pass
 spends at most ten Discord calls of any kind. The figure of roughly two renames per ten minutes per
@@ -570,16 +570,20 @@ carries no origin field, so unlike the `/goal` shape there is nothing to gate th
 that can append to a mirrored session's transcript can rename that session's thread, to another live
 session's exact name included. What bounds it is that a permission verdict is already bound to its
 own thread and request id, so what is reachable is an operator steering a thread they have
-misidentified rather than an approval landing on the wrong session. The composed glyph and separator
-are the broker's own and cannot be moved from the transcript. The state suffix is weaker than that
-and is not a bound to lean on, because it is derived from signals the same appender reaches, an
-engagement stamp read off a typed-prompt line among them, which the accepted-risk list below already
-carries. The room a name gets inside the composed title is under ninety characters, not the reader's
-hundred and twenty, because the glyph and the state suffix are spent first. Two things narrow that
-bound rather than removing it. The glyph vocabulary and the separator are ordinary characters a
-title may itself contain, so a title reading as a glyph, a name and a state draws inside the
-broker's own composed one, and a client that truncates a long thread name in a list cuts the
-broker's true suffix off the end while the planted one stays visible. And the field re-enters from
+misidentified rather than an approval landing on the wrong session. The leading mark of every
+composed title, the resting bullet or a state glyph, and the separator are the broker's own and
+cannot be moved from the transcript. The state suffix is weaker than that and is not a bound to
+lean on, because it is derived from signals the same appender reaches, an engagement stamp read off
+a typed-prompt line among them, which the accepted-risk list below already carries. Discord caps a
+thread name at 100 characters. The leading mark is spent first, and in a titled state the suffix
+too. So the room a name gets is 98 characters at rest and under 90 in a titled state, not the
+reader's 120. Two things narrow that bound rather than removing it. First, the glyph vocabulary and
+the separator are ordinary characters a title may itself contain, so a title reading as a glyph, a
+name and a state draws inside the broker's own composed one, behind the broker's leading mark. At
+rest the composed title has no suffix of its own, so a planted suffix is the only one on the thread,
+and only the leading bullet tells it apart. In a titled state, a client that truncates a long thread
+name in a list cuts the broker's true suffix off the end while the planted one stays visible,
+though the broker's leading mark, which comes first, survives the cut. And the field re-enters from
 the two files named above rather than from the transcript alone: those files are in the set that
 must not be writable. For a live mirrored session such a plant is corrected at the next re-emitted
 `custom-title` line, which the harness writes many times across a session; what has no such
@@ -591,9 +595,9 @@ that session's own console replaces it. Second, the invisible class is deliberat
 renders as nothing on every surface rather than of everything that happens to draw blank in some
 font, so a title made only of printable-blank characters, the Hangul filler and the Braille blank
 pattern among them, passes every gate and draws as an empty-looking name inside the composed title,
-whose glyph and state suffix still render. Widening the class at this reader alone would put it out
-of step with the render site it shares the class with, which is the drift the shared class exists to
-prevent.
+whose leading mark still renders, with the state suffix besides when the thread asks for something.
+Widening the class at this reader alone would put it out of step with the render site it shares the
+class with, which is the drift the shared class exists to prevent.
 
 **The question alert is the second mention-bearing write, so its volume is bounded the way the
 permission prompt's is, by a window of its own.** It has two triggers, a credited `PreToolUse`
@@ -1071,10 +1075,10 @@ credential prices in. The same feed is an accepted suppression primitive in both
 crafted `goal-complete` naming a real session clears its standing block before a tick observes it,
 and a flood of junk session ids can evict a real session's kept event through the fold's bound.
 The feed can also spend a thread's rename budget: alternating events held past the title's dwell
-each way drive real renames out of the same small per-thread bucket the final exited rename and
-the archive draw on. So the blocked surface is evidence when it draws and never proof when it does
-not, which is the same standing every state this broker renders from another program's file
-already has.
+each way drive real renames out of the same small per-thread bucket the rename clearing a `blocked`
+title at exit and the archive draw on. So the blocked surface is evidence when it draws and never
+proof when it does not, which is the same standing every state this broker renders from another
+program's file already has.
 
 What the operator's own configuration can still reach is worth stating, because these knobs sit in
 the access-controlled `broker.env` rather than in anything an attacker supplies. A project root may
@@ -1493,10 +1497,10 @@ authenticated account or a non-administrative service account.
 - **A title of printable-blank characters draws as an empty-looking thread name.** The invisible
   class the title and the render site share is deliberately a class of what renders as nothing
   everywhere rather than of everything that draws blank in some font, so the Hangul filler and the
-  Braille blank pattern pass every gate. The broker's own glyph and state suffix still render, so
-  the thread is identifiable rather than nameless. Widening the class at the title reader alone
-  would put it out of step with the render site, which is the drift a shared class exists to
-  prevent.
+  Braille blank pattern pass every gate. The broker's own leading mark still renders, the resting
+  bullet or a state glyph with its suffix, so the thread is identifiable rather than nameless.
+  Widening the class at the title reader alone would put it out of step with the render site,
+  which is the drift a shared class exists to prevent.
 - **A turn's final reply can arrive labelled as mid-turn.** The Stop mirror and the tailer read the
   same text, and whichever posts first is the one the operator sees. When the tailer wins the race,
   the turn's conclusion carries the `✨ Claude · working` attribution rather than `✨ Claude`. The

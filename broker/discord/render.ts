@@ -47,8 +47,8 @@ export const GLYPHS: Record<SurfaceState, string> = {
  * on a change the operator has to act on: a session halted on them. Working, idle and exited carry
  * no title state, and a thread in any of them carries the resting title: the resting mark, then the
  * session's name. Liveness is read from the card, the typing line, the restart line, and the
- * archive on exit where the host keeps it on, so a supervised session that exits and restarts
- * writes no rename notice at all.
+ * archive on exit where the host keeps it on, so a supervised session at rest that exits and
+ * restarts writes no rename notice at all.
  *
  * Blocked earns a title state, and so earns a rename and its irremovable notice, because it is
  * precisely the halted-on-the-operator class the title exists to surface: a run that has stopped
