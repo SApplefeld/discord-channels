@@ -3,7 +3,9 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open.
+One plan is open:
+
+- [`channels_plan-reader-linear-patterns_spec_v1.md`](channels_plan-reader-linear-patterns_spec_v1.md) (Ready, one section, Branch-and-PR): the board card's plan reader matches `##` and `### N.` headings in linear time, keeping every verdict it gives today, so one pathological line cannot stall a refresh tick.
 
 The most recently archived plan is
 [`../archive/plans/channels_board-worktree-progress_spec_v1.md`](../archive/plans/channels_board-worktree-progress_spec_v1.md),
