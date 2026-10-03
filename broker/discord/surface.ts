@@ -20,17 +20,21 @@ import type { CallOutcome, DiscordTransport } from "./transport.ts";
 import type { TypingThread } from "./typing.ts";
 
 /**
- * States worth a rename the moment they appear. Both of them are waiting on a person, and damping
- * them would be damping the only thing the thread list exists to show.
+ * States whose title is painted the moment they appear, without the dwell.
+ *
+ * `needs you` is waiting on a person, and damping it would be damping the only thing the thread
+ * list exists to show. `exited` composes the resting title, so from rest it spends nothing. From a
+ * thread titled `needs you` or `blocked` it is the rename that clears a title asking for an answer
+ * no one can give, and the archive waits on that rename, so it does not wait out the dwell first.
  *
  * `blocked` is not one of them, though it also waits on a person, because it can be transient in a
  * way the other two cannot: a run that blocks one plan and carries on to the next derives `blocked`
  * for the part of a model turn between the event and that turn's first completed tool call, and the
  * refresh tick runs every few seconds inside that window. Undamped, one such transient writes
  * Discord's irremovable rename notice twice and empties a per-thread rename bucket that holds about
- * two in ten minutes, which is the same bucket the final exited rename and the archive need. A real
- * block lasts minutes to hours, so one dwell window of title lag costs nothing, and the alert that
- * pings the operator is the fast channel.
+ * two in ten minutes, which is the same bucket the clearing rename at exit and the archive need. A
+ * real block lasts minutes to hours, so one dwell window of title lag costs nothing, and the alert
+ * that pings the operator is the fast channel.
  */
 const URGENT: ReadonlySet<SurfaceState> = new Set<SurfaceState>(["needs you", "exited"]);
 
@@ -383,7 +387,7 @@ export function createSurface(options: SurfaceOptions): Surface {
       // any pass, and one that wakes renders a live state and rebuilds normally.
       if (view.lifecycle !== "ended") return;
       // A surviving card is painted with its final state before the entry is let go, the same wait
-      // archive() holds for the final title, so the guard cannot freeze a dead session's card at
+      // archive() holds for the resting title, so the guard cannot freeze a dead session's card at
       // "working" when the paint it is owed was rate-limited this pass. reconcile edits the card
       // before it comes through here, so on any pass where that edit landed, this comparison holds.
       if (entry.messageId !== null && entry.renderedCard !== renderCard(view, state, options.now())) {
@@ -465,7 +469,8 @@ export function createSurface(options: SurfaceOptions): Surface {
 
     const budget = renameBudget(entry.threadId);
     if (!budget.affordable(options.now())) {
-      log(`discord: rename of ${label(view)} to ${titleState(state)} dropped, no budget`);
+      const target = titleState(state) ?? "the resting title";
+      log(`discord: rename of ${label(view)} to ${target} dropped, no budget`);
       return false;
     }
     if (!spend()) return false;
@@ -479,9 +484,10 @@ export function createSurface(options: SurfaceOptions): Surface {
   }
 
   /**
-   * Archiving waits for the exited title to land, so a thread is never closed still claiming to be
-   * working. An archived thread cannot be renamed, which makes this the last write, and it patches
-   * the same route a rename does, so it comes out of the same budget.
+   * Archiving waits for the exited title, which is the resting title, so a thread is never closed
+   * still asking for an answer. A thread already at rest is archived on the pass that sees the
+   * exit, with no rename before it. An archived thread cannot be renamed, which makes this the last
+   * write, and it patches the same route a rename does, so it comes out of the same budget.
    */
   async function archive(view: SessionView, entry: ThreadState): Promise<boolean> {
     if (entry.threadId === null) return false;
@@ -661,8 +667,8 @@ export function createSurface(options: SurfaceOptions): Surface {
   /**
    * A session the registry has pruned or evicted stops arriving in the view set. Its thread is
    * still on Discord, so both surfaces are driven to the final state before the entry is
-   * forgotten: dropping it here would leave a thread titled active forever, or a title that says
-   * exited over a card that still says working.
+   * forgotten: dropping it here would leave a thread asking for an answer forever, or a card that
+   * still says working under a session that is over.
    *
    * Returns true when the entry can be let go, which is when both surfaces are painted, or when
    * Discord has refused permanently, or when enough passes have been spent trying. A departed
@@ -691,7 +697,8 @@ export function createSurface(options: SurfaceOptions): Surface {
     }
 
     const cardPainted = entry.messageId === null ? true : await refreshCard(view, "exited", entry);
-    const namePainted = entry.threadId === null ? true : await refreshName(view, "exited", entry);
+    // An archived thread takes no rename, so one archived under an older title keeps it.
+    const namePainted = entry.threadId === null || entry.archived ? true : await refreshName(view, "exited", entry);
     const archived = options.archiveOnEnd && entry.threadId !== null ? await archive(view, entry) : true;
 
     if (entry.abandoned) return true;
