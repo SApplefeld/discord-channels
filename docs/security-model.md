@@ -575,13 +575,14 @@ composed title, the resting bullet or a state glyph, and the separator are the b
 cannot be moved from the transcript. The state suffix is weaker than that and is not a bound to
 lean on, because it is derived from signals the same appender reaches, an engagement stamp read off
 a typed-prompt line among them, which the accepted-risk list below already carries. Discord caps a
-thread name at a hundred characters, so the room a name gets inside the composed title is 98
-characters at rest and under ninety in a titled state, not the reader's hundred and twenty, because
-the leading mark, and in a titled state the suffix, are spent first. Two things narrow that bound
-rather than removing it. First, the glyph vocabulary and the separator are ordinary characters a
-title may itself contain, so a title reading as a glyph, a name and a state draws inside the
-broker's own composed one, behind the broker's leading mark. A client that truncates a long thread
-name in a list then cuts the broker's true suffix off the end while the planted one stays visible,
+thread name at 100 characters. The leading mark is spent first, and in a titled state the suffix
+too. So the room a name gets is 98 characters at rest and under 90 in a titled state, not the
+reader's 120. Two things narrow that bound rather than removing it. First, the glyph vocabulary and
+the separator are ordinary characters a title may itself contain, so a title reading as a glyph, a
+name and a state draws inside the broker's own composed one, behind the broker's leading mark. At
+rest the composed title has no suffix of its own, so a planted suffix is the only one on the thread,
+and only the leading bullet tells it apart. In a titled state, a client that truncates a long thread
+name in a list cuts the broker's true suffix off the end while the planted one stays visible,
 though the broker's leading mark, which comes first, survives the cut. And the field re-enters from
 the two files named above rather than from the transcript alone: those files are in the set that
 must not be writable. For a live mirrored session such a plant is corrected at the next re-emitted

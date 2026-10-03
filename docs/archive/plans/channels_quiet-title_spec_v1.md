@@ -1,6 +1,6 @@
 # A session thread's title stops announcing active and exited, so a restart writes no rename notice
 
-Status: In Progress
+Status: Complete
 Commit Model: Branch-and-PR
 Created: 2026-10-03
 
@@ -116,6 +116,13 @@ Fact base: `broker/discord/render.ts`, `broker/discord/surface.ts`, and this pla
 
 None.
 
+## Related
+
+- `channels_title-states-and-rename-cleaner_spec_v1.md`, which set up the title-state vocabulary this plan cuts to two states.
+- `channels_blocked-state_spec_v1.md`, which added the `blocked` title this plan keeps byte for byte.
+- `channels_follow-session-rename_spec_v1.md`, whose archive-at-rename gate now waits on the resting title.
+- `channels_session-activity-signals_spec_v1.md`, the parent plan whose typing line and restart line now carry liveness instead of the title.
+
 ## Chapters
 
 ### Chapter 1 - 2026-10-03
@@ -155,3 +162,34 @@ Delta: moment 2026-10-03, worktree D:/discord-channels-wt/quiet-title at 103df2a
 ```
 kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
 ```
+
+### Interim board 1 - 2026-10-03
+Finishing pass, steps 1-3. Base ref 649e8f7 (merge-base of `plans/quiet-title-docs` with main is 2d29ae6, whose tree carries the shipped code; 649e8f7 is the parent of the plan's first Chapter commit, used so the reviewers saw the whole effort). Tree-state capture before the round: porcelain empty at 38c1d6c; after: empty, no delta.
+Step 1 QA (qa-verifier, Agent tool): PASS. npm run lint exit 0; npm test exit 0, 2367 tests, 2366 pass, 0 fail, 1 skipped; every Section 1 and 2 acceptance bullet verified; `needs you` and `blocked` byte-identical to 649e8f7 across 8 names; docs sweep 0 matches at HEAD against 9 at 649e8f7. Contention lane: none defined.
+Steps 2-3 (Workflow wf_20aafe3f-d6c, fable, effort high): security CLEAR, performance CLEAR, adversarial APPROVED_WITH_CONCERNS, prose APPROVED_WITH_CONCERNS.
+Majors, both fixed: adversarial, the two plan-index lines in `docs/README.md` and `docs/plans/README.md` copied the pre-ruling Goal ("name alone") and said Ready; prose, `operations.md` said a thread falls back to the launch name after a rename yielding nothing readable, which `noteTitle` (registry.ts:977-985) refuses without clearing, so a renamed thread keeps its last readable title; the sentence now says so.
+Advisory: security Minor dwell wording (operations.md narrower than URGENT) fixed, naming the silence-backstop exited case; security Minor plan status word fixed with the index lines; security Minor npm audit deferred, the backlog item parked 2026-10-03 stands; performance Minor one rename per unarchived old `⚠ · exited` thread on an archive-off host, accepted: one notice once per such thread, paced by the budget, inside Assumption 2's one-rename-per-live-thread deploy cost; performance Minor double threadName per tick, pre-existing, refused as outside the plan.
+Minors fixed: bindings.ts comment on the composed title; render.ts comment scoped to a thread at rest; operator-checks.md "glyph-first" to the mark wording; security-model.md resting case stated (a planted suffix is the only one at rest) and the truncation sentence scoped to a titled state, the cap sentence split into one number style; operations.md rule and reason split, rename budget named at first use; architecture.md over-long sentence split and the copied verdict replaced by a pointer; backlog.md "now" dropped. Minors left: restored-binding fixtures spelling `· working` (pre-existing, still a stale name no state composes); docs/README.md:59 archived-row gloss (history, exempt).
+Gate after the fixes: targeted lane, npm run lint exit 0, `node --test "broker/discord/*.test.ts"` exit 0, 431 tests, 430 pass, 0 fail, 1 skipped. Comment-only code delta, so no review round owed.
+Next: step 4 goal read, step 5 docs-curator, step 6 close.
+Step 4 goal read (scope-adjudicator, fable, Agent tool), RULED: asked-but-unbuilt empty. Built-but-unasked, accept-and-declare: the archived-thread guard in `retire` (serves Intent "does not retitle threads already archived"); the `bindings.ts` comment; the `operator-checks.md` sentence; the plan index line. Ask, two items taken together: the rewritten `/rename`-to-nothing-readable sentence in `operations.md` and the backlog item parking that question. Settled by the seat's own recommended branch after reading the code: `customTitle` (tail.ts:1269, 1781) yields no item for an unreadable value, `noteTitle` (registry.ts:977-985) refuses rather than clears, `displayName` (render.ts:1125) prefers the stored title, so the new sentence holds and the backlog item, added in this changeset and never on main, was retired as answered. Low-blast and reversible: a docs sentence and one unmerged backlog entry. Left: `adapter.test.ts:45,56` carry the literal `• neo-intake` beside the one vocabulary pin, a fixture the plan allows either way. Tree-state check: porcelain before and after the round the same 10 files, no delta.
+
+### Chapter 3 - 2026-10-03
+Completed: finishing-work. Both sections pass their acceptance; the code shipped on PR #40 (merged at 103df2a, merge 2d29ae6) and the docs and close-out ship on a second pull request from branch `plans/quiet-title-docs`, since the merged-branch push guard refused the first branch after the operator merged it mid-run.
+Implemented By: main session (finishing pass, fix pass and close path); qa-verifier, four finishing reviewers, scope-adjudicator and docs-curator as dispatched seats
+Metrics: finishing review rounds 1, closed major-closed; provenance 0 spec-traceable, 0 fix-introduced, 0 new-requirement, rulings (0 refused, 4 declared, 1 asked and settled on the seat's recommended branch); advisory: 0 Critical or Major, 5 Minors (2 fixed, 1 deferred to the existing backlog item, 1 accepted, 1 refused as outside the plan); NEEDS_CONTEXT 0; escalations 0; consults 0
+Recap: Goal: "A session thread's title is the session name alone while it runs and after it exits, changing only for `needs you` and `blocked`, so a supervised restart writes no rename notice." As built, under the architect's ruling of 2026-10-03: the resting title is `• <name>`, the bullet held in `RESTING_MARK` (`broker/discord/render.ts`), so every title opens with a mark the broker owns. Working, idle and exited compose that one title, so a restart spends no rename. A thread titled `needs you` or `blocked` at exit takes one clearing rename without the dwell, then the archive. The two state titles compose byte for byte as before. The Goal sentence is the approved text and stays; the ruling is recorded under Intent, Assumption 1 and Standing Brief Amendments.
+Decisions / Surprises:
+- Base ref 649e8f7, the parent of the plan's first Chapter commit. The branch's merge-base with main is 2d29ae6, whose tree already carries the code, so the reviewers took 649e8f7 to see the whole effort. The changeset listing against it is the plan's Files in scope, the bookkeeping set, and `broker/discord/bindings.ts` (a comment) and `docs/operator-checks.md` (two sentences), both declared by the goal read.
+- Two review Majors fixed: the plan-index lines carried the pre-ruling Goal and a stale status; `operations.md` said a thread falls back to the launch name after a rename to nothing readable, which `noteTitle` refuses without clearing.
+- Goal read ask settled: the rewritten fallback sentence holds against `customTitle` (tail.ts:1269, 1781), `noteTitle` (registry.ts:977-985) and `displayName` (render.ts:1125), so the backlog item parking that question, added in this effort and never on main, was retired as answered.
+- Drift (docs-curator, all deviation): D1 Goal wording versus the ruled `• <name>`, kept as above; D2 the archived-thread guard in `retire`, documented in `operations.md`; D3 a backstop-exited session skips the dwell only until its thread is archived, confirmed at `surface.ts:648-652` and documented; D4 a blocked fan-out carries its state title, wording corrected; D5 `operator-checks.md` thread-list claim corrected; D6 the `bindings.ts` comment, declared. Library hygiene: Related now names the title-states, blocked-state, follow-session-rename and activity-signals plans.
+- Deploy cost, declared: each live thread takes one rename from the old title at the new broker's first pass. On a host with the archive off, a thread left unarchived under the old `⚠ <name> · exited` title also takes one, once.
+Failed approaches: tried an index-editing script as `.js` under `.kit/`, failed because the repo's `package.json` sets `"type": "module"`, learned to name such scratch scripts `.cjs`.
+Assumptions: none in the finishing pass
+Review Findings: review: security + performance + adversarial + prose at fable, Workflow wf_20aafe3f-d6c (high); capacity reading `fable capacity: scoped 58%, 7d 44%, 5h 29% (account 6) -> dispatch`. Verdicts: security CLEAR, performance CLEAR, adversarial APPROVED_WITH_CONCERNS, prose APPROVED_WITH_CONCERNS. Majors and Minors as on Interim board 1; the fix delta was prose and two code comments, gated on the targeted lane. Goal read: scope-adjudicator at fable, RULED, asked-but-unbuilt empty. QA: qa-verifier PASS. Tree-state check around steps 1-4: no delta.
+Stamps: none surfaced in the finishing pass.
+Gate: whole gate (handoff), measured 2026-10-03 on this machine over the worktree at 38c1d6c plus the uncommitted finishing edits and the archive move, after a foreign `node --test` (pid 12728, another repository's single test file) exited: `npm test` 2367 tests, 2366 pass, 0 fail, 1 skipped (the POSIX token-file test), exit 0, wall 48 s; `npm run lint` exit 0. No contention lane is defined in this repo. Delta against the baseline at 649e8f7 (2363 tests, 2362 pass, 1 skipped): 0 failing to 0 failing, 4 tests added net.
+Next: none
+Commit Model: Branch-and-PR
+Delta: moment 2026-10-03, worktree D:/discord-channels-wt/quiet-title on `plans/quiet-title-docs` at 38c1d6c with the finishing edits uncommitted, this machine.

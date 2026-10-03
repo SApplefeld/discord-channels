@@ -344,7 +344,7 @@ and none carries a date of its own. An item added from here on carries `(parked 
   adversarial round read every path and reported it holds: the archive gates on the same
   `threadName` composition the final rename writes, the title cannot move after exit because
   `noteTitle` refuses ended records, and `boundedTitle` is idempotent on its own output so a restart
-  recomposes the same name. The archive's gate is now the resting title, which a thread at rest
+  recomposes the same name. The archive's gate is the resting title, which a thread at rest
   already carries, so at rest the archive needs no rename before it. That is a code reading rather
   than the observation, so the item stays open until someone sees it.
 
@@ -677,14 +677,6 @@ and none carries a date of its own. An item added from here on carries `(parked 
   1.30.0. They predate that plan and sit outside its files. The broker binds loopback only, so
   whether any advisory is reachable is not established. The fix is a dependency refresh with the
   suite run over it.
-- Settle what a `/rename` to nothing readable leaves on the thread (parked 2026-10-03, from the
-  quiet-title plan's blind read of the title docs). `docs/operations.md` near "Renaming a session"
-  says the launch name is what the thread falls back to when a rename yields nothing readable,
-  while `docs/security-model.md` near its transcript-reading section says such a line yields no
-  item at all and the registry seam never clears a title, which reads as the previous `/rename`
-  title staying. Both may be true at different layers, the first for a session that never had a
-  readable title. Read `customTitle`, `noteTitle` and `displayName` and state the one answer in
-  both documents.
 
 ## Snapshots
 

@@ -641,15 +641,15 @@ The card's own vocabulary is five states, `working`, `needs you`, `blocked`, `id
 drawn glyph-first as ⚙, ⏹, ⛔, ⏸ and ⚠, and graded by how much each wants from the operator. The
 thread title names only two of them, `needs you` and `blocked`, the two that ask something of the
 operator. Working, idle, exited and a draining fan-out all compose one resting title, `• <name>`,
-so moving among them costs no renames at all, a supervised exit and restart included: every rename
-writes a system notice into the thread that an app cannot delete, and a title spent on liveness or
-a moving number would run a column of them down the thread. Liveness is read from the card, the
+so moving among them costs no renames. That holds across a supervised exit and restart too. Every
+rename writes a system notice into the thread that an app cannot delete. A title spent on liveness
+or a moving number would run a column of them down the thread. Liveness is read from the card, the
 typing line, the restart line and, unless the host turns it off, the archive on exit. Blocked earns
 a title because it is the halted-on-the-operator class the title exists for. The first character
 of every title is the broker's own, the bullet at rest or a state glyph, so a session-supplied name
-always opens behind a mark the broker chose. That narrows what a planted name can pass for rather
-than closing it, as `security-model.md` states. The rename damper keys on the composed title
-rather than on the state, which is what holds a session renaming itself to one rename.
+always opens behind a mark the broker chose. `security-model.md` states what that mark bounds. The
+rename damper keys on the composed title rather than on the state, which is what holds a session
+renaming itself to one rename.
 
 ## The name a session goes by
 

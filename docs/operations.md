@@ -78,7 +78,7 @@ every account, including a personal one, which is the durable fix rather than ch
 
 ## Reading a thread
 
-Thread names open with the broker's own mark because the mobile thread list truncates hard and the
+Thread names open with the broker's own mark. The mobile thread list truncates hard, and the
 actionable part has to survive truncation.
 
 ```
@@ -103,7 +103,8 @@ turn off.
 
 So a thread at its resting title takes no rename when its session exits or comes back. A thread
 titled `needs you` or `blocked` when its session exits takes one rename, back to the resting title,
-because a dead session cannot be answered. The archive waits for that rename, so when the thread's
+because a dead session cannot be answered. The archive waits for that rename. The broker paces
+renames per thread, as "Renames are the scarcest resource" below explains, so when the thread's
 rename budget is spent, the archive comes late, or not at all for a session the registry has
 already let go.
 
@@ -245,6 +246,9 @@ that horizon: from the staleness window on, a silent session gets no new card or
 that is heard from again gets both back on the next pass. `needs you`, `blocked` and a session
 holding background tasks are exempt, so a thread you must answer in is always rebuilt.
 
+An archived thread takes no rename until its session comes back, so it keeps the title it was
+archived under.
+
 ## Renaming a session
 
 `/rename` at a session's own console moves that session's thread title, and it is the only thing that
@@ -258,8 +262,11 @@ Expect it within about **80 seconds** on the defaults, which is one transcript p
 (`CHANNEL_INTERIM_POLL_MS`, 20 seconds) plus one dwell (`CHANNEL_DISCORD_DWELL_MS`, 60 seconds).
 Renaming twice inside that window spends one rename rather than two, because the dwell restarts on
 each change and only the settled name is painted. A session already reading `needs you` skips the
-dwell and repaints on the next pass. Once a session's record has ended, the broker takes no further
-title for it, so a rename after the session ends never reaches its thread.
+dwell and repaints on the next pass. So does a session the silence backstop has marked exited while
+its record is still live, until its thread is archived. With `CHANNEL_DISCORD_ARCHIVE_ON_END` on,
+the archive normally lands on the pass that marks the session exited, and an archived thread takes
+no rename until its session is heard from again. Once a session's record has ended, the broker
+takes no further title for it, so a rename after the session ends never reaches its thread.
 
 Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never
 follows a rename, because the tailer never reads that session's transcript, and the name is
@@ -274,9 +281,11 @@ without the off header, as [`security-model.md`](security-model.md) explains.
 And nothing clears a title once set: a later `/rename` replaces it, but there is no path back to
 the launch name short of starting a session under it.
 
-The launch name is still what a session with no `/rename` is called, and it is still what the thread
-falls back to when a rename yields nothing readable. A session launched without the wrapper, carrying
-neither, draws as `session ` plus the first eight characters of its session ID.
+The launch name is still what a session with no `/rename` is called. A rename that yields nothing
+readable is refused rather than stored, so the thread keeps the name it already had: the last
+readable title, or the launch name where the session was never renamed. A session launched without
+the wrapper, carrying neither, draws as `session ` plus the first eight characters of its session
+ID.
 
 ## What a session is trying to finish
 
@@ -457,12 +466,11 @@ is exempt from the silence backstop: a session blocked overnight keeps its `⛔`
 sits, where any other session silent past `CHANNEL_DISCORD_EXITED_AFTER_MS` (4 hours) renders
 exited. The price of the exemption is the inverse misread: a session killed while blocked keeps
 its `⛔` until the broker lets the record go, rather than its card reading exited and its title
-returning to the resting title at the backstop. The
-event stream is a
-plain file in your home directory that any process running as you can append to, so a crafted
-`goal-complete` clears a real block and a flood of junk session ids can push a real one out of the
-reader's 200-session map. And a block landing while the broker is down past the freshness bound
-arrives as the title without the ping. The state is evidence when it draws and never proof when it
+returning to the resting title at the backstop. The event stream is a plain file in your home
+directory that any process running as you can append to, so a crafted `goal-complete` clears a real
+block and a flood of junk session ids can push a real one out of the reader's 200-session map.
+And a block landing while the broker is down past the freshness bound arrives as the title without
+the ping. The state is evidence when it draws and never proof when it
 does not; [`security-model.md`](security-model.md) states that at the write's own paragraph.
 
 Both readers of that file, this one and the board card's per-plan marker, resolve
@@ -829,9 +837,9 @@ A session whose main thread is blocked on dispatched subagents fires no hooks at
 alone would read it as idle at the moment it is working hardest. The harness reports its own table
 of in-flight work at every turn end, and the card carries it in two places: the count beside the
 state on the card's own state row, and the tasks themselves with their ages in a block below. The
-thread title stays the resting title, since a count that moved with the fan-out would spend a
-rename, and a permanent notice in the thread, on every step of a drain. At any fan-out you are
-likely to see, every task is named. A card omits one only when the message ceiling forces it,
+thread title never carries the count, so a working session waiting on tasks keeps the resting
+title. A count that moved with the fan-out would spend a rename, and a permanent notice in the
+thread, on every step of a drain. At any fan-out you are likely to see, every task is named. A card omits one only when the message ceiling forces it,
 which is the bound that decides in practice, since each entry takes two rows: the card starts from
 at most twenty-four entries and drops them one at a time until the whole message fits. An entry
 reads as one thing rather than two: the first row carries the age and the agent's type behind a

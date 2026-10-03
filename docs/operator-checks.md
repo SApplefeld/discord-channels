@@ -137,8 +137,8 @@ already knows. That path is not built.
 **Result: passed, 2026-08-06.** The thread name stays in the top bar through a long scroll, so both
 halves of the design work: the in-thread header and the thread-list dashboard.
 
-**Proves:** whether the always-visible status line works as designed on a phone. Thread names are
-rendered glyph-first for exactly this reason, because the list view truncates hard and the actionable
+**Proves:** whether the always-visible status line works as designed on a phone. Thread names open
+with the broker's own mark for exactly this reason. The list view truncates hard, and the actionable
 part has to survive truncation.
 
 ### Steps
@@ -147,7 +147,8 @@ Open any thread in the Discord mobile app, scroll down through a long message hi
 whether the thread name stays in the top bar.
 
 **If negative on a future device:** the design barely moves. The thread **list** view still shows
-every session and its state, which is the more valuable half. Only the in-thread header is lost.
+every session and flags each one waiting on you, which is the more valuable half. Only the
+in-thread header is lost.
 
 ---
 
