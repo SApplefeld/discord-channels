@@ -1,6 +1,6 @@
 # The board card's plan reader matches headings in linear time, so one pathological line cannot stall a refresh tick
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-02
 

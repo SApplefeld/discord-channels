@@ -4,12 +4,14 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writ
 import os from "node:os";
 import path from "node:path";
 import {
+  BLOCK_HEADING,
   MAX_INTAKE_NEXT_LENGTH,
   MAX_INTAKE_STATUS_LENGTH,
   MAX_PLANS_PER_ROOT,
   MAX_PLAN_FILE_BYTES,
   parsePlan,
   readPlanFile,
+  SECTION,
   sweepPlans,
 } from "./plans.ts";
 import type { PlanDirectoryListing, PlanSweep } from "./plans.ts";
@@ -155,6 +157,118 @@ test("a ## line ends the block only when whitespace and text follow the hashes",
   assert.equal(inside("#### Deeper"), 2, "deeper headings live inside a block");
   assert.equal(inside("## Foo"), 1, "a real H2 ends the block and drops what follows");
   assert.equal(inside("##\tFoo"), 1, "a tab is whitespace to the engine's pattern too");
+});
+
+// The linear forms replace these quadratic ones, and the persona plugin's twin pins against this
+// card, so the two pairs must accept the same language. The old forms live here as the oracle.
+const OLD_BLOCK_HEADING = /^##\s+.+$/;
+const OLD_SECTION = /^###\s+(\d+)\.\s+(.*)$/;
+
+type SectionVerdict = { number: string; title: string } | null;
+
+const oldSection = (line: string): SectionVerdict => {
+  const match = OLD_SECTION.exec(line);
+  return match ? { number: match[1], title: match[2].trim() } : null;
+};
+
+const newSection = (line: string): SectionVerdict => {
+  const match = SECTION.exec(line);
+  return match ? { number: match[1], title: (match[2] ?? match[3]).trim() } : null;
+};
+
+/** Counts the ways the old and new forms disagree on one line, which is zero when they agree. */
+function disagreements(line: string): number {
+  let count = OLD_BLOCK_HEADING.test(line) === BLOCK_HEADING.test(line) ? 0 : 1;
+  const before = oldSection(line);
+  const after = newSection(line);
+  if (before === null || after === null) {
+    if (before !== after) count += 1;
+  } else if (before.number !== after.number || before.title !== after.title) {
+    count += 1;
+  }
+  return count;
+}
+
+test("the pattern sources are the exact linear forms, written with escaped terminators", () => {
+  // A live U+2028 in a regex literal is a module syntax error, and an editor can silently convert
+  // an escape into the live character, so the source text is pinned as written.
+  assert.equal(
+    BLOCK_HEADING.source,
+    "^##(?:\\s[^\\r\\u2028\\u2029]|\\s*[\\r\\u2028\\u2029][^\\r\\u2028\\u2029])[^\\r\\u2028\\u2029]*$",
+  );
+  assert.equal(
+    SECTION.source,
+    "^###\\s+(\\d+)\\.(?:\\s([^\\r\\u2028\\u2029]*)|\\s*[\\r\\u2028\\u2029]([^\\r\\u2028\\u2029]*))$",
+  );
+  assert.equal(BLOCK_HEADING.flags, "");
+  assert.equal(SECTION.flags, "");
+});
+
+test("the linear heading patterns accept the same lines as the quadratic forms", () => {
+  // Every string up to length 6 over the characters that separate the two forms: the hash, the
+  // three terminators the dot refuses, the whitespace the terminators share a class with (tab, NEL,
+  // NBSP, space), and the characters that make a heading. Each is tried bare and after each prefix
+  // that puts it in the position the patterns read.
+  const alphabet = ["#", " ", "\t", "\r", "\u2028", "\u2029", "\u0085", "\u00a0", "x", "1", "."];
+  const prefixes = ["", "##", "###", "### 1."];
+  const base = alphabet.length;
+  const maxLength = 6;
+  let total = 0;
+  for (let length = 0; length <= maxLength; length += 1) total += base ** length;
+
+  let compared = 0;
+  let differences = 0;
+  const digits = new Array<number>(maxLength).fill(0);
+  for (let length = 0; length <= maxLength; length += 1) {
+    const count = base ** length;
+    for (let index = 0; index < count; index += 1) {
+      let rest = index;
+      let text = "";
+      for (let place = 0; place < length; place += 1) {
+        digits[place] = rest % base;
+        rest = Math.floor(rest / base);
+        text += alphabet[digits[place]];
+      }
+      for (const prefix of prefixes) {
+        differences += disagreements(prefix + text);
+        compared += 1;
+      }
+    }
+  }
+
+  assert.equal(compared, total * prefixes.length);
+  assert.equal(differences, 0, `${differences} differences over ${compared} lines`);
+});
+
+test("long whitespace runs ending in a terminator get the same verdict from both forms", () => {
+  // The old forms take seconds on these by design, which is what the linear forms remove.
+  for (const terminator of ["\r", "\u2028"]) {
+    const runs = [
+      " ".repeat(16000) + terminator,
+      (" " + terminator).repeat(8000),
+      (" " + terminator).repeat(8000) + "x",
+    ];
+    for (const run of runs) {
+      for (const lead of ["##", "### 1."]) {
+        const line = lead + run;
+        assert.equal(disagreements(line), 0, `${lead} then a ${run.length}-character run`);
+      }
+    }
+  }
+});
+
+test("a section title is read whichever branch of the heading matched", () => {
+  // The title capture moved into two branches, so the count is checked through the public reader
+  // for a heading whose whitespace after the period holds a terminator. parsePlan exposes only the
+  // count, so the title itself is pinned by the equality tests above.
+  const parsed = parsePlan(
+    plan({ sections: ["### 1. \r Title", "### 2.\u2028Title", "### 3. Title"].join("\n") }),
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.sections, 3);
+  assert.deepEqual(newSection("### 1. \r Title"), { number: "1", title: "Title" });
+  assert.deepEqual(newSection("### 2.\u2028Title"), { number: "2", title: "Title" });
+  assert.deepEqual(newSection("### 3. Title"), { number: "3", title: "Title" });
 });
 
 test("only ### N. headings inside the block count as sections", () => {

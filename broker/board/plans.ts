@@ -207,7 +207,9 @@ export type PlanSweep = {
 const STATUS = /^Status:(.*)$/;
 const SECTIONS_HEADING = /^##\s+Sections of Work\s*$/;
 const CHAPTERS_HEADING = /^##\s+Chapters\s*$/;
-const SECTION = /^###\s+(\d+)\.\s+(.*)$/;
+// Written in the same linear form as BLOCK_HEADING below, with the title in group 2 or group 3
+// according to which branch matched. The terminators are escapes, never live characters.
+export const SECTION = /^###\s+(\d+)\.(?:\s([^\r\u2028\u2029]*)|\s*[\r\u2028\u2029]([^\r\u2028\u2029]*))$/;
 const CHAPTER = /^###\s+Chapter\s+(\d+)/;
 const COMPLETED = /^Completed:(.*)$/;
 const NEXT = /^Next:(.*)$/;
@@ -216,7 +218,13 @@ const NEXT = /^Next:(.*)$/;
 // requirement is what excludes `###` and `####` lines, whose next character is a hash: a section or
 // Chapter heading lives inside a block rather than ending one. A line like `##foo`, with no space,
 // is not a heading to the engine and is not one here.
-const BLOCK_HEADING = /^##\s+.+$/;
+//
+// `\s` accepts CR, U+2028 and U+2029 while `.` refuses them, so the plain `/^##\s+.+$/` backtracks
+// quadratically on a whitespace run that ends in one of them. This form accepts exactly the same
+// lines in linear time: the first branch takes one whitespace character and then a non-terminator,
+// and the second lets the whitespace run end at a terminator that the text then follows. The
+// terminators are escapes, never live characters.
+export const BLOCK_HEADING = /^##(?:\s[^\r\u2028\u2029]|\s*[\r\u2028\u2029][^\r\u2028\u2029])[^\r\u2028\u2029]*$/;
 
 function isBlockHeading(line: string): boolean {
   return BLOCK_HEADING.test(line);
@@ -254,7 +262,7 @@ function sectionHeadings(lines: string[]): Section[] {
   const sections: Section[] = [];
   for (const line of blockLines(lines, SECTIONS_HEADING)) {
     const match = SECTION.exec(line);
-    if (match) sections.push({ number: match[1], title: match[2].trim() });
+    if (match) sections.push({ number: match[1], title: (match[2] ?? match[3]).trim() });
   }
   return sections;
 }
