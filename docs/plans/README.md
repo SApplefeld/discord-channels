@@ -3,7 +3,7 @@
 This folder holds active plans only: specs that are open or in progress. A plan is the single source
 of truth for one effort's intent and state, and a fresh or post-compaction session resumes from it.
 
-No plan is open.
+- [`channels_quiet-title_spec_v1.md`](channels_quiet-title_spec_v1.md), Ready: a session thread is titled with its name alone, running or exited, and the title changes only for `needs you` and `blocked`, so a supervised restart writes no rename notice.
 
 The most recently archived plan is
 [`../archive/plans/channels_plan-reader-linear-patterns_spec_v1.md`](../archive/plans/channels_plan-reader-linear-patterns_spec_v1.md),

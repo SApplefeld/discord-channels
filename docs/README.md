@@ -29,7 +29,7 @@ All of it is built and installable.
 
 ## Plans
 
-No plan is open in [`plans/`](plans/). Everything delivered, shelved, declined or superseded is archived in [`archive/plans/`](archive/plans/) and listed below it, most recent first.
+One plan is open in [`plans/`](plans/): [`plans/channels_quiet-title_spec_v1.md`](plans/channels_quiet-title_spec_v1.md), Ready. A session thread is titled with its name alone, running or exited, and the title changes only for `needs you` and `blocked`, so a supervised restart writes no rename notice. Everything delivered, shelved, declined or superseded is archived in [`archive/plans/`](archive/plans/) and listed below, most recent first.
 
 | Plan | Status | What it is |
 |---|---|---|
