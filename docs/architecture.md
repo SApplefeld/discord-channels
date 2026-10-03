@@ -778,6 +778,22 @@ card uses: the roster, each persona's store and heartbeat, and every plan docume
 cap is refused whole rather than read as a prefix. The goal event stream is the exception, since its
 reader takes appended bytes from a held offset.
 
+The plan reader's block and section heading patterns match a line in time proportional to its
+length. They are `BLOCK_HEADING`, which finds the `##` heading that ends a block, and `SECTION`,
+which finds a `### N.` heading inside `## Sections of Work`, both in `broker/board/plans.ts`.
+JavaScript's `\s` accepts a carriage return and the separators U+2028 and U+2029, while `.` refuses
+all three. So the plain form `^##\s+.+$` retries every prefix of a whitespace run that ends in one
+of them, which cost about 22 seconds on one such line at the 256 KiB cap. Each pattern instead
+takes one of two branches: a single whitespace character, or a whitespace run ending at one of
+those three characters, and then the rest of the line, which holds none of them. Both accept
+exactly the lines the plain forms `^##\s+.+$` and `^###\s+(\d+)\.\s+(.*)$` accept, and the same
+line takes well under a millisecond. That equality holds for lines without `\n`, which `parsePlan`
+splits on before either pattern runs. The section title sits in `SECTION`'s group 2 or group 3, by
+which branch matched, and `sectionHeadings` reads whichever is set and trims it.
+`broker/board/plans.test.ts` keeps the plain forms as an oracle, compares both patterns against
+them over 7,794,868 generated lines and the long-run shapes, and pins each pattern's source text
+with the three characters written as escapes.
+
 A torn read is drawn rather than hidden. A plan caught mid-write redraws its last good parse under a
 held marker whose age climbs, so the operator sees staleness instead of a plan that silently stopped
 moving. The blocked marker is set by a `goal-blocked` event and cleared by a newer plan modification

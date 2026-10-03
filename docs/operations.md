@@ -668,6 +668,8 @@ Cost per refresh is small and bounded. A file is opened only when its modificati
 moved, and a file that fails to parse is held shut on the same terms rather than being re-read every
 tick. A plan above 256 KB is refused whole rather than parsed as a prefix, and draws a bullet saying so,
 so a truncated document never reaches the card as if it were complete; a real plan runs tens of KB.
+Finding a plan's headings takes time in proportion to each line's length, so one long line costs
+well under a millisecond whatever characters it holds.
 Each root contributes at most 64 plan files. The persona view holds to the same terms. The roster
 is capped at **64 KB**, each store and heartbeat at **2 MB**, and each persona at **200** queue
 entries. A plan document opened through the join takes the same 256 KB cap as a swept one.

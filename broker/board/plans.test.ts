@@ -4,12 +4,14 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writ
 import os from "node:os";
 import path from "node:path";
 import {
+  BLOCK_HEADING,
   MAX_INTAKE_NEXT_LENGTH,
   MAX_INTAKE_STATUS_LENGTH,
   MAX_PLANS_PER_ROOT,
   MAX_PLAN_FILE_BYTES,
   parsePlan,
   readPlanFile,
+  SECTION,
   sweepPlans,
 } from "./plans.ts";
 import type { PlanDirectoryListing, PlanSweep } from "./plans.ts";
@@ -155,6 +157,130 @@ test("a ## line ends the block only when whitespace and text follow the hashes",
   assert.equal(inside("#### Deeper"), 2, "deeper headings live inside a block");
   assert.equal(inside("## Foo"), 1, "a real H2 ends the block and drops what follows");
   assert.equal(inside("##\tFoo"), 1, "a tab is whitespace to the engine's pattern too");
+});
+
+// The quadratic forms the linear ones must agree with, kept here as the oracle. The persona
+// plugin's copy of this reader uses the same linear forms, so both must accept this language.
+const OLD_BLOCK_HEADING = /^##\s+.+$/;
+const OLD_SECTION = /^###\s+(\d+)\.\s+(.*)$/;
+
+type SectionVerdict = { number: string; title: string } | null;
+
+const oldSection = (line: string): SectionVerdict => {
+  const match = OLD_SECTION.exec(line);
+  return match ? { number: match[1], title: match[2].trim() } : null;
+};
+
+const newSection = (line: string): SectionVerdict => {
+  const match = SECTION.exec(line);
+  return match ? { number: match[1], title: (match[2] ?? match[3]).trim() } : null;
+};
+
+/** Counts the ways the old and new forms disagree on one line, which is zero when they agree. */
+function disagreements(line: string): number {
+  let count = OLD_BLOCK_HEADING.test(line) === BLOCK_HEADING.test(line) ? 0 : 1;
+  const before = oldSection(line);
+  const after = newSection(line);
+  if (before === null || after === null) {
+    if (before !== after) count += 1;
+  } else if (before.number !== after.number || before.title !== after.title) {
+    count += 1;
+  }
+  return count;
+}
+
+// Every string up to length 6 over the characters that separate the two forms: the hash, the three
+// terminators that `\s` accepts and the dot refuses, other whitespace (space, tab, NBSP), NEL, which
+// `\s` refuses and the dot accepts, and the characters that make a heading. Each is tried bare and after each prefix
+// that puts it where the patterns read. Neither form is given a `\n`, since `parsePlan` splits lines
+// on it before either pattern runs.
+const ALPHABET = ["#", " ", "\t", "\r", "\u2028", "\u2029", "\u0085", "\u00a0", "x", "1", "."];
+const PREFIXES = ["", "##", "###", "### 1."];
+const MAX_GENERATED_LENGTH = 6;
+let GENERATED_LINES = 0;
+for (let length = 0; length <= MAX_GENERATED_LENGTH; length += 1) {
+  GENERATED_LINES += ALPHABET.length ** length * PREFIXES.length;
+}
+
+test("the pattern sources are the exact linear forms, written with escaped terminators", () => {
+  // The persona plugin's copy of this reader carries the same two forms, so the source text is
+  // pinned as written, terminators as escapes, to keep the two copies identical.
+  assert.equal(
+    BLOCK_HEADING.source,
+    "^##(?:\\s[^\\r\\u2028\\u2029]|\\s*[\\r\\u2028\\u2029][^\\r\\u2028\\u2029])[^\\r\\u2028\\u2029]*$",
+  );
+  assert.equal(
+    SECTION.source,
+    "^###\\s+(\\d+)\\.(?:\\s([^\\r\\u2028\\u2029]*)|\\s*[\\r\\u2028\\u2029]([^\\r\\u2028\\u2029]*))$",
+  );
+  assert.equal(BLOCK_HEADING.flags, "");
+  assert.equal(SECTION.flags, "");
+});
+
+test(`the linear heading patterns accept the same lines as the quadratic forms over ${GENERATED_LINES} generated lines`, () => {
+  const base = ALPHABET.length;
+  let compared = 0;
+  let differences = 0;
+  for (let length = 0; length <= MAX_GENERATED_LENGTH; length += 1) {
+    const count = base ** length;
+    for (let index = 0; index < count; index += 1) {
+      let rest = index;
+      let text = "";
+      for (let place = 0; place < length; place += 1) {
+        text += ALPHABET[rest % base];
+        rest = Math.floor(rest / base);
+      }
+      for (const prefix of PREFIXES) {
+        differences += disagreements(prefix + text);
+        compared += 1;
+      }
+    }
+  }
+
+  assert.equal(compared, GENERATED_LINES);
+  assert.equal(differences, 0, `${differences} differences over ${compared} lines`);
+});
+
+test("long whitespace runs ending in a terminator get the same verdict from both forms", () => {
+  // The old block form backtracks quadratically on a long whitespace run ending in a terminator, and
+  // the old section form on such a run followed by text and a second terminator. The alternating
+  // runs and the trailing-text runs are the near misses beside them. The runs stay near 16,000
+  // characters because the oracle is quadratic: about 100 ms per shape here, minutes at the 256 KiB cap.
+  for (const terminator of ["\r", "\u2028"]) {
+    const runs = [
+      " ".repeat(16000) + terminator,
+      " ".repeat(16000) + terminator + "x" + terminator,
+      (" " + terminator).repeat(8000),
+      (" " + terminator).repeat(8000) + "x",
+    ];
+    for (const run of runs) {
+      for (const lead of ["##", "### 1."]) {
+        const line = lead + run;
+        assert.equal(disagreements(line), 0, `${lead} then a ${run.length}-character run`);
+      }
+    }
+  }
+});
+
+test("a section title is read whichever branch of the heading matched", () => {
+  // The title capture is split across two branches, so a Chapter that closes a section by its title
+  // alone registers only when the reader takes the title from the branch that matched.
+  const parsed = parsePlan(
+    plan({
+      sections: ["### 1. \r Alpha", "### 2.\u2028Beta", "### 3. Gamma"].join("\n"),
+      chapters: [
+        "### Chapter 1",
+        "Completed: Alpha",
+        "### Chapter 2",
+        "Completed: Beta",
+        "### Chapter 3",
+        "Completed: Gamma",
+      ].join("\n"),
+    }),
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.sections, 3);
+  assert.equal(parsed.completed, 3, "each title-only Completed: line closes its section");
 });
 
 test("only ### N. headings inside the block count as sections", () => {
