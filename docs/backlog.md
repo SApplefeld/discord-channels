@@ -337,24 +337,27 @@ and none carries a date of its own. An item added from here on carries `(parked 
   it does not justify guarding the name alone. Left out of that section deliberately, because the
   fields are pre-existing surface serving a different goal than following a rename.
 
-- Watch a renamed session end, and confirm the exited title and the archive both land (parked
-  2026-08-27, Acceptance item 5 of the follow-a-rename plan, the one item that run could not
-  observe). It needs a mirrored session carrying a `/rename` title to actually exit while someone is
-  watching the thread, which did not happen inside that run. The finishing adversarial round read
-  every path and reports it holds: `archive()` gates on the same `threadName` composition the exited
-  rename writes, the title cannot move after exit because `noteTitle` refuses ended records, and
-  `boundedTitle` is idempotent on its own output so a restart recomposes the same name. That is a
-  code reading rather than the observation, so the item stays open until someone sees it.
+- Watch a renamed session end, and confirm the archive lands with the thread at its renamed resting
+  title (parked 2026-08-27, Acceptance item 5 of the follow-a-rename plan, the one item that run
+  could not observe). It needs a mirrored session carrying a `/rename` title to actually exit while
+  someone is watching the thread, which did not happen inside that run. That run's finishing
+  adversarial round read every path and reported it holds: the archive gates on the same
+  `threadName` composition the final rename writes, the title cannot move after exit because
+  `noteTitle` refuses ended records, and `boundedTitle` is idempotent on its own output so a restart
+  recomposes the same name. The archive's gate is now the resting title, which a thread at rest
+  already carries, so at rest the archive needs no rename before it. That is a code reading rather
+  than the observation, so the item stays open until someone sees it.
 
 - Decide whether a renamed session evicted by the `maxSessions` cap should still get its thread
   archived (parked 2026-08-27, found by the follow-a-rename plan's finishing adversarial round,
   medium confidence). A record leaving the registry by the cap rather than by the 24-hour retention
   falls to `retire()`, which caps at five passes seconds apart. If the per-thread rename bucket is
-  empty across those five, the thread is left unarchived, or frozen at a pre-exit title where the
-  exited rename never landed. The pass cap and the budget gate both predate the title work, which
-  only adds one more consumer of the shared bucket, so this is pre-existing machinery worth a
-  deliberate call rather than a defect that effort introduced. The plan's Traps section states the
-  cost as "a late archive, not a wrong one", which is true everywhere except here.
+  empty across those five, the thread is left unarchived, or left titled `needs you` or `blocked`
+  where the rename clearing that title never landed. The pass cap and the budget gate both predate
+  the title work, which only adds one more consumer of the shared bucket, so this is pre-existing
+  machinery worth a deliberate call rather than a defect that effort introduced. The plan's Traps
+  section states the cost as "a late archive, not a wrong one", which is true everywhere except
+  here.
 
 - Normalize the three exotic line breaks in `withoutInvisible` (parked 2026-08-27, found by the
   peer-chatter rendering plan's Section 1 security review, high confidence on the gap and
@@ -674,6 +677,14 @@ and none carries a date of its own. An item added from here on carries `(parked 
   1.30.0. They predate that plan and sit outside its files. The broker binds loopback only, so
   whether any advisory is reachable is not established. The fix is a dependency refresh with the
   suite run over it.
+- Settle what a `/rename` to nothing readable leaves on the thread (parked 2026-10-03, from the
+  quiet-title plan's blind read of the title docs). `docs/operations.md` near "Renaming a session"
+  says the launch name is what the thread falls back to when a rename yields nothing readable,
+  while `docs/security-model.md` near its transcript-reading section says such a line yields no
+  item at all and the registry seam never clears a title, which reads as the previous `/rename`
+  title staying. Both may be true at different layers, the first for a session that never had a
+  readable title. Read `customTitle`, `noteTitle` and `displayName` and state the one answer in
+  both documents.
 
 ## Snapshots
 

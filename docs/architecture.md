@@ -639,12 +639,17 @@ on the card, for `blocked` as much as for `working`, and stops there.
 
 The card's own vocabulary is five states, `working`, `needs you`, `blocked`, `idle` and `exited`,
 drawn glyph-first as ⚙, ⏹, ⛔, ⏸ and ⚠, and graded by how much each wants from the operator. The
-thread title distinguishes four of them, `active`, `needs you`, `blocked` and `exited`, so working,
-idle, and a draining fan-out are one title and cost no renames at all: every rename writes a system
-notice into the thread that an app cannot delete, and a title spent on a moving number would run a
-column of them down the thread. Blocked earns a title because it is the halted-on-the-operator class
-the title exists for. The rename damper keys on the composed title rather than on the state, which is
-what holds a session renaming itself to one rename.
+thread title names only two of them, `needs you` and `blocked`, the two that ask something of the
+operator. Working, idle, exited and a draining fan-out all compose one resting title, `• <name>`,
+so moving among them costs no renames at all, a supervised exit and restart included: every rename
+writes a system notice into the thread that an app cannot delete, and a title spent on liveness or
+a moving number would run a column of them down the thread. Liveness is read from the card, the
+typing line, the restart line and, unless the host turns it off, the archive on exit. Blocked earns
+a title because it is the halted-on-the-operator class the title exists for. The first character
+of every title is the broker's own, the bullet at rest or a state glyph, so a session-supplied name
+always opens behind a mark the broker chose. That narrows what a planted name can pass for rather
+than closing it, as `security-model.md` states. The rename damper keys on the composed title
+rather than on the state, which is what holds a session renaming itself to one rename.
 
 ## The name a session goes by
 
@@ -914,9 +919,9 @@ yet records nothing and simply goes again next pass.
 The title is the slow channel and the alert is the fast one. `blocked` is deliberately not one of
 the states worth an immediate rename, because the mid-turn transient above can appear and clear
 inside a refresh tick, and an undamped rename there would write Discord's irremovable notice twice
-and empty a per-thread bucket that holds about two renames in ten minutes, the same bucket the final
-exited rename and the archive need. A real block lasts minutes to hours, so it settles well inside
-the ordinary dwell window.
+and empty a per-thread bucket that holds about two renames in ten minutes, the same bucket the
+rename clearing a `needs you` or `blocked` title at exit and the archive need. A real block lasts
+minutes to hours, so it settles well inside the ordinary dwell window.
 
 What the desk reads is lower-privilege than every token-gated surface here: appending to the stream
 needs write access to the operator's home directory and no process token at all. So a line whose

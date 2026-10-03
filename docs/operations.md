@@ -78,24 +78,35 @@ every account, including a personal one, which is the durable fix rather than ch
 
 ## Reading a thread
 
-Thread names are glyph-first because the mobile thread list truncates hard and the actionable part
-has to survive truncation.
+Thread names open with the broker's own mark because the mobile thread list truncates hard and the
+actionable part has to survive truncation.
 
 ```
-⚙ neo-intake · active
-⚙ neo-migrate · active
-⚙ scott-kit · active
+• neo-intake
+• neo-migrate
+• scott-kit
 ⏹ neo-deploy · needs you
 ⛔ scott-kit-goal · blocked
-⚠ asr-docs · exited
+• asr-docs
 ```
 
-The name between the glyph and the state is the name the session currently goes by: what an
-in-session `/rename` last set, or the name it launched under while nothing has. "Renaming a session"
-below covers how one reaches the thread and how long it takes.
+The name after the mark is the name the session currently goes by: what an in-session `/rename`
+last set, or the name it launched under while nothing has. "Renaming a session" below covers how
+one reaches the thread and how long it takes.
 
-A title carries four states. `active` means the session is up, whether it is mid-turn or sitting
-quiet. `exited` means the session ended, or that it went silent past the presumed-dead horizon.
+A title carries a state only when the session wants something from you. Every other thread wears
+the resting title, `• <name>`, whether its session is mid-turn, sitting quiet, or over. Whether a
+session is up is read elsewhere. The status card underneath names its state. The typing line shows a
+turn in progress. A `↻ supervisor restarted` line marks a supervised restart. And a thread leaves
+the active list when its session exits, by archiving, which `CHANNEL_DISCORD_ARCHIVE_ON_END` can
+turn off.
+
+So a thread at its resting title takes no rename when its session exits or comes back. A thread
+titled `needs you` or `blocked` when its session exits takes one rename, back to the resting title,
+because a dead session cannot be answered. The archive waits for that rename, so when the thread's
+rename budget is spent, the archive comes late, or not at all for a session the registry has
+already let go.
+
 `needs you`, the ⏹ glyph, means that session has a permission prompt open and is parked until you
 answer it; it is recomputed on every refresh from the set of prompts still waiting, so it clears on
 its own when you answer, and it is urgent enough to spend a rename immediately rather than waiting
@@ -115,21 +126,23 @@ The title is coarser than the state the broker tracks because every rename write
 thread that nothing can remove: an app cannot delete a thread-rename notice (Discord error 50021),
 where a human account with Manage Messages can, so a title following every change would run a column
 of notices down a thread you read for its content.
-`working` versus `idle`, and how many tasks a session is waiting on, are on the card underneath,
-which is edited in place and writes nothing into the thread.
+`working`, `idle` and `exited`, and how many tasks a session is waiting on, are on the card
+underneath, which is edited in place and writes nothing into the thread.
 
-The glyph alone says how much the state wants from you when the list truncates everything behind it:
-the gear is running, the stop-square is halted on you, the no-entry sign is halted with nothing left
-to try, and the warning triangle is over. The two you can clear are the stop-square, by answering the
-prompt, and the no-entry sign, by engaging the session.
+The first character of every title is the broker's own, so it says how much the thread wants from
+you even when the list truncates everything behind it: the bullet asks nothing, the stop-square is
+halted on you, and the no-entry sign is halted with nothing left to try. The two you can clear are
+the stop-square, by answering the prompt, and the no-entry sign, by engaging the session. A
+session's own name cannot move that character: a name that itself opens with ⏹ still comes after
+the broker's mark.
 
 Renames are the scarcest resource here. Discord documents no limit on channel or thread modification
 and says limits should not be hard-coded, so the broker reads the rate-limit response headers and
 adapts, per thread rather than globally. A rename it cannot afford is **dropped, never queued**,
 because a rename landing ten minutes late paints a state that stopped being true. The card underneath
 is edited in a far looser bucket and carries the detail. The card opens with a heading naming the
-session and its state, in a five-state vocabulary that splits the title's `active` into `⚙ working`
-and `⏸ idle` and keeps `⏹ needs you`, `⛔ blocked` and `⚠ exited` as the title draws them, then a
+session and its state, in a five-state vocabulary, `⚙ working`, `⏸ idle`, `⏹ needs you`,
+`⛔ blocked` and `⚠ exited`, of which the title draws only `needs you` and `blocked`, then a
 fenced block of fields (host, session, state, model, context size, a
 `From` row while the session is running below the model it opened with, and heartbeat), then a
 `⚠️` line while the session is stuck on a harness error, then one fenced block per thing the
@@ -236,16 +249,17 @@ holding background tasks are exempt, so a thread you must answer in is always re
 
 `/rename` at a session's own console moves that session's thread title, and it is the only thing that
 does. The broker reads the name off the session's transcript, prefers it over the name the session
-launched under, and repaints the thread with the glyph and the state suffix intact. Nothing has to be
-done in Discord, and renaming the thread from the Discord client is not a way to do it: the name you
-type there reaches no session, and the broker does not read a thread's name back, so it stands until
-the broker's own composed name next changes and overwrites it.
+launched under, and repaints the thread with the broker's leading mark, and any state suffix,
+intact. Nothing has to be done in Discord, and renaming the thread from the Discord client is not a
+way to do it: the name you type there reaches no session, and the broker does not read a thread's
+name back, so it stands until the broker's own composed name next changes and overwrites it.
 
 Expect it within about **80 seconds** on the defaults, which is one transcript poll
 (`CHANNEL_INTERIM_POLL_MS`, 20 seconds) plus one dwell (`CHANNEL_DISCORD_DWELL_MS`, 60 seconds).
 Renaming twice inside that window spends one rename rather than two, because the dwell restarts on
-each change and only the settled name is painted. A session already reading `needs you` or `exited`
-skips the dwell and repaints on the next pass.
+each change and only the settled name is painted. A session already reading `needs you` skips the
+dwell and repaints on the next pass. Once a session's record has ended, the broker takes no further
+title for it, so a rename after the session ends never reaches its thread.
 
 Two carve-outs are worth knowing before you wait on one. A session launched `-NoMirror` never
 follows a rename, because the tailer never reads that session's transcript, and the name is
@@ -442,7 +456,8 @@ Three limits are worth knowing before you read the absence of a `⛔` as good ne
 is exempt from the silence backstop: a session blocked overnight keeps its `⛔` however long it
 sits, where any other session silent past `CHANNEL_DISCORD_EXITED_AFTER_MS` (4 hours) renders
 exited. The price of the exemption is the inverse misread: a session killed while blocked keeps
-its `⛔` until the broker lets the record go, rather than flipping to exited at the backstop. The
+its `⛔` until the broker lets the record go, rather than its card reading exited and its title
+returning to the resting title at the backstop. The
 event stream is a
 plain file in your home directory that any process running as you can append to, so a crafted
 `goal-complete` clears a real block and a flood of junk session ids can push a real one out of the
@@ -814,14 +829,14 @@ A session whose main thread is blocked on dispatched subagents fires no hooks at
 alone would read it as idle at the moment it is working hardest. The harness reports its own table
 of in-flight work at every turn end, and the card carries it in two places: the count beside the
 state on the card's own state row, and the tasks themselves with their ages in a block below. The
-thread title says only `active`, since a count that moved with the fan-out would spend a rename, and
-a permanent notice in the thread, on every step of a drain. At any fan-out you are likely to see,
-every task is named. A card omits one only when the message ceiling forces it, which is the bound
-that decides in practice, since each entry takes two rows: the card starts from at most twenty-four
-entries and drops them one at a time until the whole message fits. An entry reads as one thing
-rather than two: the first row carries the age and the agent's type behind a separator dot, and the
-second row carries the description with no separator of its own, indented two columns past where the
-type starts so it reads as the entry continuing.
+thread title stays the resting title, since a count that moved with the fan-out would spend a
+rename, and a permanent notice in the thread, on every step of a drain. At any fan-out you are
+likely to see, every task is named. A card omits one only when the message ceiling forces it,
+which is the bound that decides in practice, since each entry takes two rows: the card starts from
+at most twenty-four entries and drops them one at a time until the whole message fits. An entry
+reads as one thing rather than two: the first row carries the age and the agent's type behind a
+separator dot, and the second row carries the description with no separator of its own, indented
+two columns past where the type starts so it reads as the entry continuing.
 
 ```
 Tasks

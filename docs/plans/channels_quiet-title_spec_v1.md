@@ -1,6 +1,6 @@
 # A session thread's title stops announcing active and exited, so a restart writes no rename notice
 
-Status: Ready
+Status: In Progress
 Commit Model: Branch-and-PR
 Created: 2026-10-03
 
@@ -22,13 +22,13 @@ What done does not need to do. It does not delete rename notices: Discord refuse
 
 Alternatives refused. Keeping the title at `⚙ <name> · active` for good and merely skipping the exited rename: refused, since an archived thread of a dead session would read active, which is untrue on a surface the operator reads. A grace window that delays the exited rename until a restart had its chance: refused, since it keeps both renames for every exit that outlasts the window and adds a timer nothing asked for. A switch to turn the old titles back on: refused, since it keeps two title contracts under test and the operator asked for removal. Skipping the exited rename for supervised sessions only: refused, since the operator's reasons hold for every thread.
 
-Rulings after the spec shipped: none yet.
+Rulings after the spec shipped: 2026-10-03, the ARCHITECT persona (record DEV-DISCORD-a3e057e2-b227-463b-aea0-95f28b9c5978-1), on the worker's finding that `docs/security-model.md` names the broker's own glyph as the bound on two accepted risks of a transcript-planted title: the resting title carries a fixed broker-owned prefix that names no state, the bullet U+2022, so it reads `• <name>`. Option refused: the bare name with both security-model passages rewritten to a wider residual, since widening an accepted risk is the operator's call. The first character of every title is the broker's own and alone says whether the thread asks for something. The mark is held in one constant so the operator can swap it before deploy.
 
 Provenance: written by the ARCHITECT persona, session 421dc0ce, on 2026-10-03, from `broker/discord/render.ts`, `broker/discord/surface.ts` and the live docs at `origin/main` 649e8f7.
 
 ## Approach
 
-The title is composed in one place, `threadName` in `broker/discord/render.ts:1154`, from `titleState` at `:71`, which folds the card's five states into four title states. The change folds them into two. `working`, `idle` and `exited` have no title state, and their thread name is the session's display name alone, fitted to Discord's 100-character ceiling, with no glyph, no separator and no state word. `needs you` and `blocked` compose as today: `⏹ <name> · needs you` and `⛔ <name> · blocked`. This plan calls the bare name the resting title.
+The title is composed in one place, `threadName` in `broker/discord/render.ts:1154`, from `titleState` at `:71`, which folds the card's five states into four title states. The change folds them into two. `working`, `idle` and `exited` have no title state, and their thread name is the resting mark `•`, a space and the session's display name, fitted to Discord's 100-character ceiling, with no separator and no state word. `needs you` and `blocked` compose as today: `⏹ <name> · needs you` and `⛔ <name> · blocked`. This plan calls `• <name>` the resting title.
 
 Everything else follows from that one composition, because the surface already compares composed names rather than states.
 
@@ -42,13 +42,17 @@ Nothing outside the broker reads a thread title. Confirmed in this repository: `
 
 The sweep for surfaces that speak this contract ran as `git grep` over `origin/main` for `titleState|TitleState|TITLE_GLYPHS|threadName(`, for the literals `· active` and `· exited`, and over the live docs for `exited title`, `title state`, `exited rename` and `four states`. It found: `broker/discord/render.ts`, `render.test.ts`, `surface.ts`, `surface.test.ts`, `adapter.test.ts`, `docs/operations.md`, `docs/architecture.md`, `docs/security-model.md` and `docs/backlog.md`. The `"active"` literals in `broker/board/queues.ts`, `queues.test.ts` and `broker/log.test.ts` are a different word, a store status and a file body, and are out of scope. Rows in `docs/README.md` that describe archived plans are history and stay.
 
+## Standing Brief Amendments
+
+- 2026-10-03, ruling of the ARCHITECT persona: a resting title is `• <name>`, the bullet U+2022 held in one exported constant, then a space, then the display name fitted to the room left under Discord's 100-character ceiling. It applies to `working`, `idle` and `exited` alike, so all three still compose one string and spend no rename between them. A session title that itself begins with a state glyph composes with the resting mark first. A thread restored from `⚙ <name> · active` is renamed once to `• <name>`.
+
 ## Sections of Work
 
 ### 1. The title carries two states
 
 Model: opus
 
-`titleState`, `TitleState` and `TITLE_GLYPHS` in `broker/discord/render.ts` cover `needs you` and `blocked` only, and `threadName` returns the fitted display name alone for `working`, `idle` and `exited`. The comments above them state the new rule in the present tense. The log line at `surface.ts:468` names a rename to the resting title in plain words rather than a state that no longer exists. The comments in `surface.ts` at `:22-34`, `:481-485` and `:661-666` are brought in line with the resting title, and the `URGENT` set keeps `exited`.
+`titleState`, `TitleState` and `TITLE_GLYPHS` in `broker/discord/render.ts` cover `needs you` and `blocked` only, and `threadName` returns the resting mark, a space and the fitted display name for `working`, `idle` and `exited`, the mark held in one constant. The comments above them state the new rule in the present tense. The log line at `surface.ts:468` names a rename to the resting title in plain words rather than a state that no longer exists. The comments in `surface.ts` at `:22-34`, `:481-485` and `:661-666` are brought in line with the resting title, and the `URGENT` set keeps `exited`.
 
 The shape of `titleState`'s return for a state with no title is the implementer's call. Opus rather than sonnet because the tests encode the old contract in 36 title literals across three test files, and several assert the exited rename as the gate on the archive, so each needs a judgment on what it now proves rather than a literal swap.
 
@@ -57,9 +61,10 @@ Acceptance:
 - A session moving `working` to `idle` to `exited` and a new session taking over the thread by lineage spends zero renames across the whole sequence, with the thread at the resting title throughout.
 - A session at the resting title that exits is archived with no rename before it.
 - A session titled `needs you` or `blocked` that exits is renamed to the resting title without waiting the dwell, then archived.
-- A thread restored from a binding whose painted name is `⚙ <name> · active` is renamed once to `<name>`, and not again.
+- A thread restored from a binding whose painted name is `⚙ <name> · active` is renamed once to `• <name>`, and not again.
 - `needs you` and `blocked` titles compose byte-for-byte as they do at `origin/main` 649e8f7, and `needs you` is still painted at once while `blocked` still waits the dwell.
 - A display name at or over 100 characters yields a resting title of at most 100 characters.
+- A session title that itself begins with a state glyph composes with the resting mark first.
 - `npm run lint` and `npm test` exit 0, read from each run's own exit code.
 
 Files in scope: `broker/discord/render.ts`, `broker/discord/render.test.ts`, `broker/discord/surface.ts`, `broker/discord/surface.test.ts`, `broker/discord/adapter.test.ts`.
@@ -72,9 +77,9 @@ Model: sonnet
 
 Four live documents state the old contract and are corrected in place, in the present tense, with no account of the change.
 
-- `docs/operations.md`, "Reading a thread", from the sample block near `:85` through the glyph paragraph near `:122`. The sample shows resting titles as bare names beside one `needs you` and one `blocked` title. The text says a title carries a state only when the session wants something from the operator, and says where liveness is read instead: the status card, the thread leaving the active list when its session exits, the typing line, and the `↻ supervisor restarted` line. The glyph paragraph covers two glyphs.
+- `docs/operations.md`, "Reading a thread", from the sample block near `:85` through the glyph paragraph near `:122`. The sample shows resting titles as `• <name>` beside one `needs you` and one `blocked` title. The text says a title carries a state only when the session wants something from the operator, and says where liveness is read instead: the status card, the thread leaving the active list when its session exits, the typing line, and the `↻ supervisor restarted` line. The glyph paragraph covers three marks. The same file's other carriers of the old title follow: the card-vocabulary sentence near `:131`, the archive paragraph near `:229`, the `/rename` paragraph near `:239`, and the fan-out sentence near `:817`.
 - `docs/architecture.md` near `:641-647`, the sentence naming four title states, and near `:915-918`, "the final exited rename and the archive".
-- `docs/security-model.md:1074`, the same phrase about the per-thread bucket.
+- `docs/security-model.md:1074`, the same phrase about the per-thread bucket. Its title-bound passages near `:573-594` and `:1494-1497` stay true in substance and correct only what moved: the state suffix no longer renders at rest, so the blank-title passages say the broker's glyph still renders, and the "under ninety characters" room is restated from the code as built, since a resting title spends two characters and a state title spends more.
 - `docs/backlog.md`, two parked items. The item parked 2026-08-27 that opens "Watch a renamed session end" still needs its observation, and now names the archive alone, since no exited title exists. The item parked 2026-08-27 on a session evicted by the `maxSessions` cap drops "frozen at a pre-exit title where the exited rename never landed" for what can still happen: a thread left unarchived, or left titled `needs you` or `blocked`.
 
 Acceptance:
@@ -98,7 +103,7 @@ Fact base: `broker/discord/render.ts`, `broker/discord/surface.ts`, and this pla
 
 ## Assumptions
 
-- assumed 2026-10-03 (default): the resting title is the bare session name with no glyph; reversal: one constant and its tests, and one more rename per live thread.
+- assumed 2026-10-03 (ruled): the resting title is `• <name>`, ruled 2026-10-03 on the worker's finding that security-model.md leans on a broker-owned glyph; reversal: one constant and its tests, and one more rename per live thread.
 - assumed 2026-10-03 (default): one rename notice per live thread at deploy is acceptable, since it is the last one a quiet thread gets; reversal: a lazy migration that waits for the next wanted rename, which adds a second comparison to `refreshName`.
 - assumed 2026-10-03 (operator, 2026-10-03 messages): `needs you` and `blocked` keep their titles, since the operator named only active and exited; reversal: a further plan.
 - assumed 2026-10-03 (default): the blind read and the plan review are skipped, as the brainstorming skill allows for a plan of two sections.
@@ -112,3 +117,41 @@ Fact base: `broker/discord/render.ts`, `broker/discord/surface.ts`, and this pla
 None.
 
 ## Chapters
+
+### Chapter 1 - 2026-10-03
+Completed: 1. The title carries two states
+Implemented By: implementer-opus (first build and the round 1 fix round, resumed); main session (the archived-entry guard in `retire` with its test, and the round 2 fix)
+Metrics: review rounds 2, closed major-closed; provenance 1 spec-traceable, 1 fix-introduced, 0 new-requirement, rulings (0 refused, 0 declared, 0 asked); advisory: 3 findings, 1 fixed, 1 deferred, 0 refused (one covered by Section 2); NEEDS_CONTEXT 0; escalations 0; consults 0; one architect ruling (option (b), resting mark) taken through the expert seat
+Decisions / Surprises: section 1 open: changes titleState/threadName so working, idle and exited compose the bare fitted display name; serves Goal sentence 1 and acceptance bullets 1-6; adds no mechanism (removes two title states); size about 5 files, 36 test literals; not building it leaves two rename notices per supervised restart.
+fold: retire skips refreshName for an archived entry; serves Intent negative clause 'does not retitle threads already archived' and Out of Scope 'Retitling archived threads'; adds no unnamed mechanism (restores the no-call behavior the old composition gave); 1 line + 1 test; not building it spends one doomed rename per old archived binding at deploy.
+round 1 fix (Major, blind+security, trace Goal sentence 1 as amended): resting title becomes `• <name>` via one exported constant; serves the Standing Brief Amendment of 2026-10-03 (architect ruling) and the new acceptance bullet; adds no unnamed mechanism (the amendment names the constant); size one constant, one branch, ~30 test literals; not building it lets a planted title draw byte-identical to a broker needs-you title and widens two accepted risks without the operator.
+The implementer's DONE_WITH_CONCERNS surfaced that `retire` would spend one doomed rename on a thread archived under the old `⚠ <name> · exited` title once its session departs, contradicting the Intent's "does not retitle threads already archived"; the main session added the guard, watched its test fail first (`actual: ['neo-intake']`), and the round 1 adversarial reviewer confirmed it implements the Approach sentence. The worker's docs sweep found that `docs/security-model.md` names the broker's own glyph as the bound on two accepted risks of a transcript-planted title, which a bare resting title removed; the blind and security reviewers independently raised the same defect as a Major. The architect ruled option (b) on 2026-10-03 (record DEV-DISCORD-a3e057e2-b227-463b-aea0-95f28b9c5978-1): a resting title is `• <name>`. Recorded under Intent, Assumption 1, Approach, Section 1, Section 2, and a new Standing Brief Amendments block. Promises p1-p4 read above 0.6 (0.75, 0.67, 0.61, 0.60 after the fix round): each is cross-file behavior the source alone cannot show, and each is pinned by a named test the implementer reports red on the old code.
+Failed approaches: tried a Perl substitution with the bullet written literally into the `-e` script under `-CSD`, failed because Perl does not decode a script's own source as UTF-8 without `use utf8`, learned to write the code point as `\x{2022}`.
+Assumptions: none
+Review Findings: `review: adversarial + blind + security at fable, Agent tool` (round 1); `review: adversarial at opus, Workflow, effort high` (round 2). Round 1: Major (blind, security) bare resting title lets a planted title pass as a broker title, fixed by the architect's ruling in the round 1 fix; orchestrator-made trace for the blind lens's copy (Goal sentence 1). Round 2: Major (adversarial) tests repeated the resting mark as a literal 31 times beyond the vocabulary pin, fix-introduced, fixed by building every expected resting title from `RESTING_MARK`; the swap control (mark changed to `◦` in a detached probe worktree at 103df2a) failed exactly one of 283 targeted tests, the vocabulary pin. Advisory: security Major on `security-model.md:573-594` fixed through Section 2; security Minor `npm audit` deferred, already the backlog item parked 2026-10-03 by the plan reader plan; security Minor `:1074` covered by Section 2. Minors: 4 fixed (the archive-liveness comment claim, the duplicate render test folded, the RESTING_MARK pin sentence, "draws" narrowed to "composes"), 0 upgraded, 1 left (blind: `entry.archived` can be stale across a revival window; no visible effect, since every thread archived under this code already carries the resting title).
+Stamps: adjudicated 2, stamped 1 (forward-resource-arrangements-into-dispatch-briefs: the section's brief forwarded the kit suite and main-checkout baseline as workspace constraints); kit-memory-database-host skipped, read but not applied.
+Gate: targeted lane (render, surface, adapter tests) at 103df2a exit 0, 283 tests, 283 pass, 0 fail; npm run lint exit 0; npm test on the worktree at 103df2a plus Section 2's uncommitted docs, 2026-10-03, exit 0, 2367 tests, 2366 pass, 0 fail, 1 skipped (the POSIX token-file test, Windows skip), 53 s wall, a foreign `node --test` (pid 11288) running beside it. Baseline on the same lane: main checkout at 649e8f7, exit 0, 2363 tests, 2362 pass, 1 skipped, 56 s, the implementer's runs possibly beside it. Delta: 0 failing to 0 failing, 4 tests added net. Added: zero renames across a supervised restart (the defect); archive at rest with no rename; clearing rename from needs you and blocked at exit without the dwell; ceiling for the resting title at 98, 100, 101 and 400; a glyph-led session title composes behind the resting mark; an archived thread whose session departs takes no rename. Retired: "a session going quiet or exiting does not change its thread name", class duplicate. Edited: about 20 tests repointed from the exit rename to the needs-you rename so budget, GONE, refusal, retire-pass and archive-gate contracts are still exercised; expected titles moved to the resting title. Tests spawning a process: 0.
+Next: 2. The docs describe the title as built
+Commit Model: Branch-and-PR
+Delta: moment 2026-10-03, worktree D:/discord-channels-wt/quiet-title at 103df2a with Section 2 docs uncommitted, this machine.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
+
+### Chapter 2 - 2026-10-03
+Completed: 2. The docs describe the title as built
+Implemented By: main session (`Locus: inline`, docs/ writes stay in the main thread; the section's tier is sonnet)
+Metrics: review rounds 1, closed major-closed; provenance 3 spec-traceable, 0 fix-introduced, 0 new-requirement (reader and prose findings take no trace; counted from the prose reviewer's three accuracy Majors), rulings (0 refused, 0 declared, 0 asked); advisory: 0; NEEDS_CONTEXT 0; escalations 0; consults 0
+Decisions / Surprises: section 2 open: rewrites the title passages in operations.md, architecture.md, security-model.md and backlog.md to the resting title • <name>; serves Section 2 acceptance and the 2026-10-03 amendment; adds no mechanism; ~10 passages across 4 files; not doing it leaves live docs stating a title the broker no longer writes.
+The plan's sweep named the "Reading a thread" block alone in `docs/operations.md`; a wider read found four more carriers in the same file (the card-vocabulary sentence, the `/rename` paragraph, the fan-out sentence and the blocked-backstop sentence) and two title-bound passages in `docs/security-model.md` (near 573-596 and 1496-1500). Their substance was folded into this section, all inside its listed files, and the plan's Section 2 text was amended to name them; recorded as approval drift. `docs/operator-checks.md:141` ("rendered glyph-first") was read and left: it stays true with the mark first. `docs/security-model.md:83` speaks of the session's `exited` state, not a title, and stays.
+Failed approaches: none
+Assumptions: none
+Review Findings: `review: blind-reader + prose-reviewer at fable, Agent tool (1 reader)`; code pair not run, the section changed documents only. The blind-reader dispatch carried focus framing (which words to search for), which the reader itself recorded as contamination; its findings are read with that discount. Prose reviewer, CHANGES_REQUIRED: Major `operations.md` claimed an exit writes no rename notice at all, fixed by scoping it to a thread at rest and stating the clearing rename and the archive that waits on it; Major the blocked-backstop sentence still said a title flips to exited, fixed; Major the backlog attributed today's archive gate to an August round's reading, fixed by keeping that round's report as found and stating the current gate as present fact. Blind reader: Major the archive can be late behind a clearing rename, fixed in the same `operations.md` paragraph with the knob named (`CHANNEL_DISCORD_ARCHIVE_ON_END`); Major the `/rename` paragraph implied an exited session repaints faster, fixed (an ended record takes no further title, confirmed at `broker/registry.ts:805`); Major unreadable `/rename` fallback, outside this plan's behavior, routed to `docs/backlog.md` (parked 2026-10-03). Minors: 7 fixed (glyph-first wording to mark, "exited name" to resting title, the parenthetical split, the over-long security sentence split, the architecture-versus-security bound strength aligned, Discord's 100-character cap stated, every touched paragraph rewrapped under 101 characters), 0 upgraded, 5 left: the `security-model.md:1074` bucket wording stays `blocked` because that passage is about the blocked-goal feed; four blind-reader Minors on pre-existing passages this plan does not change (the dropped-rename log line, the dwell table row, the Unicode examples, the wrapper `-Name` relationship). The fix delta is prose only, so it owes no round; it took the author re-read against `render.ts`, `surface.ts` and `registry.ts`.
+Stamps: none surfaced since Chapter 1.
+Gate: docs sweep over live docs (`docs` and `README.md`, excluding `docs/archive`, `docs/plans` and `docs/README.md`) for `· active|· exited|exited title|title state|exited rename|four states|state suffix intact|says only \`active\`|title.{0,40}\`active\`|composed exited name|flipping to exited|glyph-first because`: exit 1, no match; the same pattern at 649e8f7 matches 13 lines across the four documents, so it speaks. The pattern is literal and the class (statements about the title) has no structural shape, so the named members are swept and the class is not; the passages the wider read found are listed above. npm test on this tree, 2026-10-03, exit 0, 2367 tests, 2366 pass, 1 skipped, 53 s wall, foreign `node --test` pid 11288 beside it; npm run lint exit 0. Delta against the Chapter 1 baseline: unchanged. Tests added, retired, edited: none.
+Next: finishing-work
+Commit Model: Branch-and-PR
+Delta: moment 2026-10-03, worktree D:/discord-channels-wt/quiet-title at 103df2a with this section's docs uncommitted, this machine.
+```
+kit-size: measured no file at all under the measured roots, no tracked path a root holds was absent from the pathspec-filtered listing, and no untracked file a measured shape reaches was found either, so the corpus is empty rather than hidden and there is no reading to report
+```
